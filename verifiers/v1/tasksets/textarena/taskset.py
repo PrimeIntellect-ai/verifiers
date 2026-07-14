@@ -39,6 +39,8 @@ class TextArenaState(vf.State):
 class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
     """Keep a seeded game alive across user turns in the harness process."""
 
+    EXTRAS = ("ta",)
+
     async def setup(self) -> None:
         if not self.config.colocated:
             raise ValueError(
