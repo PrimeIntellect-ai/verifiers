@@ -185,7 +185,6 @@ class EnvServerPool:
         if self._poller is not None:
             self._poller.unregister(worker["dealer"])
             self._poller.unregister(worker["sentinel"])
-        self.workers.remove(worker)
 
         # The process sentinel and its final DEALER reply can become readable in
         # adjacent loop iterations. Honor every reply already queued before failing
@@ -198,23 +197,28 @@ class EnvServerPool:
             ).model_dump(mode="python"),
             use_bin_type=True,
         )
+        failed_responses = []
         for request_id, entry in list(pending.items()):
             if entry["worker"] is not worker:
                 continue
             pending.pop(request_id)
             released += entry["rollout_slots"]
-            with contextlib.suppress(zmq.ZMQError):
-                await self.frontend.send_multipart(
-                    [entry["client_id"], request_id, data]
-                )
+            failed_responses.append([entry["client_id"], request_id, data])
 
+        # Keep the dead worker under shutdown's ownership until all of its resources
+        # are closed, then restore capacity before sending failures can suspend.
         with contextlib.suppress(Exception):
             worker["pipe"].close()
         worker["dealer"].close()
         with contextlib.suppress(OSError):
             os.unlink(self._worker_path(worker["index"]))
         process.close()
+        self.workers.remove(worker)
         self._spawn_worker(worker["index"])
+
+        for response in failed_responses:
+            with contextlib.suppress(zmq.ZMQError):
+                await self.frontend.send_multipart(response)
         return released
 
     def _maybe_scale_up(self, in_flight: int) -> None:
