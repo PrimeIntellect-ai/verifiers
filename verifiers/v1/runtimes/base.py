@@ -110,7 +110,8 @@ class Runtime(ABC):
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
-        self._uv_ready = False
+        # uv installs under each command's HOME; None represents the runtime default.
+        self._uv_ready_homes: set[str | None] = set()
         self._uv_lock = asyncio.Lock()
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
@@ -183,12 +184,15 @@ class Runtime(ABC):
                 if digest not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
+                    uv_home = (env or {}).get("HOME")
                     async with (
                         self._uv_lock
-                        if not self._uv_ready
+                        if uv_home not in self._uv_ready_homes
                         else contextlib.nullcontext()
                     ):
-                        setup = _UV_ENV if self._uv_ready else _ENSURE_UV
+                        setup = (
+                            _UV_ENV if uv_home in self._uv_ready_homes else _ENSURE_UV
+                        )
                         command = (
                             f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
                             f"&& {{ {setup}; }} "
@@ -197,7 +201,7 @@ class Runtime(ABC):
                         )
                         result = await self.run(["sh", "-c", command], env or {})
                         if result.exit_code == 0:
-                            self._uv_ready = True
+                            self._uv_ready_homes.add(uv_home)
                     if result.exit_code != 0:
                         raise RuntimeError(
                             "failed to prepare uv script: "

@@ -125,8 +125,12 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # build, silently running the server against a released (older) API. Pretend the
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
-    async with runtime._uv_lock if not runtime._uv_ready else contextlib.nullcontext():
-        ensure_uv = _UV_ENV if runtime._uv_ready else _ENSURE_UV
+    async with (
+        runtime._uv_lock
+        if None not in runtime._uv_ready_homes
+        else contextlib.nullcontext()
+    ):
+        ensure_uv = _UV_ENV if None in runtime._uv_ready_homes else _ENSURE_UV
         setup = (
             f'{ensure_uv}; set -e; for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
             f"uv venv {venv} && "
@@ -136,7 +140,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
         )
         result = await runtime.run(["sh", "-c", setup], {})
         if result.exit_code == 0:
-            runtime._uv_ready = True
+            runtime._uv_ready_homes.add(None)
     if result.exit_code != 0:
         raise ToolsetError(
             f"server {server.server_name!r} install failed in runtime: "
