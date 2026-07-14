@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTaskData
@@ -32,14 +32,15 @@ class InfoRequest(BaseRequest):
 
 
 class InfoResponse(BaseResponse):
-    num_tasks: int = 0
+    num_tasks: int | None = None
+    """Task count; `None` means the taskset is infinite (bound runs with `num_tasks`)."""
     requires_group_scoring: bool = False
     """Whether tasks must be run and resumed as whole groups."""
 
 
 class RunRolloutRequest(BaseRequest):
     method: ClassVar[str] = "run_rollout"
-    task_idx: int
+    task_idx: int = Field(ge=0)
     client: ClientConfig
     model: str
     sampling: SamplingConfig
@@ -56,7 +57,7 @@ class RunRolloutResponse(BaseResponse):
 
 class RunGroupRequest(BaseRequest):
     method: ClassVar[str] = "run_group"
-    task_idx: int
+    task_idx: int = Field(ge=0)
     n: int
     client: ClientConfig
     model: str

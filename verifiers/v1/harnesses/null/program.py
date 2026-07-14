@@ -7,14 +7,18 @@
 import argparse
 import asyncio
 import json
-import os
 from contextlib import AsyncExitStack
+from pathlib import Path
 
 from openai import AsyncOpenAI
 
 
-async def chat(client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]):
-    completion = await client.chat.completions.create(model=model, messages=messages, tools=tools or None)
+async def chat(
+    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
+):
+    completion = await client.chat.completions.create(
+        model=model, messages=messages, tools=tools or None
+    )
     return completion.choices[0].message
 
 
@@ -30,8 +34,12 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
     tool_schemas: list[dict] = []
     dispatch: dict[str, tuple] = {}
     for name, spec in config.get("mcpServers", {}).items():
-        http_client = await stack.enter_async_context(create_mcp_http_client(headers=spec.get("headers") or None))
-        read, write, *_ = await stack.enter_async_context(streamable_http_client(spec["url"], http_client=http_client))
+        http_client = await stack.enter_async_context(
+            create_mcp_http_client(headers=spec.get("headers") or None)
+        )
+        read, write, *_ = await stack.enter_async_context(
+            streamable_http_client(spec["url"], http_client=http_client)
+        )
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
@@ -80,12 +88,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
+    parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
+    initial = []
+    if args.initial_messages_file:
+        path = Path(args.initial_messages_file)
+        payload = path.read_bytes()
+        path.unlink()
+        initial = json.loads(payload)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
@@ -100,12 +115,11 @@ async def main() -> None:
                 tools, dispatch = await connect_mcp(stack, config)
         else:
             tools, dispatch = [], {}
-        messages = [{"role": "system", "content": args.system_prompt}] if args.system_prompt else []
-        # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
-        # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
-        # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
-        # message. Both empty means the task has no prompt — the user simulator seeds the opening.
-        initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
+        messages = (
+            [{"role": "system", "content": args.system_prompt}]
+            if args.system_prompt
+            else []
+        )
         if initial:
             messages.extend(initial)
         elif args.prompt:
@@ -143,7 +157,9 @@ async def main() -> None:
                     content = await call_mcp(dispatch, name, tool_args)
                 else:
                     content = f"error: unknown tool {name!r}"
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+                messages.append(
+                    {"role": "tool", "tool_call_id": call.id, "content": content}
+                )
 
 
 if __name__ == "__main__":

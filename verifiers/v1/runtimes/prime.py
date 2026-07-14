@@ -3,7 +3,7 @@
 `expose` (sandbox port -> public URL) uses the SDK's native exposure (`client.expose`), so a
 host-side harness/framework can reach a tool/user server hosted in the sandbox. The reverse
 direction (a program in the sandbox reaching a host service) is the shared host-side
-`host_endpoint` tunnel, not the runtime's concern.
+`Tunnel` (interception.tunnel), not the runtime's concern.
 """
 
 import asyncio
@@ -61,7 +61,7 @@ class PrimeConfig(BaseConfig):
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    and globally — see limiters.TUNNEL_LIMITER.)"""
+    and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
 
     @model_validator(mode="after")
     def _validate_idle_timeout(self) -> "PrimeConfig":
@@ -138,7 +138,7 @@ class PrimeRuntime(Runtime):
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
-            await self._client.run_background_job(
+            await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
         except (

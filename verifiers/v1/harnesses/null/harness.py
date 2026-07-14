@@ -54,13 +54,16 @@ class NullHarness(Harness[NullHarnessConfig]):
                     }
                 )
             )
-        # A Messages prompt (e.g. an image-bearing prompt) seeds the chat loop directly via env
-        # (it can be large multimodal content that overflows argv); a plain string is the single
-        # first user message; None means the task has no prompt and the user simulator opens it.
         if isinstance(prompt, str):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
-            env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
+            # Base64 images can exceed exec limits, so hand Messages off through a file.
+            path = f".vf-initial-messages-{trace.id}.json"
+            await runtime.write(
+                path,
+                json.dumps([message_to_wire(m) for m in prompt]).encode(),
+            )
+            args.append(f"--initial-messages-file={path}")
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )

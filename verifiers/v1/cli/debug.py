@@ -3,9 +3,7 @@
 import asyncio
 import contextlib
 import logging
-import random
 import shlex
-import signal
 import sys
 import time
 import traceback
@@ -30,6 +28,7 @@ from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
+from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -138,15 +137,19 @@ def record_debug_error(
     setup_timeout: float | None,
     action_timeout: float | None,
 ) -> None:
-    if not trace.timing.setup.end:
-        trace.timing.setup.end = time.time()
-    if trace.timing.generation.start and not trace.timing.generation.end:
-        trace.timing.generation.end = time.time()
+    now = time.time()
+    for span in (trace.timing.boot, trace.timing.setup, trace.timing.generation):
+        if span.start and not span.end:
+            span.end = now
     in_action = bool(trace.timing.generation.start)
-    stage = "debug action" if in_action else "setup"
+    stage = (
+        "debug action" if in_action else "setup" if trace.timing.setup.start else "boot"
+    )
     timeout = action_timeout if in_action else setup_timeout
     error_start = (
-        trace.timing.generation.start if in_action else trace.timing.setup.start
+        trace.timing.generation.start
+        if in_action
+        else trace.timing.setup.start or trace.timing.boot.start
     )
     debug.update(error_info(error, error_start, timeout, stage))
     debug.setdefault("runtime", runtime_info(runtime))
@@ -226,8 +229,11 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         else task.data.timeout.setup
     )
     try:
-        trace.timing.setup.start = time.time()
+        trace.timing.boot.start = time.time()
         await runtime.start()
+        now = time.time()
+        trace.timing.boot.end = now
+        trace.timing.setup.start = now
         debug["runtime"] = runtime_info(runtime)
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
@@ -267,11 +273,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load()
-    if config.shuffle:
-        random.Random(0).shuffle(tasks)
-    if config.num_tasks is not None:
-        tasks = tasks[: config.num_tasks]
+    tasks = taskset.select(config.num_tasks, config.shuffle)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):
@@ -327,8 +329,9 @@ def main(argv: list[str] | None = None) -> None:
     sys.argv = [sys.argv[0], *argv]
     config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
-    # Translate SIGTERM so async finally blocks still tear down their resources.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`;
+    # a second is swallowed so it can't orphan containers/sandboxes mid-cleanup.
+    install_interrupt()
     asyncio.run(run_debug(config))
 
 

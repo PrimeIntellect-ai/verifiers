@@ -26,6 +26,7 @@ class ValidateConfig(BaseConfig):
     """Run only `Task.setup` and `Task.validate`."""
     num_tasks: int | None = Field(
         None,
+        ge=1,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
     )
     """How many tasks to validate (None = all)."""
