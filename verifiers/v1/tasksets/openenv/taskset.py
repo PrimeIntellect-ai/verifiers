@@ -48,7 +48,8 @@ class OpenEnvConfig(vf.TasksetConfig):
     provider options only apply when `env` is set."""
     use_docker: bool = False
     """Use OpenEnv's Docker provider instead of its UV provider. Under Prime this
-    defaults the outer runtime to a VM, allowing Docker to start inside it."""
+    defaults the outer runtime to a VM, allowing Docker to start inside it. Docker-backed
+    users cannot be colocated because the taskset does not own the harness runtime."""
     provider_kwargs: dict[str, Any] = {}
     """Keyword arguments passed unchanged to `GenericEnvClient.from_env`, such as
     `app`, `env_vars`, `tag`, or `project_path`."""
@@ -69,6 +70,8 @@ class OpenEnvConfig(vf.TasksetConfig):
             and launch_options & self.model_dump(exclude_defaults=True).keys()
         ):
             raise ValueError("`base_url` cannot be combined with local launch options")
+        if self.use_docker and self.task.user.colocated:
+            raise ValueError("OpenEnv Docker requires its own user runtime")
 
         runtime = self.task.user.runtime
         # OpenEnv Docker starts inside the user runtime. Prime therefore defaults the
