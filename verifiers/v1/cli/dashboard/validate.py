@@ -9,6 +9,7 @@ this reads them each tick.
 
 import contextlib
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 from rich.console import Group
@@ -60,16 +61,16 @@ def Overview(config: ValidateConfig) -> Table:
 
 def Progress(states: list[TaskProgress], start: float) -> Table:
     done = [s for s in states if s.state in _DONE]
-    valid = sum(1 for s in done if s.state == "valid")
-    stats = (
-        f" {len(done)}/{len(states)} · {format_time(time.time() - start)} · "
-        f"valid {valid} · invalid {len(done) - valid}"
-    )
+    counts = Counter(s.state for s in done)
+    stats = Text(f" {len(done)}/{len(states)} · {format_time(time.time() - start)}")
+    for state in _DONE:
+        stats.append(" · ")
+        stats.append(f"{state} {counts[state]}", style=_STYLE[state])
     row = Table.grid()
     row.add_column()
     row.add_column()
     row.add_row(
-        ProgressBar(total=len(states) or 1, completed=len(done), width=32), Text(stats)
+        ProgressBar(total=len(states) or 1, completed=len(done), width=32), stats
     )
     return row
 
