@@ -40,7 +40,7 @@ _LABEL_WIDTH = len("timeouts")
 
 _STYLE = {
     "pending": "dim",
-    "boot": "bright_yellow",
+    "boot": "orange3",
     "setup": "yellow",
     "running": "cyan",
     "finalize": "magenta",
