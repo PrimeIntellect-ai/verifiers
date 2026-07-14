@@ -25,6 +25,7 @@ from verifiers.v1.interception.server import (
     InterceptionServer,
     InterceptionServerConfig,
 )
+from verifiers.v1.interception.tunnel import PrimeTunnelConfig
 from verifiers.v1.session import RolloutSession
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,10 @@ class ElasticInterceptionPool(Interception):
         for server in self.servers:
             if server.load < self.config.multiplex:
                 return server
-        server = InterceptionServer(requires_tunnel=self.requires_tunnel)
+        # Pin prime explicitly — the only tunnel kind that can be minted on demand.
+        server = InterceptionServer(
+            InterceptionServerConfig(tunnel=PrimeTunnelConfig()), self.requires_tunnel
+        )
         await self.stack.enter_async_context(server)
         self.servers.append(server)
         logger.info(
