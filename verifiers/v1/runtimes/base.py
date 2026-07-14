@@ -244,6 +244,10 @@ class Runtime(ABC):
     async def write(self, path: str, data: bytes) -> None:
         pass
 
+    def host_url(self, url: str) -> str:
+        """The URL a program inside this runtime uses to reach a host-bound `url`."""
+        return url
+
     @property
     def published_port(self) -> int | None:
         """A fixed port this runtime exposes to the outside at startup, declared up front to the

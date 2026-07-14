@@ -5,8 +5,10 @@ import contextlib
 import logging
 import shlex
 import subprocess
+import sys
 from pathlib import PurePosixPath
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic_config import BaseConfig
 
@@ -117,6 +119,14 @@ class DockerRuntime(Runtime):
             self._container,
             self.config.image,
         )
+
+    def host_url(self, url: str) -> str:
+        # Docker Desktop (macOS/Windows) runs containers in a VM, so `--network host`
+        # doesn't reach the host's loopback; `host.docker.internal` does.
+        host = urlsplit(url).hostname
+        if sys.platform != "linux" and host in ("127.0.0.1", "localhost"):
+            return url.replace(host, "host.docker.internal", 1)
+        return url
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
