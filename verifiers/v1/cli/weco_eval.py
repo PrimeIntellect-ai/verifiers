@@ -67,13 +67,14 @@ def summary(traces: list[Trace]) -> str:
     `metric/has_boxed_answer`) so the final unprefixed `reward:` line — the scalar the
     optimizer tracks — is unambiguous, whatever the tasks name their parts."""
     errors = sum(1 for trace in traces if trace.has_error)
+    clean = [trace for trace in traces if not trace.has_error]
     lines = [f"rollouts: {len(traces)}", f"errors: {errors}"]
     for kind, prefix in (("rewards", "reward"), ("metrics", "metric")):
-        keys = sorted({key for trace in traces for key in getattr(trace, kind)})
+        keys = sorted({key for trace in clean for key in getattr(trace, kind)})
         for key in keys:
-            mean = sum(getattr(t, kind).get(key, 0.0) for t in traces) / len(traces)
+            mean = sum(getattr(t, kind).get(key, 0.0) for t in clean) / len(clean)
             lines.append(f"{prefix}/{key}: {mean:.4f}")
-    lines.append(f"reward: {sum(t.reward for t in traces) / len(traces):.4f}")
+    lines.append(f"reward: {sum(t.reward for t in clean) / len(clean):.4f}")
     return "\n".join(lines)
 
 
