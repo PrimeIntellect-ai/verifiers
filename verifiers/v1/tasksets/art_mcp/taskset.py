@@ -46,7 +46,9 @@ def _read_rows(path: Path) -> Iterable[dict[str, Any]]:
         yield from data
         return
     if isinstance(data, dict):
-        rows = data.get("scenarios", data.get("tasks"))
+        rows = data.get("scenarios")
+        if not isinstance(rows, list):
+            rows = data.get("tasks")
         if isinstance(rows, list):
             yield from rows
             return
@@ -56,6 +58,8 @@ def _read_rows(path: Path) -> Iterable[dict[str, Any]]:
 def load_art_rows(path: str | Path) -> list[dict[str, Any]]:
     rows = list(_read_rows(Path(path)))
     for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"row {idx} must be a JSON object")
         task = row.get("task")
         if not isinstance(task, str) or not task.strip():
             raise ValueError(f"row {idx} missing non-empty 'task'")
