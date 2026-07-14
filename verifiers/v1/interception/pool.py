@@ -5,14 +5,15 @@ Behind a remote consumer each interception server needs a tunnel, and prime tunn
 is rate-capped per API token — so one-tunnel-per-rollout caps how wide a remote eval (or env
 server) can fan out. Each shared `InterceptionServer` multiplexes rollouts behind one
 tunnel; the harness is unchanged, authenticating with a per-rollout secret the server routes
-by. Two shapes: `ElasticInterceptionPool` grows servers on demand (`multiplex` rollouts
-each, always prime tunnels — the only kind the framework can mint) and fits both the bounded
-eval runner and the env server's unbounded request load; `StaticInterceptionPool` is a fixed
-set of servers (each with its own tunnel choice, e.g. bring-your-own endpoints), balanced
+by. Two shapes: `ElasticInterceptionPool` warms one server, then grows on demand (`multiplex`
+rollouts each, always prime tunnels — the only kind the framework can mint) and fits both the
+bounded eval runner and the env server's unbounded request load; `StaticInterceptionPool` is a
+fixed set of servers (each with its own tunnel choice, e.g. bring-your-own endpoints), balanced
 least-loaded.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -72,8 +73,8 @@ class StaticInterceptionPool(Interception):
 
 
 class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
-    """Interception servers grown on demand: `multiplex` rollouts share one server (and,
-    behind a remote consumer, one prime tunnel). The default."""
+    """An eagerly warmed interception server, then more grown on demand: `multiplex`
+    rollouts share one server (and, behind a remote consumer, one prime tunnel). The default."""
 
     type: Literal["elastic"] = "elastic"
     multiplex: int = Field(32, ge=1)
@@ -83,9 +84,9 @@ class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
 
 
 class ElasticInterceptionPool(Interception):
-    """Interception servers grown on demand: `multiplex` rollouts share one server (one
-    prime tunnel behind a remote consumer); `acquire` hands a rollout a slot on one,
-    bringing up a new server when all are at capacity."""
+    """Warm the first interception server on start, then grow on demand: `multiplex`
+    rollouts share one server (one prime tunnel behind a remote consumer); `acquire` hands
+    a rollout a slot on one, bringing up a new server when all are at capacity."""
 
     def __init__(
         self,
@@ -97,14 +98,22 @@ class ElasticInterceptionPool(Interception):
         self.requires_tunnel = requires_tunnel
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
+        self._warm_task: asyncio.Task[InterceptionServer] | None = None
 
     async def start(self) -> None:
-        pass  # servers are brought up lazily in `acquire`, on `stack`
+        self._warm_task = asyncio.create_task(self._server())
+
+    async def stop(self) -> None:
+        if self._warm_task is not None:
+            self._warm_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._warm_task
+        await super().stop()
 
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
-        one (its own tunnel, on `stack`, torn down with the pool). The caller holds
-        `_lock`."""
+        one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
+        the warm task runs before they reach this path."""
         for server in self.servers:
             if server.load < self.config.multiplex:
                 return server
@@ -123,6 +132,10 @@ class ElasticInterceptionPool(Interception):
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
+        if self._warm_task is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self._warm_task)
+            self._warm_task = None
         # Register under the lock so concurrent acquires see each other's load.
         async with self._lock:
             server = await self._server()
