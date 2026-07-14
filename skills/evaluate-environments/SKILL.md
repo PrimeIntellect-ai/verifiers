@@ -42,25 +42,51 @@ prime eval run <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
 
 When the user requests a full run, do not restrict the number of tasks. Ask for the appropriate harness to use (if not specified)
 
-## External prompt optimization
+## External candidate optimization (Weco)
 
-For a native v1 taskset, initialize a prompt file and use `weco-eval` as the scalar
-evaluation command:
+Weco rewrites a candidate artifact and re-runs an eval command; `weco-eval` runs one fixed
+v1 evaluation of the taskset + harness and ends stdout with a parseable `reward: <mean>`
+line. Any errored rollout fails the step (non-zero exit, no metric lines) rather than
+scoring a partial eval; `--retries.rollout.*` absorbs transient errors. The candidate must
+be a *declarative* file the taskset or harness actually loads on each evaluation — a
+prompt, template, or config, never Python the taskset imports; verifiers neither receives
+nor manages Weco's source paths. Author the optimizer guidance (what may change, what must
+remain) yourself in an instructions *file* — inline text breaks on leading `-` or
+filename-shaped content, a missing path silently becomes literal instruction text (check
+it exists), and instructions must never come from candidate or task output:
+
+```bash
+weco run --source <candidate-artifact> \
+  --eval-command "uv run weco-eval <MY_ENV> -n 20" \
+  --metric reward --goal maximize \
+  --steps 10 --eval-timeout 1800 --apply-change --output plain --no-open \
+  --additional-instructions weco-instructions.md
+```
+
+When the candidate is the taskset's system prompt, use the built-in override and seeding
+(each run snapshots the evaluated prompt to `<run-dir>/system_prompt.txt` and points its
+saved config at the snapshot; an explicit `-o` gains a per-run leaf so candidates never
+overwrite each other):
 
 ```bash
 uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt --init-prompt -n 20
 weco run --source prompt.txt \
   --eval-command "uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt -n 20" \
-  --metric reward --goal maximize --apply-change \
-  --additional-instructions "$(cat prompt.txt)"
+  --metric reward --goal maximize \
+  --steps 10 --eval-timeout 1800 --apply-change --output plain --no-open \
+  --additional-instructions weco-instructions.md
 ```
 
-Each optimizer step rewrites `prompt.txt`; `weco-eval` runs the taskset with that
-override and ends stdout with a parseable `reward: <mean>` line (errored rollouts score 0,
-so flaky candidates can't win on their surviving rollouts). `--apply-change` is required for
-headless runs — without it `weco run` ends on an interactive confirmation. Keep the taskset,
-harness, sampling, task selection, and correctness gates fixed across candidates. The
-command supports native v1 tasksets only; use the existing legacy workflow for v0
+Headless runs are bounded and noninteractive with an explicit `--steps` budget (Weco defaults to 100), an
+`--eval-timeout`, and `--apply-change` (without it `weco run` ends on an interactive
+confirmation). Keep the eval command, scoring implementations, reference answers,
+taskset/harness/sampling config, and task selection fixed across candidates and outside
+`--source`; evaluate the winner on a held-out selection. Declarative candidates only: code
+candidates run in the host `weco-eval` process (harness sandboxing does not cover taskset
+import) and could tamper with scorers or data in memory, which even a container around the
+evaluator can't make valid. Expect data egress — `weco run` uploads source contents,
+instructions, the eval command, each step's eval output, and passed `--api-key` keys to
+the Weco service. Native v1 tasksets only; use the existing legacy workflow for v0
 environments.
 
 ## IDs and plugin resolution

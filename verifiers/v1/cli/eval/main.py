@@ -9,7 +9,7 @@ from pydantic_config import cli
 import verifiers.v1 as vf
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
-from verifiers.v1.cli.output import output_path, snapshot_system_prompt, write_config
+from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -60,24 +60,12 @@ def main(argv: list[str] | None = None) -> None:
         config_type = narrow_config(EvalConfig, argv)
         sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
         config = cli(config_type)
-    # Reject impossible configs before the --dry-run early exit, so a dry run can't bless
-    # a config the real run would refuse.
     if config.is_legacy and config.resume is not None:
+        # Before the --dry-run exit, so a dry run can't bless a config (e.g. a toml
+        # carrying a legacy id plus resume) that the real run would refuse.
         raise SystemExit("--resume is not supported for legacy (v0) evals")
-    if config.is_legacy and config.system_prompt_path is not None:
-        raise SystemExit(
-            "--system-prompt-path overrides native v1 task prompts and is not supported "
-            "for legacy (v0) evals"
-        )
-    if (
-        config.system_prompt_path is not None
-        and not config.system_prompt_path.is_file()
-    ):
-        raise SystemExit(
-            f"--system-prompt-path {config.system_prompt_path} does not exist or is "
-            "not a file; it must hold the system prompt to override every task with"
-        )
-    if config.dry_run:  # resolved + validated; write it to the output dir and exit
+    if resume_dir is None and config.dry_run:
+        # resolved + validated; write it to the output dir and exit
         setup_logging("DEBUG" if config.verbose else "INFO")
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return
@@ -95,7 +83,6 @@ def main(argv: list[str] | None = None) -> None:
         logging.lastResort = None
     else:
         setup_logging(level, log_file=log_file, console=True)
-    snapshot_system_prompt(config, output_path(config))
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still
     # runs each rollout's `finally` (tears down containers/sandboxes) and any worker pool it
     # spawned; further signals during that cleanup are swallowed so an impatient second Ctrl-C

@@ -54,11 +54,6 @@ def main(argv: list[str] | None = None) -> None:
             "gepa optimizes native v1 tasksets; run a legacy (v0) environment through "
             "`vf-gepa` instead of `gepa`."
         )
-    if config.system_prompt_path is not None:
-        raise SystemExit(
-            "gepa proposes candidate system prompts itself; the fixed --system-prompt-path "
-            "override would clobber every candidate. Seed with --initial-prompt instead."
-        )
     setup_logging("DEBUG" if config.verbose else "INFO")
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         logger.info("wrote config to %s", write_config(config, output_path(config)))

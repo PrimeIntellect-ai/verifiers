@@ -51,9 +51,6 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     config = EvalConfig.model_validate(tomllib.loads(config_path.read_text()))
     config.resume = resume_dir
     config.output_dir = resume_dir
-    snapshot_path = resume_dir / "system_prompt.txt"
-    if config.system_prompt_path is not None and snapshot_path.is_file():
-        config.system_prompt_path = snapshot_path
     return config
 
 
