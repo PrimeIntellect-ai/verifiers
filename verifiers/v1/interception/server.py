@@ -24,15 +24,14 @@ import contextlib
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Literal
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
@@ -42,11 +41,15 @@ from verifiers.v1.errors import (
     TaskError,
     UserError,
 )
-from verifiers.v1.trace import Trace
+from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
+from verifiers.v1.interception.tunnel import (
+    PrimeTunnelConfig,
+    Tunnel,
+    TunnelConfig,
+    make_tunnel,
+)
+from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import Messages, Tool
-
-if TYPE_CHECKING:
-    from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +61,6 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
-# The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
-_HOST = "127.0.0.1"
 
 
 def _completion_response(completion: dict | None) -> web.Response:
@@ -85,87 +86,45 @@ async def _queue_chunks(
         ready.set()
 
 
-@dataclass(frozen=True)
-class RolloutLimits:
-    """Per-rollout framework limits (None = no cap), checked before each turn is served.
-    The first limit reached refuses the turn — halting any harness, the same mechanism as
-    a @stop — and becomes the trace's stop condition. Each caps a trace computed property:
-    `max_turns` -> num_turns, `max_input_tokens` -> num_input_tokens, `max_output_tokens` ->
-    num_output_tokens, `max_total_tokens` -> num_total_tokens. Token caps are soft by one turn:
-    they're checked between turns, so the turn that crosses a cap still completes."""
+class InterceptionServerConfig(BaseInterceptionConfig):
+    """A single interception server shared by every rollout, reached (when any consumer is
+    remote) via its `tunnel` — the shape that supports a bring-your-own endpoint
+    (`tunnel.type custom`)."""
 
-    max_turns: int | None = None
-    max_input_tokens: int | None = None
-    max_output_tokens: int | None = None
-    max_total_tokens: int | None = None
-
-    def reached(self, trace: Trace) -> str | None:
-        """The name of the first limit `trace` has reached, or None if within all caps."""
-        if self.max_turns is not None and trace.num_turns >= self.max_turns:
-            return "max_turns"
-        if (
-            self.max_input_tokens is not None
-            and trace.num_input_tokens >= self.max_input_tokens
-        ):
-            return "max_input_tokens"
-        if (
-            self.max_output_tokens is not None
-            and trace.num_output_tokens >= self.max_output_tokens
-        ):
-            return "max_output_tokens"
-        if (
-            self.max_total_tokens is not None
-            and trace.num_total_tokens >= self.max_total_tokens
-        ):
-            return "max_total_tokens"
-        return None
+    type: Literal["server"] = "server"
+    tunnel: TunnelConfig = PrimeTunnelConfig()
+    """How remote consumers reach the server: `prime` (a framework-minted prime_tunnel) or
+    `custom` (a pre-started tunnel / reverse proxy / direct bind you provide)."""
 
 
-@dataclass
-class RolloutSession:
-    ctx: ModelContext
-    trace: Trace
-    stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
-    limits: RolloutLimits = field(default_factory=RolloutLimits)
-    user: "Respond | None" = None
-    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
-    When set, each model turn with no tool call is followed by the simulator's reply,
-    injected as a user turn, and the model is re-prompted — all within one program request,
-    transparently to the harness."""
-    opening: Messages | None = None
-    """Cached opening `respond("")` messages for a no-prompt task. Computed once and re-injected on
-    every request until the first turn lands on the trace — so a retried opening request (e.g. the
-    harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
-    twice and advances the simulator's queue past the opening."""
-    error: "RolloutError | None" = None
-    """The latest unresolved model-call failure. The harness only sees it as an HTTP error
-    (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
-    harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
-    Reset before each model turn, so a successful retry clears it."""
+class InterceptionServer(Interception):
+    """A server that proxies model calls for one or more rollouts — and is itself the
+    single-server `Interception` (the pools compose several of these). With
+    `requires_tunnel` (some consumer is off the host network) it mints its configured
+    tunnel; on `start` it then binds where the tunnel says (`bind_host`/`bind_port`) and
+    sets `base_url` — the one URL every consumer reaches it at — to the tunnel's public
+    URL. Without, every consumer is on the host network: it binds loopback, tunnel-free."""
 
-    async def refused(self) -> str | None:
-        """The framework's limits (turns / token budget) and `@stop` checks, run before each
-        model call. Sets the stop condition and returns its name, else None. A refused first
-        call halts the harness (its model call errors out); Harness.run treats it as clean. A task
-        that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
-        so the interception server holds no opinion about the state's contents."""
-        if (limit := self.limits.reached(self.trace)) is not None:
-            self.trace.stop(limit)
-            logger.debug("limit %r reached: id=%s", limit, self.trace.id)
-            return limit
-        for stop in self.stops:
-            if await stop(self.trace):
-                self.trace.stop(stop.__name__)
-                logger.debug("stop %r fired: id=%s", stop.__name__, self.trace.id)
-                return stop.__name__
-        return None
-
-
-class InterceptionServer:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        config: InterceptionServerConfig | None = None,
+        requires_tunnel: bool = False,
+    ) -> None:
+        super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
+        self.config = config or InterceptionServerConfig()
+        self.tunnel: Tunnel | None = (
+            make_tunnel(self.config.tunnel) if requires_tunnel else None
+        )
+        self.host = "127.0.0.1"
         self.port = 0
+        self.base_url = ""  # set by `start`
         self.runner: web.AppRunner | None = None
+
+    @property
+    def load(self) -> int:
+        """Rollouts currently registered — what the pools balance on."""
+        return len(self.sessions)
 
     def register(self, session: RolloutSession) -> str:
         """Add a session under a fresh secret (the bearer token the harness must send) and
@@ -176,6 +135,14 @@ class InterceptionServer:
 
     def unregister(self, secret: str) -> None:
         self.sessions.pop(secret, None)
+
+    @asynccontextmanager
+    async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
+        secret = self.register(session)
+        try:
+            yield self.base_url, secret
+        finally:
+            self.unregister(secret)
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
@@ -192,7 +159,7 @@ class InterceptionServer:
 
         return handler
 
-    async def __aenter__(self) -> "InterceptionServer":
+    async def start(self) -> None:
         app = web.Application(client_max_size=_MAX_REQUEST_BODY)
         for dialect in DIALECTS:
             for route in dialect.routes:
@@ -208,16 +175,27 @@ class InterceptionServer:
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, _HOST, 0)
+        self.stack.push_async_callback(self.runner.cleanup)
+        # No tunnel → every consumer shares the host network: bind loopback on any ephemeral
+        # port. Otherwise the tunnel says where to bind for it to reach the port, and
+        # `expose` publishes it.
+        if self.tunnel is None:
+            self.host, bind_port = "127.0.0.1", 0
+        else:
+            self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
+        site = web.TCPSite(self.runner, self.host, bind_port)
         await site.start()
-        self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
-        logger.info("interception up: url=http://%s:%d", _HOST, self.port)
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        logger.info("interception down: url=http://%s:%d", _HOST, self.port)
-        if self.runner is not None:
-            await self.runner.cleanup()
+        self.port = site._server.sockets[0].getsockname()[1]  # actual bound port
+        logger.info("interception up: url=http://%s:%d", self.host, self.port)
+        self.stack.callback(
+            logger.info, "interception down: url=http://%s:%d", self.host, self.port
+        )
+        if self.tunnel is None:
+            self.base_url = f"http://127.0.0.1:{self.port}"
+        else:
+            self.base_url = await self.stack.enter_async_context(
+                self.tunnel.expose(self.port)
+            )
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
