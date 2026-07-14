@@ -138,15 +138,19 @@ def record_debug_error(
     setup_timeout: float | None,
     action_timeout: float | None,
 ) -> None:
-    if not trace.timing.setup.end:
-        trace.timing.setup.end = time.time()
-    if trace.timing.generation.start and not trace.timing.generation.end:
-        trace.timing.generation.end = time.time()
+    now = time.time()
+    for span in (trace.timing.boot, trace.timing.setup, trace.timing.generation):
+        if span.start and not span.end:
+            span.end = now
     in_action = bool(trace.timing.generation.start)
-    stage = "debug action" if in_action else "setup"
+    stage = (
+        "debug action" if in_action else "setup" if trace.timing.setup.start else "boot"
+    )
     timeout = action_timeout if in_action else setup_timeout
     error_start = (
-        trace.timing.generation.start if in_action else trace.timing.setup.start
+        trace.timing.generation.start
+        if in_action
+        else trace.timing.setup.start or trace.timing.boot.start
     )
     debug.update(error_info(error, error_start, timeout, stage))
     debug.setdefault("runtime", runtime_info(runtime))
@@ -226,8 +230,11 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         else task.data.timeout.setup
     )
     try:
-        trace.timing.setup.start = time.time()
+        trace.timing.boot.start = time.time()
         await runtime.start()
+        now = time.time()
+        trace.timing.boot.end = now
+        trace.timing.setup.start = now
         debug["runtime"] = runtime_info(runtime)
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),

@@ -47,7 +47,10 @@ class TimeSpan(StrictBaseModel):
 
 class Timing(StrictBaseModel):
     start: float = Field(default_factory=time.time)
+    boot: TimeSpan = Field(default_factory=TimeSpan)
+    """The runtime coming up (`Runtime.start`) — e.g. a sandbox/VM booting."""
     setup: TimeSpan = Field(default_factory=TimeSpan)
+    """Provisioning on the booted runtime: task setup, harness install, servers."""
     generation: TimeSpan = Field(default_factory=TimeSpan)
     finalize: TimeSpan = Field(default_factory=TimeSpan)
     scoring: TimeSpan = Field(default_factory=TimeSpan)
