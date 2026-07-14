@@ -48,16 +48,20 @@ For a native v1 taskset, initialize a prompt file and use `weco-eval` as the sca
 evaluation command:
 
 ```bash
-uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt --init-prompt
+uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt --init-prompt -n 20
 weco run --source prompt.txt \
   --eval-command "uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt -n 20" \
-  --metric reward --goal maximize
+  --metric reward --goal maximize --apply-change \
+  --additional-instructions "This is the task's baseline system prompt: $(cat prompt.txt)"
 ```
 
-Each optimizer step rewrites `prompt.txt`; `weco-eval` runs the taskset with that override
-and ends stdout with a parseable `reward: <mean>` line. Keep the taskset, harness, sampling,
-task selection, and correctness gates fixed across candidates. The command supports native
-v1 tasksets only; use the existing legacy workflow for v0 environments.
+Each optimizer step rewrites `prompt.txt`; `weco-eval` runs the taskset with that
+override and ends stdout with a parseable `reward: <mean>` line (errored rollouts score 0,
+so flaky candidates can't win on their surviving rollouts). `--apply-change` is required for
+headless runs — without it `weco run` ends on an interactive confirmation. Keep the taskset,
+harness, sampling, task selection, and correctness gates fixed across candidates. The
+command supports native v1 tasksets only; use the existing legacy workflow for v0
+environments.
 
 ## IDs and plugin resolution
 

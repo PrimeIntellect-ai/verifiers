@@ -42,10 +42,13 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 
 ## Optimizing a system prompt
 
-For a native v1 taskset, seed a prompt file from its first task system prompt:
+For a native v1 taskset, seed a prompt file from the taskset's own baseline system prompt.
+Seeding scans the same task selection the eval scores (`-n`/`--shuffle`; an infinite taskset
+requires `-n`) and is refused when those tasks carry differing system prompts — the override
+below replaces all of them:
 
 ```bash
-uv run weco-eval <taskset-id> --system-prompt-path prompt.txt --init-prompt
+uv run weco-eval <taskset-id> --system-prompt-path prompt.txt --init-prompt -n 20
 ```
 
 Then use `weco-eval` as the parseable scalar evaluator for Weco:
@@ -53,10 +56,19 @@ Then use `weco-eval` as the parseable scalar evaluator for Weco:
 ```bash
 weco run --source prompt.txt \
   --eval-command "uv run weco-eval <taskset-id> --system-prompt-path prompt.txt -n 20" \
-  --metric reward --goal maximize
+  --metric reward --goal maximize --apply-change \
+  --additional-instructions "This is the task's baseline system prompt: $(cat prompt.txt)"
 ```
 
-`--system-prompt-path` overrides native v1 task prompts. Legacy v0 evals reject it.
+Passing the seeded baseline as `--additional-instructions` anchors the task's intent: the
+optimizer only ever sees the current candidate file, so without it the original task
+description (and any output format the reward parses) is one bad rewrite away from being
+lost.
+
+`--system-prompt-path` overrides native v1 task prompts. Legacy v0 evals reject it. Errored
+rollouts score 0 in the reported mean, so flaky candidates can't win on their surviving
+rollouts. `--apply-change` writes the winning prompt back to `prompt.txt` without the
+interactive confirmation `weco run` otherwise ends with — required when running headless.
 
 ## Resuming evaluations
 

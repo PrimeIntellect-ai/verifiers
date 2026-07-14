@@ -60,10 +60,8 @@ def main(argv: list[str] | None = None) -> None:
         config_type = narrow_config(EvalConfig, argv)
         sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
         config = cli(config_type)
-        if config.dry_run:  # resolved + validated; write it to the output dir and exit
-            setup_logging("DEBUG" if config.verbose else "INFO")
-            logger.info("wrote config to %s", write_config(config, output_path(config)))
-            return
+    # Reject impossible configs before the --dry-run early exit, so a dry run can't bless
+    # a config the real run would refuse.
     if config.is_legacy and config.resume is not None:
         raise SystemExit("--resume is not supported for legacy (v0) evals")
     if config.is_legacy and config.system_prompt_path is not None:
@@ -71,6 +69,10 @@ def main(argv: list[str] | None = None) -> None:
             "--system-prompt-path overrides native v1 task prompts and is not supported "
             "for legacy (v0) evals"
         )
+    if config.dry_run:  # resolved + validated; write it to the output dir and exit
+        setup_logging("DEBUG" if config.verbose else "INFO")
+        logger.info("wrote config to %s", write_config(config, output_path(config)))
+        return
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
     # state, so it's in-process only (`server + rich` is rejected at config validation). Legacy
