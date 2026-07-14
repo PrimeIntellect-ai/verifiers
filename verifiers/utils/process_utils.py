@@ -85,14 +85,14 @@ def terminate_processes(
         t.join()
 
 
-def _proc_session_processes(session: int) -> set[int] | None:
+def _proc_session_processes(session: int) -> dict[int, bool] | None:
     """Read session membership from procfs, or return None when unavailable."""
     try:
         entries = os.scandir("/proc")
     except OSError:
         return None
 
-    members: set[int] = set()
+    members: dict[int, bool] = {}
     with entries:
         for entry in entries:
             if not entry.name.isdigit():
@@ -101,7 +101,7 @@ def _proc_session_processes(session: int) -> set[int] | None:
                 with open(f"/proc/{entry.name}/stat") as stat:
                     fields = stat.read().rsplit(")", 1)[1].split()
                 if int(fields[3]) == session:
-                    members.add(int(entry.name))
+                    members[int(entry.name)] = fields[0] != "Z"
             except (IndexError, OSError, ValueError):
                 # Processes can exit between scandir and opening their stat file. A live
                 # member is seen on the next fixed-point scan below.
@@ -109,14 +109,14 @@ def _proc_session_processes(session: int) -> set[int] | None:
     return members
 
 
-def _session_processes(session: int) -> set[int] | None:
-    """Return current POSIX session members, or None if discovery is unavailable."""
+def _session_processes(session: int) -> dict[int, bool] | None:
+    """Map current POSIX session PIDs to whether each process is non-zombie."""
     if (members := _proc_session_processes(session)) is not None:
         return members
 
     try:
         listing = subprocess.run(
-            ["ps", "-A", "-o", "pid=,sid="],
+            ["ps", "-A", "-o", "pid=,sid=,stat="],
             check=True,
             capture_output=True,
             text=True,
@@ -126,14 +126,15 @@ def _session_processes(session: int) -> set[int] | None:
         logger.warning("Could not read POSIX session %d", session)
         return None
 
-    members = set()
+    members = {}
     for line in listing.splitlines():
         try:
-            pid, sid = map(int, line.split())
+            raw_pid, raw_sid, state = line.split()
+            pid, sid = int(raw_pid), int(raw_sid)
         except ValueError:
             continue
         if sid == session:
-            members.add(pid)
+            members[pid] = not state.startswith("Z")
     return members
 
 
@@ -168,27 +169,41 @@ def kill_process_session(process: BaseProcess, timeout: float = 10.0) -> None:
         process.join(timeout=timeout)
         return
 
+    live = {pid for pid, is_live in members.items() if is_live}
     discovery_failures = 0
-    while members:
-        for pid in members:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, signal.SIGSTOP)
-        discovered = _session_processes(root)
-        if discovered is None:
-            discovery_failures += 1
-            if discovery_failures < 3:
-                continue
-            logger.error("Could not verify stopped worker session %d", root)
-            break
-        discovery_failures = 0
-        if discovered <= members:
-            break
-        members.update(discovered)
-
-    for pid in members:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.kill(pid, signal.SIGKILL)
-    process.join(timeout=timeout)
+    try:
+        while live:
+            for pid in live:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGSTOP)
+            discovered = _session_processes(root)
+            if discovered is None:
+                discovery_failures += 1
+                if discovery_failures < 3:
+                    continue
+                logger.error("Could not verify stopped worker session %d", root)
+                break
+            discovery_failures = 0
+            current = {pid for pid, is_live in discovered.items() if is_live}
+            if current <= live:
+                live = current
+                break
+            live = current
+    finally:
+        # Refresh away exited/zombie PIDs before killing. The nested finally guarantees
+        # that even KeyboardInterrupt during discovery cannot strand a stopped worker.
+        try:
+            if (current := _session_processes(root)) is not None:
+                live = {pid for pid, is_live in current.items() if is_live}
+        finally:
+            for pid in live:
+                with contextlib.suppress(BaseException):
+                    if os.getsid(pid) == root:
+                        os.kill(pid, signal.SIGKILL)
+            with contextlib.suppress(BaseException):
+                process.kill()
+            with contextlib.suppress(BaseException):
+                process.join(timeout=timeout)
 
 
 def use_threading_tqdm_lock() -> None:
