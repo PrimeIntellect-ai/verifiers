@@ -68,11 +68,16 @@ class PiHarness(Harness[PiHarnessConfig]):
         script = INSTALL.replace("{version}", self.config.version).replace(
             "{mcp_version}", MCP_VERSION
         )
-        lock = f"{PI_DIR}/installing"
+        lock = f"{PI_DIR}/install.lock"
         guarded = (
             f"mkdir -p {PI_DIR} && "
-            f"until mkdir {lock} 2>/dev/null; do sleep 0.1; done; "
-            f"trap 'rmdir {lock}' EXIT; sh -c {shlex.quote(script)}"
+            f'until ln -s "$$" {lock} 2>/dev/null; do '
+            f"owner=$(readlink {lock}); "
+            f'if ! kill -0 "$owner" 2>/dev/null; then '
+            f'[ "$(readlink {lock})" != "$owner" ] || rm -f {lock}; fi; '
+            f"sleep 0.1; done; "
+            f'trap \'[ "$(readlink {lock})" != "$$" ] || rm -f {lock}\' EXIT; '
+            f"sh -c {shlex.quote(script)}"
         )
         install = await runtime.run(["sh", "-c", guarded], {})
         if install.exit_code != 0:
