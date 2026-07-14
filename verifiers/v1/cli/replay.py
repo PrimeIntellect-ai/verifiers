@@ -10,7 +10,6 @@ config is the base for replay-specific overrides.
 import asyncio
 import contextlib
 import logging
-import signal
 import sys
 import time
 import tomllib
@@ -31,6 +30,7 @@ from verifiers.v1.configs.replay import ReplayConfig
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, WireTaskData, task_data_cls
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -220,8 +220,9 @@ def main(argv: list[str] | None = None) -> None:
         logging.lastResort = None
     else:
         setup_logging(level, log_file=log_file, console=True)
-    # Translate SIGTERM so async finally blocks still tear down their resources.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    # Graceful shutdown: first Ctrl-C/SIGTERM unwinds the scoring teardown `finally`;
+    # a second is swallowed so it can't orphan resources mid-cleanup.
+    install_interrupt()
     asyncio.run(run_replay(config, source, out))
 
 

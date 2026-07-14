@@ -22,5 +22,12 @@ CONFIGS = sorted(
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
 def test_eval_config_parses(path: Path) -> None:
-    config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
-    assert config.taskset.id or config.id  # resolved to a v1 taskset or a v0 env id
+    try:
+        config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
+    except (
+        ModuleNotFoundError
+    ) as e:  # workspace-only plugin (e.g. research-environments)
+        pytest.skip(f"config needs a package this checkout doesn't ship: {e}")
+    # Resolved to a v1 taskset, a v0 env id, or an explicit topology (seeds under
+    # `topology.taskset`).
+    assert config.taskset.id or config.id or config.topology is not None

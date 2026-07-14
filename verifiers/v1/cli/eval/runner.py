@@ -8,7 +8,6 @@ of each finished `AgentGraph` and written as ordinary traces.
 import asyncio
 import contextlib
 import logging
-import random
 import time
 
 from verifiers.v1.cli.dashboard import dashboard
@@ -18,23 +17,16 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.topology import resolve_topology_runner
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
-
-_SHUFFLE_SEED = 0
-
-
-def _selected(items: list, config: EvalConfig) -> list:
-    if config.shuffle:
-        random.Random(_SHUFFLE_SEED).shuffle(items)
-    return items if config.num_tasks is None else items[: config.num_tasks]
 
 
 async def run_eval(config: EvalConfig) -> list[Trace]:
     """Run taskset syntax or an explicit topology; persist and return flat traces."""
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     runner = resolve_topology_runner(config)
-    tasks = _selected(list(runner.tasks), config)
+    tasks = runner.select_tasks(config.num_tasks, config.shuffle)
     out = output_path(config)
     finished: list[Trace] = []
     owed: dict[int, int] | None = None
@@ -149,8 +141,25 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
-        positions = _selected(list(range(info.num_tasks)), config)
-        task_ids = [info.task_ids[position] for position in positions]
+        if info.num_tasks is None:  # infinite seeds - the run must be bounded
+            if config.num_tasks is None:
+                raise ValueError(
+                    f"{config.env_id} is infinite - bound the run with -n/--num-tasks"
+                )
+            if config.shuffle:
+                logger.warning(
+                    "shuffle is a no-op on an infinite taskset - "
+                    "taking the first %d generated tasks",
+                    config.num_tasks,
+                )
+            positions = list(range(config.num_tasks))
+            # Generated seeds stamp sequential idxs, so position and id coincide.
+            task_ids = positions
+        else:
+            positions = sample(
+                list(range(info.num_tasks)), config.shuffle, config.num_tasks
+            )
+            task_ids = [info.task_ids[position] for position in positions]
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:

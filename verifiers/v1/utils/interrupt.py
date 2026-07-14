@@ -1,6 +1,7 @@
-"""Graceful-shutdown signal handling for the eval CLI: the first Ctrl-C/SIGTERM warns and
-raises KeyboardInterrupt so asyncio unwinds each rollout's teardown `finally`; further signals
-are swallowed so a second Ctrl-C can't orphan containers/sandboxes mid-cleanup."""
+"""Graceful-shutdown signal handling shared across the v1 CLI entrypoints (eval, gepa,
+validate, debug, replay): the first Ctrl-C/SIGTERM warns and raises KeyboardInterrupt so
+asyncio unwinds each run's teardown `finally`; further signals are swallowed so a second
+Ctrl-C can't orphan containers/sandboxes/tool-server runtimes mid-cleanup."""
 
 import logging
 import signal
@@ -15,8 +16,9 @@ def cleaning_up() -> bool:
     return _cleaning_up
 
 
-def install() -> None:
-    """Route SIGINT/SIGTERM through the graceful-shutdown handler."""
+def install_interrupt() -> None:
+    """Route SIGINT/SIGTERM through the graceful-shutdown handler. Call once from a CLI
+    entrypoint before running its async main."""
 
     def handle(*_) -> None:
         global _cleaning_up

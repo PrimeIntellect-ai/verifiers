@@ -102,7 +102,6 @@ from verifiers.v1.scoring import (
 from verifiers.v1.scoring import (
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
-from verifiers.v1.services import RunServices
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import (
     Task,
@@ -143,6 +142,7 @@ from verifiers.v1.types import (
     ContentPart,
     ImageUrlContentPart,
     ImageUrlSource,
+    KeptTokens,
     Message,
     MessageContent,
     Messages,
@@ -195,6 +195,7 @@ __all__ = [
     "MessageNode",
     "Branch",
     "TurnTokens",
+    "KeptTokens",
     "Timing",
     "TimeSpan",
     "Error",
@@ -254,7 +255,6 @@ __all__ = [
     "NullAgentConfig",
     "SingleAgentTopology",
     "SingleAgentTopologyConfig",
-    "RunServices",
     "Session",
     "SessionEnded",
     "Topology",

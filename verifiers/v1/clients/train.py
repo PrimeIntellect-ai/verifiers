@@ -25,6 +25,7 @@ from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
+    KeptTokens,
     Response,
     SamplingConfig,
     Tool,
@@ -149,6 +150,9 @@ def response_from_generate(
             is_content=attribution.is_content if attribution is not None else None,
             multi_modal_data=result.get("multi_modal_data"),
             routed_experts=result.get("routed_experts"),
+            kept_tokens=KeptTokens(**kept)
+            if (kept := result.get("kept_tokens"))
+            else None,
         ),
     )
 

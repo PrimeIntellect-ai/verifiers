@@ -27,7 +27,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cached_property
 from typing import Generic, TypeVar
 
@@ -37,19 +37,29 @@ from pydantic_config import BaseConfig
 from verifiers.v1.agent import Agent, Parent, Session
 from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.env import EnvConfig, EnvServerConfig, validate_pairing
+from verifiers.v1.env import (
+    EnvConfig,
+    EnvServerConfig,
+    taskset_server_configs,
+    validate_pairing,
+)
 from verifiers.v1.errors import TopologyError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.interception import RolloutLimits
+from verifiers.v1.interception import (
+    Interception,
+    make_interception,
+    requires_tunnel,
+)
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import Runtime, SubprocessConfig
-from verifiers.v1.services import RunServices
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Error, Trace, TraceTask, WireTrace
 from verifiers.v1.types import ID, SamplingConfig, StrictBaseModel
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.memory import trim_memory_periodically
+from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
 
@@ -365,10 +375,11 @@ class Topology(Generic[ConfigT]):
                     )
         return agents
 
-    def load_tasks(self) -> list[Task]:
+    def load_tasks(self) -> Iterable[Task]:
         """The seed tasks — one topology instance (`go`) runs per seed task. Defaults to
-        the config's `taskset` slot (`--topology.taskset.id <id>`); override for a
-        topology that constructs its own seeds."""
+        the config's `taskset` slot (`--topology.taskset.id <id>`), whose `load` may be
+        lazy or infinite (see `Taskset`); override for a topology that constructs its own
+        seeds (a finite, materializable iterable)."""
         if not self.config.taskset.id:
             raise ValueError(
                 f"topology {self.config.id!r} has no seed tasks: set --topology.taskset.id "
@@ -376,6 +387,15 @@ class Topology(Generic[ConfigT]):
             )
         assert self.taskset is not None
         return self.taskset.load()
+
+    @property
+    def infinite(self) -> bool:
+        """Whether the seed source never ends (an `INFINITE` taskset in the config slot) —
+        such runs must be bounded with `num_tasks`. A custom `load_tasks` override is
+        finite by contract."""
+        if type(self).load_tasks is not Topology.load_tasks:
+            return False
+        return self.taskset is not None and type(self.taskset).INFINITE
 
     def complete(self, graph: AgentGraph) -> bool:
         """Whether a persisted instance counts as a valid result of this topology — the
@@ -647,10 +667,33 @@ class TopologyRunner:
                     "for debugging. Use --harness.runtime.type docker or prime for an isolated run.",
                     binding.harness.config.id,
                 )
-        self.tasks = self.topology.load_tasks()
-        self._services: RunServices | None = None
+        self._interception: Interception | None = None
         self._shared_tools: dict = {}
         self._override_clients: dict[str, Client] = {}
+
+    @property
+    def infinite(self) -> bool:
+        """Whether this topology's seed source is infinite (see `Topology.infinite`)."""
+        return self.topology.infinite
+
+    def load_tasks(self) -> "Iterable[Task]":
+        """The topology's seed tasks, possibly lazy/infinite (see `Topology.load_tasks`)."""
+        return self.topology.load_tasks()
+
+    def select_tasks(
+        self, num_tasks: int | None = None, shuffle: bool = False
+    ) -> list[Task]:
+        """Materialize the seeds a run needs. When the config's `taskset` slot is the
+        seed source this is `Taskset.select` (lazy/infinite-aware — an infinite taskset
+        requires `num_tasks`); a topology's own `load_tasks` override is finite, so it
+        materializes and samples the same way (`verifiers.v1.utils.sampling`)."""
+        topology = self.topology
+        if (
+            type(topology).load_tasks is Topology.load_tasks
+            and topology.taskset is not None
+        ):
+            return topology.taskset.select(num_tasks, shuffle)
+        return sample(list(topology.load_tasks()), shuffle, num_tasks)
 
     def agent(self, name: str) -> AgentBinding:
         """The named agent, with an actionable error for a typo in `go`."""
@@ -664,42 +707,54 @@ class TopologyRunner:
     @contextlib.asynccontextmanager
     async def serving(self):
         """Hold worker-scoped services while request contexts remain invocation-local."""
-        if self._services is not None:
+        if self._interception is not None:
             raise RuntimeError("TopologyRunner.serving() is already active")
         from verifiers.v1.mcp import serve_shared
         from verifiers.v1.runtimes import runtime_is_local
 
         async with contextlib.AsyncExitStack() as stack:
-            services = await stack.enter_async_context(
-                RunServices(self.config.multiplex)
-            )
             bindings = self.topology.agents
+            # Every agent's harness placement — any remote seat must reach the shared
+            # servers and the interception through a tunnel.
+            local = all(
+                runtime_is_local(b.harness.config.runtime) for b in bindings.values()
+            )
             shared_tools: dict = {}
             if self.topology.taskset is not None:
                 servers = self.topology.taskset.tool_servers()
                 if servers:
-                    # Tunnel unless every agent's harness runs locally — any remote
-                    # seat must still reach the one shared instance.
-                    local = all(
-                        runtime_is_local(b.harness.config.runtime)
-                        for b in bindings.values()
-                    )
                     shared_tools = await stack.enter_async_context(
                         serve_shared(servers, harness_is_local=local)
                     )
+            # One interception serves the whole run, tunneled whenever any statically
+            # knowable consumer — an agent's harness, a live shared server, or a seed
+            # task's tool/user server — is off the host network. Tasks minted in `go`
+            # aren't knowable here; like the pairing checks, the seed taskset stands in
+            # for them.
+            seed_configs = (
+                taskset_server_configs(self.topology.taskset)
+                if self.topology.taskset is not None
+                else []
+            )
+            tunneled = seed_configs is None or requires_tunnel(
+                local, seed_configs, shared_tools.values()
+            )
+            interception = await stack.enter_async_context(
+                make_interception(self.config.interception, requires_tunnel=tunneled)
+            )
             override_clients: dict[str, Client] = {}
             for name, binding in bindings.items():
                 if binding.config.client is not None:
                     client = resolve_client(binding.config.client)
                     stack.push_async_callback(client.close)
                     override_clients[name] = client
-            self._services = services
+            self._interception = interception
             self._shared_tools = shared_tools
             self._override_clients = override_clients
             try:
                 yield
             finally:
-                self._services = None
+                self._interception = None
                 self._shared_tools = {}
                 self._override_clients = {}
 
@@ -708,8 +763,8 @@ class TopologyRunner:
         ctx: ModelContext,
         on_rollout: Callable[[Rollout], None] | None = None,
     ) -> dict[str, Agent]:
-        services = self._services
-        if services is None:
+        interception = self._interception
+        if interception is None:
             raise RuntimeError(
                 "TopologyRunner.run_instance() must be called inside TopologyRunner.serving()"
             )
@@ -734,7 +789,7 @@ class TopologyRunner:
                 trainable=binding.config.trainable,
                 limits=limits,
                 timeout=self.config.timeout,
-                services=services,
+                interception=interception,
                 shared_tools=self._shared_tools,
                 on_rollout=on_rollout,
             )

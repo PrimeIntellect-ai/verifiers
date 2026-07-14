@@ -33,8 +33,11 @@ class InfoRequest(BaseRequest):
 
 
 class InfoResponse(BaseResponse):
-    num_tasks: int = 0
+    num_tasks: int | None = 0
+    """Seed count; `None` means the seed source is infinite (bound runs with
+    `num_tasks` — generated seeds are position-addressed)."""
     task_ids: list[int] = Field(default_factory=list)
+    """Seed idxs by position (empty for an infinite source, where position == idx)."""
 
 
 class LegacyInfoResponse(InfoResponse):
@@ -43,7 +46,7 @@ class LegacyInfoResponse(InfoResponse):
 
 class RunRequest(BaseRequest):
     method: ClassVar[str] = "run"
-    task_idx: int
+    task_idx: int = Field(ge=0)
     client: ClientConfig
     model: str
     sampling: SamplingConfig

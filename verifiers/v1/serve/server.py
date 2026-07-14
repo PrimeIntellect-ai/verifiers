@@ -24,6 +24,9 @@ from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
 
+MAX_LAZY_TASKS = 1_000_000
+"""Most tasks an infinite taskset's generator is willing to build (and cache) per worker."""
+
 
 class EnvServer:
     def __init__(
@@ -31,7 +34,15 @@ class EnvServer:
     ) -> None:
         self.address = address
         self.runner = resolve_topology_runner(config)
-        self.tasks = self.runner.tasks
+        # A finite seed source is materialized up front (its count is served via `info`);
+        # an infinite one is pulled off its generator on demand (see `_task`), so
+        # `num_tasks=None` on the wire ⟺ the seeds are infinite.
+        self._task_iter = iter(self.runner.load_tasks())
+        self._tasks: list = []
+        self.num_tasks: int | None = None
+        if not self.runner.infinite:
+            self._tasks = list(self._task_iter)
+            self.num_tasks = len(self._tasks)
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -65,6 +76,26 @@ class EnvServer:
             # of a spurious multiprocessing traceback, matching serve_env's own handling.
             pass
 
+    def _task(self, idx: int):
+        """The task at `idx`; an infinite taskset is generated (and cached) up to `idx`
+        on demand. Generation must be deterministic — every pool worker runs its own
+        `load()`, so idx-addressing relies on all of them producing the same sequence.
+        Lazy generation is capped at `MAX_LAZY_TASKS`: an idx that far ahead is a
+        runaway driver, and generating (and caching) toward it would hang the worker
+        and exhaust memory instead of failing the one request."""
+        while len(self._tasks) <= idx:
+            if idx >= MAX_LAZY_TASKS:
+                raise IndexError(
+                    f"task_idx {idx} exceeds the lazy-generation cap ({MAX_LAZY_TASKS})"
+                )
+            try:
+                self._tasks.append(next(self._task_iter))
+            except StopIteration:
+                raise IndexError(
+                    f"task_idx {idx} out of range ({len(self._tasks)} tasks)"
+                ) from None
+        return self._tasks[idx]
+
     def _client(self, client_config: ClientConfig, model: str) -> Client:
         """Cache clients because renderer initialization builds a tokenizer pool."""
         key = (client_config.model_dump_json(), model)
@@ -85,7 +116,7 @@ class EnvServer:
 
     async def _run(self, req: RunRequest) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        graph = await self.runner.run_instance(self.tasks[req.task_idx], ctx)
+        graph = await self.runner.run_instance(self._task(req.task_idx), ctx)
         return RunResponse.model_construct(graph=graph)
 
     async def _dispatch(self, route: str, raw: dict) -> BaseResponse:
@@ -93,8 +124,8 @@ class EnvServer:
             return HealthResponse()
         if route == "info":
             return InfoResponse(
-                num_tasks=len(self.tasks),
-                task_ids=[task.data.idx for task in self.tasks],
+                num_tasks=self.num_tasks,
+                task_ids=[task.data.idx for task in self._tasks],
             )
         if route == "run":
             return await self._run(RunRequest.model_validate(raw))
@@ -127,14 +158,14 @@ class EnvServer:
 
     async def run(self) -> None:
         logger.info(
-            "EnvServer up: address=%s tasks=%d",
+            "EnvServer up: address=%s tasks=%s",
             self.address,
-            len(self.tasks),
+            self.num_tasks if self.num_tasks is not None else "infinite",
         )
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
-        # Shared servers and the interception pool live across requests in this worker.
+        # Shared servers and the interception live across requests in this worker.
         async with self.serving():
             try:
                 while True:

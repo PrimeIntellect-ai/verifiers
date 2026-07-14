@@ -37,11 +37,12 @@ traces dug out of each finished graph.
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `taskset.id` / `harness.id` — pick the taskset and harness
-- `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks
+- `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
+  infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — independent invocations per seed task
 - `max_concurrent` — caps agent runs in-process or graph requests through the server
 - `verbose` — log at debug instead of info
-- `shuffle` — randomizes the order of tasks (fixed seed)
+- `shuffle` — randomizes the order of tasks (fixed seed); a no-op on an infinite taskset
 
 ## Resuming evaluations
 

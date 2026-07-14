@@ -10,8 +10,10 @@ for training.
 """
 
 import base64
+import itertools
 import random
 import re
+from collections.abc import Iterator
 from io import BytesIO
 
 from PIL import Image
@@ -87,8 +89,6 @@ class ColorCodewordTaskConfig(vf.TaskConfig):
 
 
 class ColorCodewordConfig(vf.TasksetConfig):
-    num_examples: int = 1000
-    """Number of synthetic episodes to generate."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
     task: ColorCodewordTaskConfig = ColorCodewordTaskConfig()
@@ -129,14 +129,15 @@ class ColorCodewordTask(
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
-    def load(self) -> list[ColorCodewordTask]:
+    INFINITE = True
+
+    def load(self) -> Iterator[ColorCodewordTask]:
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
         color_urls = {color: color_data_url(color) for color in colors}
         length = c.images_per_turn * MAX_TURNS
-        tasks: list[ColorCodewordTask] = []
-        for idx in range(c.num_examples):
+        for idx in itertools.count():
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
             colors_per_turn = [
@@ -149,19 +150,16 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
                 vf.ImageUrlContentPart(image_url=vf.ImageUrlSource(url=color_urls[col]))
                 for col in turn0
             ] + [vf.TextContentPart(text=text)]
-            tasks.append(
-                ColorCodewordTask(
-                    ColorCodewordTaskData(
-                        idx=idx,
-                        prompt=[vf.UserMessage(content=parts)],
-                        system_prompt=SYSTEM_PROMPT,
-                        answer=answer,
-                        info={
-                            "colors_per_turn": colors_per_turn,
-                            "max_turns": MAX_TURNS,
-                        },
-                    ),
-                    c.task,
-                )
+            yield ColorCodewordTask(
+                ColorCodewordTaskData(
+                    idx=idx,
+                    prompt=[vf.UserMessage(content=parts)],
+                    system_prompt=SYSTEM_PROMPT,
+                    answer=answer,
+                    info={
+                        "colors_per_turn": colors_per_turn,
+                        "max_turns": MAX_TURNS,
+                    },
+                ),
+                c.task,
             )
-        return tasks

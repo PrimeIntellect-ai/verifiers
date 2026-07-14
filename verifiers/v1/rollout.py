@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -16,19 +17,18 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import (
-    InterceptionPool,
+    Interception,
     InterceptionServer,
-    RolloutLimits,
-    RolloutSession,
+    Slot,
+    requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.runtimes import (
-    HOST,
     Runtime,
     RuntimeConfig,
     make_runtime,
-    reachable_url,
 )
+from verifiers.v1.session import RolloutLimits, RolloutSession
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 class Phase(StrEnum):
     PENDING = "pending"
+    BOOT = "boot"
     SETUP = "setup"
     RUNNING = "running"
     FINALIZE = "finalize"
@@ -61,7 +62,7 @@ class Rollout:
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
         shared_tools: dict[str, SharedToolServer] | None = None,
-        interception: InterceptionPool | None = None,
+        interception: Interception | None = None,
         runtime: Runtime | None = None,
         user: "Respond | None" = None,
     ) -> None:
@@ -92,30 +93,32 @@ class Rollout:
     @asynccontextmanager
     async def _serve_interception(
         self,
-        pool: InterceptionPool | None,
         runtime: Runtime,
         session: RolloutSession,
-    ):
-        if pool is not None:
-            async with pool.acquire(session) as (
-                endpoint,
-                secret,
-                state_port,
-                state_base,
-            ):
-                yield endpoint, secret, state_port, state_base
-        else:
-            async with InterceptionServer() as server:
-                secret = server.register(session)
-                # The runtime reaches this host service through localhost or a tunnel.
-                async with reachable_url(HOST, server.port, consumer=runtime) as url:
-                    yield f"{url}/v1", secret, server.port, url
+        servers: list,
+    ) -> AsyncIterator[Slot]:
+        """A slot on the shared interception when one was injected (its owner keeps the
+        lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
+        down — by this rollout."""
+        if self.interception is not None:
+            async with self.interception.acquire(session) as slot:
+                yield slot
+            return
+        tunneled = requires_tunnel(
+            runtime.is_local,
+            [server.config for server in servers],
+            self.shared_tools.values(),
+        )
+        server = InterceptionServer(requires_tunnel=tunneled)
+        async with server:
+            async with server.acquire(session) as slot:
+                yield slot
 
     async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
         the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
-        eval-level shared tool servers / interception pool injected at construction (see
+        eval-level shared tool servers / interception injected at construction (see
         `self.shared_tools` / `self.interception`)."""
         # The trace carries the DATA (the wire half); behavior stays on `self.task`.
         trace: Trace = Trace(
@@ -123,8 +126,8 @@ class Rollout:
             state=state_cls(type(self.task))(),
         )
         self.trace = trace  # expose for the --rich dashboard
-        self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
-        trace.timing.setup.start = time.time()
+        self.phase = Phase.BOOT  # leaving the queue: the runtime boots now
+        trace.timing.boot.start = time.time()
         if self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
             # A lifetime bug in the borrowing program, not a property of this rollout's
             # world: raise to the caller instead of capturing onto the trace.
@@ -153,6 +156,10 @@ class Rollout:
             session = RolloutSession(ctx, trace, stops, self.limits)
             if self._borrowed_runtime is None:
                 await runtime.start()
+            now = time.time()
+            trace.timing.boot.end = now  # a borrowed box is already up: ~zero boot
+            trace.timing.setup.start = now
+            self.phase = Phase.SETUP
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
                 None
@@ -169,31 +176,30 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
+            async with boundary(ToolsetError, "building tool servers"):
+                tool_servers = self.task.tool_servers()
+            user = self.task.user_server()
+            # `base_url` is the interception server's reachable URL for this rollout. The
+            # harness reaches the model at `{base_url}/v1`; tool/user servers reach this
+            # rollout's `/state` + `/task` at `base_url` — it's universally reachable (the
+            # interception is exposed whenever any consumer is remote).
             async with self._serve_interception(
-                self.interception, runtime, session
-            ) as (
-                endpoint,
-                secret,
-                state_port,
-                state_base,
-            ):
-                async with boundary(ToolsetError, "building tool servers"):
-                    tool_servers = self.task.tool_servers()
+                runtime, session, [*tool_servers, *([user] if user else [])]
+            ) as (base_url, secret):
+                endpoint = f"{base_url}/v1"
                 async with (
                     serve_tools(
                         tool_servers,
                         runtime,
                         shared=self.shared_tools,
-                        state_port=state_port,
                         state_secret=secret,
-                        state_base=state_base,
+                        state_base=base_url,
                     ) as urls,
                     serve_user(
-                        None if self._user is not None else self.task.user_server(),
+                        None if self._user is not None else user,
                         harness_runtime=runtime,
-                        state_port=state_port,
                         state_secret=secret,
-                        state_base=state_base,
+                        state_base=base_url,
                     ) as launched_user,
                 ):
                     session.user = (
@@ -267,6 +273,7 @@ class Rollout:
             trace.is_completed = True
             now = time.time()
             for span in (
+                trace.timing.boot,
                 trace.timing.setup,
                 trace.timing.generation,
                 trace.timing.finalize,

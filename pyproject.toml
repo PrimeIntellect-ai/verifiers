@@ -80,7 +80,7 @@ examples = [
     "compact",
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1",
     "reverse-text-v1", "color-codeword-v1",
-    "wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
+    "wordle-v1", "alphabet-sort-v1", "scratchpad-v1", "mmmu-v1",
     "proposer-solver-v1", "writer-editors-v1", "shared-runtime-v1",
     "chess-v1", "debate-v1",
 ]
@@ -149,6 +149,7 @@ wordle-v1 = { path = "environments/wordle_v1", editable = true }
 color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
+mmmu-v1 = { path = "environments/mmmu_v1", editable = true }
 proposer-solver-v1 = { path = "environments/proposer_solver_v1", editable = true }
 writer-editors-v1 = { path = "environments/writer_editors_v1", editable = true }
 shared-runtime-v1 = { path = "environments/shared_runtime_v1", editable = true }
@@ -176,6 +177,7 @@ debug = "verifiers.v1.cli.debug:main"
 replay = "verifiers.v1.cli.replay:main"
 serve = "verifiers.v1.cli.serve:main"
 init = "verifiers.v1.cli.init:main"
+gepa = "verifiers.v1.cli.gepa:main"
 vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"

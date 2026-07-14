@@ -170,6 +170,7 @@ def _eval_config(
     harness_overrides: dict | None = None,
     pool: dict | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` / `harness_overrides`
@@ -190,7 +191,11 @@ def _eval_config(
         num_rollouts=n,
         max_turns=max_turns,
         max_output_tokens=max_tokens,
-        sampling={"max_tokens": max_tokens, "temperature": 0},
+        sampling={
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "reasoning_effort": reasoning_effort,
+        },
         timeout={"rollout": rollout_timeout, "scoring": 60},
         retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
         rich=False,

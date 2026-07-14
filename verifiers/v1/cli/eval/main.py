@@ -16,7 +16,7 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.utils.interrupt import install as install_interrupt
+from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)

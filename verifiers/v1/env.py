@@ -7,13 +7,17 @@ from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.interception import (
+    ElasticInterceptionPoolConfig,
+    InterceptionConfig,
+)
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
 )
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.types import ID
 from verifiers.v1.utils.generic import generic_type
@@ -103,10 +107,11 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `num_total_tokens`; framework-enforced between turns."""
-    multiplex: int = Field(32, ge=1)
-    """Rollouts that share one interception server (and, behind a remote runtime, one
-    tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
-    key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
+    interception: InterceptionConfig = ElasticInterceptionPoolConfig()
+    """The interception shape (see `verifiers.v1.interception`): `elastic` (the
+    default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
+    with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
+    such servers)."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
@@ -311,3 +316,23 @@ def validate_pairing(harness: Harness, taskset: Taskset) -> None:
     validate_task_pairing(
         harness, task_cls, harness.config.runtime, shared_tools=type(taskset).tools
     )
+
+
+def taskset_server_configs(taskset: Taskset) -> list[BaseConfig] | None:
+    """The taskset's statically-knowable tool/user server configs — the task class's
+    servers (read class-level, like `validate_pairing`) with their configs resolved the
+    way `Task.server_config` resolves them — for the run-wide `requires_tunnel` verdict.
+    `None` means not statically knowable: the task class *overrides* that pairing, so it
+    conservatively counts as remote (the tunnel then reaches everything; a wrongly-assumed
+    localhost would reach nothing remote)."""
+    task_cls = generic_type(type(taskset), Task, origin=Taskset) or Task
+    server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
+    if server_classes and task_cls.server_config is not Task.server_config:
+        return None
+    sole = len({*task_cls.tools} | ({task_cls.user} - {None})) == 1
+    return [
+        resolve_server_config(
+            task_cls.__name__, taskset.config.task, server_cls, sole=sole
+        )
+        for server_cls in server_classes
+    ]

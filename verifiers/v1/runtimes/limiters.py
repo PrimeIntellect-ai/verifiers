@@ -67,10 +67,3 @@ def creation_limiter(per_sec: float | None, name: str) -> CreationLimiter | None
     if limiter is None:
         limiter = _creation_limiters[name] = CreationLimiter(name, per_sec)
     return limiter
-
-
-# The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
-# tunnel service, shared by every runtime that opens a prime_tunnel (prime AND modal). One
-# host-global limiter, not a per-runtime config knob.
-_TUNNELS_PER_MIN = 512
-TUNNEL_LIMITER = creation_limiter(_TUNNELS_PER_MIN / 60, "prime-tunnel")

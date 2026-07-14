@@ -145,7 +145,8 @@ async def test_tool_response_image(run_v1, tmp_path):
         "tool-response-image-v1",
         harness="null",
         harness_overrides={"runtime": {"type": "subprocess"}},
-        model="qwen/qwen3-vl-8b-instruct",
+        model="openai/gpt-5.6-luna",
+        reasoning_effort="none",
         output_dir=tmp_path,
         max_turns=4,
     )

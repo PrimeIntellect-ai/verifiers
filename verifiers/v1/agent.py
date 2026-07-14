@@ -11,12 +11,13 @@ brings up its own per-rollout interception server, right for scripts and small p
     agent = vf.Agent(DirectHarness(DirectHarnessConfig()), ctx)
     trace = await agent.run(MyTask(vf.TaskData(idx=0, prompt="...")))
 
-Serving resources have exactly one owner: `RunServices` (interception pools). For pooled
-operation (N concurrent runs sharing interception servers, like an eval), enter a scope
-and inject it — `async with RunServices() as services: Agent(..., services=services)` —
-which is precisely what `TopologyRunner.serving` does for every agent it binds. The agent
-never owns services; it borrows them. Taskset-scoped shared tool servers likewise arrive
-pre-served (`shared_tools=`, see `serve_shared`), from whoever owns the taskset.
+Serving resources have exactly one owner. For pooled operation (N concurrent runs sharing
+interception servers, like an eval), bring up an `Interception` and inject it —
+`async with make_interception(...) as interception: Agent(..., interception=interception)`
+— which is precisely what `TopologyRunner.serving` does for every agent it binds. The
+agent never owns the interception; it borrows it. Taskset-scoped shared tool servers
+likewise arrive pre-served (`shared_tools=`, see `serve_shared`), from whoever owns the
+taskset.
 
 The framework's config-driven packaging of agents — CLI/toml-addressable, persisted as
 agent graphs, eval- and trainer-integrated — is the topology (`verifiers.v1.topology`);
@@ -38,12 +39,12 @@ from verifiers.v1.env import (
     validate_task_pairing,
 )
 from verifiers.v1.harness import Harness
-from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.interception import Interception
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.retries import RolloutRetryConfig, run_with_retry
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
-from verifiers.v1.services import RunServices
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, UserMessage
@@ -182,7 +183,7 @@ class _AgentAttempt:
         *,
         runtime_config: RuntimeConfig,
         runtime: Runtime | None,
-        interception: InterceptionPool | None,
+        interception: Interception | None,
         parents: Sequence[Parent],
     ) -> None:
         self.agent = agent
@@ -228,10 +229,10 @@ class Agent:
     world explicitly, use `provision()` and pass the yielded runtime back to one or more
     `run(..., runtime=box)` calls; borrowed-runtime rollouts never start or stop the box.
 
-    `services` is the (optional) serving scope the agent borrows pooled interception
-    from — see the module docstring; without one, every run brings up its own
-    per-rollout interception server. `shared_tools` are the taskset-scoped shared
-    servers (already served, see `serve_shared`) this agent's rollouts reuse."""
+    `interception` is the (optional) shared interception the agent's rollouts borrow —
+    see the module docstring; without one, every run brings up its own per-rollout
+    interception server. `shared_tools` are the taskset-scoped shared servers (already
+    served, see `serve_shared`) this agent's rollouts reuse."""
 
     def __init__(
         self,
@@ -243,7 +244,7 @@ class Agent:
         trainable: bool = True,
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
-        services: RunServices | None = None,
+        interception: Interception | None = None,
         shared_tools: dict[str, SharedToolServer] | None = None,
         on_rollout: Callable[[Rollout], None] | None = None,
     ) -> None:
@@ -255,7 +256,7 @@ class Agent:
         self.limits = limits or RolloutLimits()
         self.timeout = timeout or TimeoutConfig()
         self.shared_tools = shared_tools or {}
-        self._services = services
+        self._interception = interception
         self._on_rollout = on_rollout
         self._warned_resources: set[tuple[str, str]] = set()
         self._validated: set[tuple[type[Task], str, str]] = set()
@@ -291,15 +292,12 @@ class Agent:
         retry policy."""
         runtime_config = self.runtime_for(task, runtime)
         self._validate_pairing(task, runtime_config)
-        services = self._services
         attempt = _AgentAttempt(
             self,
             task,
             runtime_config=runtime_config,
             runtime=runtime,
-            interception=await services.pool_for(runtime_config)
-            if services is not None
-            else None,
+            interception=self._interception,
             parents=parents,
         )
         if retry is not None:
@@ -384,7 +382,6 @@ class Agent:
             )
         runtime_config = self.runtime_for(task, runtime)
         self._validate_pairing(task, runtime_config)
-        services = self._services
         session = Session()
         timeouts = resolve_stage_timeouts(self.timeout, task, runtime_config)
         rollout = Rollout(
@@ -398,9 +395,7 @@ class Agent:
             scoring_timeout=timeouts.scoring,
             limits=self.limits,
             shared_tools=self.shared_tools,
-            interception=await services.pool_for(runtime_config)
-            if services is not None
-            else None,
+            interception=self._interception,
             runtime=runtime,
             user=session._respond,
         )

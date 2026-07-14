@@ -112,6 +112,41 @@ finished rollout's bare `Trace` — how a multi-agent step spawns a follow-up ta
 `trace.task.data` is the `TaskData` (with `trace.task.type` recording the producing Task
 class's name), and behavior re-attaches by constructing the task class around it.
 
+## Lazy and infinite tasksets
+
+`load()` may be a generator instead of returning a list: yield each task as it's built.
+Consumers materialize tasks through `Taskset.select`, which pulls only what a run needs —
+`eval -n 5` builds 5 tasks, not the whole set — so a generator pays off whenever building
+a task is expensive.
+
+A procedural taskset can keep yielding forever. Declare `INFINITE = True` so consumers know
+the stream never ends — infinity is inherent to the taskset, not a config knob; how many
+tasks a run takes is the run's choice (`-n`), not the taskset's:
+
+```python
+import itertools
+from collections.abc import Iterator
+
+
+class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
+    INFINITE = True
+
+    def load(self) -> Iterator[AdditionTask]:
+        for i in itertools.count():
+            yield AdditionTask(
+                AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
+                self.config.task,
+            )
+```
+
+Two rules follow from infinity: a run over an infinite taskset must be bounded with
+`num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is a no-op (warned):
+there is no whole set to sample from, and the first `n` generated tasks are already an
+arbitrary sample. Generation must be deterministic — env-server pool workers each run
+their own `load()` and rely on every worker producing the same sequence, so seed any
+randomness with a constant (see `alphabet_sort_v1`, `color_codeword_v1`, or the built-in
+`textarena` taskset).
+
 ## Adding Tools
 
 Some environments require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
