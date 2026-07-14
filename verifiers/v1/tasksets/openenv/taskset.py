@@ -127,6 +127,8 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
 
     def parse_action(self, message: str) -> dict[str, Any]:
         message = message.strip()
+        if message.startswith("```") and message.endswith("```"):
+            message = "\n".join(message.splitlines()[1:-1]).strip()
         try:
             action = json.loads(message)
         except json.JSONDecodeError:
