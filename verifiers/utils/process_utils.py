@@ -85,8 +85,35 @@ def terminate_processes(
         t.join()
 
 
-def _session_processes(session: int) -> set[int]:
-    """Return the current members of a POSIX session."""
+def _proc_session_processes(session: int) -> set[int] | None:
+    """Read session membership from procfs, or return None when unavailable."""
+    try:
+        entries = os.scandir("/proc")
+    except OSError:
+        return None
+
+    members: set[int] = set()
+    with entries:
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry.name}/stat") as stat:
+                    fields = stat.read().rsplit(")", 1)[1].split()
+                if int(fields[3]) == session:
+                    members.add(int(entry.name))
+            except (IndexError, OSError, ValueError):
+                # Processes can exit between scandir and opening their stat file. A live
+                # member is seen on the next fixed-point scan below.
+                continue
+    return members
+
+
+def _session_processes(session: int) -> set[int] | None:
+    """Return current POSIX session members, or None if discovery is unavailable."""
+    if (members := _proc_session_processes(session)) is not None:
+        return members
+
     try:
         listing = subprocess.run(
             ["ps", "-A", "-o", "pid=,sid="],
@@ -95,15 +122,19 @@ def _session_processes(session: int) -> set[int]:
             text=True,
             timeout=5,
         ).stdout
-        return {
-            pid
-            for line in listing.splitlines()
-            for pid, sid in [map(int, line.split())]
-            if sid == session
-        }
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, subprocess.SubprocessError):
         logger.warning("Could not read POSIX session %d", session)
-        return set()
+        return None
+
+    members = set()
+    for line in listing.splitlines():
+        try:
+            pid, sid = map(int, line.split())
+        except ValueError:
+            continue
+        if sid == session:
+            members.add(pid)
+    return members
 
 
 def kill_process_session(process: BaseProcess, timeout: float = 10.0) -> None:
@@ -123,17 +154,33 @@ def kill_process_session(process: BaseProcess, timeout: float = 10.0) -> None:
     # The caller waits on the process sentinel without joining first.  An exited worker
     # therefore remains a zombie and keeps its PID/SID reserved until this cleanup joins it.
     members = _session_processes(root)
+    if members is None:
+        logger.error(
+            "Cannot discover worker session %d; killing only the worker process", root
+        )
+        with contextlib.suppress(Exception):
+            process.kill()
+        process.join(timeout=timeout)
+        return
     if root not in members:
         with contextlib.suppress(Exception):
             process.kill()
         process.join(timeout=timeout)
         return
 
+    discovery_failures = 0
     while members:
         for pid in members:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGSTOP)
         discovered = _session_processes(root)
+        if discovered is None:
+            discovery_failures += 1
+            if discovery_failures < 3:
+                continue
+            logger.error("Could not verify stopped worker session %d", root)
+            break
+        discovery_failures = 0
         if discovered <= members:
             break
         members.update(discovered)
