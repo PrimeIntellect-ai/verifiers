@@ -64,14 +64,17 @@ def parse_judge_choice(
     )
 
     # Prefer an explicit verdict marker on the full reply so a draft \boxed{...}
-    # cannot shadow a later Final Judgment / Final Answer line.
+    # cannot shadow a later Final Judgment / Final Answer line. If the marker has
+    # no choice after it, fall through to boxed / last-match instead of failing.
     text_upper = text.upper()
     verdict = re.search(verdict_re, text_upper)
     if verdict:
         match = re.search(choice_re, text_upper[verdict.end() :])
-        return choices_by_upper.get(match.group(1)) if match else None
+        if match:
+            return choices_by_upper.get(match.group(1))
 
-    # No marker: keep boxed answers preferred over CoT mentions, then last match.
+    # No usable marker choice: keep boxed answers preferred over CoT mentions,
+    # then last match.
     boxed = extract_boxed_answer(text, strict=True).strip()
     search_upper = (boxed or text).upper()
     matches = re.findall(choice_re, search_upper)
