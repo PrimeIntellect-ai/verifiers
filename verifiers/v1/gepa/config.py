@@ -54,8 +54,6 @@ class GEPAConfig(EnvConfig):
     """Total rollouts GEPA may spend across the whole optimization run."""
     reflection_minibatch_size: int = 3
     """Train tasks sampled per reflection step."""
-    perfect_score: float | None = None
-    """Skip reflecting on a minibatch that already scores this well."""
     reflection_columns: list[str] = Field(default_factory=list)
     """Extra per-trace fields (from `trace.info`, else `task`) to surface to the teacher LM."""
     initial_prompt: str | None = None

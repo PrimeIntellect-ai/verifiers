@@ -14,7 +14,8 @@
             "v1/environments",
             "v1/evaluation",
             "v1/harnesses",
-            "v1/harbor"
+            "v1/harbor",
+            "v1/gepa"
           ]
         },
         {

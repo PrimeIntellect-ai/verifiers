@@ -106,11 +106,9 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
                 run_dir=str(run_dir) if run_dir is not None else None,
                 seed=config.seed,
                 display_progress_bar=False,
-                skip_perfect_score=config.perfect_score is not None,
+                skip_perfect_score=False,
                 logger=_GEPALog(),
             )
-            if config.perfect_score is not None:
-                optimize_kwargs["perfect_score"] = config.perfect_score
             return optimize(**optimize_kwargs)
         finally:
             loop.run_until_complete(serving.__aexit__(None, None, None))
