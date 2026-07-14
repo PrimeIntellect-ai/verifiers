@@ -20,7 +20,7 @@ import json
 
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData
-from verifiers.v1.topology import AgentConfig, Topology, TopologyRun
+from verifiers.v1.topology import AgentConfig, Agents, Topology
 from verifiers.v1.topologies.llm_judge import (
     JudgeTask,
     LLMJudgeConfig,
@@ -97,9 +97,9 @@ class AgenticJudgeTopology(LLMJudgeTopology, Topology[AgenticJudgeConfig]):
     metric, weighted `judge` reward on the solver's trace); only the forward arrow —
     what the judge is handed — differs."""
 
-    async def go(self, task: Task, run: TopologyRun) -> None:
-        solver = await run.agent("solver").run(task)
-        await run.agent("judge").run(
+    async def run(self, task: Task, agents: Agents) -> None:
+        solver = await agents.solver.run(task)
+        await agents.judge.run(
             AgenticJudgeTask.from_trace(solver, self.config.prompt),
             parents=[solver],
         )

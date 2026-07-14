@@ -140,16 +140,15 @@ class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
         )
         return type(seed)(data, seed.config)
 
-    async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         propose_task = cast(vf.Task, ProposeTask.from_task(task))
-        proposer = await run.agent("proposer").run(propose_task)
+        proposer = await agents.proposer.run(propose_task)
         if not isinstance(proposer.info.get("submission"), dict):
             return
         derived = self.solver_task(task, proposer)
-        solver = run.agent("solver")
         await asyncio.gather(
             *(
-                solver.run(derived, parents=[proposer])
+                agents.solver.run(derived, parents=[proposer])
                 for _ in range(self.config.num_solvers)
             )
         )

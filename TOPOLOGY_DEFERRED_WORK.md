@@ -11,21 +11,6 @@ have been removed.
 
 ## Execution and scalability
 
-### Bound session-driven model concurrency
-
-`TopologyRun.run_agent()` acquires the configured rollout semaphore, but
-`TopologyRun.interact_agent()` deliberately bypasses it. In-process evaluation also starts all
-topology invocations eagerly. A session topology can therefore create unbounded model pressure
-even when `max_concurrent` is configured. Server-backed execution is bounded by the outer graph
-request pool, but that does not bound turns or agents inside a graph.
-
-The eventual solution must limit active model work without holding a permit for an entire
-suspended session, which could deadlock multi-seat topologies. A turn-level permit, or another
-model-call-level admission mechanism, is preferable to a session-lifetime permit.
-
-Done when direct and server-backed execution have an explicit, tested concurrency bound for
-session topologies without deadlocking games or debates.
-
 ### Account for variable topology cost
 
 The server currently charges every topology invocation as one unit of capacity regardless of
@@ -57,10 +42,12 @@ mirroring what `to_record()` already does for JSON persistence.
 
 ### Add explicit run-level state if needed
 
-There is no canonical state store for information that must survive beyond one `go(task)`
-invocation, such as cumulative chess wins and losses. Storing mutable data on a `Topology` or
-`TopologyRunner` instance is not a contract: workers have separate copies, processes restart,
-and distributed execution cannot observe a single authoritative value.
+There is no canonical state store for information that must survive beyond one
+`run(task, agents)` invocation (cumulative match results, cross-instance curricula).
+Storing mutable data on a `Topology` or `TopologyRunner` instance is not a contract —
+`setup()`/`teardown()` scope per-worker resources, not authoritative shared state:
+workers have separate copies, processes restart, and distributed execution cannot observe
+a single authoritative value.
 
 If this becomes necessary, define the ownership, persistence, consistency, and worker-sharing
 semantics explicitly. Do not accidentally introduce run-level state through topology object
@@ -82,7 +69,7 @@ Deleting `@group_reward` removed the only native home for pairwise/relative eval
 (shortest-of-group, preference comparisons); they were demoted to per-trace metrics with
 the comparison left to "the training algorithm". For *training* that is the right owner,
 but eval-mode relative signals have a clean replacement the framework should ship rather
-than describe: a built-in best-of-N topology — one seed, `go` fans out N runs of the same
+than describe: a built-in best-of-N topology — one seed, `run` fans out N runs of the same
 agent, a `@reward(agent=...)` compares `graph.children(...)`. That recovers everything
 group rewards did, explicitly, on the canonical path, and doubles as the documented
 migration story for the removal.
@@ -145,9 +132,6 @@ A reviewed set of config cleanups, deferred as one pass (analysis 2026-07-11):
 - **Declare `RolloutLimits` once.** `EnvConfig` carries four flat `max_*` fields that are
   hand-copied into `RolloutLimits` at the runner; a `limits` property on `EnvConfig`
   states the correspondence once while keeping the flat CLI flags.
-- **De-collide `multiplex`.** `--multiplex` (rollouts per interception server) and
-  `--pool.multiplex` (graph requests per worker, the elastic scale trigger) are unrelated
-  knobs sharing a name; rename the pool field with an alias for compatibility.
 - **Align timeout vocabulary.** `--timeout.rollout` maps onto the task-authored
   `TaskTimeout.harness`; post-consolidation "rollout" is the word — rename the task field
   while it is still a five-file change.
@@ -188,8 +172,8 @@ the current model only, not preserve a migration narrative.
 ### Reconcile PR #1939 (agent programs)
 
 The standalone Agent-facade PR (#1939, open against main) is the ancestor of this branch's
-agent layer. Its machinery is fully absorbed or deliberately superseded here (pool ownership
-moved to `RunServices`; `TaskData.sources`/`relation` lineage replaced by trace-field links;
+agent layer. Its machinery is fully absorbed or deliberately superseded here (interception ownership
+moved to the runner's serving scope; `TaskData.sources`/`relation` lineage replaced by trace-field links;
 the per-run `ctx=` override replaced by per-agent routing), and its three correctness fixes
 (borrowed-box tombstone, mid-run teardown attribution, resolved-runtime pairing) have been
 ported. What remains unique to it is `docs/v1/agent-programs.md` plus four

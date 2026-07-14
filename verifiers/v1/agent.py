@@ -26,6 +26,7 @@ reach for a bare `Agent` when you're scripting.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
@@ -46,6 +47,7 @@ from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.memory import trim_memory_periodically
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -120,7 +122,14 @@ class Agent:
     `interception` is the (optional) shared interception the agent's rollouts borrow —
     see the module docstring; without one, every run brings up its own per-rollout
     interception server. `shared_tools` are the taskset-scoped shared servers (already
-    served, see `serve_shared`) this agent's rollouts reuse."""
+    served, see `serve_shared`) this agent's rollouts reuse.
+
+    The remaining keyword knobs are how a managing framework (the topology runner)
+    threads run-wide policy through every agent it builds: `retry` (the whole-rollout
+    retry policy every `run` applies), `semaphore` (the run-wide rollout-concurrency
+    gate, held across a run's retries), `on_trace` (called with each completed trace —
+    graph recording), and `on_rollout` (called with each constructed `Rollout` — the
+    live dashboard). A hand-built agent leaves them unset."""
 
     def __init__(
         self,
@@ -129,22 +138,32 @@ class Agent:
         runtime: RuntimeConfig | None = None,
         *,
         name: str | None = None,
+        seat: int | None = None,
         trainable: bool = True,
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
         interception: Interception | None = None,
         shared_tools: dict[str, SharedToolServer] | None = None,
+        retry: RolloutRetryConfig | None = None,
+        semaphore: asyncio.Semaphore | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
         on_rollout: Callable[[Rollout], None] | None = None,
     ) -> None:
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime if runtime is not None else harness.config.runtime
         self.name = name
+        self.seat = seat
+        """This agent's index within its role when the topology declares a list of
+        agents under one name (None for a scalar role)."""
         self.trainable = trainable
         self.limits = limits or RolloutLimits()
         self.timeout = timeout or TimeoutConfig()
         self.shared_tools = shared_tools or {}
         self._interception = interception
+        self._retry = retry
+        self._semaphore = semaphore
+        self._on_trace = on_trace
         self._on_rollout = on_rollout
         self._warned_resources: set[tuple[str, str]] = set()
         self._validated: set[tuple[type[Task], str, str]] = set()
@@ -172,12 +191,12 @@ class Agent:
         *,
         parents: Sequence[Parent] = (),
         runtime: Runtime | None = None,
-        retry: RolloutRetryConfig | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return its trace, stamped with lineage
-        (`parents`) and this agent's provenance. `runtime` places the run into a live
-        borrowed box instead of provisioning one; `retry` applies the whole-rollout
-        retry policy."""
+        (`parents`: the upstream traces this task was derived from) and this agent's
+        provenance. `runtime` places the run into a live borrowed box instead of
+        provisioning one. A framework-built agent also applies its injected policy
+        here: the rollout retry, the concurrency gate, and trace recording."""
         runtime_config = self.runtime_for(task, runtime)
         self._validate_pairing(task, runtime_config)
         attempt = _AgentAttempt(
@@ -188,9 +207,15 @@ class Agent:
             interception=self._interception,
             parents=parents,
         )
-        if retry is not None:
-            return await run_with_retry(attempt, retry)
-        return await attempt.run()
+        async with self._semaphore or contextlib.nullcontext():
+            if self._retry is not None:
+                trace = await run_with_retry(attempt, self._retry)
+            else:
+                trace = await attempt.run()
+        if self._on_trace is not None:
+            self._on_trace(trace)
+        await trim_memory_periodically()
+        return trace
 
     def stamp(
         self,
@@ -208,6 +233,7 @@ class Agent:
         trace.sampling = self.ctx.sampling
         trace.info["agent"] = {
             "name": self.name,
+            "seat": self.seat,
             "harness": self.harness.config.id,
             "model": self.ctx.model,
             "runtime": {

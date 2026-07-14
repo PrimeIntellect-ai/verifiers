@@ -2,10 +2,12 @@
 
 The rounds + fan-in shape, one self-contained package:
 
-  - **Rounds are a loop in `go`**: each round, the current draft goes out to the editors
+  - **Rounds are a loop in `run`**: each round, the current draft goes out to the editors
     and comes back revised — `num_rounds` cycles, plain Python.
-  - **Fan-out**: `asyncio.gather(*(run.agent("editor").run(critique, parents=[draft])
-    for _ in range(num_editors)))` — every editor critiques the same draft, concurrently.
+  - **A list role**: `editors: list[DirectAgentConfig]` declares one role with several
+    seats — `asyncio.gather(*(editor.run(critique, parents=[draft]) for editor in
+    agents.editors))` fans the same draft out to every seat, concurrently (and
+    per-seat config makes mixed-model editorial boards a TOML change).
   - **Fan-in**: the revision task is built from *all* the editors' traces at once, and the
     revised trace is linked under every one of them (`parents=[draft, *edits]`).
   - **One shared reward, every trace**: a deterministic comparison of the writer's first
@@ -124,9 +126,9 @@ class ReviseTask(vf.Task[vf.TaskData]):
 
 class WriterEditorsConfig(vf.TopologyConfig):
     writer: vf.DirectAgentConfig = vf.DirectAgentConfig()
-    editor: vf.DirectAgentConfig = vf.DirectAgentConfig()
-    num_editors: int = 3
-    """Editors critiquing each draft (the fan-out width)."""
+    editors: list[vf.DirectAgentConfig] = [vf.DirectAgentConfig() for _ in range(3)]
+    """The editorial board: one role, one seat per entry (the fan-out width). Per-seat
+    overrides via `--topology.editors.<i>.model` or `[[topology.editors]]` tables."""
     num_rounds: int = 1
     """Critique→revise cycles (each round: every editor reads the current draft, the
     writer revises off all their feedback)."""
@@ -142,11 +144,10 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
             for i, brief in enumerate(BRIEFS)
         ]
 
-    async def go(self, task: DraftTask, run: vf.TopologyRun) -> None:
+    async def run(self, task: DraftTask, agents: vf.Agents) -> None:
         """Draft, then `num_rounds` critique→revise cycles: editors fan out over the
         current draft, their feedback fans back in to one revision task."""
-        writer = run.agent("writer")
-        editor = run.agent("editor")
+        writer = agents.writer
         draft = await writer.run(task)
         for _ in range(self.config.num_rounds):
             if not draft.last_reply:
@@ -163,7 +164,7 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
                 await asyncio.gather(
                     *(
                         editor.run(critique, parents=[draft])
-                        for _ in range(self.config.num_editors)
+                        for editor in agents.editors
                     )
                 )
             )
@@ -192,7 +193,7 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
     async def writer_improvement(self, graph: vf.AgentGraph) -> dict[str, float]:
         return {"improvement": improvement(graph)}
 
-    @vf.reward(agent="editor")
+    @vf.reward(agent="editors")
     async def editor_improvement(self, graph: vf.AgentGraph) -> dict[str, float]:
         return {"improvement": improvement(graph)}
 

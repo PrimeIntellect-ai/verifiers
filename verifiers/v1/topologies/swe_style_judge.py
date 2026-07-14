@@ -23,10 +23,10 @@ from verifiers.v1.task import Task, TaskData
 from verifiers.v1.topologies.llm_judge import JudgeTask
 from verifiers.v1.topology import (
     AgentConfig,
+    Agents,
     AgentGraph,
     Topology,
     TopologyConfig,
-    TopologyRun,
 )
 from verifiers.v1.trace import Trace
 
@@ -98,11 +98,10 @@ class SWEStyleJudgeConfig(TopologyConfig):
 
 
 class SWEStyleJudgeTopology(Topology[SWEStyleJudgeConfig]):
-    async def go(self, task: Task, run: TopologyRun) -> None:
-        solver = run.agent("solver")
-        async with solver.provision(task) as runtime:
-            solution = await solver.run(task, runtime=runtime)
-            await run.agent("judge").run(
+    async def run(self, task: Task, agents: Agents) -> None:
+        async with agents.solver.provision(task) as runtime:
+            solution = await agents.solver.run(task, runtime=runtime)
+            await agents.judge.run(
                 StyleJudgeTask.from_trace(solution, self.config.prompt),
                 parents=[solution],
                 runtime=runtime,

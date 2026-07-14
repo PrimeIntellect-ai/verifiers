@@ -28,9 +28,9 @@ from verifiers.v1.task import DataT, Task, TaskData
 from verifiers.v1.topology import (
     AgentConfig,
     AgentGraph,
+    Agents,
     Topology,
     TopologyConfig,
-    TopologyRun,
 )
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import content_text
@@ -163,9 +163,9 @@ class LLMJudgeConfig(TopologyConfig):
 
 
 class LLMJudgeTopology(Topology[LLMJudgeConfig]):
-    async def go(self, task: Task, run: TopologyRun) -> None:
-        solver = await run.agent("solver").run(task)
-        await run.agent("judge").run(JudgeTask.from_trace(solver), parents=[solver])
+    async def run(self, task: Task, agents: Agents) -> None:
+        solver = await agents.solver.run(task)
+        await agents.judge.run(JudgeTask.from_trace(solver), parents=[solver])
 
     @metric(agent="solver")
     async def judge_committed(self, trace: Trace, graph: AgentGraph) -> float:

@@ -66,15 +66,14 @@ class SharedRuntimeTopology(vf.Topology[SharedRuntimeConfig]):
     def load_tasks(self) -> list[vf.Task]:
         return [WriteTask(vf.TaskData(idx=0, prompt=WRITE_PROMPT))]
 
-    async def go(self, task: WriteTask, run: vf.TopologyRun) -> None:
-        writer = run.agent("writer")
-        reader = run.agent("reader")
+    async def run(self, task: WriteTask, agents: vf.Agents) -> None:
+        writer = agents.writer
         async with writer.provision(task) as runtime:
             written = await writer.run(task, runtime=runtime)
             note = written.info.get("shared_runtime", {}).get("wrote")
             if note is None:
-                return  # writer episode failed before finalize — nothing was handed off
-            await reader.run(
+                return  # writer run failed before finalize — nothing was handed off
+            await agents.reader.run(
                 ReadTask(
                     ReadData(idx=task.data.idx, prompt=READ_PROMPT, expected=note)
                 ),

@@ -5,15 +5,22 @@ into a multi-agent interaction: which agents exist, how one agent's trace become
 downstream agent's task, and how rewards flow backwards once downstream agents have run.
 Each agent run is an ordinary `Rollout` (same lifecycle, same error model, same trace), and
 tasks are the whole task-side contract — their classes carry the behavior — so a topology
-declares named agent bindings, then executes topology-bound agents against tasks.
+declares its agents as config fields, and the framework hands `run` ready executable agents.
 
-The interaction pattern is plain imperative Python in `go` — not a DSL: a loop is rounds,
-`asyncio.gather` over `run.agent(...).run(...)` calls is fan-out, and awaiting several traces
-before building the next task is fan-in. `go` owns *control flow only*, including the
+The interaction pattern is plain imperative Python in `run` — not a DSL: a loop is rounds,
+`asyncio.gather` over `agents.<name>.run(...)` calls is fan-out, and awaiting several traces
+before building the next task is fan-in. `run` owns *control flow only*, including the
 forward arrow (trace → next task, pure host-side construction); judgement — including the
 backward arrow, a reward derived from downstream traces — is declared as
 `@vf.reward(agent=...)`/`@vf.metric(agent=...)` methods, run over the finished instance
 (see `Topology.score`).
+
+Agents are framework-managed: the runner builds one executable `Agent` per `AgentConfig`
+field on the topology's config (a `list[AgentConfig]` field builds a list — one *role*,
+many seats) and exposes them to `run` as an `Agents` namespace mirroring the config
+(`agents.judge`, `agents.editors[i]`). Each completed run records its trace onto the
+instance's `AgentGraph` automatically, so a crash in `run` never loses finished work;
+lineage is named at the call site (`run(task, parents=[upstream])`).
 
 Running one instance produces an `AgentGraph` — the serialized instance artifact: the
 global, causally ordered view over its traces, each linked to its parents (`trace.agent` /
@@ -27,14 +34,14 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from functools import cached_property
-from typing import Generic, TypeVar
+from typing import Annotated, Generic, TypeVar, get_args, get_origin
 
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent, Parent
+from verifiers.v1.agent import Agent
 from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.env import (
@@ -51,14 +58,13 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.rollout import Rollout
-from verifiers.v1.runtimes import Runtime, SubprocessConfig
+from verifiers.v1.runtimes import SubprocessConfig
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Error, Trace, TraceTask, WireTrace
 from verifiers.v1.types import ID, SamplingConfig, StrictBaseModel
 from verifiers.v1.utils.install import env_name
-from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
@@ -88,11 +94,12 @@ def _merge_sampling(
 class AgentConfig(BaseConfig):
     """One agent in a topology: which harness drives its runs (and where —
     `harness.runtime`), and how its model calls are routed. Declared as typed fields of a
-    `TopologyConfig` subclass — the field *name* is the agent's name in `go` — so every
+    `TopologyConfig` subclass — the field *name* is the agent's name in `run` (a
+    `list[AgentConfig]` field declares one *role* with several seats) — so every
     agent is CLI/toml-addressable (`--topology.<agent>.harness.id`,
     `--topology.<agent>.model`, ...). An agent carries nothing task-side: the tasks it
     consumes (each carrying its own behavior) arrive per run, from the topology's seeds
-    or constructed in `go`.
+    or constructed in `run`.
 
     To pin a per-agent default harness, **subclass and set the field default**
     (`harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="direct")`) — pins must
@@ -170,17 +177,35 @@ class NullAgentConfig(AgentConfig):
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="null")
 
 
+def _agent_list_item_type(annotation) -> type[AgentConfig] | None:
+    """The `AgentConfig` subclass a `list[...]` annotation holds (Annotated wrappers like
+    `SerializeAsAny` unwrapped on both levels), else None — how a config field is
+    recognized as a list *role*."""
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if get_origin(annotation) is not list:
+        return None
+    args = get_args(annotation)
+    item = args[0] if args else None
+    while get_origin(item) is Annotated:
+        item = get_args(item)[0]
+    if isinstance(item, type) and issubclass(item, AgentConfig):
+        return item
+    return None
+
+
 class TopologyConfig(BaseConfig):
     """Base topology config. Subclass to declare the agents (typed `AgentConfig` fields —
-    the field name is the agent's name) plus any interaction knobs (fan-out width, number
-    of rounds, reward weights). Mirrors `TasksetConfig`: the concrete subclass is resolved
-    by `id`, so its fields surface typed on the CLI/toml."""
+    the field name is the agent's name; a `list[AgentConfig]` field is one role with
+    several seats) plus any interaction knobs (fan-out width, number of rounds, reward
+    weights). Mirrors `TasksetConfig`: the concrete subclass is resolved by `id`, so its
+    fields surface typed on the CLI/toml."""
 
     id: ID = ""
     """The topology id, which selects this topology: a built-in (`llm-judge`), a local
     package, or an `org/name[@version]` package installed on demand from the Environments
     Hub (see `ID`). Set via `--topology.id`."""
-    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
+    taskset: SerializeAsAny[TasksetConfig] | None = None
     """The seed source: a taskset (a pure task factory, resolved by id — see
     `verifiers.v1.taskset`) whose tasks seed the instances, one instance per seed. Set via
     `--topology.taskset.id <id>` — the same word, slot, and grammar as the single-agent
@@ -205,6 +230,38 @@ class TopologyConfig(BaseConfig):
             narrow_plugin_field(data, "taskset", taskset_config_type)
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_agent_lists(cls, data):
+        """CLI dotted overrides into a list role (`--topology.judges.0.model x`) parse as
+        an index-keyed dict; coerce it into a positional merge over the field's default
+        seats, so per-seat overrides tune the declared list instead of failing validation
+        (TOML arrays of tables arrive as real lists and skip this)."""
+        if not isinstance(data, dict):
+            return data
+        for name, field in cls.model_fields.items():
+            value = data.get(name)
+            if not isinstance(value, dict) or not value:
+                continue
+            if _agent_list_item_type(field.annotation) is None:
+                continue
+            if not all(str(key).isdigit() for key in value):
+                continue  # not index-shaped; let pydantic report it
+            defaults = field.default if isinstance(field.default, list) else []
+            merged: list[dict] = [
+                seat.model_dump() if isinstance(seat, BaseConfig) else dict(seat)
+                for seat in defaults
+            ]
+            for key, override in value.items():
+                index = int(key)
+                while len(merged) <= index:
+                    merged.append({})
+                if isinstance(override, BaseConfig):
+                    override = override.model_dump()
+                merged[index] = _deep_merge(merged[index], dict(override))
+            data[name] = merged
+        return data
+
 
 class SingleAgentTopologyConfig(TopologyConfig):
     """Internal lowering target for the user-facing taskset + harness syntax."""
@@ -217,11 +274,11 @@ ConfigT = TypeVar("ConfigT", bound=TopologyConfig)
 
 
 class AgentBinding:
-    """A topology-registered agent slot: name + config + loaded harness.
+    """A topology-declared agent slot: name + config + loaded harness.
 
-    The value exposed inside `Topology.go` is a topology-bound `TopologyAgent`; this
-    binding is the config-side declaration a topology loads and validates before serving.
-    """
+    The value exposed inside `Topology.run` is an executable `Agent` built per instance;
+    this binding is the config-side declaration the runner loads and validates once,
+    before serving."""
 
     def __init__(
         self, name: str, config: AgentConfig, harness: Harness | None = None
@@ -231,6 +288,39 @@ class AgentBinding:
         self.name = name
         self.config = config
         self.harness = harness if harness is not None else load_harness(config.harness)
+
+
+class Agents:
+    """The framework-built executable agents of one topology instance, mirroring the
+    config's declaration: an `AgentConfig` field is one `Agent` (`agents.judge`), a
+    `list[AgentConfig]` field is a list of them (`agents.editors`, one role, several
+    seats). Built fresh per instance by the runner with the run's model context, serving
+    resources, budgets, and graph recording already bound — `run` just picks who acts."""
+
+    def __init__(self, agents: dict[str, Agent | list[Agent]]) -> None:
+        self._agents = agents
+
+    def __getattr__(self, name: str) -> Agent | list[Agent]:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self.__dict__["_agents"][name]
+        except KeyError:
+            raise AttributeError(
+                f"unknown agent {name!r}: this topology defines "
+                f"{sorted(self.__dict__['_agents'])}"
+            ) from None
+
+    def __getitem__(self, name: str) -> Agent | list[Agent]:
+        try:
+            return self._agents[name]
+        except KeyError:
+            raise KeyError(
+                f"unknown agent {name!r}: this topology defines {sorted(self._agents)}"
+            ) from None
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._agents
 
 
 class AgentGraph(StrictBaseModel):
@@ -251,7 +341,7 @@ class AgentGraph(StrictBaseModel):
     task: SerializeAsAny[TraceTask]
     """The seed task for this invocation, including its task behavior type."""
     error: Error | None = None
-    """A failure in the topology's own code (`go` or instance scoring, a `TopologyError`),
+    """A failure in the topology's own code (`run` or instance scoring, a `TopologyError`),
     recorded instead of raised — agent failures live on their traces, this is for the
     composition itself. Traces completed before the failure remain data."""
     traces: list[SerializeAsAny[Trace]] = Field(default_factory=list)
@@ -275,7 +365,8 @@ class AgentGraph(StrictBaseModel):
         ]
 
     def by_agent(self, agent: str) -> list[Trace]:
-        """The traces a named agent produced, in completion order."""
+        """The traces a named agent (or every seat of a named role) produced, in
+        completion order."""
         return [trace for trace in self.traces if trace.agent == agent]
 
     def to_record(self) -> dict:
@@ -308,8 +399,9 @@ def graph_complete(graph: AgentGraph) -> bool:
 
 class Topology(Generic[ConfigT]):
     """Generic over its config type, so `self.config` is fully typed in subclasses.
-    Subclass: declare `AgentConfig` fields on your config, implement `go` (control flow)
-    and `@vf.reward(agent=...)`/`@vf.metric(agent=...)` methods (judgement). Seeds come
+    Subclass: declare `AgentConfig` fields on your config (a `list[AgentConfig]` field
+    is one role with several seats), implement `run` (control flow) and
+    `@vf.reward(agent=...)`/`@vf.metric(agent=...)` methods (judgement). Seeds come
     from the config's `taskset` slot, or override `load_tasks` to construct them."""
 
     def __init__(self, config: ConfigT) -> None:
@@ -318,32 +410,33 @@ class Topology(Generic[ConfigT]):
     @cached_property
     def taskset(self) -> Taskset | None:
         """The configured seed taskset, loaded once, or None for self-seeding topologies."""
-        if not self.config.taskset.id:
+        if self.config.taskset is None or not self.config.taskset.id:
             return None
         from verifiers.v1.loaders import load_taskset
 
         return load_taskset(self.config.taskset)
 
-    def load_agents(self) -> dict[str, AgentBinding]:
-        """The topology's agents, one per `AgentConfig` field on the config (in declaration
-        order). Override only to compose agents programmatically — each is still just
-        `AgentBinding(name, config)`."""
-        return {
-            name: AgentBinding(name, value)
-            for name, value in self.config
-            if isinstance(value, AgentConfig)
-        }
-
     @cached_property
-    def agents(self) -> dict[str, AgentBinding]:
-        """The loaded agents, built once via `load_agents`. Loading also validates the
-        topology's declared judgement (`@reward`/`@metric` methods) against them, so a
-        typo'd or missing agent scope fails at load time, not mid-eval."""
-        agents = self.load_agents()
+    def agents(self) -> dict[str, AgentBinding | list[AgentBinding]]:
+        """The declared agents, one binding per `AgentConfig` field on the config (in
+        declaration order); a `list[AgentConfig]` field yields a list of bindings under
+        its role name. Loading also validates the topology's declared judgement
+        (`@reward`/`@metric` methods) against them, so a typo'd or missing agent scope
+        fails at load time, not mid-eval."""
+        fields = type(self.config).model_fields
+        agents: dict[str, AgentBinding | list[AgentBinding]] = {}
+        for name, value in self.config:
+            if isinstance(value, AgentConfig):
+                agents[name] = AgentBinding(name, value)
+            elif isinstance(value, list) and (
+                name in fields
+                and _agent_list_item_type(fields[name].annotation) is not None
+            ):
+                agents[name] = [AgentBinding(name, seat) for seat in value]
         if not agents:
             raise ValueError(
                 f"topology {self.config.id!r} declares no agents: give its config "
-                "`AgentConfig` fields (or override `load_agents`)"
+                "`AgentConfig` fields"
             )
         # Scan the class, not `discover_decorated` (whose getmembers would re-enter this
         # very cached_property via the properties it evaluates). Unwrap descriptors so a
@@ -376,16 +469,17 @@ class Topology(Generic[ConfigT]):
         return agents
 
     def load_tasks(self) -> Iterable[Task]:
-        """The seed tasks — one topology instance (`go`) runs per seed task. Defaults to
+        """The seed tasks — one topology instance (`run`) runs per seed task. Defaults to
         the config's `taskset` slot (`--topology.taskset.id <id>`), whose `load` may be
         lazy or infinite (see `Taskset`); override for a topology that constructs its own
-        seeds (a finite, materializable iterable)."""
-        if not self.config.taskset.id:
+        seeds (a finite, materializable iterable). A start-from-nothing topology returns
+        identity-only stubs (`Task(TaskData(idx=i))`) — the seed is each instance's
+        identity for `-n`, resume, and dispatch, not necessarily content."""
+        if self.taskset is None:
             raise ValueError(
                 f"topology {self.config.id!r} has no seed tasks: set --topology.taskset.id "
                 "<id>, or override `load_tasks` to construct them"
             )
-        assert self.taskset is not None
         return self.taskset.load()
 
     @property
@@ -397,22 +491,32 @@ class Topology(Generic[ConfigT]):
             return False
         return self.taskset is not None and type(self.taskset).INFINITE
 
+    async def setup(self) -> None:
+        """Author hook: bring up topology-owned shared resources before any instance runs.
+        The runner calls it once inside `serving()`, after the framework's own services
+        (interception, shared tool servers) are up. Default no-op."""
+
+    async def teardown(self) -> None:
+        """Author hook: tear down what `setup` brought up. Runs on serving exit — after
+        the last instance, before the framework's services come down — even when
+        instances failed. Default no-op."""
+
     def complete(self, graph: AgentGraph) -> bool:
         """Whether a persisted instance counts as a valid result of this topology — the
         verdict consumers read when deciding what to redo or drop (today: `--resume`
         re-runs instances that fail it). The default is conservative — no instance-level
         error and no errored trace — which is exact for the single-agent lowering, where
-        the one trace IS the invocation. A topology whose `go` tolerates child failures
+        the one trace IS the invocation. A topology whose `run` tolerates child failures
         overrides this to match (typically `graph.error is None`), else resume redoes
         instances it already accepted and scored. A read-only verdict over a finished
-        graph: what a failed child *means* stays in `go` and the declared rewards."""
+        graph: what a failed child *means* stays in `run` and the declared rewards."""
         return graph_complete(graph)
 
     async def score(self, graph: AgentGraph) -> None:
         """Run the topology's declared judgement over one completed instance: every
         `@metric(agent=...)`, then every `@reward(agent=...)`, each invoked once per
         trace the named agent produced — declaring any of `task`/`trace`/`graph` by
-        parameter name. Runs after `go` returns and before the instance persists, so
+        parameter name. Runs after `run` returns and before the instance persists, so
         every trace (across all rounds and fan-outs) is scored, automatically.
 
         Ordering contract, chosen for predictability over cleverness: methods run
@@ -442,18 +546,20 @@ class Topology(Generic[ConfigT]):
                     else:
                         trace.record_reward(fn.__name__, result, weight)
 
-    async def go(self, task: Task, run: "TopologyRun") -> None:
+    async def run(self, task: Task, agents: Agents) -> None:
         """Run one topology instance from seed `task`: the *control flow only* — which
         agents run, in what order, with what tasks:
-        `await run.agent(name).run(task, parents=...)` per agent invocation,
+        `await agents.<name>.run(task, parents=...)` per agent invocation,
         `asyncio.gather` for fan-out, loops for rounds, and
         `trace.info[...] = ...` to annotate provenance. The forward arrow lives here —
         construct the next agent's typed `Task` from an upstream trace (its typed task,
-        `last_reply`, `transcript`, or what its `finalize` peeled into `trace.info`).
+        `last_reply`, `transcript`, or what its `finalize` peeled into `trace.info`) and
+        name the lineage at the call (`parents=[upstream]`). Every completed run records
+        its trace onto the instance's graph automatically — nothing to return.
         Judgement belongs in the topology's `@reward(agent=...)`/`@metric(agent=...)`
         methods (see `score`); recording a reward imperatively here is the escape hatch,
         not the norm. Agent failures come back as data on their traces (`trace.error`),
-        never as exceptions — `go` decides what a failed child means (drop it, count it
+        never as exceptions — `run` decides what a failed child means (drop it, count it
         against a pass rate, retry the round, ...)."""
         raise NotImplementedError
 
@@ -461,8 +567,8 @@ class Topology(Generic[ConfigT]):
 class SingleAgentTopology(Topology[SingleAgentTopologyConfig]):
     """The canonical one-agent topology produced from taskset + harness syntax."""
 
-    async def go(self, task: Task, run: "TopologyRun") -> None:
-        await run.agent("agent").run(task)
+    async def run(self, task: Task, agents: Agents) -> None:
+        await agents.agent.run(task)
 
 
 def resolve_topology_runner(config: EnvConfig) -> "TopologyRunner":
@@ -481,105 +587,6 @@ def resolve_topology_runner(config: EnvConfig) -> "TopologyRunner":
     return TopologyRunner(topology, config)
 
 
-class TopologyAgent:
-    """A topology-bound view of a registered executable `Agent`.
-
-    It exposes the public agent's `run` / `provision` surface, but routes completed
-    traces through the owning `TopologyRun` so the graph, parents, trainability, retries,
-    and concurrency limit remain topology-owned.
-    """
-
-    def __init__(self, run: "TopologyRun", name: str) -> None:
-        self._run = run
-        self.name = name
-
-    def _executable(self) -> Agent:
-        return self._run.executable_agent(self.name)
-
-    @property
-    def config(self) -> AgentConfig:
-        return self._run.runner.agent(self.name).config
-
-    @property
-    def harness(self) -> Harness:
-        return self._executable().harness
-
-    def provision(
-        self, task: Task | None = None
-    ) -> contextlib.AbstractAsyncContextManager[Runtime]:
-        """Provision a runtime from this agent's policy (resolved for `task` when given)
-        and tear it down on exit — the box for `run(..., runtime=box)` calls to share,
-        by this agent or any other (see `Agent.provision`)."""
-        return self._executable().provision(task)
-
-    async def run(
-        self,
-        task: Task,
-        *,
-        parents: Sequence[Parent] = (),
-        runtime: Runtime | None = None,
-    ) -> Trace:
-        return await self._run.run_agent(
-            self.name, task, parents=parents, runtime=runtime
-        )
-
-
-class TopologyRun:
-    """One live topology instance: the execution surface `go` programs against. Owns the
-    instance's `AgentGraph` and links every agent trace into it; concurrency, retries, and
-    limits come from the eval config, identically to a single-agent eval."""
-
-    def __init__(
-        self,
-        runner: "TopologyRunner",
-        task: Task,
-        agents: dict[str, Agent],
-        semaphore: asyncio.Semaphore | None = None,
-    ) -> None:
-        self.runner = runner
-        self.graph = AgentGraph(
-            topology=runner.topology.config.id,
-            task=TraceTask(type=type(task).__name__, data=task.data),
-        )
-        self._agents = agents
-        self._semaphore = semaphore
-
-    def agent(self, name: str) -> TopologyAgent:
-        """The registered agent named `name`, bound to this graph."""
-        self.runner.agent(name)  # validate spelling with the existing actionable error
-        return TopologyAgent(self, name)
-
-    def executable_agent(self, name: str) -> Agent:
-        try:
-            return self._agents[name]
-        except KeyError:
-            self.runner.agent(name)
-            raise RuntimeError(
-                f"agent {name!r} is not bound to this topology run"
-            ) from None
-
-    async def run_agent(
-        self,
-        agent: str,
-        task: Task,
-        *,
-        parents: Sequence[Parent] = (),
-        runtime: Runtime | None = None,
-    ) -> Trace:
-        """Run a topology-bound explicit agent and record its trace in this graph."""
-        executable = self.executable_agent(agent)
-        async with self._semaphore or contextlib.nullcontext():
-            trace = await executable.run(
-                task,
-                parents=parents,
-                runtime=runtime,
-                retry=self.runner.config.retries.rollout,
-            )
-        self.graph.add(trace)
-        await trim_memory_periodically()
-        return trace
-
-
 class TopologyRunner:
     """Long-lived executor for one topology and its worker-scoped services."""
 
@@ -594,8 +601,10 @@ class TopologyRunner:
         # or `load_tasks` is overridden — never both. A self-seeding topology accepting a
         # `--topology.taskset.id` it then ignores would silently run a different experiment
         # than the config claims, so refuse it up front.
-        if topology.config.taskset.id and (
-            type(self.topology).load_tasks is not Topology.load_tasks
+        if (
+            topology.config.taskset is not None
+            and topology.config.taskset.id
+            and type(self.topology).load_tasks is not Topology.load_tasks
         ):
             raise ValueError(
                 f"topology {topology.config.id!r} constructs its own seeds (it overrides "
@@ -606,8 +615,10 @@ class TopologyRunner:
         bindings = self.topology.agents
         if isinstance(topology, SingleAgentTopology):
             assert topology.taskset is not None
-            validate_pairing(bindings["agent"].harness, topology.taskset)
-        for binding in bindings.values():
+            agent_binding = bindings["agent"]
+            assert isinstance(agent_binding, AgentBinding)
+            validate_pairing(agent_binding.harness, topology.taskset)
+        for _, _, binding in self._iter_bindings():
             if binding.harness.config.id != "null" and isinstance(
                 binding.harness.config.runtime, SubprocessConfig
             ):
@@ -619,7 +630,17 @@ class TopologyRunner:
                 )
         self._interception: Interception | None = None
         self._shared_tools: dict = {}
-        self._override_clients: dict[str, Client] = {}
+        self._override_clients: dict[tuple[str, int | None], Client] = {}
+
+    def _iter_bindings(self) -> Iterator[tuple[str, int | None, AgentBinding]]:
+        """Flatten the declared agents to `(name, seat, binding)`: a scalar role yields
+        seat None, a list role one entry per seat."""
+        for name, value in self.topology.agents.items():
+            if isinstance(value, list):
+                for seat, binding in enumerate(value):
+                    yield name, seat, binding
+            else:
+                yield name, None, value
 
     @property
     def infinite(self) -> bool:
@@ -645,29 +666,22 @@ class TopologyRunner:
             return topology.taskset.select(num_tasks, shuffle)
         return sample(list(topology.load_tasks()), shuffle, num_tasks)
 
-    def agent(self, name: str) -> AgentBinding:
-        """The named agent, with an actionable error for a typo in `go`."""
-        try:
-            return self.topology.agents[name]
-        except KeyError:
-            raise ValueError(
-                f"unknown agent {name!r}: topology {self.topology.config.id!r} defines {sorted(self.topology.agents)}"
-            ) from None
-
     @contextlib.asynccontextmanager
     async def serving(self):
-        """Hold worker-scoped services while request contexts remain invocation-local."""
+        """Hold worker-scoped services while request contexts remain invocation-local:
+        the run's one interception, the taskset's shared tool servers, per-agent override
+        clients, and the topology's own `setup`/`teardown` resources."""
         if self._interception is not None:
             raise RuntimeError("TopologyRunner.serving() is already active")
         from verifiers.v1.mcp import serve_shared
         from verifiers.v1.runtimes import runtime_is_local
 
         async with contextlib.AsyncExitStack() as stack:
-            bindings = self.topology.agents
             # Every agent's harness placement — any remote seat must reach the shared
             # servers and the interception through a tunnel.
             local = all(
-                runtime_is_local(b.harness.config.runtime) for b in bindings.values()
+                runtime_is_local(binding.harness.config.runtime)
+                for _, _, binding in self._iter_bindings()
             )
             shared_tools: dict = {}
             if self.topology.taskset is not None:
@@ -678,7 +692,7 @@ class TopologyRunner:
                     )
             # One interception serves the whole run, tunneled whenever any statically
             # knowable consumer — an agent's harness, a live shared server, or a seed
-            # task's tool/user server — is off the host network. Tasks minted in `go`
+            # task's tool/user server — is off the host network. Tasks minted in `run`
             # aren't knowable here; like the pairing checks, the seed taskset stands in
             # for them.
             seed_configs = (
@@ -692,12 +706,16 @@ class TopologyRunner:
             interception = await stack.enter_async_context(
                 make_interception(self.config.interception, requires_tunnel=tunneled)
             )
-            override_clients: dict[str, Client] = {}
-            for name, binding in bindings.items():
+            override_clients: dict[tuple[str, int | None], Client] = {}
+            for name, seat, binding in self._iter_bindings():
                 if binding.config.client is not None:
                     client = resolve_client(binding.config.client)
                     stack.push_async_callback(client.close)
-                    override_clients[name] = client
+                    override_clients[(name, seat)] = client
+            await self.topology.setup()
+            # Paired with the successful setup(): teardown runs first on unwind (LIFO),
+            # while the framework services it may depend on are still up.
+            stack.push_async_callback(self.topology.teardown)
             self._interception = interception
             self._shared_tools = shared_tools
             self._override_clients = override_clients
@@ -711,8 +729,13 @@ class TopologyRunner:
     def _agents_for(
         self,
         ctx: ModelContext,
+        graph: AgentGraph,
+        semaphore: asyncio.Semaphore | None = None,
         on_rollout: Callable[[Rollout], None] | None = None,
-    ) -> dict[str, Agent]:
+    ) -> Agents:
+        """One instance's executable agents, mirroring the config declaration: the run's
+        ctx with per-agent overrides merged, the serving resources, the eval budgets and
+        retry policy, and this instance's graph recording — all bound at construction."""
         interception = self._interception
         if interception is None:
             raise RuntimeError(
@@ -724,26 +747,39 @@ class TopologyRunner:
             max_output_tokens=self.config.max_output_tokens,
             max_total_tokens=self.config.max_total_tokens,
         )
-        agents: dict[str, Agent] = {}
-        for name, binding in self.topology.agents.items():
+
+        def build(name: str, seat: int | None, binding: AgentBinding) -> Agent:
             agent_ctx = ModelContext(
                 model=binding.config.model or ctx.model,
-                client=self._override_clients.get(name, ctx.client),
+                client=self._override_clients.get((name, seat), ctx.client),
                 sampling=_merge_sampling(ctx.sampling, binding.config.sampling),
             )
-            agents[name] = Agent(
+            return Agent(
                 binding.harness,
                 agent_ctx,
                 binding.harness.config.runtime,
                 name=name,
+                seat=seat,
                 trainable=binding.config.trainable,
                 limits=limits,
                 timeout=self.config.timeout,
                 interception=interception,
                 shared_tools=self._shared_tools,
+                retry=self.config.retries.rollout,
+                semaphore=semaphore,
+                on_trace=graph.add,
                 on_rollout=on_rollout,
             )
-        return agents
+
+        agents: dict[str, Agent | list[Agent]] = {}
+        for name, value in self.topology.agents.items():
+            if isinstance(value, list):
+                agents[name] = [
+                    build(name, seat, binding) for seat, binding in enumerate(value)
+                ]
+            else:
+                agents[name] = build(name, None, value)
+        return Agents(agents)
 
     async def run_instance(
         self,
@@ -752,27 +788,32 @@ class TopologyRunner:
         semaphore: asyncio.Semaphore | None = None,
         on_rollout: Callable[[Rollout], None] | None = None,
     ) -> AgentGraph:
-        """Run one topology instance — a single `go` over one seed task, then the declared
-        instance judgement (`Topology.score`) — and return its agent graph. A failure in
-        topology-authored code is classified (`TopologyError`) and captured on the graph,
-        never raised: completed traces remain data, and sibling instances keep
-        running (mirrors `Rollout.run`'s a-bad-rollout-is-data stance one level up)."""
-        run = TopologyRun(self, task, self._agents_for(ctx, on_rollout), semaphore)
+        """Run one topology instance — a single `Topology.run` over one seed task, then
+        the declared instance judgement (`Topology.score`) — and return its agent graph.
+        A failure in topology-authored code is classified (`TopologyError`) and captured
+        on the graph, never raised: completed traces remain data (agents record them as
+        they finish), and sibling instances keep running (mirrors `Rollout.run`'s
+        a-bad-rollout-is-data stance one level up)."""
+        graph = AgentGraph(
+            topology=self.topology.config.id,
+            task=TraceTask(type=type(task).__name__, data=task.data),
+        )
+        agents = self._agents_for(ctx, graph, semaphore, on_rollout)
         try:
             async with boundary(
-                TopologyError, f"topology {self.topology.config.id!r} go"
+                TopologyError, f"topology {self.topology.config.id!r} run"
             ):
-                await self.topology.go(task, run)
+                await self.topology.run(task, agents)
             # Instance judgement: the declared @reward/@metric methods over the finished
-            # graph. Skipped when `go` itself failed — a broken instance isn't scored.
+            # graph. Skipped when `run` itself failed — a broken instance isn't scored.
             async with boundary(
                 TopologyError, f"topology {self.topology.config.id!r} scoring"
             ):
-                await self.topology.score(run.graph)
+                await self.topology.score(graph)
         except TopologyError as e:
             logger.exception("topology instance failed (seed task %s)", task.data.idx)
-            run.graph.error = Error(type=type(e).__name__, message=str(e))
-        return run.graph
+            graph.error = Error(type=type(e).__name__, message=str(e))
+        return graph
 
 
 # `EnvConfig.topology` is annotated as a forward reference — env.py sits *below* this

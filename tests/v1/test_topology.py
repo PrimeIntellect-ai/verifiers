@@ -42,12 +42,14 @@ def stub_agent_run(monkeypatch) -> None:
     """Run topology instances through real `TopologyRunner.serving`, but replace the
     executable agent's rollout work with a tiny deterministic trace."""
 
-    async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
+    async def fake_agent_run(self, task, *, parents=(), runtime=None):
         trace = echoing_trace(task, getattr(task.data, "answer", "ok"))
         trace.record_reward("echoed", 1.0)
         self.stamp(
             trace, parents=parents, runtime=runtime, borrowed=runtime is not None
         )
+        if self._on_trace is not None:  # the framework recording Agent.run would do
+            self._on_trace(trace)
         return trace
 
     monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
@@ -209,9 +211,12 @@ def test_proposer_solver_refuses_taskset_override():
         TopologyRunner(config.topology, config)
 
 
-def test_unknown_agent_is_refused(echo_chain_env):
-    with pytest.raises(ValueError, match="unknown agent 'thrid'"):
-        echo_chain_env.agent("thrid")
+def test_unknown_agent_is_refused():
+    agents = vf.Agents({"first": object(), "second": object()})
+    with pytest.raises(AttributeError, match="unknown agent 'thrid'"):
+        _ = agents.thrid
+    with pytest.raises(KeyError, match="unknown agent 'thrid'"):
+        _ = agents["thrid"]
 
 
 async def test_run_instance_requires_serving(echo_chain_env):
@@ -286,7 +291,7 @@ async def test_proposer_solver_fan_out_and_difficulty(monkeypatch, proposer_seed
     (peaked at 50%, so a 2/4 split scores 1.0)."""
     verdicts = iter([1.0, 0.0, 1.0, 0.0])
 
-    async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
+    async def fake_agent_run(self, task, *, parents=(), runtime=None):
         if self.name == "proposer":
             trace = echoing_trace(task, "submitted")
             trace.info["submission"] = {
@@ -299,6 +304,8 @@ async def test_proposer_solver_fan_out_and_difficulty(monkeypatch, proposer_seed
         self.stamp(
             trace, parents=parents, runtime=runtime, borrowed=runtime is not None
         )
+        if self._on_trace is not None:
+            self._on_trace(trace)
         return trace
 
     monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
@@ -318,7 +325,7 @@ async def test_proposer_solver_fan_out_and_difficulty(monkeypatch, proposer_seed
 
 
 async def test_provisioned_runtime_is_borrowed_across_runs(echo_chain_env, monkeypatch):
-    """`run.agent(...).provision()` hands `go` a live box whose lifetime the provisioner
+    """`agents.<name>.provision()` hands `run` a live box whose lifetime the provisioner
     owns; runs passed `runtime=box` are stamped borrowed and never tear it down — and a
     bare-id parent (`parents=[trace.id]`) links the same as a `Trace`."""
 
@@ -343,8 +350,12 @@ async def test_provisioned_runtime_is_borrowed_across_runs(echo_chain_env, monke
         model="org/model", client=object(), sampling=vf.SamplingConfig()
     )
     async with env.serving():
-        run = vf.TopologyRun(env, seed, env._agents_for(ctx))
-        agent = run.agent("first")
+        graph = AgentGraph(
+            topology="echo-chain-v1",
+            task=vf.TraceTask(type=type(seed).__name__, data=seed.data),
+        )
+        agents = env._agents_for(ctx, graph)
+        agent = agents.first
         async with agent.provision(seed) as box:
             assert box is fake and fake.started and not fake.stopped
             first = await agent.run(seed, runtime=box)
@@ -353,7 +364,7 @@ async def test_provisioned_runtime_is_borrowed_across_runs(echo_chain_env, monke
     assert first.info["agent"]["runtime"]["borrowed"] is True
     assert second.info["agent"]["runtime"]["borrowed"] is True
     assert second.parents == [first.id]
-    assert run.graph.traces == [first, second]
+    assert graph.traces == [first, second]
 
 
 async def test_shared_runtime_topology_hands_off_through_one_box(monkeypatch):
@@ -361,7 +372,7 @@ async def test_shared_runtime_topology_hands_off_through_one_box(monkeypatch):
     reader run in the SAME provisioned box (both traces stamped borrowed), and the
     deferred writer reward mirrors the reader's verification."""
 
-    async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
+    async def fake_agent_run(self, task, *, parents=(), runtime=None):
         trace = echoing_trace(task, "shared runtime handoff ready.")
         if self.name == "writer":
             trace.info["shared_runtime"] = {"wrote": "note", "path": "shared/note.txt"}
@@ -370,6 +381,8 @@ async def test_shared_runtime_topology_hands_off_through_one_box(monkeypatch):
         self.stamp(
             trace, parents=parents, runtime=runtime, borrowed=runtime is not None
         )
+        if self._on_trace is not None:
+            self._on_trace(trace)
         return trace
 
     monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
@@ -387,23 +400,24 @@ async def test_shared_runtime_topology_hands_off_through_one_box(monkeypatch):
     assert written.rewards == {"handoff_succeeded": 1.0}  # mirrored off the reader
 
 
-async def test_go_failure_is_captured_on_graph(echo_chain_env, monkeypatch):
+async def test_run_failure_is_captured_on_graph(echo_chain_env, monkeypatch):
     """A crash in topology-authored code is classified `TopologyError` and recorded on the
-    graph — completed episodes stay, nothing raises (a bad instance is data)."""
+    graph — completed runs stay (agents record traces as they finish), nothing raises
+    (a bad instance is data)."""
     cls = type(echo_chain_env.topology)
 
-    async def exploding_go(self, task, run):
-        await run.agent("first").run(task)
+    async def exploding_run(self, task, agents):
+        await agents.first.run(task)
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(cls, "go", exploding_go)
+    monkeypatch.setattr(cls, "run", exploding_run)
     graph = await run_stubbed_instance(
         echo_chain_env, echo_chain_env.topology.load_tasks()[0]
     )
     assert graph.error is not None
     assert graph.error.type == "TopologyError"
     assert "boom" in graph.error.message
-    assert len(graph.traces) == 1  # the episode that completed before the crash
+    assert len(graph.traces) == 1  # the run that completed before the crash
 
 
 def test_eval_config_rejects_topology_with_taskset():
@@ -511,11 +525,11 @@ async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch):
     from writer_editors_v1.topology import CritiqueTask, DraftTask, ReviseTask
 
     config = EvalConfig(
-        topology={"id": "writer-editors-v1", "num_editors": 2}, rich=False
+        topology={"id": "writer-editors-v1", "editors": [{}, {}]}, rich=False
     )
     env = TopologyRunner(config.topology, config)
 
-    async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
+    async def fake_agent_run(self, task, *, parents=(), runtime=None):
         # Short first draft, in-band revision — improvement = 1.0 - short/120 > 0.
         if isinstance(task, DraftTask):
             reply = "short draft"
@@ -529,13 +543,15 @@ async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch):
         self.stamp(
             trace, parents=parents, runtime=runtime, borrowed=runtime is not None
         )
+        if self._on_trace is not None:
+            self._on_trace(trace)
         return trace
 
     monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
     graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
     assert graph.error is None
     draft, edit_a, edit_b, revision = graph.traces
-    assert [t.agent for t in graph.traces] == ["writer", "editor", "editor", "writer"]
+    assert [t.agent for t in graph.traces] == ["writer", "editors", "editors", "writer"]
     assert edit_a.parents == edit_b.parents == [draft.id]
     assert revision.parents == [draft.id, edit_a.id, edit_b.id]  # the fan-in
     score = draft.rewards["improvement"]
