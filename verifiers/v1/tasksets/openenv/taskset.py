@@ -60,18 +60,15 @@ class OpenEnvConfig(vf.TasksetConfig):
 
     @model_validator(mode="after")
     def validate_config(self) -> Self:
-        if bool(self.env) == bool(self.base_url):
-            raise ValueError("pass exactly one of `env` or `base_url`")
-        if self.base_url and (self.use_docker or self.provider_kwargs):
-            raise ValueError(
-                "`use_docker` and `provider_kwargs` only apply when `env` is set"
-            )
+        if not self.env and not self.base_url:
+            raise ValueError("pass `env` or `base_url`")
 
         runtime = self.task.user.runtime
         # OpenEnv Docker starts inside the user runtime. Prime therefore defaults the
         # outer sandbox to a VM while preserving an explicit `vm=True` or `vm=False`.
         if (
-            self.use_docker
+            not self.base_url
+            and self.use_docker
             and isinstance(runtime, vf.PrimeConfig)
             and "vm" not in runtime.model_fields_set
         ):
@@ -105,7 +102,9 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
             "action"
         ]
         action_type = self.action_schema.get("properties", {}).get("type", {})
-        if action_type.get("const") == "call_tool":
+        if action_type.get("const") == "call_tool" or "call_tool" in action_type.get(
+            "enum", []
+        ):
             # MCP's generic call action needs the server's concrete tool catalog.
             result = await self.client.step({"type": "list_tools"})
             self.action_schema["available_tools"] = result.observation["tools"]
