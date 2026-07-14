@@ -30,7 +30,7 @@ from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.runner import run_eval
-from verifiers.v1.cli.output import output_path, write_config
+from verifiers.v1.cli.output import output_path, snapshot_system_prompt, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -192,6 +192,7 @@ def main(argv: list[str] | None = None) -> None:
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return
+    snapshot_system_prompt(config, output_path(config))
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval
     # still runs each rollout's `finally`; further signals during cleanup are swallowed.
     install_interrupt()

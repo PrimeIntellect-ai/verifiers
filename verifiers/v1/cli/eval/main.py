@@ -9,7 +9,7 @@ from pydantic_config import cli
 import verifiers.v1 as vf
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
-from verifiers.v1.cli.output import output_path, write_config
+from verifiers.v1.cli.output import output_path, snapshot_system_prompt, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -95,6 +95,7 @@ def main(argv: list[str] | None = None) -> None:
         logging.lastResort = None
     else:
         setup_logging(level, log_file=log_file, console=True)
+    snapshot_system_prompt(config, output_path(config))
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still
     # runs each rollout's `finally` (tears down containers/sandboxes) and any worker pool it
     # spawned; further signals during that cleanup are swallowed so an impatient second Ctrl-C

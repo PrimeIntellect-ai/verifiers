@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel
 
 from verifiers.v1.cli.eval.main import main
-from verifiers.v1.cli.output import save_config
+from verifiers.v1.cli.output import save_config, snapshot_system_prompt
 
 
 @pytest.mark.parametrize("path_kind", ["missing", "directory"])
@@ -54,3 +54,16 @@ def test_save_config_snapshots_system_prompt_for_resume(tmp_path: Path):
     assert snapshot_path.read_text() == "original prompt"
     assert config.system_prompt_path == snapshot_path
     assert str(snapshot_path) in (output_dir / "config.toml").read_text()
+
+
+def test_snapshot_system_prompt_precedes_environment_reads(tmp_path: Path):
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("original prompt")
+    output_dir = tmp_path / "output"
+    config = PromptConfig(system_prompt_path=prompt_path)
+
+    snapshot_system_prompt(config, output_dir)
+    prompt_path.write_text("changed prompt")
+
+    assert config.system_prompt_path == output_dir / "system_prompt.txt"
+    assert config.system_prompt_path.read_text() == "original prompt"

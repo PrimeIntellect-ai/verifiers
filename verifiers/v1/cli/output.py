@@ -49,6 +49,17 @@ def write_config(config: BaseModel, results_dir: Path) -> Path:
     return config_path
 
 
+def snapshot_system_prompt(config: BaseModel, results_dir: Path) -> None:
+    """Copy an external prompt into the run directory before environment construction."""
+    prompt_path = getattr(config, "system_prompt_path", None)
+    if prompt_path is None:
+        return
+    results_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = results_dir / "system_prompt.txt"
+    snapshot_path.write_text(prompt_path.read_text())
+    config.system_prompt_path = snapshot_path
+
+
 def save_config(config: BaseModel, results_dir: Path) -> None:
     """Set up the run's output dir and make prompt-based runs resumable.
 
@@ -56,12 +67,7 @@ def save_config(config: BaseModel, results_dir: Path) -> None:
     saved. Resuming then reads the exact prompt used by the original run instead of
     following a path whose contents may have changed.
     """
-    prompt_path = getattr(config, "system_prompt_path", None)
-    if prompt_path is not None:
-        results_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_path = results_dir / "system_prompt.txt"
-        snapshot_path.write_text(prompt_path.read_text())
-        config.system_prompt_path = snapshot_path
+    snapshot_system_prompt(config, results_dir)
     write_config(config, results_dir)
     (results_dir / TRACES_FILE).write_text("")  # fresh; appended to as traces complete
 
