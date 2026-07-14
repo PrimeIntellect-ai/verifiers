@@ -118,11 +118,14 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
     def parse_action(self, message: str) -> dict[str, Any]:
         message = message.strip()
         try:
-            return json.loads(message)
+            action = json.loads(message)
         except json.JSONDecodeError:
-            # Single-field environments such as Wordle also accept the raw field value.
-            [field] = self.action_schema["required"]
-            return {field: message}
+            action = message
+        if isinstance(action, dict):
+            return action
+        # Single-field environments such as Wordle also accept the raw field value.
+        [field] = self.action_schema["required"]
+        return {field: action}
 
     async def respond(self, message: str) -> vf.Messages:
         if message:
