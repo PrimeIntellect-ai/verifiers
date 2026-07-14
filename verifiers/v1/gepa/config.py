@@ -21,13 +21,14 @@ from verifiers.v1.types import SamplingConfig
 class GEPAConfig(EnvConfig):
     """The GEPA run plus its environment. `model` runs the rollouts under optimization;
     `reflection_model` (defaults to `model`) proposes new system prompts from the reflective
-    dataset. No default for `model` — a GEPA run can spend a large eval budget, so pick it
-    explicitly rather than silently optimizing (and spending) against a fallback."""
+    dataset. `model` defaults to the same id as `EvalConfig`."""
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
     Excluded from the saved config so re-running `@ config.toml` lands in a fresh dir."""
-    model: str = Field(..., validation_alias=AliasChoices("model", "m"))
+    model: str = Field(
+        "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
+    )
     """Model id for rollouts under optimization."""
     client: EvalClientConfig = EvalClientConfig()
     sampling: SamplingConfig = SamplingConfig()

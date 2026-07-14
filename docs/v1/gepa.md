@@ -26,7 +26,7 @@ temperature = 1.0
 Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA, use `uv run gepa @ config.toml`. CLI arguments overwrite toml arguments when both are present.
 
 ## Common config values
-- `model` / `-m` — model for the rollouts under optimization (required; no default, since a run can spend a large budget)
+- `model` / `-m` — model for the rollouts under optimization (default: `deepseek/deepseek-v4-flash`, same as eval)
 - `reflection_model` / `reflection_client` - the model/endpoint that proposes new prompts (default: reuse `model` / `client`)
 - `num_train` - tasks reserved for reflection minibatches (default: 100)
 - `num_val` - tasks held out to score each prompt candidate for the pareto frontier (default: 50)
