@@ -263,7 +263,9 @@ async def serve(
         # `state_base`, which is universally reachable (the interception is exposed via a tunnel
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
         # (`state_base` is None for them).
-        state_url = f"{state_base.rstrip('/')}/state" if state_base else None
+        state_url = (
+            f"{runtime.host_url(state_base.rstrip('/'))}/state" if state_base else None
+        )
         port = await serve_in_runtime(
             server,
             runtime,
@@ -289,6 +291,8 @@ async def serve(
                 runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
             )
         )
+        if not for_host and not colocated and harness_runtime is not None:
+            base = harness_runtime.host_url(base)
         yield f"{base.rstrip('/')}/mcp"
 
 
@@ -389,7 +393,8 @@ async def serve_tools(
                 urls[name] = server.url
                 logger.info("tool server '%s' (shared, external): %s", name, server.url)
                 continue
-            urls[name] = _shared_url_for_rollout(server.url, state_base, state_secret)
+            url = harness_runtime.host_url(server.url) if server.local else server.url
+            urls[name] = _shared_url_for_rollout(url, state_base, state_secret)
             # The tagged URL contains the bearer secret; log only the untagged base URL.
             logger.info("tool server '%s' (shared): %s", name, server.url)
         for toolset in toolsets:
