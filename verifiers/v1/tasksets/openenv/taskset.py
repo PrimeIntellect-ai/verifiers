@@ -130,7 +130,7 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
         return {required[0]: action}
 
     async def respond(self, message: str) -> vf.Messages:
-        if message:
+        if message.strip():
             self.result = await self.client.step(self.parse_action(message))
             # OpenEnv reports per-step rewards; v1 scores their total over the trace.
             self.state.reward += self.result.reward or 0.0
