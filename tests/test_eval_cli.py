@@ -2,8 +2,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from verifiers.v1.cli.eval.main import main
+from verifiers.v1.cli.output import save_config
 
 
 @pytest.mark.parametrize("path_kind", ["missing", "directory"])
@@ -33,3 +35,22 @@ def test_eval_dry_run_rejects_invalid_system_prompt_path(
         main()
 
     assert not output_dir.exists()
+
+
+class PromptConfig(BaseModel):
+    system_prompt_path: Path
+
+
+def test_save_config_snapshots_system_prompt_for_resume(tmp_path: Path):
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("original prompt")
+    output_dir = tmp_path / "output"
+    config = PromptConfig(system_prompt_path=prompt_path)
+
+    save_config(config, output_dir)
+    prompt_path.write_text("changed prompt")
+
+    snapshot_path = output_dir / "system_prompt.txt"
+    assert snapshot_path.read_text() == "original prompt"
+    assert config.system_prompt_path == snapshot_path
+    assert str(snapshot_path) in (output_dir / "config.toml").read_text()

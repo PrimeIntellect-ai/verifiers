@@ -50,8 +50,18 @@ def write_config(config: BaseModel, results_dir: Path) -> Path:
 
 
 def save_config(config: BaseModel, results_dir: Path) -> None:
-    """Set up the run's output dir: write `config.toml` and start a fresh (empty)
-    `traces.jsonl`. Call once up front, before traces start landing."""
+    """Set up the run's output dir and make prompt-based runs resumable.
+
+    An external system prompt is copied into the run directory before the config is
+    saved. Resuming then reads the exact prompt used by the original run instead of
+    following a path whose contents may have changed.
+    """
+    prompt_path = getattr(config, "system_prompt_path", None)
+    if prompt_path is not None:
+        results_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = results_dir / "system_prompt.txt"
+        snapshot_path.write_text(prompt_path.read_text())
+        config.system_prompt_path = snapshot_path
     write_config(config, results_dir)
     (results_dir / TRACES_FILE).write_text("")  # fresh; appended to as traces complete
 

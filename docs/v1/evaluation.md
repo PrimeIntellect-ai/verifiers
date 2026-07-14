@@ -70,7 +70,7 @@ interactive confirmation `weco run` otherwise ends with — required when runnin
 
 ## Resuming evaluations
 
-`--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `results.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.
+`--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `results.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone. When `--system-prompt-path` is used, the initial run copies the prompt to `system_prompt.txt` in the output directory and saves that snapshot in `config.toml`; changing the original file cannot mix prompt versions during resume.
 
 ## Disabling tools
 

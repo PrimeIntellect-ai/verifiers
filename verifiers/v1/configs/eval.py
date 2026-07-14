@@ -61,8 +61,10 @@ class EvalConfig(EnvServerConfig):
     resume: Path | None = Field(None, exclude=True)
     """Set by `--resume <dir>`: re-run missing or errored rollouts, or an incomplete
     group-scored task as a whole group, appending to that run's own results. The run's saved
-    config is loaded verbatim, so `--resume` takes no other arguments. Excluded from the
-    saved config."""
+    config is loaded verbatim, so `--resume` takes no other arguments. When an external
+    system prompt is used, the initial run snapshots it into the output directory before
+    saving this config, so resume uses the original prompt contents. Excluded from the saved
+    config."""
 
     @model_validator(mode="after")
     def reject_rich_with_server(self):
