@@ -229,11 +229,11 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
-        await self.run(
-            ["sh", "-c", f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}"],
-            {},
-        )
         try:
+            await self._client.execute_command(
+                self.info.id,
+                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
+            )
             await self._client.upload_bytes(
                 self.info.id, target, data, filename=PurePosixPath(target).name
             )
