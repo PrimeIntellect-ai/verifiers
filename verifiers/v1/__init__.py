@@ -4,7 +4,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent, Session, SessionEnded
+from verifiers.v1.agent import Agent
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -255,8 +255,6 @@ __all__ = [
     "NullAgentConfig",
     "SingleAgentTopology",
     "SingleAgentTopologyConfig",
-    "Session",
-    "SessionEnded",
     "Topology",
     "TopologyAgent",
     "TopologyConfig",

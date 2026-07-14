@@ -26,7 +26,6 @@ reach for a bare `Agent` when you're scripting.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
@@ -47,7 +46,6 @@ from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages, UserMessage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -59,116 +57,6 @@ Parent = Trace | str
 
 def _parent_ids(parents: Sequence[Parent]) -> list[str]:
     return [parent.id if isinstance(parent, Trace) else parent for parent in parents]
-
-
-_END = object()
-"""Inbox sentinel: the session ended and its next turn is refused."""
-_DEAD = object()
-"""Reply sentinel: the agent run finished (completed, errored, or budget-tripped) —
-poisons a pending or future `turn()` into `SessionEnded` instead of a hang."""
-
-
-class SessionEnded(RuntimeError):
-    """Raised by `Session.turn` when the agent can no longer take a turn — it ended,
-    errored, or a budget tripped. Carries the trace: agent failure is data, and `go`
-    decides what a dead seat means (forfeit it, end the game, keep playing without it)."""
-
-    def __init__(self, trace: Trace | None) -> None:
-        condition = trace.stop_condition if trace is not None else None
-        super().__init__(f"session ended ({condition or 'run never started'})")
-        self.trace = trace
-
-
-class Session:
-    """A live, suspended agent run `go` converses with — the counterpart seat of one
-    agent's rollout, held open by `Agent.interact`.
-
-    Three members, deliberately: `turn(message)` sends the agent its next user turn
-    and returns the model's reply; `end()` finishes the run early (idempotent —
-    scope exit calls it for you); `.trace` is the live trace (read mid-game state,
-    stamp `info`). Everything else — who talks to whom, in what order, with what view
-    of the interaction — is plain imperative code in `go`.
-
-    Mechanically this is a user simulator without the server: the interception layer
-    suspends the run between model turns awaiting `_respond`, exactly as it awaits
-    a `User`'s respond tool; here the "user" is `go` itself, over a queue handshake.
-    The handshake is also the safety contract: `turn()` never blocks on a run that
-    can no longer answer — it raises `SessionEnded` — and a second in-flight `turn()`
-    on one session raises immediately (one driver per seat)."""
-
-    def __init__(self) -> None:
-        self._rollout: Rollout | None = None
-        self._run_task: asyncio.Task | None = None
-        self._inbox: asyncio.Queue = asyncio.Queue()
-        self._replies: asyncio.Queue = asyncio.Queue()
-        self._opened = False
-        self._pending = False
-
-    @property
-    def trace(self) -> Trace:
-        """The agent's live trace — readable mid-game (`trace.state`, `num_turns`)
-        and the place `go` stamps outcome facts (`trace.info[...]`) for the topology's
-        declared rewards to read."""
-        if self._rollout is None or self._rollout.trace is None:
-            raise RuntimeError("session's agent run has not started yet")
-        return self._rollout.trace
-
-    async def _respond(self, last_assistant: str) -> Messages:
-        """The user-seat contract (see `RolloutSession.user`), driven by the interception
-        loop between model turns: deliver the model's turn to `go`, suspend until `go`
-        supplies the next user turn. The very first call (`respond(\"\")`, the no-prompt
-        opening) delivers nothing — there is no reply yet."""
-        if self._opened:
-            await self._replies.put(last_assistant)
-        self._opened = True
-        incoming = await self._inbox.get()
-        if incoming is _END:
-            return []  # stop is already set; `refused()` ends the exchange cleanly
-        return incoming
-
-    async def turn(self, message: str | Messages) -> str:
-        """Send the agent its next user turn(s) and return the model's reply text.
-        Raises `SessionEnded` (never hangs) when the agent can't answer, and refuses
-        a second concurrent `turn()` on this session — including after a `turn()` was
-        *cancelled* mid-flight (its message is already with the model, so the
-        conversation is desynced; `end()` the seat instead of driving on)."""
-        if self._pending:
-            raise RuntimeError(
-                "a turn is already pending (or was cancelled mid-flight) on this "
-                "session — one driver per seat; end() a desynced seat"
-            )
-        if self._run_task is not None and self._run_task.done():
-            raise SessionEnded(self._rollout.trace if self._rollout else None)
-        turns: Messages = (
-            [UserMessage(content=message)]
-            if isinstance(message, str)
-            else list(message)
-        )
-        self._pending = True
-        try:
-            await self._inbox.put(turns)
-            reply = await self._replies.get()
-        except asyncio.CancelledError:
-            # The message is in flight with no reader for its reply: leave `_pending`
-            # set so a later turn() can't consume the stale reply one turn late.
-            raise
-        self._pending = False
-        if reply is _DEAD:
-            raise SessionEnded(self._rollout.trace if self._rollout else None)
-        return reply
-
-    async def end(self, condition: str = "interaction_complete") -> None:
-        """Finish the agent run early and cleanly (forfeits, eliminations). Idempotent;
-        scope exit calls it, so plain `go` code never has to."""
-        trace = self._rollout.trace if self._rollout is not None else None
-        if trace is not None and trace.stop_condition is None:
-            trace.stop(condition)
-        await self._inbox.put(_END)
-
-    def _poison(self, _task: asyncio.Task) -> None:
-        """Run-completion callback: wake any pending (or future) `turn()` into
-        `SessionEnded` rather than leaving it awaiting a reply that will never come."""
-        self._replies.put_nowait(_DEAD)
 
 
 class _AgentAttempt:
@@ -343,83 +231,3 @@ class Agent:
             yield runtime
         finally:
             await runtime.stop()
-
-    @contextlib.asynccontextmanager
-    async def interact(
-        self,
-        task: Task,
-        *,
-        parents: Sequence[Parent] = (),
-        runtime: Runtime | None = None,
-    ) -> AsyncIterator[Session]:
-        """Hold a live agent run open and yield the `Session` to converse with it — the
-        primitive under back-and-forth multi-agent (each agent is the other's user seat,
-        `go` is the router). The agent runs in the background, suspending between
-        turns; scope exit ends it cleanly (stop → finalize → task scoring) and the
-        completed trace is stamped like any `run()`.
-
-        Sessions are opened by the first `turn()` — build the task with
-        `prompt=None` and put the framing in `system_prompt`. No `retry=`: one side of a
-        half-played interaction can't be transparently re-run; a dead seat surfaces as
-        `SessionEnded` and `go` decides what it means. Note the run's budgets
-        (`max_turns`, timeouts) span the whole interaction, including time suspended
-        while other seats move — size them for the game, not a solo run."""
-        if task.data.prompt is not None:
-            raise ValueError(
-                "interact() sessions are opened by the first turn(): build the task "
-                "with prompt=None and put the framing in system_prompt"
-            )
-        if type(task).user is not None:
-            raise ValueError(
-                f"task {type(task).__name__} declares its own user simulator "
-                "(Task.user), and a session is a second claimant for the same user "
-                "seat — run it with run(), or drop the simulator"
-            )
-        if not type(self.harness).SUPPORTS_USER_SIM:
-            raise ValueError(
-                f"harness {self.harness.config.id!r} cannot take injected user turns; "
-                "sessions need a user-capable harness (e.g. direct, null, default)"
-            )
-        runtime_config = self.runtime_for(task, runtime)
-        self._validate_pairing(task, runtime_config)
-        session = Session()
-        timeouts = resolve_stage_timeouts(self.timeout, task, runtime_config)
-        rollout = Rollout(
-            task=task,
-            harness=self.harness,
-            ctx=self.ctx,
-            runtime_config=runtime_config,
-            setup_timeout=timeouts.setup,
-            harness_timeout=timeouts.rollout,
-            finalize_timeout=timeouts.finalize,
-            scoring_timeout=timeouts.scoring,
-            limits=self.limits,
-            shared_tools=self.shared_tools,
-            interception=self._interception,
-            runtime=runtime,
-            user=session._respond,
-        )
-        if self._on_rollout is not None:
-            self._on_rollout(rollout)
-        session._rollout = rollout
-        run_task = asyncio.create_task(rollout.run())
-        session._run_task = run_task
-        run_task.add_done_callback(session._poison)
-        try:
-            yield session
-        finally:
-            await session.end()
-            try:
-                # A rollout captures its failures onto the trace; the one raise is a
-                # borrowed-box lifetime bug (torn down under the run), which belongs
-                # to the caller.
-                trace = await run_task
-            except asyncio.CancelledError:
-                run_task.cancel()
-                raise
-            self.stamp(
-                trace,
-                parents=parents,
-                runtime=rollout.runtime,
-                borrowed=runtime is not None,
-            )

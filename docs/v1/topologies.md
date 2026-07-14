@@ -105,53 +105,6 @@ building the next task is fan-in:
         )
 ```
 
-## Sessions — agents talking within live interactions
-
-`run(task)` composes **completed** agent runs: a run finishes before its trace feeds
-anything downstream. For back-and-forth interaction — chess, negotiation, debate, any
-game where each agent is effectively the other's user — hold agent runs **open** with
-`run.agent(name).interact(task)` and converse with the yielded `Session`:
-
-```python
-    async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
-        board = chess.Board()                       # game rules live HERE, host-side
-        async with (
-            run.agent("white").interact(SeatTask(SeatData(color="white", prompt=None, system_prompt=...))) as white,
-            run.agent("black").interact(SeatTask(SeatData(color="black", prompt=None, system_prompt=...))) as black,
-        ):
-            seats = {chess.WHITE: white, chess.BLACK: black}
-            while not board.is_game_over():
-                reply = await seats[board.turn].turn(render(board))   # user turn in, model turn out
-                board.push(parse_move(reply, board))
-        # scope exit ends both runs cleanly (stop -> finalize -> task scoring);
-        # stamp the outcome as data for the declared rewards to read:
-        white.trace.info["chess"] = {"score": ...}
-```
-
-A `Session` has exactly three members: `turn(message) -> reply` (send the agent its
-next user turn, get the model's turn back), `end()` (finish early — forfeits,
-eliminations; idempotent, scope exit calls it), and `.trace` (the live trace: read
-mid-game `state`, stamp outcome `info`). Everything else — who talks to whom, in what
-order, with what *view* of the interaction — is imperative code in `go`, so N seats
-compose into round-robins, simultaneous moves (`asyncio.gather` over several `turn`s),
-moderated rooms, and hidden-information games with no further machinery. Each seat's
-trace is ONE multi-turn trajectory with its counterparts' messages as user turns — the
-training-sample shape self-play wants, not one trace per move.
-
-Mechanically a session is a user simulator without the server: the interception layer
-suspends the agent between turns awaiting the user seat, and here the "user" is `go`.
-The safety contract is loud, not patient: `turn()` on a dead run raises
-`SessionEnded` (carrying the trace) instead of hanging; a second concurrent `turn()` on
-one session is refused; a task that declares its own user simulator (`Task.user`) — or a prompted task
-(sessions open on the first `turn()`; put framing in `system_prompt`), or a harness that
-can't take injected user turns — is refused at the `interact()` call. No `retry=`: one
-side of a half-played game can't be re-run; a dead seat is `go`'s decision. Budgets
-(`--max-turns`, rollout timeout) span the whole interaction, including time a seat
-spends suspended — size them for the game. Scripted counterparts stay `vf.User`
-simulators (route 1, no topology needed); sessions are for counterparts that are
-themselves agents. See `chess-v1` (two seats, host-side referee) and `debate-v1` (N
-concurrent seats of one agent config, peer-voted).
-
 ## Topology rewards — declared, cross-agent judgement
 
 Per-trace judgement rides on task classes (the derived AIME task's `correct` reward above). Cross-agent

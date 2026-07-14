@@ -4,7 +4,6 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -30,8 +29,6 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession
 
-if TYPE_CHECKING:
-    from verifiers.v1.mcp import Respond
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
@@ -64,7 +61,6 @@ class Rollout:
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
         runtime: Runtime | None = None,
-        user: "Respond | None" = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -81,11 +77,6 @@ class Rollout:
         """A live runtime to run in instead of provisioning one (see `Agent.provision`).
         The borrower gets its own trace/session/secrets, but the runtime owner keeps
         start/stop ownership."""
-        self._user = user
-        """A programmatic user seat (see `verifiers.v1.agent.Session`): an in-process
-        `Respond` wired straight into the interception session instead of a user-sim
-        server built from `Task.user`. Exactly one party may hold the user seat — the
-        caller (`Agent.interact`) refuses tasks that declare their own."""
         self.phase = Phase.PENDING
         self.runtime: Runtime | None = None
         self.trace: Trace | None = None
@@ -196,15 +187,12 @@ class Rollout:
                         state_base=base_url,
                     ) as urls,
                     serve_user(
-                        None if self._user is not None else user,
+                        user,
                         harness_runtime=runtime,
                         state_secret=secret,
                         state_base=base_url,
-                    ) as launched_user,
+                    ) as session.user,
                 ):
-                    session.user = (
-                        self._user if self._user is not None else launched_user
-                    )
                     if self.task.data.prompt is None and session.user is None:
                         raise TaskError(
                             "task has no prompt and no user simulator to open the "

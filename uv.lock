@@ -590,21 +590,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/93/09/7d04d7581ae3bb8b598017941781bceb7959dd1b13e3ebf7b6a2cd843bc9/chess-1.11.2.tar.gz", hash = "sha256:a8b43e5678fdb3000695bdaa573117ad683761e5ca38e591c4826eba6d25bb39", size = 6131385, upload-time = "2025-02-25T19:10:27.328Z" }
 
 [[package]]
-name = "chess-v1"
-version = "0.1.0"
-source = { editable = "environments/chess_v1" }
-dependencies = [
-    { name = "chess" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "chess", specifier = ">=1.10" },
-    { name = "verifiers" },
-]
-
-[[package]]
 name = "chromadb"
 version = "1.5.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1000,17 +985,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/d7/94/eb81c6fe32e9b6ef9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/37/f0/99fe6eb530c7ee9ee1faee48059eb8a6437f80c893a496b98a78864e0fc6/datasets-4.6.1-py3-none-any.whl", hash = "sha256:f53228e6dadc9f837037b1bf3051d7d8c054abbb3eb29f1f022926e08090e0da", size = 520667, upload-time = "2026-02-27T23:26:46.855Z" },
 ]
-
-[[package]]
-name = "debate-v1"
-version = "0.1.0"
-source = { editable = "environments/debate_v1" }
-dependencies = [
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "debugpy"
@@ -6308,10 +6282,8 @@ dev = [
 ]
 examples = [
     { name = "alphabet-sort-v1" },
-    { name = "chess-v1" },
     { name = "color-codeword-v1" },
     { name = "compact" },
-    { name = "debate-v1" },
     { name = "deepwiki-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
@@ -6398,10 +6370,8 @@ dev = [
 ]
 examples = [
     { name = "alphabet-sort-v1", editable = "environments/alphabet_sort_v1" },
-    { name = "chess-v1", editable = "environments/chess_v1" },
     { name = "color-codeword-v1", editable = "environments/color_codeword_v1" },
     { name = "compact", editable = "environments/compact" },
-    { name = "debate-v1", editable = "environments/debate_v1" },
     { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },

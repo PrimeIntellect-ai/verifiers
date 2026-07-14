@@ -82,7 +82,6 @@ examples = [
     "reverse-text-v1", "color-codeword-v1",
     "wordle-v1", "alphabet-sort-v1", "scratchpad-v1", "mmmu-v1",
     "proposer-solver-v1", "writer-editors-v1", "shared-runtime-v1",
-    "chess-v1", "debate-v1",
 ]
 
 [project.optional-dependencies]
@@ -153,8 +152,6 @@ mmmu-v1 = { path = "environments/mmmu_v1", editable = true }
 proposer-solver-v1 = { path = "environments/proposer_solver_v1", editable = true }
 writer-editors-v1 = { path = "environments/writer_editors_v1", editable = true }
 shared-runtime-v1 = { path = "environments/shared_runtime_v1", editable = true }
-chess-v1 = { path = "environments/chess_v1", editable = true }
-debate-v1 = { path = "environments/debate_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
