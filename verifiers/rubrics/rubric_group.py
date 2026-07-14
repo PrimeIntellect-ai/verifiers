@@ -117,7 +117,8 @@ class RubricGroup(Rubric):
 
         Mirrors ``score_rollout`` for metrics (full replace) and ``Rubric.score_group``
         for advantages: child rubrics may write per-rubric advantages/trajectory fields,
-        so the group recomputes them from the aggregated rewards and overwrites leftovers.
+        so the group recomputes state advantages from aggregated rewards and only fills
+        trajectory fields that are still ``None`` (preserving intentional step values).
         """
         num_states = len(states)
         if num_states == 0:
@@ -132,6 +133,14 @@ class RubricGroup(Rubric):
             for state in states
         ]
         original_advantages = [state.get("advantage") for state in states]
+        # Snapshot traj fields so child if-None fills can be rolled back between rubrics.
+        original_traj_fields = [
+            [
+                (step.get("reward"), step.get("advantage"))
+                for step in state.get("trajectory") or []
+            ]
+            for state in states
+        ]
         for rubric in self.rubrics:
             await rubric.score_group(states)
             for i, state in enumerate(states):
@@ -148,15 +157,22 @@ class RubricGroup(Rubric):
                 state["reward"] = original_rewards[i]
                 state["metrics"] = original_metrics[i].copy()
                 state["advantage"] = original_advantages[i]
+                for step, (reward, advantage) in zip(
+                    state.get("trajectory") or [], original_traj_fields[i]
+                ):
+                    step["reward"] = reward
+                    step["advantage"] = advantage
 
         avg_reward = sum(aggregated_rewards) / num_states
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]
             state["advantage"] = aggregated_rewards[i] - avg_reward
-            # Children fill traj via if-None; overwrite with the aggregate.
+            # Same as Rubric.score_group: fill only unset traj fields.
             for step in state.get("trajectory") or []:
-                step["advantage"] = state["advantage"]
-                step["reward"] = state["reward"]
+                if step.get("advantage") is None:
+                    step["advantage"] = state["advantage"]
+                if step.get("reward") is None:
+                    step["reward"] = state["reward"]
             state["metrics"] = {
                 key: values[i] for key, values in aggregated_metrics.items()
             }
