@@ -136,7 +136,9 @@ class ElasticInterceptionPool(Interception):
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
         if self._warm_task is not None:
-            await asyncio.shield(self._warm_task)
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self._warm_task)
+            self._warm_task = None
         # Register under the lock so concurrent acquires see each other's load.
         async with self._lock:
             server = await self._server()
