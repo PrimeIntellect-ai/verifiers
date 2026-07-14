@@ -51,7 +51,7 @@ class OpenEnvConfig(vf.TasksetConfig):
     defaults the outer runtime to a VM, allowing Docker to start inside it. Docker-backed
     users cannot be colocated because the taskset does not own the harness runtime."""
     provider_kwargs: dict[str, Any] = {}
-    """Keyword arguments passed unchanged to `GenericEnvClient.from_env`, such as
+    """Keyword arguments passed to `GenericEnvClient.from_env`, such as
     `app`, `env_vars`, `tag`, or `project_path`."""
     reset: dict[str, Any] = {}
     """Arguments passed to OpenEnv's `reset`; the generated seed takes precedence."""
@@ -168,9 +168,9 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig]):
 
     def load(self) -> Iterator[OpenEnvTask]:
         config = self.config
-        # Provider options may contain secrets, so keep them off persisted TaskData.
+        # Keep provider options off TaskData; top-level values override task defaults.
         task_config = config.task.model_copy(deep=True)
-        task_config.user.provider_kwargs = config.provider_kwargs
+        task_config.user.provider_kwargs.update(config.provider_kwargs)
         source = config.base_url or config.env
         for idx, seed in enumerate(itertools.count(config.seed)):
             yield OpenEnvTask(
