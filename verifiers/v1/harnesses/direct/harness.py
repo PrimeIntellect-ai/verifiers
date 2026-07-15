@@ -3,8 +3,8 @@
 The cheapest possible episode: the chat loop runs inside the eval process itself, POSTing to
 its interception endpoint like any program would — so the trace, stops, limits, and per-agent
 routing all work unmodified — but with nothing to provision or launch. Cost per episode is
-essentially the model call itself, which makes an agent-as-judge (the `llm-judge`
-topology's judge) as cheap as a plain judge call while still producing a real, inspectable
+essentially the model call itself, which makes an agent-as-judge (a judge agent in a
+topology) as cheap as a plain judge call while still producing a real, inspectable
 trace.
 
 Tool-less by design (`null` is the subprocess chat loop with MCP tools); a model that calls a

@@ -128,7 +128,7 @@ class WriterEditorsConfig(vf.TopologyConfig):
     writer: vf.DirectAgentConfig = vf.DirectAgentConfig()
     editors: list[vf.DirectAgentConfig] = [vf.DirectAgentConfig() for _ in range(3)]
     """The editorial board: one role, one seat per entry (the fan-out width). Per-seat
-    overrides via `--topology.editors.<i>.model` or `[[topology.editors]]` tables."""
+    per-seat overrides via `[[topology.editors]]` array-of-tables in TOML."""
     num_rounds: int = 1
     """Critique→revise cycles (each round: every editor reads the current draft, the
     writer revises off all their feedback)."""

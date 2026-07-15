@@ -249,61 +249,6 @@ async def test_replay_round_trip(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_llm_judge_topology(tmp_path):
-    """The built-in `llm-judge` topology, live: a solver runs an echo task, the
-    non-trainable judge (in-process `direct` harness — one API call) grades its final
-    message against the task and its ground truth, and the verdict lands on the solver's
-    trace as a deferred reward. Asserts the plumbing (seed factory -> solver episode ->
-    judge episode -> declared instance scoring), not judge quality."""
-    from verifiers.v1.cli.eval.runner import run_eval
-    from verifiers.v1.configs.eval import EvalConfig
-
-    config = EvalConfig(
-        topology={"id": "llm-judge", "taskset": {"id": "echo-v1"}},
-        num_tasks=1,
-        max_turns=2,
-        sampling={"max_tokens": 2048, "temperature": 0},
-        timeout={"rollout": 180, "scoring": 60},
-        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
-        rich=False,
-        output_dir=tmp_path,
-    )
-    solver, judge = await run_eval(config)
-    assert solver.errors == [] and judge.errors == []
-    assert (solver.agent, judge.agent) == ("solver", "judge")
-    assert judge.parents == [solver.id] and judge.trainable is False
-    assert solver.rewards["echoed"] == 1.0  # the task's own reward still ran
-    assert solver.metrics["judge_committed"] == 1.0
-    assert solver.rewards["judge"] > 0.5  # the verdict landed on the SOLVER
-
-
-@pytest.mark.e2e
-async def test_agentic_judge_topology(tmp_path):
-    """The built-in `agentic-judge` topology, live: the solver's entire serialized trace
-    is uploaded into the judge's runtime, and the judge — a real agent on the bash+edit
-    `default` harness — reads the file with its tools before committing to a score."""
-    from verifiers.v1.cli.eval.runner import run_eval
-    from verifiers.v1.configs.eval import EvalConfig
-
-    config = EvalConfig(
-        topology={"id": "agentic-judge", "taskset": {"id": "echo-v1"}},
-        num_tasks=1,
-        max_turns=10,
-        sampling={"max_tokens": 4096, "temperature": 0},
-        timeout={"rollout": 300, "scoring": 60},
-        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
-        rich=False,
-        output_dir=tmp_path,
-    )
-    solver, judge = await run_eval(config)
-    assert solver.errors == [] and judge.errors == []
-    assert judge.parents == [solver.id] and judge.trainable is False
-    assert judge.num_turns >= 2  # it actually investigated (read the file, then scored)
-    assert solver.metrics["judge_committed"] == 1.0
-    assert solver.rewards["judge"] > 0.5
-
-
-@pytest.mark.e2e
 async def test_writer_editors_topology(tmp_path):
     """The `writer-editors-v1` example, live: draft -> editor critique (a one-seat list
     role) -> revision (fan-in), then a deterministic first→final score puts the same

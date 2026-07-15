@@ -1,27 +1,17 @@
 """Explicit executable agents.
 
-An `Agent` is the reusable execution primitive under evals, topologies, and plain agent
-programs: harness + model context + runtime policy, with one arrow, `run(task) -> Trace`.
-Topologies add graph recording and deferred rewards around that arrow; the agent itself
-only knows how to execute one task.
-
-A bare agent is fully standalone — each `run` provisions a runtime from the policy and
-brings up its own per-rollout interception server, right for scripts and small programs:
+An `Agent` is the reusable execution primitive under evals and topologies: harness + model
+context + runtime policy, with one arrow, `run(task) -> Trace`. A bare agent provisions a
+runtime per run and brings up its own per-rollout interception server:
 
     agent = vf.Agent(DirectHarness(DirectHarnessConfig()), ctx)
     trace = await agent.run(MyTask(vf.TaskData(idx=0, prompt="...")))
 
-Serving resources have exactly one owner. For pooled operation (N concurrent runs sharing
-interception servers, like an eval), bring up an `Interception` and inject it —
-`async with make_interception(...) as interception: Agent(..., interception=interception)`
-— which is precisely what `TopologyRunner.serving` does for every agent it binds. The
-agent never owns the interception; it borrows it. Taskset-scoped shared tool servers
-likewise arrive pre-served (`shared_tools=`, see `serve_shared`), from whoever owns the
-taskset.
-
-The framework's config-driven packaging of agents — CLI/toml-addressable, persisted as
-agent graphs, eval- and trainer-integrated — is the topology (`verifiers.v1.topology`);
-reach for a bare `Agent` when you're scripting.
+Shared serving resources are injected, never owned: an eval or topology brings up one
+`Interception` and passes it in (`interception=`), and taskset-scoped shared tool servers
+arrive pre-served (`shared_tools=`). `TopologyRunner` is the config-driven packaging of
+agents (CLI-addressable, graph-recorded, trainer-integrated); reach for a bare `Agent`
+when scripting.
 """
 
 from __future__ import annotations
@@ -62,9 +52,8 @@ def _parent_ids(parents: Sequence[Parent]) -> list[str]:
 
 
 class _AgentAttempt:
-    """One retryable attempt (see `retries.Runnable`): each `run()` builds and runs a
-    fresh `Rollout` when the agent owns runtime provisioning; borrowed-runtime attempts
-    deliberately reuse the borrowed box."""
+    """One retryable attempt (see `retries.Runnable`): a fresh `Rollout` each try, reusing
+    the borrowed box when the agent didn't provision its own."""
 
     def __init__(
         self,
@@ -115,21 +104,13 @@ class _AgentAttempt:
 class Agent:
     """A harness + model context + runtime policy, runnable on any compatible task.
 
-    `run(task)` provisions a fresh runtime from the policy and tears it down. To share a
-    world explicitly, use `provision()` and pass the yielded runtime back to one or more
-    `run(..., runtime=box)` calls; borrowed-runtime rollouts never start or stop the box.
-
-    `interception` is the (optional) shared interception the agent's rollouts borrow —
-    see the module docstring; without one, every run brings up its own per-rollout
-    interception server. `shared_tools` are the taskset-scoped shared servers (already
-    served, see `serve_shared`) this agent's rollouts reuse.
-
-    The remaining keyword knobs are how a managing framework (the topology runner)
-    threads run-wide policy through every agent it builds: `retry` (the whole-rollout
-    retry policy every `run` applies), `semaphore` (the run-wide rollout-concurrency
-    gate, held across a run's retries), `on_trace` (called with each completed trace —
-    graph recording), and `on_rollout` (called with each constructed `Rollout` — the
-    live dashboard). A hand-built agent leaves them unset."""
+    `run(task)` provisions a runtime and tears it down. To share a world, `provision()`
+    it and pass the box to `run(..., runtime=box)` calls; borrowed rollouts never start or
+    stop it. `interception` and `shared_tools` are injected serving resources (module
+    docstring). The framework-only knobs thread run-wide policy through every agent the
+    topology runner builds — `retry` (whole-rollout retry), `semaphore` (the concurrency
+    gate, held across retries), `on_trace` (graph recording), `on_rollout` (the live
+    dashboard); a hand-built agent leaves them unset."""
 
     def __init__(
         self,
@@ -154,8 +135,7 @@ class Agent:
         self.runtime_config = runtime if runtime is not None else harness.config.runtime
         self.name = name
         self.seat = seat
-        """This agent's index within its role when the topology declares a list of
-        agents under one name (None for a scalar role)."""
+        """Index within a list role (None for a scalar agent)."""
         self.trainable = trainable
         self.limits = limits or RolloutLimits()
         self.timeout = timeout or TimeoutConfig()
@@ -192,11 +172,10 @@ class Agent:
         parents: Sequence[Parent] = (),
         runtime: Runtime | None = None,
     ) -> Trace:
-        """Run this agent on `task` once and return its trace, stamped with lineage
-        (`parents`: the upstream traces this task was derived from) and this agent's
-        provenance. `runtime` places the run into a live borrowed box instead of
-        provisioning one. A framework-built agent also applies its injected policy
-        here: the rollout retry, the concurrency gate, and trace recording."""
+        """Run once, returning the trace stamped with lineage (`parents`: the upstream
+        traces this task was derived from) and provenance. `runtime` borrows a live box
+        instead of provisioning one. A framework-built agent also applies its injected
+        policy here: retry, the concurrency gate, and trace recording."""
         runtime_config = self.runtime_for(task, runtime)
         self._validate_pairing(task, runtime_config)
         attempt = _AgentAttempt(

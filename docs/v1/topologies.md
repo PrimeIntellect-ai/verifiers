@@ -7,9 +7,14 @@ including taskset × harness syntax lowered to the built-in single-agent topolog
 one `AgentGraph`. Run an explicit topology with `--topology.id`:
 
 ```bash
-uv run eval --topology.id llm-judge --topology.taskset.id gsm8k-v1 -n 4
 uv run eval --topology.id proposer-solver-v1 -n 3
+uv run eval --topology.id writer-editors-v1 -n 3
 ```
+
+Topologies are packages, exactly like tasksets and harnesses — the example environments
+under `environments/` (`proposer-solver-v1`, `writer-editors-v1`, `shared-runtime-v1`) are
+the reference implementations; a custom one lives in its own package or on the Environments
+Hub.
 
 ## Agents
 
@@ -29,8 +34,8 @@ An `AgentConfig` binds a harness (and where it runs — `harness.runtime`) plus 
 routing: `model` / `client` / `sampling` overrides and a `trainable` flag (stamped onto every
 trace the agent produces, so a trainer can drop e.g. judge traces without the topology
 config). Subclass it to pin typed per-agent defaults — `vf.DirectAgentConfig` /
-`vf.NullAgentConfig` are the shared common pins, and the `llm-judge` topology's judge pins
-the `direct` harness plus `trainable=False` (a pin must live on the subclass's field default,
+`vf.NullAgentConfig` are the shared common pins (e.g. a judge agent pinned to the `direct`
+harness plus `trainable=False`; a pin must live on the subclass's field default,
 e.g. `harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="direct")`, so partial
 overrides deep-merge into it). The tasks an agent consumes (each carrying its own behavior)
 arrive per invocation, from the topology's seeds or constructed in `run`.
@@ -38,8 +43,7 @@ arrive per invocation, from the topology's seeds or constructed in `run`.
 An `AgentConfig` field is the one declaration form, and a `list[AgentConfig]` field
 declares one **role with several seats** (`editors: list[vf.DirectAgentConfig] = [...]`) —
 every seat shares the role name on its traces, and per-seat config makes mixed-model
-line-ups a TOML change (`[[topology.editors]]` array-of-tables, or
-`--topology.editors.<i>.model` on the CLI). The framework builds one executable
+line-ups a TOML change (`[[topology.editors]]` array-of-tables). The framework builds one executable
 `vf.Agent` per declared field for every instance — with the run's model context, serving
 resources, budgets, and graph recording already bound — and hands them to `run` as an
 `Agents` namespace mirroring the config (`agents.judge`, `agents.editors[i]`). Loading
@@ -183,27 +187,19 @@ reconstructs from any flat trace dump (one instance = one connected component). 
 cross-agent scoring lives on, and `graph.error` records a crash in `run` itself. A `Trace` is
 the per-agent view of one run; the agent graph is the global view of the interaction.
 
-## The built-in judge topologies
+## Judging as a topology
 
-Judging as a config-only pattern, two tiers, one verdict contract (a `SCORE: <0-10>` line,
-recorded on the *solver's* trace as a weighted reward, `--topology.weight`):
+An LLM-judge is just a two-agent topology: a `solver` runs the task, a non-trainable
+`judge` (pinned to the in-process `direct` harness, so a run ≈ one API call) grades the
+solver's finished trace, and its verdict lands on the *solver's* trace as a declared
+`@reward(agent="solver")`. `run` peels the judge's inputs off the solver trace — the seed
+task's framing, its ground truth, the solver's final message — into a `JudgeTask` minted
+from the trace (the forward arrow). Scaling the judge up to a real agent that investigates
+the trace with tools is only a harness swap on the judge's `AgentConfig`. This is
+demonstrated by the example environments rather than shipped as a core built-in.
 
-- **`llm-judge`** — a `solver` (any taskset, via `--topology.taskset.id`) and a non-trainable
-  `judge`, **fixed** to the in-process `direct` harness (a run ≈ one API call). `run`
-  peels the judge's inputs off the finished solver trace — the seed task's framing, its
-  ground truth (an `answer` field, when the taskset carries one), and the solver's final
-  message — into a `JudgeTask` minted from the trace. Give the judge its own model
-  (`--topology.judge.model`) or client routing; swapping its harness is refused and points
-  here:
-- **`agentic-judge`** — same shape, but the judge is a real agent: the solver's **entire
-  serialized trace** is uploaded into the judge's own runtime (by the judge task's `setup`
-  hook), and the judge investigates it with its tools before committing. Its harness is
-  configurable (`--topology.judge.harness.id ...`, bash+edit `default` by default), as is its
-  assignment (`--topology.prompt`, with `{path}` = where the trace landed).
-
-For a verdict baked into a task's own grading, call `vf.Judge` from the task's
-`@reward` instead — that's the cheap utility tier; these topologies are the tier where the
-judge is itself an agent.
+For a verdict baked into a task's own grading — no second agent — call `vf.Judge` from the
+task's `@reward` instead; that's the cheap single-call utility tier.
 
 Topologies use the same in-process runner, env-server worker pool, resume behavior, and
 dashboard path as taskset × harness configurations.

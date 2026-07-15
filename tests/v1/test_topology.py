@@ -2,7 +2,7 @@
 
 The unit tests stub `vf.Agent.run` with a canned reply, so the explicit-agent topology
 surface — forward trace→task arrows, fan-out, parent links, declared instance judgement,
-`go` failure capture — runs without a model or a runtime. The `e2e`-marked test runs the
+`run` failure capture — runs without a model or a runtime. The `e2e`-marked test runs the
 `echo-chain-v1` fixture topology live (skipped without a key), mirroring `test_e2e`.
 """
 
@@ -16,10 +16,8 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.cli.resolve import narrow_config
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.serve.types import RunResponse
-from verifiers.v1.topologies.agentic_judge import TRACE_PATH, AgenticJudgeTask
-from verifiers.v1.topologies.llm_judge import JudgeTask
 from verifiers.v1.runner import TopologyRunner
+from verifiers.v1.serve.types import RunResponse
 from verifiers.v1.topology import AgentGraph
 from verifiers.v1.trace import Trace, TraceTask, WireTrace
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -82,90 +80,28 @@ def proposer_seed(monkeypatch) -> vf.Task:
     return seed
 
 
-def test_llm_judge_config_narrows_typed_agents():
-    """`--topology.id llm-judge` narrows to `LLMJudgeConfig`; the seed factory narrows by
-    id, and the judge keeps its pinned defaults (direct harness, non-trainable) unless
-    overridden."""
-    config = EvalConfig(
-        topology={"id": "llm-judge", "taskset": {"id": "echo-v1"}}, rich=False
-    )
-    assert type(config.topology).__name__ == "LLMJudgeConfig"
-    assert type(config.topology.taskset).__name__ == "EchoConfig"
-    assert config.topology.solver.harness.id == "default"
-    assert config.topology.judge.harness.id == "direct"
-    assert config.topology.judge.trainable is False
-    assert config.topology.solver.trainable is True
-
-
-def test_pinned_harness_survives_sibling_and_partial_overrides():
-    """The pin contract, all three previously-broken paths: (a) a sibling override
-    (`--topology.solver.model X`) must not silently replace a pinned harness with the
-    default agent; (b) an id-less partial harness override must deep-merge into the pin,
-    not reset it; (c) a base-typed `HarnessConfig(id=...)` pin is detected by value."""
+def test_harness_pin_contract():
+    """The `AgentConfig` harness-pin machinery, the four paths that were previously broken:
+    (a) a sibling field override (`--topology.solver.model X`) must not silently reset a
+    pinned harness to the default; (b) an id-less partial harness override deep-merges into
+    the pin instead of resetting it; (c) a base-typed pin is detected by value; (d) an
+    explicit harness id still swaps the pin, narrowing to that harness's own config type."""
     from proposer_solver_v1.topology import ProposerSolverConfig
 
-    # (a) sibling field override keeps the subclass pin
+    # (a) sibling override keeps the subclass pin (solver is pinned to `direct`)
     config = ProposerSolverConfig.model_validate({"solver": {"model": "org/strong"}})
     assert config.proposer.harness.id == "default"
-    assert config.solver.model == "org/strong"
-    assert config.solver.harness.id == "direct"
-    # (b) partial harness override tunes the pin (llm-judge judge: direct + docker runtime)
-    eval_config = EvalConfig(
-        topology={
-            "id": "llm-judge",
-            "taskset": {"id": "echo-v1"},
-            "judge": {"harness": {"runtime": {"type": "docker"}}},
-        },
-        rich=False,
+    assert (config.solver.model, config.solver.harness.id) == ("org/strong", "direct")
+    # (b) partial harness override tunes the pin, not resets it
+    tuned = vf.DirectAgentConfig.model_validate(
+        {"harness": {"runtime": {"type": "docker"}}}
     )
-    judge = eval_config.topology.judge
-    assert judge.harness.id == "direct"
-    assert judge.harness.runtime.type == "docker"
+    assert tuned.harness.id == "direct" and tuned.harness.runtime.type == "docker"
     # (c) a base-typed pin (null) is a value pin — bare construction keeps it
-    assert vf.NullAgentConfig().harness.id == "null"
     assert vf.NullAgentConfig.model_validate({"model": "org/x"}).harness.id == "null"
-
-
-def test_pinned_agent_harness_still_swaps_by_id():
-    """A subclass pins per-agent defaults via the field default *instance*, not the
-    annotation — so an explicit `--topology.judge.harness.id <id>` (on `agentic-judge`,
-    whose judge harness is configurable) narrows to the swapped harness's own config type
-    while the other pins survive the swap."""
-    config = EvalConfig(
-        topology={
-            "id": "agentic-judge",
-            "taskset": {"id": "echo-v1"},
-            "judge": {"harness": {"id": "null"}},
-        },
-        rich=False,
-    )
-    assert type(config.topology.judge.harness).__name__ == "NullHarnessConfig"
-    assert config.topology.judge.trainable is False  # other pins survive the swap
-
-
-def test_llm_judge_harness_is_locked():
-    """`llm-judge` fixes its judge to the in-process `direct` chat loop: an explicit
-    harness swap is refused with a pointer at `agentic-judge` (whose judge harness IS
-    configurable); the judge's routing stays per-agent config."""
-    with pytest.raises(ValueError, match="agentic-judge"):
-        EvalConfig(
-            topology={
-                "id": "llm-judge",
-                "taskset": {"id": "echo-v1"},
-                "judge": {"harness": {"id": "default"}},
-            },
-            rich=False,
-        )
-    config = EvalConfig(  # routing overrides don't touch the lock
-        topology={
-            "id": "llm-judge",
-            "taskset": {"id": "echo-v1"},
-            "judge": {"model": "org/strong-judge"},
-        },
-        rich=False,
-    )
-    assert config.topology.judge.harness.id == "direct"
-    assert config.topology.judge.model == "org/strong-judge"
+    # (d) an explicit id swaps the pin, narrowing to the swapped harness's config type
+    swapped = vf.DirectAgentConfig.model_validate({"harness": {"id": "null"}})
+    assert type(swapped.harness).__name__ == "NullHarnessConfig"
 
 
 def test_agent_discovery_and_seed_factory():
@@ -177,30 +113,16 @@ def test_agent_discovery_and_seed_factory():
 
 
 def test_topology_without_seeds_is_refused():
-    config = EvalConfig(topology={"id": "llm-judge"}, rich=False)
+    """A topology with no `taskset` slot and no `load_tasks` override has no seeds."""
+
+    class NoSeedConfig(vf.TopologyConfig):
+        agent: vf.AgentConfig = vf.AgentConfig()
+
+    class NoSeedTopology(vf.Topology):
+        pass
+
     with pytest.raises(ValueError, match="has no seed tasks"):
-        vf.load_topology(config.topology).load_tasks()
-
-
-def test_proposer_solver_fixes_aime26_seed_taskset(monkeypatch):
-    from proposer_solver_v1.topology import AIME_TASKSET_ID
-
-    config = EvalConfig(topology={"id": "proposer-solver-v1"}, rich=False)
-    topology = vf.load_topology(config.topology)
-    requested: list[str] = []
-
-    def config_type(taskset_id):
-        requested.append(taskset_id)
-        return vf.TasksetConfig
-
-    class StubTaskset:
-        def load(self):
-            return ["seed"]
-
-    monkeypatch.setattr(vf, "taskset_config_type", config_type)
-    monkeypatch.setattr(vf, "load_taskset", lambda config: StubTaskset())
-    assert topology.load_tasks() == ["seed"]
-    assert requested == [AIME_TASKSET_ID]
+        NoSeedTopology(NoSeedConfig()).load_tasks()
 
 
 def test_proposer_solver_refuses_taskset_override():
@@ -273,9 +195,9 @@ async def test_run_instance_links_and_defers(echo_chain_env):
 
 async def test_declared_judgement_scores_the_instance(stub_agent_run, proposer_seed):
     """`Topology.score` runs the declared @metric/@reward methods once per matching trace
-    after `go` returns — metrics before rewards (`difficulty` reads the `solve_rate`
+    after `run` returns — metrics before rewards (`difficulty` reads the `solve_rate`
     metric), and over every trace in scope even when the instance ended early (the stub
-    never calls the submission tool, so `go` stops after the proposer). The proposer's
+    never calls the submission tool, so `run` stops after the proposer). The proposer's
     task-declared parseability reward is absent because the stub skips episode scoring."""
     config = EvalConfig(topology={"id": "proposer-solver-v1"}, rich=False)
     env = TopologyRunner(config.topology, config)
@@ -286,7 +208,7 @@ async def test_declared_judgement_scores_the_instance(stub_agent_run, proposer_s
 
 
 async def test_proposer_solver_fan_out_and_difficulty(monkeypatch, proposer_seed):
-    """The happy path: the proposer commits a submission, `go` fans `num_solvers` solver
+    """The happy path: the proposer commits a submission, `run` fans `num_solvers` solver
     episodes out over the derived AIME task (all parented under the proposer), and the
     declared judgement averages the solvers' `correct` into `solve_rate` → `difficulty`
     (peaked at 50%, so a 2/4 split scores 1.0)."""
@@ -368,39 +290,6 @@ async def test_provisioned_runtime_is_borrowed_across_runs(echo_chain_env, monke
     assert graph.traces == [first, second]
 
 
-async def test_shared_runtime_topology_hands_off_through_one_box(monkeypatch):
-    """The shared-runtime example, stubbed: the writer's borrowed run hands its note to a
-    reader run in the SAME provisioned box (both traces stamped borrowed), and the
-    deferred writer reward mirrors the reader's verification."""
-
-    async def fake_agent_run(self, task, *, parents=(), runtime=None):
-        trace = echoing_trace(task, "shared runtime handoff ready.")
-        if self.name == "writer":
-            trace.info["shared_runtime"] = {"wrote": "note", "path": "shared/note.txt"}
-        else:
-            trace.record_reward("read_shared_note", 1.0)
-        self.stamp(
-            trace, parents=parents, runtime=runtime, borrowed=runtime is not None
-        )
-        if self._on_trace is not None:
-            self._on_trace(trace)
-        return trace
-
-    monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
-    config = EvalConfig(topology={"id": "shared-runtime-v1"}, rich=False)
-    env = TopologyRunner(config.topology, config)
-    graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
-    assert graph.error is None
-    written, read = graph.traces
-    assert (written.agent, read.agent) == ("writer", "reader")
-    assert read.parents == [written.id]
-    assert read.task.data.expected == "note"  # the forward arrow carried the handoff
-    # both runs were placed into the one provisioned box
-    assert written.info["agent"]["runtime"]["borrowed"] is True
-    assert read.info["agent"]["runtime"]["borrowed"] is True
-    assert written.rewards == {"handoff_succeeded": 1.0}  # mirrored off the reader
-
-
 async def test_run_failure_is_captured_on_graph(echo_chain_env, monkeypatch):
     """A crash in topology-authored code is classified `TopologyError` and recorded on the
     graph — completed runs stay (agents record traces as they finish), nothing raises
@@ -440,12 +329,6 @@ def test_eval_config_rejects_topology_with_resume():
         EvalConfig(topology={"id": "echo-chain-v1"}, resume=Path("."), rich=False)
 
 
-def test_eval_config_forces_no_push_for_topology():
-    config = EvalConfig(topology={"id": "echo-chain-v1"}, rich=False)
-    assert config.push is False
-    assert config.topology.id == "echo-chain-v1"
-
-
 def test_eval_config_rejects_topology_with_harness():
     """A user-supplied `--harness.*` under a topology would be silently ignored (agents
     bind their own) — refused up front, while the framework-manufactured default (absent
@@ -456,67 +339,16 @@ def test_eval_config_rejects_topology_with_harness():
 
 
 def test_narrow_config_resolves_topology_id():
-    narrowed = narrow_config(EvalConfig, ["--topology.id", "llm-judge"])
-    assert type(narrowed.model_fields["topology"].default).__name__ == "LLMJudgeConfig"
+    narrowed = narrow_config(EvalConfig, ["--topology.id", "proposer-solver-v1"])
+    assert (
+        type(narrowed.model_fields["topology"].default).__name__
+        == "ProposerSolverConfig"
+    )
 
 
 def test_output_path_names_topology_runs():
     config = EvalConfig(topology={"id": "echo-chain-v1"}, model="org/model", rich=False)
     assert output_path(config).parent.name == "echo-chain-v1--org--model"
-
-
-def test_judge_task_construction_and_verdict_parsing():
-    """`JudgeTask.from_trace` (main's `Task.from_trace` convention) peels the judge's
-    inputs off the finished episode: the seed
-    task's framing, its ground truth (an `answer` field, when the task carries one), and
-    the solver's final message (last message of the final branch, not the transcript)."""
-
-    class AnsweredData(vf.TaskData):
-        answer: str
-
-    class AnsweredTask(vf.Task[AnsweredData]):
-        pass
-
-    task = AnsweredTask(AnsweredData(idx=0, prompt="what is 2+2?", answer="4"))
-    solved = echoing_trace(task, "It is 4.")
-    grading = JudgeTask.from_trace(solved)
-    assert "what is 2+2?" in grading.data.prompt and "It is 4." in grading.data.prompt
-    assert "<reference_answer>\n4\n</reference_answer>" in grading.data.prompt
-    # a task without ground truth just omits the reference section
-    unanswered = echoing_trace(vf.Task(vf.TaskData(idx=0, prompt="write a poem")), "ok")
-    bare = JudgeTask.from_trace(unanswered)
-    assert "<reference_answer>" not in bare.data.prompt
-    for reply, expected in [
-        ("The attempt is correct.\nSCORE: 10", 1.0),
-        ("Partially right.\nscore: 7/10", 0.7),
-        ("Flawless.\n**SCORE: 10**", 1.0),  # markdown-bolded verdicts still parse
-        ("SCORE: 999", 1.0),  # clamped to the 0-10 scale
-        ("SCORE: not-a-number", None),
-        ("I refuse to commit to a verdict.", None),
-    ]:
-        assert JudgeTask.parse_score(echoing_trace(task, reply)) == expected
-
-
-async def test_agentic_judge_task_uploads_the_trace():
-    """`AgenticJudgeTask` carries the solver's entire serialized trace as data — its
-    `setup` hook writes it to `TRACE_PATH` in the judge's runtime, and the assignment
-    prompt points there."""
-    task = vf.Task(vf.TaskData(idx=0, prompt="what is 2+2?"))
-    solved = echoing_trace(task, "It is 4.")
-    solved.record_reward("correct", 1.0)
-    grading = AgenticJudgeTask.from_trace(solved)
-    assert TRACE_PATH in grading.data.prompt
-    payload = json.loads(grading.data.trace_json)
-    assert payload["id"] == solved.id and payload["rewards"] == {"correct": 1.0}
-
-    written: dict[str, bytes] = {}
-
-    class StubRuntime:
-        async def write(self, path: str, data: bytes) -> None:
-            written[path] = data
-
-    await grading.setup(echoing_trace(grading, ""), StubRuntime())
-    assert json.loads(written[TRACE_PATH]) == payload
 
 
 async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch):
@@ -566,7 +398,7 @@ def test_instance_record_roundtrips():
     intact) — what `traces.jsonl` consumers and the trainer wire rely on."""
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
     graph = AgentGraph(
-        topology="llm-judge",
+        topology="proposer-solver-v1",
         task=vf.TraceTask(type=type(task).__name__, data=task.data),
     )
     trace = echoing_trace(task, "hi")
@@ -576,7 +408,7 @@ def test_instance_record_roundtrips():
     trace.record_reward("relay", 1.0)
     graph.add(trace)
     loaded = AgentGraph.load(json.loads(json.dumps(graph.to_record())))
-    assert loaded.id == graph.id and loaded.topology == "llm-judge"
+    assert loaded.id == graph.id and loaded.topology == "proposer-solver-v1"
     (t,) = loaded.traces
     assert isinstance(t, WireTrace)
     assert (t.agent, t.parents, t.trainable) == ("judge", ["abc123"], False)

@@ -1,33 +1,23 @@
 """The topology: a surface over which agents interact.
 
-A `Topology` composes agent runs — one agent consuming one task and producing one trace —
-into a multi-agent interaction: which agents exist, how one agent's trace becomes a
-downstream agent's task, and how rewards flow backwards once downstream agents have run.
-Each agent run is an ordinary `Rollout` (same lifecycle, same error model, same trace), and
-tasks are the whole task-side contract — their classes carry the behavior — so a topology
-declares its agents as config fields, and the framework hands `run` ready executable agents.
-
-The interaction pattern is plain imperative Python in `run` — not a DSL: a loop is rounds,
-`asyncio.gather` over `agents.<name>.run(...)` calls is fan-out, and awaiting several traces
-before building the next task is fan-in. `run` owns *control flow only*, including the
-forward arrow (trace → next task, pure host-side construction); judgement — including the
-backward arrow, a reward derived from downstream traces — is declared as
-`@vf.reward(agent=...)`/`@vf.metric(agent=...)` methods, run over the finished instance
-(see `Topology.score`).
+A `Topology` composes agent runs into a multi-agent interaction: which agents exist, how
+one agent's trace becomes a downstream agent's task (the forward arrow), and how rewards
+flow backwards. It declares its agents as config fields; `run(task, agents)` is the
+control flow — plain imperative Python (a loop is rounds, `asyncio.gather` is fan-out,
+awaiting several traces before the next task is fan-in), no DSL. Judgement, including the
+backward arrow, is declared separately as `@vf.reward(agent=...)`/`@vf.metric(agent=...)`
+methods run over the finished instance (see `Topology.score`).
 
 Agents are framework-managed: the runner builds one executable `Agent` per `AgentConfig`
-field on the topology's config (a `list[AgentConfig]` field builds a list — one *role*,
-many seats) and exposes them to `run` as an `Agents` namespace mirroring the config
-(`agents.judge`, `agents.editors[i]`). Each completed run records its trace onto the
-instance's `AgentGraph` automatically, so a crash in `run` never loses finished work;
-lineage is named at the call site (`run(task, parents=[upstream])`).
+field (a `list[AgentConfig]` field is one *role* with many seats) and hands them to `run`
+as an `Agents` namespace mirroring the config. Each completed run records its trace onto
+the instance's `AgentGraph` automatically (so a crash in `run` keeps finished work);
+lineage is named at the call site, `run(task, parents=[upstream])`.
 
-Running one instance produces an `AgentGraph` — the serialized instance artifact: the
-global, causally ordered view over its traces, each linked to its parents (`trace.agent` /
-`trace.parents`). A `Trace` stays the per-agent view of one run; the graph is the
-cross-agent view of the whole interaction. Interleaving two agents' *execution* inside one
-run is deliberately out of scope — an agent run completes before its trace
-feeds anything downstream.
+One instance produces one `AgentGraph`: the causally ordered view over its traces, each
+linked to its parents. A `Trace` is the per-agent view of one run; the graph is the
+cross-agent view. Interleaving two agents' *execution* is out of scope — a run completes
+before its trace feeds anything downstream.
 """
 
 import logging
@@ -69,35 +59,27 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 class AgentConfig(BaseConfig):
     """One agent in a topology: which harness drives its runs (and where —
-    `harness.runtime`), and how its model calls are routed. Declared as typed fields of a
-    `TopologyConfig` subclass — the field *name* is the agent's name in `run` (a
-    `list[AgentConfig]` field declares one *role* with several seats) — so every
-    agent is CLI/toml-addressable (`--topology.<agent>.harness.id`,
-    `--topology.<agent>.model`, ...). An agent carries nothing task-side: the tasks it
-    consumes (each carrying its own behavior) arrive per run, from the topology's seeds
-    or constructed in `run`.
+    `harness.runtime`) and how its model calls are routed. Declared as a typed field of a
+    `TopologyConfig` subclass — the field *name* is the agent's name in `run`, a
+    `list[AgentConfig]` field is one *role* with several seats — so every agent is
+    CLI/toml-addressable. An agent carries nothing task-side; tasks arrive per run.
 
     To pin a per-agent default harness, **subclass and set the field default**
-    (`harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="direct")`) — pins must
-    live on an `AgentConfig` subclass, never on the outer topology-config field's default
-    instance, which a partial override (`--topology.<agent>.model ...`) would silently
-    replace (pydantic re-validates the whole field; it never merges into instance
-    defaults). A pinned harness survives everything except an explicit
-    `--topology.<agent>.harness.id`."""
+    (`harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="direct")`): the pin must
+    live on an `AgentConfig` subclass, not the outer topology-config field default, which
+    a partial override would replace wholesale (pydantic re-validates the field, never
+    merges into instance defaults). A pin survives everything but an explicit `harness.id`."""
 
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
-    """The program driving this agent's runs, and where it runs (`harness.runtime`) —
-    per agent, so a judge can run the in-process `direct` chat loop while the solver's
-    coding agent runs in a container."""
+    """The program driving this agent's runs, and where (`harness.runtime`) — per agent,
+    so a judge can run the in-process `direct` loop while a solver runs in a container."""
     model: str | None = None
-    """Model override for this agent (None = the eval's model) — e.g. a stronger judge."""
+    """Model override (None = the eval's model)."""
     client: ClientConfig | None = None
-    """Client override for this agent (None = the eval's client) — how its model calls are
-    routed: e.g. a non-trainable judge relayed to a plain API endpoint while the solver
-    runs against the train client. Per-agent routing lives here, not in extra interception
-    machinery — sessions are already per-rollout."""
+    """Client override (None = the eval's client) — e.g. a non-trainable judge routed to a
+    plain API endpoint while the solver runs against the train client."""
     sampling: SamplingConfig | None = None
-    """Sampling overrides for this agent, layered over the eval's sampling."""
+    """Sampling overrides, layered over the eval's sampling."""
     trainable: bool = True
     """Whether this agent's traces are training samples — stamped onto `Trace.trainable`
     so a trainer can filter without consulting the topology config."""
@@ -105,13 +87,11 @@ class AgentConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_plugins(cls, data):
-        """Resolve the `harness` field. Three cases, in precedence order:
-        an explicit `id` swaps the harness (narrowed to that harness's own config type);
-        otherwise a subclass **pin** — detected by value, so any changed default counts,
-        including a base-typed `HarnessConfig(id="null")` — absorbs partial overrides by
-        deep-merging them over the pinned default (`--...harness.runtime.type docker`
-        tunes the pin, never silently replaces it); otherwise the base default narrows to
-        the `default` harness's config."""
+        """Resolve `harness`, in precedence order: an explicit `id` swaps it (narrowing to
+        that harness's config type); else a subclass **pin** — detected by value, so a
+        base-typed `HarnessConfig(id="null")` counts — deep-merges partial overrides over
+        the pinned default (`harness.runtime.type docker` tunes it, never resets it); else
+        the base default narrows to the `default` harness."""
         if not isinstance(data, dict):
             return data
         from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
@@ -137,26 +117,23 @@ class AgentConfig(BaseConfig):
 
 
 class DirectAgentConfig(AgentConfig):
-    """An agent pinned to the in-process `direct` chat loop — tool-less, a run ≈ one
-    API call. The most common pin, shared so topologies don't each redeclare it; per the
-    pin contract, partial overrides (`--topology.<agent>.model ...`) tune it and an
-    explicit `--topology.<agent>.harness.id` still swaps it."""
+    """Pinned to the in-process `direct` chat loop — tool-less, a run ≈ one API call. The
+    shared common pin so topologies don't each redeclare it."""
 
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="direct")
 
 
 class NullAgentConfig(AgentConfig):
-    """An agent pinned to the `null` chat loop — a subprocess program WITH the task's MCP
-    tools but none of its own. The pin for an agent that must call task tools without
-    being a full coding agent."""
+    """Pinned to the `null` chat loop — a subprocess program with the task's MCP tools but
+    none of its own (calls task tools without being a full coding agent)."""
 
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="null")
 
 
 def _agent_list_item_type(annotation) -> type[AgentConfig] | None:
-    """The `AgentConfig` subclass a `list[...]` annotation holds (Annotated wrappers like
-    `SerializeAsAny` unwrapped on both levels), else None — how a config field is
-    recognized as a list *role*."""
+    """The `AgentConfig` subclass a `list[...]` annotation holds (unwrapping `Annotated`
+    wrappers like `SerializeAsAny` on both levels), else None — how a field is recognized
+    as a list *role*."""
     while get_origin(annotation) is Annotated:
         annotation = get_args(annotation)[0]
     if get_origin(annotation) is not list:
@@ -178,17 +155,14 @@ class TopologyConfig(BaseConfig):
     fields surface typed on the CLI/toml."""
 
     id: ID = ""
-    """The topology id, which selects this topology: a built-in (`llm-judge`), a local
-    package, or an `org/name[@version]` package installed on demand from the Environments
-    Hub (see `ID`). Set via `--topology.id`."""
+    """The topology id, which selects this topology: a local package (e.g. an environment
+    under `environments/`) or an `org/name[@version]` package installed on demand from the
+    Environments Hub (see `ID`). Set via `--topology.id`."""
     taskset: SerializeAsAny[TasksetConfig] | None = None
-    """The seed source: a taskset (a pure task factory, resolved by id — see
-    `verifiers.v1.taskset`) whose tasks seed the instances, one instance per seed. Set via
-    `--topology.taskset.id <id>` — the same word, slot, and grammar as the single-agent
-    route's `--taskset.id`. Exclusive-or with overriding `load_tasks`: when this slot can
-    be set, it IS the seed source, verbatim — a topology that constructs its own seeds
-    overrides `load_tasks` and is refused this flag (a custom `load_tasks` wanting a
-    config-driven source declares its own factory field instead)."""
+    """The seed source: a taskset (resolved by id, `--topology.taskset.id <id>`) whose
+    tasks seed the instances, one per seed. Exclusive-or with a `load_tasks` override: a
+    topology that constructs its own seeds overrides `load_tasks` and is refused this
+    flag, rather than silently ignoring it."""
 
     @property
     def name(self) -> str:
@@ -204,38 +178,6 @@ class TopologyConfig(BaseConfig):
             from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
             narrow_plugin_field(data, "taskset", taskset_config_type)
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_agent_lists(cls, data):
-        """CLI dotted overrides into a list role (`--topology.judges.0.model x`) parse as
-        an index-keyed dict; coerce it into a positional merge over the field's default
-        seats, so per-seat overrides tune the declared list instead of failing validation
-        (TOML arrays of tables arrive as real lists and skip this)."""
-        if not isinstance(data, dict):
-            return data
-        for name, field in cls.model_fields.items():
-            value = data.get(name)
-            if not isinstance(value, dict) or not value:
-                continue
-            if _agent_list_item_type(field.annotation) is None:
-                continue
-            if not all(str(key).isdigit() for key in value):
-                continue  # not index-shaped; let pydantic report it
-            defaults = field.default if isinstance(field.default, list) else []
-            merged: list[dict] = [
-                seat.model_dump() if isinstance(seat, BaseConfig) else dict(seat)
-                for seat in defaults
-            ]
-            for key, override in value.items():
-                index = int(key)
-                while len(merged) <= index:
-                    merged.append({})
-                if isinstance(override, BaseConfig):
-                    override = override.model_dump()
-                merged[index] = _deep_merge(merged[index], dict(override))
-            data[name] = merged
         return data
 
 
@@ -300,15 +242,11 @@ class Agents:
 
 
 class AgentGraph(StrictBaseModel):
-    """One topology instance's artifact: the global, causally ordered view over its traces,
-    each linked to the traces it was derived from (`trace.agent` names the producing agent,
-    `trace.parents` its upstream trace ids). Traces append in completion order — a parent
-    always finishes before a task is derived from it, so the list is topologically sorted.
-
-    The trace's sibling, one level up: what a trace is to an agent run, the graph is to an
-    instance. A topology run persists one graph per line (`traces.jsonl`), traces nested —
-    and since each trace carries its own links, the graph is also *recoverable* from a flat
-    trace dump (one instance = one connected component)."""
+    """One topology instance's artifact: the causally ordered view over its traces, each
+    linked to its upstream (`trace.agent` / `trace.parents`). Traces append in completion
+    order, so the list is topologically sorted. Persisted one graph per `traces.jsonl`
+    line (traces nested); since each trace carries its own links, the graph also rebuilds
+    from a flat trace dump (one instance = one connected component)."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique id for this instance, auto-generated per graph."""
@@ -394,11 +332,10 @@ class Topology(Generic[ConfigT]):
 
     @cached_property
     def agents(self) -> dict[str, AgentBinding | list[AgentBinding]]:
-        """The declared agents, one binding per `AgentConfig` field on the config (in
-        declaration order); a `list[AgentConfig]` field yields a list of bindings under
-        its role name. Loading also validates the topology's declared judgement
-        (`@reward`/`@metric` methods) against them, so a typo'd or missing agent scope
-        fails at load time, not mid-eval."""
+        """The declared agents, one binding per `AgentConfig` field (a `list[AgentConfig]`
+        field yields a list under its role name), in declaration order. Also validates the
+        declared `@reward`/`@metric` scopes against them, so a typo'd or missing agent
+        scope fails at load time."""
         fields = type(self.config).model_fields
         agents: dict[str, AgentBinding | list[AgentBinding]] = {}
         for name, value in self.config:
@@ -445,12 +382,11 @@ class Topology(Generic[ConfigT]):
         return agents
 
     def load_tasks(self) -> Iterable[Task]:
-        """The seed tasks — one topology instance (`run`) runs per seed task. Defaults to
-        the config's `taskset` slot (`--topology.taskset.id <id>`), whose `load` may be
-        lazy or infinite (see `Taskset`); override for a topology that constructs its own
-        seeds (a finite, materializable iterable). A start-from-nothing topology returns
-        identity-only stubs (`Task(TaskData(idx=i))`) — the seed is each instance's
-        identity for `-n`, resume, and dispatch, not necessarily content."""
+        """The seed tasks — one instance runs per seed. Defaults to the config's `taskset`
+        slot (whose `load` may be lazy or infinite); override to construct seeds (a finite
+        iterable). A start-from-nothing topology returns identity-only stubs
+        (`Task(TaskData(idx=i))`) — the seed is each instance's identity for `-n`, resume,
+        and dispatch, not necessarily content."""
         if self.taskset is None:
             raise ValueError(
                 f"topology {self.config.id!r} has no seed tasks: set --topology.taskset.id "
@@ -460,47 +396,37 @@ class Topology(Generic[ConfigT]):
 
     @property
     def infinite(self) -> bool:
-        """Whether the seed source never ends (an `INFINITE` taskset in the config slot) —
-        such runs must be bounded with `num_tasks`. A custom `load_tasks` override is
-        finite by contract."""
+        """Whether the seed source never ends (an `INFINITE` taskset in the slot; runs must
+        then be bounded with `num_tasks`). A `load_tasks` override is finite by contract."""
         if type(self).load_tasks is not Topology.load_tasks:
             return False
         return self.taskset is not None and type(self.taskset).INFINITE
 
     async def setup(self) -> None:
-        """Author hook: bring up topology-owned shared resources before any instance runs.
-        The runner calls it once inside `serving()`, after the framework's own services
-        (interception, shared tool servers) are up. Default no-op."""
+        """Author hook: bring up topology-owned shared resources. Called once inside
+        `serving()`, after the framework's own services are up. Default no-op."""
 
     async def teardown(self) -> None:
-        """Author hook: tear down what `setup` brought up. Runs on serving exit — after
-        the last instance, before the framework's services come down — even when
+        """Author hook: tear down what `setup` brought up. Runs on serving exit, even when
         instances failed. Default no-op."""
 
     def complete(self, graph: AgentGraph) -> bool:
-        """Whether a persisted instance counts as a valid result of this topology — the
-        verdict consumers read when deciding what to redo or drop (today: `--resume`
-        re-runs instances that fail it). The default is conservative — no instance-level
-        error and no errored trace — which is exact for the single-agent lowering, where
-        the one trace IS the invocation. A topology whose `run` tolerates child failures
-        overrides this to match (typically `graph.error is None`), else resume redoes
-        instances it already accepted and scored. A read-only verdict over a finished
-        graph: what a failed child *means* stays in `run` and the declared rewards."""
+        """Whether a persisted instance is a valid result — the verdict `--resume` reads to
+        decide what to redo. The default is conservative (no instance-level error, no
+        errored trace); a topology whose `run` tolerates child failures overrides this
+        (typically `graph.error is None`), else resume redoes instances it already
+        accepted. Read-only: what a failed child *means* stays in `run` and the rewards."""
         return graph_complete(graph)
 
     async def score(self, graph: AgentGraph) -> None:
-        """Run the topology's declared judgement over one completed instance: every
-        `@metric(agent=...)`, then every `@reward(agent=...)`, each invoked once per
-        trace the named agent produced — declaring any of `task`/`trace`/`graph` by
-        parameter name. Runs after `run` returns and before the instance persists, so
-        every trace (across all rounds and fan-outs) is scored, automatically.
+        """Run the declared judgement over one finished instance: every `@metric(agent=)`
+        then every `@reward(agent=)`, once per trace the named agent produced (declaring
+        `task`/`trace`/`graph` by parameter name), recorded on that trace.
 
-        Ordering contract, chosen for predictability over cleverness: methods run
-        *sequentially*, metrics before rewards, each phase in (priority, name) order.
-        A method may read task-recorded rewards (final since the agent run ended) and,
-        in the rewards phase, any metric — but topology rewards must not read each
-        other; derive shared inputs from the traces (or a metric) instead. Mirrors
-        `Task.score` one level up: trace judgement there, instance judgement here."""
+        Ordering, for predictability: sequential, metrics before rewards, each phase in
+        (priority, name) order. A method may read task-recorded rewards and, in the rewards
+        phase, any metric — but rewards must not read each other; derive shared inputs from
+        the traces or a metric. Mirrors `Task.score` one level up."""
         for kind in ("metric", "reward"):
             for fn in discover_decorated(self, kind):
                 weight = getattr(fn, "_vf_weight", 1.0)
@@ -523,20 +449,14 @@ class Topology(Generic[ConfigT]):
                         trace.record_reward(fn.__name__, result, weight)
 
     async def run(self, task: Task, agents: Agents) -> None:
-        """Run one topology instance from seed `task`: the *control flow only* — which
-        agents run, in what order, with what tasks:
-        `await agents.<name>.run(task, parents=...)` per agent invocation,
-        `asyncio.gather` for fan-out, loops for rounds, and
-        `trace.info[...] = ...` to annotate provenance. The forward arrow lives here —
-        construct the next agent's typed `Task` from an upstream trace (its typed task,
-        `last_reply`, `transcript`, or what its `finalize` peeled into `trace.info`) and
-        name the lineage at the call (`parents=[upstream]`). Every completed run records
-        its trace onto the instance's graph automatically — nothing to return.
-        Judgement belongs in the topology's `@reward(agent=...)`/`@metric(agent=...)`
-        methods (see `score`); recording a reward imperatively here is the escape hatch,
-        not the norm. Agent failures come back as data on their traces (`trace.error`),
-        never as exceptions — `run` decides what a failed child means (drop it, count it
-        against a pass rate, retry the round, ...)."""
+        """Run one instance from seed `task`: *control flow only*.
+        `await agents.<name>.run(task, parents=...)` per invocation, `asyncio.gather` for
+        fan-out, loops for rounds. The forward arrow lives here — build the next agent's
+        typed `Task` from an upstream trace and name the lineage at the call
+        (`parents=[upstream]`). Every completed run records its trace automatically —
+        nothing to return. Judgement belongs in the `@reward`/`@metric` methods (see
+        `score`). Agent failures come back as data on their traces, never as exceptions —
+        `run` decides what a failed child means."""
         raise NotImplementedError
 
 

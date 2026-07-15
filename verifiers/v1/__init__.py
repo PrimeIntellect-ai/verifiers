@@ -270,7 +270,7 @@ __all__ = [
     "harness_config_type",
     "topology_config_type",
     "default_harness_id",
-    # judge (a single-call utility — judge-as-agent is the llm-judge/agentic-judge topologies)
+    # judge (a single-call utility — judge-as-agent is a topology, e.g. an environment)
     "Judge",
     "JudgeConfig",
     "JudgeSamplingConfig",

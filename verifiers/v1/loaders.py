@@ -36,7 +36,13 @@ def narrow_plugin_field(
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     module = ensure_installed(plugin_id)
     namespaced = f"{group}.{module}"
-    target = namespaced if importlib.util.find_spec(namespaced) else module
+    try:
+        has_builtin = importlib.util.find_spec(namespaced) is not None
+    except ModuleNotFoundError:
+        # The built-in group ships no package (e.g. no built-in topologies) — the plugin
+        # is a top-level installed package, not namespaced.
+        has_builtin = False
+    target = namespaced if has_builtin else module
     try:
         return importlib.import_module(target)
     except ModuleNotFoundError as e:
