@@ -231,9 +231,9 @@ class InterceptionServer(Interception):
         # repeats a body, so this only ever matches a real retry; a failed attempt was not cached
         # and re-runs normally.
         req_hash = hashlib.blake2b(raw, digest_size=16).digest()
-        if session.last_request == req_hash and session.last_completion is not None:
+        if session.last_request == req_hash and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return _completion_response(session.last_completion)
+            return _completion_response(session.last_response)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
@@ -275,12 +275,12 @@ class InterceptionServer(Interception):
             None  # the latest turn's response, returned to the program
         )
 
-        def serve(served: dict) -> web.Response:
+        def serve(response: dict) -> web.Response:
             # Record the served turn so a retried (byte-identical) request replays it instead
             # of re-sampling and forking the graph.
             session.last_request = req_hash
-            session.last_completion = served
-            return _completion_response(served)
+            session.last_response = response
+            return _completion_response(response)
 
         while True:
             try:
