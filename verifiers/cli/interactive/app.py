@@ -618,7 +618,10 @@ class InteractiveRolloutApp(App[None]):
                 border_style="cyan",
             )
         )
-        self.set_timer(0.01, self._scroll_messages_to_end)
+        # Scroll after the refresh so the pane has been laid out and
+        # ``max_scroll_y`` is known; a bare timer can fire before layout and
+        # scroll to 0 (flaky on slow terminals / CI).
+        self.call_after_refresh(self._scroll_messages_to_end)
 
     def _render_tools(self, tools: list[Tool]) -> None:
         self.query_one("#tools-content", Static).update(

@@ -145,23 +145,25 @@ async def test_app_uses_scrollable_prompt_and_tool_panes():
 @pytest.mark.asyncio
 async def test_app_scrolls_prompt_pane_to_latest_turn():
     app = InteractiveRolloutApp()
-    task = asyncio.create_task(app.run_async(headless=True))
-    await app.ready.wait()
-    messages = [
-        UserMessage(content=f"turn {index}\n" + ("detail\n" * 4)) for index in range(20)
-    ]
-    ask_task = asyncio.create_task(app.ask(messages, []))
-    await asyncio.sleep(0.2)
+    async with app.run_test() as pilot:
+        messages = [
+            UserMessage(content=f"turn {index}\n" + ("detail\n" * 4))
+            for index in range(20)
+        ]
+        ask_task = asyncio.create_task(app.ask(messages, []))
+        pane = app.query_one("#messages-pane", VerticalScroll)
+        # Poll until the deferred scroll-to-end settles (timing varies on CI).
+        for _ in range(40):
+            await pilot.pause()
+            if pane.max_scroll_y > 0 and pane.scroll_y == pane.max_scroll_y:
+                break
 
-    pane = app.query_one("#messages-pane", VerticalScroll)
-    assert pane.max_scroll_y > 0
-    assert pane.scroll_y == pane.max_scroll_y
+        assert pane.max_scroll_y > 0
+        assert pane.scroll_y == pane.max_scroll_y
 
-    app.query_one("#message", TextArea).load_text("done")
-    app._submit_current_turn()
-    await ask_task
-    app.exit()
-    await task
+        app.query_one("#message", TextArea).load_text("done")
+        app._submit_current_turn()
+        await ask_task
 
 
 @pytest.mark.asyncio
