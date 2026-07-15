@@ -11,7 +11,6 @@ lettered A.. dynamically (MMMU rows range from 2 to 9 choices); open-ended rows
 import ast
 import re
 from collections.abc import Iterator
-from io import BytesIO
 from typing import Literal
 
 import verifiers.v1 as vf
