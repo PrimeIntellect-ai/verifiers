@@ -38,6 +38,11 @@ class DockerConfig(BaseConfig):
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so
     this is accepted (so a task can declare it without a warning) but not enforced."""
+    network_access: bool = True
+    """Whether the workload can reach the internet. When False, the container's DNS is disabled
+    so hostname fetches (pip, git clone, curl) fail, while the model tunnel still works — it
+    egresses from the host, which the container reaches DNS-lessly. A DNS block, not an IP
+    airgap. Mirrors prime/modal (which also sever the tunnel)."""
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
@@ -98,8 +103,7 @@ class DockerRuntime(Runtime):
         run = await docker(
             "run",
             "--detach",
-            "--network",
-            "host",
+            *self._network_args(),
             *limits,
             "--workdir",
             self.config.workdir,
@@ -115,10 +119,24 @@ class DockerRuntime(Runtime):
             :12
         ]  # `docker run -d` prints the container id
         logger.info(
-            "docker: started container %s (image=%s)",
+            "docker: started container %s (image=%s%s)",
             self._container,
             self.config.image,
+            "" if self.config.network_access else ", internet blocked",
         )
+
+    def _network_args(self) -> list[str]:
+        """`docker run` networking. network_access=False breaks DNS to block the workload's
+        internet while keeping the DNS-less host route the model tunnel needs."""
+        if self.config.network_access:
+            return ["--network", "host"]
+        if sys.platform == "linux":
+            # Host netns reaches the interception at 127.0.0.1; only DNS is broken. --dns writes
+            # a container-private resolv.conf, so the host's DNS is untouched.
+            return ["--network", "host", "--dns", "0.0.0.0"]
+        # Docker Desktop: bridge instead of host, host.docker.internal pinned via /etc/hosts
+        # (host_url() already routes the tunnel there off-Linux).
+        return ["--dns", "0.0.0.0", "--add-host", "host.docker.internal:host-gateway"]
 
     def host_url(self, url: str) -> str:
         # Docker Desktop (macOS/Windows) runs containers in a VM, so `--network host`
