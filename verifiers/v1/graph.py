@@ -36,6 +36,7 @@ from verifiers.v1.types import (
     Response,
     StrictBaseModel,
     TextContentPart,
+    Tool,
     ToolMessage,
     Usage,
 )
@@ -341,8 +342,10 @@ class PendingTurn:
             for span in tail_spans
         ]
 
-    def commit(self, response: Response) -> None:
+    def commit(self, response: Response, tools: list[Tool] | None = None) -> None:
         _commit_turn(self, response)
+        if tools:
+            self.trace.tools = tools
 
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
