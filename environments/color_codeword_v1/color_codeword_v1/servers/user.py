@@ -1,6 +1,7 @@
 from PIL import Image
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.image import image_data_url
 
 COLOR_RGB = {
     "red": (255, 0, 0),
@@ -48,9 +49,7 @@ class ColorCodewordUser(vf.User[vf.UserConfig, ColorCodewordState]):
         parts = [
             vf.ImageUrlContentPart(
                 image_url=vf.ImageUrlSource(
-                    url=vf.image_data_url(
-                        Image.new("RGB", (100, 100), COLOR_RGB[color])
-                    )
+                    url=image_data_url(Image.new("RGB", (100, 100), COLOR_RGB[color]))
                 )
             )
             for color in colors

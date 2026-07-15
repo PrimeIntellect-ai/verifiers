@@ -18,6 +18,7 @@ from PIL import Image
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.image import image_data_url
 
 from color_codeword_v1.servers.user import (
     COLOR_RGB,
@@ -126,7 +127,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
         color_urls = {
-            color: vf.image_data_url(Image.new("RGB", (100, 100), COLOR_RGB[color]))
+            color: image_data_url(Image.new("RGB", (100, 100), COLOR_RGB[color]))
             for color in colors
         }
         length = c.images_per_turn * MAX_TURNS

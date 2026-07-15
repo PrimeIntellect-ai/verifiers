@@ -13,6 +13,7 @@ import re
 from typing import Literal
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.image import image_data_url
 
 ALL_SUBSETS = [
     "Accounting",
@@ -113,9 +114,7 @@ class MMMUTaskset(vf.Taskset[MMMUTask, MMMUConfig]):
                         image = row[f"image_{segment}"]
                         parts.append(
                             vf.ImageUrlContentPart(
-                                image_url=vf.ImageUrlSource(
-                                    url=vf.image_data_url(image)
-                                )
+                                image_url=vf.ImageUrlSource(url=image_data_url(image))
                             )
                         )
                     elif segment:
