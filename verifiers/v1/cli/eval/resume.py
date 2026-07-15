@@ -59,7 +59,6 @@ class Finished(Rollout):
         self.trace = trace
         self.task = Task(trace.task.data)
         self.phase = Phase.DONE
-        self.runtime = None
 
 
 def load(

@@ -9,13 +9,13 @@ lettered A.. dynamically (MMMU rows range from 2 to 9 choices); open-ended rows
 """
 
 import ast
-import base64
 import re
 from collections.abc import Iterator
 from io import BytesIO
 from typing import Literal
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.image import image_data_url
 
 ALL_SUBSETS = [
     "Accounting",
@@ -51,13 +51,6 @@ ALL_SUBSETS = [
 ]
 
 LETTERS = "ABCDEFGHI"
-
-
-def image_data_url(pil_image) -> str:
-    """The row's PIL image as a base64 PNG `data:` URL."""
-    buffer = BytesIO()
-    pil_image.save(buffer, format="PNG")
-    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
 
 
 def question_text(question: str, options: list[str]) -> str:
