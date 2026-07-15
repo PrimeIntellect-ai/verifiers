@@ -6,8 +6,11 @@ implicit contracts or disappear into follow-up discussions.
 
 It does not track work that is already complete: topology selection is shared through
 `EnvConfig`, taskset and harness syntax lowers to the built-in single-agent topology, one
-invocation returns and persists one `AgentGraph`, and native v1 group rewards and `Episode`
-have been removed.
+invocation returns and persists one `AgentGraph`, native v1 group rewards and `Episode`
+have been removed, `topology.py` is split into its authoring half and the `runner.py`
+glue, and the built-in judge topologies are gone (topologies are packages like tasksets
+and harnesses; the `environments/` examples are the reference implementations, not a
+shipped judge tier).
 
 ## Execution and scalability
 
@@ -36,6 +39,26 @@ logic) — best done as its own small PR, coordinated with main.
 
 Done when the guesser is gone, a mixed-placement run keeps local agents on loopback
 (tested), and the minted-remote-tool case is served correctly.
+
+### Make infinite-seed addressing an explicit contract
+
+An infinite seed source (an `INFINITE` taskset in the slot) can't be enumerated, so the
+env server serves `num_tasks=None` with no `task_ids`, and `run_eval_server` addresses
+instances by position — assuming generated seeds stamp `idx == position`. Resume and
+dispatch silently rely on that: a generator that stamps `idx` any other way would
+mis-match on resume. Today it's a bare comment in `runner.py`, not a checked contract.
+Either assert it (the server could verify `task.data.idx == position` as it pulls each
+lazy task) or document it as a taskset-authoring rule. Low urgency — every current
+generator stamps sequentially — but it's an unguarded invariant.
+
+### Teach the prime-rl dispatcher about infinite seed sources
+
+The orchestrator's `EnvClient` wrapper (`orchestrator/envs.py`) types `num_tasks: int` and
+reads `info.num_tasks` as an int, so an infinite-seeded topology (`num_tasks=None` on the
+wire) would break training-side dispatch. Finite runs are unaffected and the wire protocol
+is compatible; this is only blocking if someone points *training* at an infinite seed
+source. Cross-repo (prime-rl, not verifiers) — recorded here because the gap is on the
+topology seed contract.
 
 ### Account for variable topology cost
 
@@ -89,18 +112,18 @@ callers and future graph-native resume should. Stamp the topology's final comple
 onto the returned `AgentGraph` after topology scoring so consumers can read a self-contained
 verdict without loading topology code.
 
-### Recover relative signals as a built-in best-of-N topology
+### Recover relative signals as a best-of-N example topology
 
 Deleting `@group_reward` removed the only native home for pairwise/relative eval signals
 (shortest-of-group, preference comparisons); they were demoted to per-trace metrics with
 the comparison left to "the training algorithm". For *training* that is the right owner,
-but eval-mode relative signals have a clean replacement the framework should ship rather
-than describe: a built-in best-of-N topology — one seed, `run` fans out N runs of the same
-agent, a `@reward(agent=...)` compares `graph.children(...)`. That recovers everything
-group rewards did, explicitly, on the canonical path, and doubles as the documented
-migration story for the removal.
+but eval-mode relative signals have a clean replacement to ship as an **example
+environment** (built-in topologies are gone): a best-of-N topology — one seed, `run` fans
+out N runs of the same role (a `list[AgentConfig]`), a `@reward(agent=...)` compares
+`graph.children(...)`. That recovers everything group rewards did, explicitly, on the
+canonical path, and doubles as the documented migration story for the removal.
 
-Done when a `best-of-n` built-in exists and the docs name it as the group-reward successor.
+Done when a best-of-N example exists and the docs name it as the group-reward successor.
 
 ## Replay, presentation, and platform upload
 
@@ -136,35 +159,25 @@ graphs are not pushed. Prefer a graph-native upload contract before re-enabling 
 
 ### Normalize agent execution configuration before running
 
-Agent model, client, and sampling settings are currently resolved while binding a topology run:
-agent-specific values override request-level defaults. The behavior is correct, but the layered
-fallbacks remain visible in execution code and leave more than one representation of a resolved
-agent configuration.
-
-A future cleanup can introduce one normalized, fully resolved agent execution context before any
-agent runs. This is not required for correctness and should not be combined with unrelated server
-lifecycle changes.
+Agent model/client/sampling settings resolve via layered fallbacks (`binding.config.model
+or ctx.model`, `_merge_sampling`, the override-client lookup). The `topology.py` split
+centralized this into one place — `TopologyRunner._agents_for.build` — which produces the
+resolved `ModelContext` per agent, so it is no longer scattered; introducing a distinct
+named "resolved agent config" type on top is low-value and deferred.
 
 ### Settle the config layer's structure
 
-A reviewed set of config cleanups, deferred as one pass (analysis 2026-07-11):
+A reviewed set of config cleanups, deferred as one pass (analysis 2026-07-11); the
+`topology.py` split and `RolloutLimits`-declared-once (a `limits` property on `EnvConfig`)
+have since been done, leaving:
 
-- **Split `topology.py` into its authoring and runner halves.** The authoring surface
-  (`AgentConfig`, `TopologyConfig`, `AgentGraph`, `Topology`, `SingleAgentTopology`,
-  `graph_complete`) imports nothing from `env.py`; only the runner half does. Splitting
-  turns the layering into a clean DAG (`topology ← env ← runner`) and deletes the
-  forward-referenced `EnvConfig.topology` annotation plus the `model_rebuild()` call that
-  currently papers over the cycle — the one trick in the config layer.
-- **Declare `RolloutLimits` once.** `EnvConfig` carries four flat `max_*` fields that are
-  hand-copied into `RolloutLimits` at the runner; a `limits` property on `EnvConfig`
-  states the correspondence once while keeping the flat CLI flags.
 - **Align timeout vocabulary.** `--timeout.rollout` maps onto the task-authored
   `TaskTimeout.harness`; post-consolidation "rollout" is the word — rename the task field
   while it is still a five-file change.
-- **Delete the dead `EnvConfig.env_id` property** (no v1 consumers) and, riding the
-  split, consider moving the `EnvConfig` family into `configs/` so that package holds all
-  process-level configs (plugin configs stay colocated with their plugin classes — that
-  idiom is deliberate and load-bearing for id-narrowing).
+- **Move the `EnvConfig` family into `configs/`** so that package holds all process-level
+  configs (plugin configs stay colocated with their plugin classes — that idiom is
+  deliberate and load-bearing for id-narrowing). `EnvConfig.env_id` is *not* dead — the
+  infinite-seed guard in `cli/eval/runner.py` reads it — so it stays.
 
 Explicitly considered and rejected (do not re-open without new evidence): nesting
 `model`/`client`/`sampling` into a ModelContext-shaped sub-config (kills `-m` /
@@ -177,9 +190,9 @@ interface), and dropping the `group_size`/`rollouts_per_example` aliases (traine
 ### Separate the legacy protocol from native v1
 
 Native v1 execution uses only `run -> AgentGraph`, but the public `EnvClient` and shared protocol
-module still expose `run_rollout`, `run_group`, `requires_group_scoring`, and their legacy
-request/response types. This is intentional compatibility leakage, not part of the native graph
-contract.
+module still expose `run_rollout`, `run_group`, and their legacy request/response types. This is
+intentional compatibility leakage, not part of the native graph contract. (`requires_group_scoring`
+has already moved off the native `InfoResponse` onto `LegacyInfoResponse` — partial progress.)
 
 Move the bridge routes and types behind an explicitly legacy client/module, or remove them when
 v0 support is retired. Native imports and generated client interfaces should then expose only the

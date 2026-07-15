@@ -17,6 +17,7 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
     runtime_is_local,
 )
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.topology import TopologyConfig
@@ -109,6 +110,18 @@ class EnvConfig(BaseConfig):
     default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
     with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
     such servers)."""
+
+    @property
+    def limits(self) -> RolloutLimits:
+        """The four flat `max_*` fields as one per-rollout `RolloutLimits` budget (kept
+        flat as CLI flags; stated as `RolloutLimits` here, once)."""
+        return RolloutLimits(
+            max_turns=self.max_turns,
+            max_input_tokens=self.max_input_tokens,
+            max_output_tokens=self.max_output_tokens,
+            max_total_tokens=self.max_total_tokens,
+        )
+
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the

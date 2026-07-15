@@ -29,7 +29,6 @@ from verifiers.v1.interception import (
 )
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import SubprocessConfig
-from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.topology import (
     AgentBinding,
@@ -227,12 +226,7 @@ class TopologyRunner:
             raise RuntimeError(
                 "TopologyRunner.run_instance() must be called inside TopologyRunner.serving()"
             )
-        limits = RolloutLimits(
-            max_turns=self.config.max_turns,
-            max_input_tokens=self.config.max_input_tokens,
-            max_output_tokens=self.config.max_output_tokens,
-            max_total_tokens=self.config.max_total_tokens,
-        )
+        limits = self.config.limits
 
         def build(name: str, seat: int | None, binding: AgentBinding) -> Agent:
             agent_ctx = ModelContext(
