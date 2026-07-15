@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 class Phase(StrEnum):
     PENDING = "pending"
+    BOOT = "boot"
     SETUP = "setup"
     RUNNING = "running"
     FINALIZE = "finalize"
@@ -111,8 +112,8 @@ class Rollout:
             state=state_cls(type(self.task))(),
         )
         self.trace = trace  # expose for the --rich dashboard
-        self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
-        trace.timing.setup.start = time.time()
+        self.phase = Phase.BOOT  # leaving the queue: the runtime boots now
+        trace.timing.boot.start = time.time()
         self.runtime = make_runtime(self.runtime_config, name=trace.id)
         runtime = self.runtime
         trace.runtime = runtime.info
@@ -132,6 +133,10 @@ class Rollout:
                 ttt_hook = TTTRolloutHook(self.ttt, trace, ctx=ctx)
                 session.ttt = ttt_hook
             await runtime.start()
+            now = time.time()
+            trace.timing.boot.end = now
+            trace.timing.setup.start = now
+            self.phase = Phase.SETUP
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
                 None if self.setup_timeout is None else asyncio.get_running_loop().time() + self.setup_timeout
@@ -233,6 +238,7 @@ class Rollout:
             trace.is_completed = True
             now = time.time()
             for span in (
+                trace.timing.boot,
                 trace.timing.setup,
                 trace.timing.generation,
                 trace.timing.finalize,

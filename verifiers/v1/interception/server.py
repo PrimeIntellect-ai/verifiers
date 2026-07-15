@@ -44,7 +44,7 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Messages, Tool
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
@@ -266,7 +266,10 @@ class InterceptionServer:
         # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
         # A user simulator extends both each turn (`dialect.extend` for wire, `prompt` for trace).
         prompt: Messages
-        prompt, _ = dialect.parse_request(body)
+        # `tools` is recorded onto the trace only when a turn commits (below / in `_stream`):
+        # the request is ground truth for what the model saw, but a refused or failed request
+        # was never seen at all.
+        prompt, tools = dialect.parse_request(body)
         # Cache the opening so retries do not advance the simulator twice.
         if session.user is not None and session.trace.task.data.prompt is None and session.trace.num_turns == 0:
             if session.opening is None:
@@ -285,7 +288,7 @@ class InterceptionServer:
                         "(TTT requires the renderer client, which never streams)"
                     ),
                 )
-            return await self._stream(request, session, dialect, body, prompt)
+            return await self._stream(request, session, dialect, body, prompt, tools)
         headers = request.headers.copy()
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
@@ -372,6 +375,9 @@ class InterceptionServer:
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             if session.ttt is not None:
                 session.ttt.after_commit(session.trace, num_nodes_before)
+            if tools:
+                # Preserve the schemas actually advertised on the committed turn.
+                session.trace.tools = tools
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
@@ -405,6 +411,7 @@ class InterceptionServer:
         dialect: Dialect,
         body: dict,
         prompt: Messages,
+        tools: list[Tool] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace. Single-shot — a streamed
@@ -506,6 +513,8 @@ class InterceptionServer:
             if parser_error is not None:
                 raise parser_error
             turn.commit(parser.finish())
+            if tools:  # record only on commit, like the non-streaming path
+                session.trace.tools = tools
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         finally:
             # Release the withheld events only now — after the commit — then close.

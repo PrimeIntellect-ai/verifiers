@@ -7,7 +7,6 @@
 import argparse
 import asyncio
 import json
-import os
 import subprocess
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -330,6 +329,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
+    parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
@@ -342,6 +342,12 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
+    initial = []
+    if args.initial_messages_file:
+        path = Path(args.initial_messages_file)
+        payload = path.read_bytes()
+        path.unlink()
+        initial = json.loads(payload)
     # No client-side retries: re-sending a request whose turn the interception already committed
     # re-samples it and forks the trace into an extra dead-end branch. A generous timeout lets a
     # slow turn finish instead of timing out and re-sending; genuine failures surface as error rows.
@@ -356,11 +362,7 @@ async def main() -> None:
             tools.append(SEARCH_TOOL)
         tools += mcp_tools
         messages = [{"role": "system", "content": args.system_prompt}] if args.system_prompt else []
-        # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
-        # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
-        # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
-        # message. Both empty means the task has no prompt — the user simulator seeds the opening.
-        initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
+
         if initial:
             messages.extend(initial)
         elif args.prompt:

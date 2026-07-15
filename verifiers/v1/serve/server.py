@@ -26,6 +26,9 @@ from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
 
+MAX_LAZY_TASKS = 1_000_000
+"""Most tasks an infinite taskset's generator is willing to build (and cache) per worker."""
+
 
 class EnvServer:
     def __init__(
@@ -34,11 +37,20 @@ class EnvServer:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        self.tasks = self.env.taskset.load()
+        # A finite taskset is materialized up front (its count is served via `info`); an
+        # infinite one is pulled off its generator on demand (see `_task`), so
+        # `num_tasks=None` on the wire ⟺ the taskset is infinite.
+        self._task_iter = iter(self.env.taskset.load())
+        self._tasks: list = []
+        self.num_tasks: int | None = None
+        if not type(self.env.taskset).INFINITE:
+            self._tasks = list(self._task_iter)
+            self.num_tasks = len(self._tasks)
         # One task type per taskset (the authoring contract; its `load()` constructs it),
         # so group scoring is a run-wide property.
-        self.requires_group_scoring = bool(self.tasks) and bool(
-            discover_decorated(self.tasks[0], "group_reward")
+        first = self._task(0) if self.num_tasks != 0 else None
+        self.requires_group_scoring = first is not None and bool(
+            discover_decorated(first, "group_reward")
         )
         self._clients: dict[
             tuple[str, str], Client
@@ -73,6 +85,26 @@ class EnvServer:
             # of a spurious multiprocessing traceback, matching serve_env's own handling.
             pass
 
+    def _task(self, idx: int):
+        """The task at `idx`; an infinite taskset is generated (and cached) up to `idx`
+        on demand. Generation must be deterministic — every pool worker runs its own
+        `load()`, so idx-addressing relies on all of them producing the same sequence.
+        Lazy generation is capped at `MAX_LAZY_TASKS`: an idx that far ahead is a
+        runaway driver, and generating (and caching) toward it would hang the worker
+        and exhaust memory instead of failing the one request."""
+        while len(self._tasks) <= idx:
+            if idx >= MAX_LAZY_TASKS:
+                raise IndexError(
+                    f"task_idx {idx} exceeds the lazy-generation cap ({MAX_LAZY_TASKS})"
+                )
+            try:
+                self._tasks.append(next(self._task_iter))
+            except StopIteration:
+                raise IndexError(
+                    f"task_idx {idx} out of range ({len(self._tasks)} tasks)"
+                ) from None
+        return self._tasks[idx]
+
     def _client(self, client_config: ClientConfig, model: str) -> Client:
         """Cache clients because renderer initialization builds a tokenizer pool."""
         key = (client_config.model_dump_json(), model)
@@ -96,14 +128,14 @@ class EnvServer:
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
+        episode = self.env.episode(self._task(req.task_idx), ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
+        episode = self.env.episode(self._task(req.task_idx), ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)
@@ -118,7 +150,7 @@ class EnvServer:
                 response: BaseResponse = HealthResponse()
             elif route == "info":
                 response = InfoResponse(
-                    num_tasks=len(self.tasks),
+                    num_tasks=self.num_tasks,
                     requires_group_scoring=self.requires_group_scoring,
                 )
             elif route == "run_rollout":
@@ -151,10 +183,10 @@ class EnvServer:
 
     async def run(self) -> None:
         logger.info(
-            "EnvServer up: taskset=%s address=%s tasks=%d group_scoring=%s",
+            "EnvServer up: taskset=%s address=%s tasks=%s group_scoring=%s",
             self.taskset_id,
             self.address,
-            len(self.tasks),
+            self.num_tasks if self.num_tasks is not None else "infinite",
             self.requires_group_scoring,
         )
         poller = zmq.asyncio.Poller()
