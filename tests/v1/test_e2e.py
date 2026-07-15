@@ -3,13 +3,6 @@
 import pytest
 
 
-def _is_transient_provider_invalid_request(trace) -> bool:
-    return bool(trace.errors) and all(
-        error.type == "ProviderError" and '"code":"invalid_request"' in error.message
-        for error in trace.errors
-    )
-
-
 @pytest.mark.e2e
 async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     """Single-turn (echo a short phrase back)."""
@@ -101,19 +94,14 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
         pytest.skip(
             "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
         )
-    # Prime can intermittently return a transient generic invalid_request on tool calls;
-    # one rerun keeps this smoke test deterministic while still surfacing real regressions.
-    for _ in range(2):
-        (trace,) = await run_v1(
-            "counter-tool-v1",
-            harness="null",
-            harness_overrides={"runtime": {"type": harness_runtime}},
-            output_dir=tmp_path,
-            max_turns=8,
-            taskset_overrides={"task": {"tools": tool_runtime}},
-        )
-        if not _is_transient_provider_invalid_request(trace):
-            break
+    (trace,) = await run_v1(
+        "counter-tool-v1",
+        harness="null",
+        harness_overrides={"runtime": {"type": harness_runtime}},
+        output_dir=tmp_path,
+        max_turns=8,
+        taskset_overrides={"task": {"tools": tool_runtime}},
+    )
     assert trace.errors == []
     assert trace.num_turns >= 2  # at least two tool calls accumulated
     assert trace.reward == 1.0
