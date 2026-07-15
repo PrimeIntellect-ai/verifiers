@@ -94,7 +94,7 @@ class TextifyConfig(BaseConfig):
     gamma: float = 1.0           # brightness curve (lum **= gamma)
     invert: bool | None = None   # None auto-inverts predominantly-light diagrams
     ramp: str = " .:-=+*#%@"     # ascii glyph ramp, dark -> light
-    threshold: float = 0.5       # braille on/off cutoff
+    threshold: float | Literal["otsu"] = 0.5 # fixed cutoff or global Otsu
     max_chars: int | None = 40_000 # hard budget; clamp width/height to fit
 
 def image_to_text(image, cfg) -> str            # pure numpy render, no fence
@@ -241,8 +241,9 @@ non-deterministic across model/version changes, and introduces a new dependency/
 - **`describe()` output format**: currently one deterministic key=value-like prose line;
   whether the fence tag should carry mode only or dimensions too (lean: mode only).
 - **Color**: luminance-only for now; ANSI color codes explode token counts. Revisit never?
-- **Braille default params**: threshold vs adaptive (Otsu)? Start fixed threshold, keep the
-  config door open.
+- **Thresholding**: fixed 0.5 remains the default; `threshold="otsu"` applies deterministic
+  global Otsu binarization to both ASCII and braille. Local/Sauvola thresholding remains future
+  work for uneven illumination and document scans.
 - **Default width evidence**: width 160 is the current starting default, not settled. A blind
   six-image MMMU test at 160 matched all originals to shuffled ASCII correctly, but ASCII-only
   semantic descriptions lost text and misidentified anatomy/physics symbols; coarse geometry

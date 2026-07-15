@@ -70,7 +70,8 @@ width = 160
 
 Or on the CLI: `--textify.enabled true --textify.width 160`. Set
 `--textify.mode braille` for braille; `height`, `char_aspect`, `gamma`, `invert`, `ramp`,
-`threshold`, and `max_chars` tune rendering. `invert` defaults to auto, which maps the white
+`threshold`, and `max_chars` tune rendering. Set `threshold = "otsu"` for deterministic
+global Otsu binarization in either ASCII or braille mode. `invert` defaults to auto, which maps the white
 backgrounds common in diagrams and documents to spaces. Each image is limited to 40,000 output
 characters by default (25 megapixels decoded), so extreme aspect ratios cannot explode a prompt.
 

@@ -280,3 +280,39 @@ def test_oversized_payload_rejected_before_decode(monkeypatch) -> None:
     cfg = vf.TextifyConfig(enabled=True)
     with pytest.raises(ValueError, match="byte safety limit"):
         render_url("data:image/png;base64," + "A" * 5, cfg)
+
+
+def test_otsu_ascii_is_binary_and_braille_uses_adaptive_cutoff() -> None:
+    image = np.array(
+        [
+            [0, 10, 20, 30],
+            [0, 10, 220, 255],
+        ],
+        dtype=np.uint8,
+    )
+    ascii_cfg = vf.TextifyConfig(
+        enabled=True,
+        width=4,
+        height=2,
+        invert=False,
+        threshold="otsu",
+    )
+    ascii_art = vf.image_to_text(image, ascii_cfg)
+    assert set(ascii_art) <= {ascii_cfg.ramp[0], ascii_cfg.ramp[-1], "\n"}
+    assert ascii_cfg.ramp[0] in ascii_art and ascii_cfg.ramp[-1] in ascii_art
+
+    braille_cfg = vf.TextifyConfig(
+        enabled=True,
+        mode="braille",
+        width=1,
+        height=1,
+        invert=False,
+        threshold="otsu",
+    )
+    assert vf.image_to_text(np.tile(image, (2, 1)), braille_cfg) != "⠀"
+
+
+def test_threshold_validation() -> None:
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        vf.TextifyConfig(threshold=1.1)
+    assert vf.TextifyConfig(threshold="otsu").threshold == "otsu"

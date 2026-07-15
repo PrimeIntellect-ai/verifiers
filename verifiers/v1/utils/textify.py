@@ -76,8 +76,8 @@ class TextifyConfig(BaseConfig):
     is inverted so ink gets the glyphs and background the blanks."""
     ramp: str = Field(" .:-=+*#%@", min_length=2)
     """Ascii glyphs from dark to light before optional inversion."""
-    threshold: float = Field(0.5, ge=0, le=1)
-    """Braille dot on/off luminance cutoff."""
+    threshold: float | Literal["otsu"] = 0.5
+    """Braille cutoff, or `otsu` for automatic global binarization of ASCII/Braille."""
     max_chars: int | None = Field(40_000, ge=1, le=1_000_000)
     """Hard character budget per image; width is clamped to fit."""
 
@@ -86,6 +86,13 @@ class TextifyConfig(BaseConfig):
     def _finite(cls, value: float) -> float:
         if not np.isfinite(value):
             raise ValueError("value must be finite")
+        return value
+
+    @field_validator("threshold")
+    @classmethod
+    def _threshold_range(cls, value: float | str) -> float | str:
+        if isinstance(value, float) and (not np.isfinite(value) or not 0 <= value <= 1):
+            raise ValueError("threshold must be between 0 and 1")
         return value
 
 
@@ -180,6 +187,28 @@ def _luminance(img: np.ndarray, rows: int, cols: int, cfg: TextifyConfig) -> np.
     return lum
 
 
+def _otsu_threshold(lum: np.ndarray) -> float:
+    """Classic global Otsu threshold over luminance in [0, 1]."""
+    values = np.clip((lum * 255).round(), 0, 255).astype(np.uint8)
+    hist = np.bincount(values.ravel(), minlength=256).astype(np.float64)
+    if np.count_nonzero(hist) <= 1:
+        return 0.5
+    levels = np.arange(256, dtype=np.float64)
+    left_weight = np.cumsum(hist)
+    right_weight = hist.sum() - left_weight
+    left_sum = np.cumsum(hist * levels)
+    right_sum = left_sum[-1] - left_sum
+    valid = (left_weight > 0) & (right_weight > 0)
+    between = np.full(256, -1.0)
+    delta = np.zeros(256)
+    delta[valid] = (
+        left_sum[valid] / left_weight[valid] - right_sum[valid] / right_weight[valid]
+    )
+    between[valid] = left_weight[valid] * right_weight[valid] * delta[valid] ** 2
+    split = int(np.argmax(between))
+    return (split + 0.5) / 255.0
+
+
 def image_to_text(image: bytes | np.ndarray, cfg: TextifyConfig) -> str:
     """Render an image to multi-line character art (no fence). Deterministic in
     (image, cfg). Accepts encoded bytes (any Pillow format) or an RGB(A)/grayscale
@@ -190,7 +219,8 @@ def image_to_text(image: bytes | np.ndarray, cfg: TextifyConfig) -> str:
     rows, cols = img.shape[0] // factor[0], img.shape[1] // factor[1]
     if cfg.mode == "braille":
         lum = _luminance(img, rows * 4, cols * 2, cfg)
-        dots = lum >= cfg.threshold
+        threshold = _otsu_threshold(lum) if cfg.threshold == "otsu" else cfg.threshold
+        dots = lum >= threshold
         codes = np.zeros((rows, cols), dtype=np.uint16)
         for row in range(4):
             for col in range(2):
@@ -198,6 +228,8 @@ def image_to_text(image: bytes | np.ndarray, cfg: TextifyConfig) -> str:
                 codes |= bits << _BRAILLE_BITS[row, col]
         return "\n".join("".join(chr(0x2800 + int(c)) for c in line) for line in codes)
     lum = _luminance(img, rows, cols, cfg)
+    if cfg.threshold == "otsu":
+        lum = (lum >= _otsu_threshold(lum)).astype(np.float32)
     idx = np.clip((lum * (len(cfg.ramp) - 1)).round(), 0, len(cfg.ramp) - 1)
     glyphs = np.array(list(cfg.ramp))
     return "\n".join("".join(line) for line in glyphs[idx.astype(np.intp)])
