@@ -448,10 +448,8 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                         stop = f"{stop} (truncated)".strip()
             else:
                 state, result, stop = rollout.phase, "", ""
-            descriptor = (
-                rollout.runtime.descriptor if rollout.runtime is not None else None
-            )
-            runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
+            runtime_id = t.runtime.id if t.runtime is not None else None
+            runtime = f"{runtime_type}({runtime_id})" if runtime_id else runtime_type
             turns = t.num_turns
             start = t.timing.boot.start or t.timing.setup.start
             end = (

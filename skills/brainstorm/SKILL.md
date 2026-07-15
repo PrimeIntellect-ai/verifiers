@@ -1,13 +1,13 @@
 ---
 name: brainstorm
-description: Run interactive brainstorming across verifiers environments, evaluations, GEPA, and RL training. Use when the user wants ideation, literature scanning, concept teaching, roadmap planning, or research program design grounded in local CLI sources, verifiers, and RL trainer code.
+description: Run interactive brainstorming across verifiers tasksets, evaluations, GEPA, and RL training. Use when the user wants ideation, literature scanning, concept teaching, roadmap planning, or research program design grounded in local CLI sources, verifiers, and RL trainer code.
 ---
 
 # Brainstorm
 
 ## Goal
 
-Run an interactive idea session with the user to turn their idea into a concrete environment outline.
+Run an interactive idea session with the user to turn their idea into a concrete taskset outline.
 
 ## Interaction style
 
@@ -19,7 +19,7 @@ Run an interactive idea session with the user to turn their idea into a concrete
 ## Discovery workflow
 
 1. Find out what the user wants:
-  - Is it running existing evaluations or training with common environments? If so, use the environments hub to see whether those envs already exist.
+  - Is it running existing evaluations or training with common tasksets? If so, use the Environment Hub to see whether those tasksets already exist.
   - Is it optimizing an existing workflow? In this case, prompt optimization with GEPA is the right tool.
-  - Else: For training and evaluations, building an environment together is the right call.
+  - Else: For training and evaluations, building a taskset together is the right call.
 2. After you have found this out, look at the other skills and choose the appropriate one to proceed on the technical level, while still keeping the interactive session with the user alive.

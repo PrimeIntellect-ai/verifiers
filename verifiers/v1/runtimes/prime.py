@@ -138,7 +138,7 @@ class PrimeRuntime(Runtime):
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
-            await self._client.run_background_job(
+            await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
         except (
@@ -229,11 +229,11 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
-        await self.run(
-            ["sh", "-c", f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}"],
-            {},
-        )
         try:
+            await self._client.execute_command(
+                self.info.id,
+                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
+            )
             await self._client.upload_bytes(
                 self.info.id, target, data, filename=PurePosixPath(target).name
             )
@@ -257,9 +257,7 @@ class PrimeRuntime(Runtime):
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return
-        if (
-            self.info.id is not None
-        ):  # kept (not nulled) so descriptor survives teardown
+        if self.info.id is not None:  # keep info.id available after teardown
             try:
                 await client.delete(self.info.id)
             except Exception as e:

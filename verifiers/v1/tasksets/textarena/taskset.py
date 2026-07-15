@@ -39,6 +39,8 @@ class TextArenaState(vf.State):
 class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
     """Keep a seeded game alive across user turns in the harness process."""
 
+    EXTRAS = ("ta",)
+
     async def setup(self) -> None:
         if not self.config.colocated:
             raise ValueError(
@@ -73,9 +75,9 @@ class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
             with open(OUTCOME_FILE, "w") as f:
                 json.dump({"reward": reward, "reason": reason}, f)
             self.state.game_over = True
-            return [{"role": "user", "content": reason}]
+            return [vf.UserMessage(content=reason)]
         _, observation = env.get_observation()
-        return [{"role": "user", "content": self._latest_feedback(str(observation))}]
+        return [vf.UserMessage(content=self._latest_feedback(str(observation)))]
 
 
 class TextArenaTaskConfig(vf.TaskConfig):

@@ -19,13 +19,10 @@ from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
-# Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
-# if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
-# first installing curl + CA certs from the distro package manager when the image has no
-# downloader at all (bare task images, e.g. Harbor's). It installs to ~/.local/bin, which
-# we prepend to PATH so the provisioning command finds it; uv resolves each script's inline
-# deps into its own cache, isolated from the eval process. (Needs network + one of
-# uv / pip / curl / wget / apt-get / apk.)
+# Ensure the latest `uv` is available for our PEP 723 scripts: prefer pip on Python images,
+# then fall back to the standalone installer (curl/wget), installing curl + CA certs when a
+# bare image has no downloader. Both paths install to ~/.local/bin, which we prepend to PATH.
+# (Needs network + one of pip / curl / wget / apt-get / apk.)
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
     "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
     "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
@@ -37,12 +34,8 @@ _DOWNLOAD_UV = (
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    # Always install the latest uv into $HOME/.local/bin (ahead of any image uv on PATH) rather
-    # than reusing whatever the image ships: base images carry wildly varying uvs (too old for the
-    # `uv sync --script` / `uv python find --script` that prepare_uv_script runs, or stale/shadowed
-    # on PATH). Installing fresh sidesteps all version probing. Falls back to pip when no downloader.
-    f"{{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} "
-    "|| pip install -q -U uv 2>/dev/null"
+    "pip install -q -U --user uv 2>/dev/null "
+    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
 
 # The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
@@ -123,10 +116,6 @@ class Runtime(ABC):
     def type(self) -> str:
         return self.config.type
 
-    @property
-    def descriptor(self) -> str | None:
-        return self.info.id
-
     @abstractmethod
     async def start(self) -> None:
         pass
@@ -187,12 +176,10 @@ class Runtime(ABC):
                 if digest not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
-                    await self.run(
-                        ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"],
-                        {},
-                    )
                     command = (
-                        f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q --no-config "
+                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                        f"&& {{ {_ENSURE_UV}; }} "
+                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
                     )
                     result = await self.run(["sh", "-c", command], env or {})
@@ -243,6 +230,10 @@ class Runtime(ABC):
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
         pass
+
+    def host_url(self, url: str) -> str:
+        """The URL a program inside this runtime uses to reach a host-bound `url`."""
+        return url
 
     @property
     def published_port(self) -> int | None:

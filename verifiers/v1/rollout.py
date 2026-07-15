@@ -165,7 +165,7 @@ class Rollout:
             async with self._serve_interception(
                 runtime, session, [*tool_servers, *([user] if user else [])]
             ) as (base_url, secret):
-                endpoint = f"{base_url}/v1"
+                endpoint = f"{runtime.host_url(base_url)}/v1"
                 async with (
                     serve_tools(
                         tool_servers,

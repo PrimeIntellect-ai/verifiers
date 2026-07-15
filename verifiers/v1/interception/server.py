@@ -408,14 +408,8 @@ class InterceptionServer(Interception):
                 session.trace.id,
                 len(response.message.tool_calls or []),
             )
-            turn.commit(response)  # one node per new message;
+            turn.commit(response, tools)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
-            if tools:
-                # Persist the advertised tools now that the model actually saw them (see
-                # `Trace.tools`). Only a tools-bearing turn updates it (truthy, so an empty
-                # parse or a trailing tool-less call never erases the schemas the recorded
-                # tool calls need).
-                session.trace.tools = tools
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
@@ -651,9 +645,7 @@ class InterceptionServer(Interception):
                     return resp
 
             try:
-                turn.commit(response)
-                if tools:  # record only on commit, like the non-streaming path
-                    session.trace.tools = tools
+                turn.commit(response, tools)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
             finally:
                 # Release the withheld terminal events only now — after the commit.

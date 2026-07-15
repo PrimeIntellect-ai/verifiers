@@ -113,8 +113,13 @@ def _import_ref(ref: str) -> object:
 
 
 class ServerBase(Generic[ConfigT, StateT]):
-    # The empty value falls back to the snake-cased class name.
-    TOOL_PREFIX: ClassVar[str] = ""
+    TOOL_PREFIX: ClassVar[str | None] = ""
+    """The empty value falls back to the snake-cased class name. None advertises the server's
+    tools bare (no `<server>_` prefix); name collisions across servers are then the taskset
+    author's concern."""
+
+    EXTRAS: ClassVar[tuple[str, ...]] = ()
+    """Package extras the server's module needs, applied at sandbox install."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -211,6 +216,8 @@ class ServerBase(Generic[ConfigT, StateT]):
 
     @property
     def server_name(self) -> str:
+        if self.TOOL_PREFIX is None:
+            return ""
         return self.TOOL_PREFIX or "".join(
             ("_" + c.lower() if c.isupper() else c) for c in type(self).__name__
         ).lstrip("_")

@@ -35,7 +35,7 @@ class EchoUserSimUser(vf.User[vf.UserConfig, EchoUserSimState]):
         if self.turns >= len(self.phrases):
             self.state.user_finished = True
             return []
-        return [{"role": "user", "content": self.phrases[self.turns]}]
+        return [vf.UserMessage(content=self.phrases[self.turns])]
 
 
 class EchoUserSimData(vf.TaskData):

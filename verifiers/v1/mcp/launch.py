@@ -125,13 +125,15 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # build, silently running the server against a released (older) API. Pretend the
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
+    extras = ",".join(type(server).EXTRAS)
     setup = (
         f"{_ENSURE_UV}; set -e; "
         f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
         f"uv venv {venv} && "
         f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
         f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
-        f"uv pip install --python {venv} {root}/{shlex.quote(env.name)}"
+        f"uv pip install --python {venv} "
+        f"{shlex.quote(f'{root}/{env.name}' + (f'[{extras}]' if extras else ''))}"
     )
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
@@ -263,7 +265,9 @@ async def serve(
         # `state_base`, which is universally reachable (the interception is exposed via a tunnel
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
         # (`state_base` is None for them).
-        state_url = f"{state_base.rstrip('/')}/state" if state_base else None
+        state_url = (
+            f"{runtime.host_url(state_base.rstrip('/'))}/state" if state_base else None
+        )
         port = await serve_in_runtime(
             server,
             runtime,
@@ -289,6 +293,8 @@ async def serve(
                 runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
             )
         )
+        if not for_host and not colocated and harness_runtime is not None:
+            base = harness_runtime.host_url(base)
         yield f"{base.rstrip('/')}/mcp"
 
 
@@ -389,7 +395,8 @@ async def serve_tools(
                 urls[name] = server.url
                 logger.info("tool server '%s' (shared, external): %s", name, server.url)
                 continue
-            urls[name] = _shared_url_for_rollout(server.url, state_base, state_secret)
+            url = harness_runtime.host_url(server.url) if server.local else server.url
+            urls[name] = _shared_url_for_rollout(url, state_base, state_secret)
             # The tagged URL contains the bearer secret; log only the untagged base URL.
             logger.info("tool server '%s' (shared): %s", name, server.url)
         for toolset in toolsets:

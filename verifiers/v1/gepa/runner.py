@@ -101,16 +101,14 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
                 valset=[task.data.idx for task in val_tasks],
                 adapter=adapter,
                 reflection_lm=reflection_lm,
-                max_metric_calls=config.max_metric_calls,
+                max_metric_calls=config.max_total_rollouts,
                 reflection_minibatch_size=config.reflection_minibatch_size,
                 run_dir=str(run_dir) if run_dir is not None else None,
                 seed=config.seed,
                 display_progress_bar=False,
-                skip_perfect_score=config.perfect_score is not None,
+                skip_perfect_score=False,
                 logger=_GEPALog(),
             )
-            if config.perfect_score is not None:
-                optimize_kwargs["perfect_score"] = config.perfect_score
             return optimize(**optimize_kwargs)
         finally:
             loop.run_until_complete(serving.__aexit__(None, None, None))

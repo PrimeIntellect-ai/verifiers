@@ -409,38 +409,56 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 item=added,
             )
             if kind == "message":
-                part = item["content"][0]
-                empty_part = {**part, "text": ""}
-                emit(
-                    "response.content_part.added",
-                    item_id=item_id,
-                    output_index=output_index,
-                    content_index=0,
-                    part=empty_part,
-                )
-                emit(
-                    "response.output_text.delta",
-                    item_id=item_id,
-                    output_index=output_index,
-                    content_index=0,
-                    delta=part["text"],
-                    logprobs=[],
-                )
-                emit(
-                    "response.output_text.done",
-                    item_id=item_id,
-                    output_index=output_index,
-                    content_index=0,
-                    text=part["text"],
-                    logprobs=[],
-                )
-                emit(
-                    "response.content_part.done",
-                    item_id=item_id,
-                    output_index=output_index,
-                    content_index=0,
-                    part=part,
-                )
+                for content_index, part in enumerate(item.get("content") or []):
+                    refusal = part.get("type") == "refusal"
+                    field = "refusal" if refusal else "text"
+                    value = part.get(field, "")
+                    emit(
+                        "response.content_part.added",
+                        item_id=item_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                        part={**part, field: ""},
+                    )
+                    if refusal:
+                        emit(
+                            "response.refusal.delta",
+                            item_id=item_id,
+                            output_index=output_index,
+                            content_index=content_index,
+                            delta=value,
+                        )
+                        emit(
+                            "response.refusal.done",
+                            item_id=item_id,
+                            output_index=output_index,
+                            content_index=content_index,
+                            refusal=value,
+                        )
+                    else:
+                        emit(
+                            "response.output_text.delta",
+                            item_id=item_id,
+                            output_index=output_index,
+                            content_index=content_index,
+                            delta=value,
+                            logprobs=[],
+                        )
+                        emit(
+                            "response.output_text.done",
+                            item_id=item_id,
+                            output_index=output_index,
+                            content_index=content_index,
+                            text=value,
+                            logprobs=[],
+                        )
+                    emit(
+                        "response.content_part.done",
+                        item_id=item_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                        part=part,
+                    )
             elif kind == "function_call":
                 emit(
                     "response.function_call_arguments.delta",
