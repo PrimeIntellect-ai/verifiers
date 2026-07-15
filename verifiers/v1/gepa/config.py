@@ -49,9 +49,7 @@ class GEPAConfig(EnvConfig):
     """Seed for GEPA's optimizer (candidate selection / minibatch sampling). Task shuffling
     uses a fixed seed, matching eval — so this doesn't change the train/val split."""
 
-    max_metric_calls: int = Field(
-        500, validation_alias=AliasChoices("max_metric_calls", "B")
-    )
+    max_total_rollouts: int = Field(500)
     """Total rollouts GEPA may spend across the whole optimization run."""
     reflection_minibatch_size: int = 3
     """Train tasks sampled per reflection step."""

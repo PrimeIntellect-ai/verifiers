@@ -101,7 +101,7 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
                 valset=[task.data.idx for task in val_tasks],
                 adapter=adapter,
                 reflection_lm=reflection_lm,
-                max_metric_calls=config.max_metric_calls,
+                max_metric_calls=config.max_total_rollouts,
                 reflection_minibatch_size=config.reflection_minibatch_size,
                 run_dir=str(run_dir) if run_dir is not None else None,
                 seed=config.seed,
