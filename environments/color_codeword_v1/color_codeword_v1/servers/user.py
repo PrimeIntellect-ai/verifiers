@@ -1,7 +1,7 @@
 from PIL import Image
 
 import verifiers.v1 as vf
-from verifiers.utils.image_utils import image_data_url
+from verifiers.v1.utils.image import image_data_url
 
 COLOR_RGB = {
     "red": (255, 0, 0),

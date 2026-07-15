@@ -13,7 +13,7 @@ import re
 from typing import Literal
 
 import verifiers.v1 as vf
-from verifiers.utils.image_utils import image_data_url
+from verifiers.v1.utils.image import image_data_url
 
 ALL_SUBSETS = [
     "Accounting",

@@ -1,10 +1,11 @@
 import ast
+import base64
+from io import BytesIO
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 
 import verifiers as vf
 from verifiers.utils.data_utils import extract_boxed_answer
-from verifiers.utils.image_utils import image_data_url
 
 ALL_SUBSETS = [
     "Accounting",
@@ -51,6 +52,9 @@ MC_MAP = {
 
 def format_prompt(example: dict):
     pil_image = example["image_1"]
+    buffer = BytesIO()
+    pil_image.save(buffer, format="PNG")
+    b64_img = base64.b64encode(buffer.getvalue()).decode("utf-8")
     txt = example["question"] + "\n\n"
     options = ast.literal_eval(example["options"])
     assert len(options) == 4
@@ -65,7 +69,7 @@ def format_prompt(example: dict):
                 {"type": "text", "text": str(txt)},
                 {
                     "type": "image_url",
-                    "image_url": {"url": image_data_url(pil_image)},
+                    "image_url": {"url": f"data:image/png;base64,{b64_img}"},
                 },
             ],
         }
