@@ -8,6 +8,7 @@ injects the user simulator's replies, and stashes the real failure on `error`.
 turns.
 """
 
+import hashlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
+from verifiers.v1.utils.textify import TextifyConfig, render_url
 
 if TYPE_CHECKING:
     from verifiers.v1.errors import RolloutError
@@ -66,6 +68,10 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    textify: TextifyConfig = field(default_factory=TextifyConfig)
+    """How the interception server renders this rollout's wire images to text
+    (`verifiers.v1.utils.textify`); disabled by default, ascii when enabled."""
+    _textify_cache: dict[str, str | None] = field(default_factory=dict, init=False)
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -81,6 +87,15 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+
+    def render_image(self, url: str) -> str | None:
+        """Render one wire image once per rollout; harnesses resend the full history."""
+        key = hashlib.sha256(url.encode()).hexdigest()
+        if key not in self._textify_cache:
+            if len(self._textify_cache) >= 32:
+                self._textify_cache.pop(next(iter(self._textify_cache)))
+            self._textify_cache[key] = render_url(url, self.textify)
+        return self._textify_cache[key]
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each

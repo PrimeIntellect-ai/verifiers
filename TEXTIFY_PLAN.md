@@ -17,7 +17,7 @@ Observation (Slack): gpt-5.6 and fable jump massively on maze-bench in ASCII mod
 image mode — evidence that labs train on games with images rendered to text. Two uses:
 
 1. **RL / evals**: flip any vision-language environment into a pure-language environment with
-   one config value (`--textify.mode ascii`). Expands the set of trainable environments to
+   one config value (`--textify.enabled true`). Expands the set of trainable environments to
    text-only models, and creates deliberately-hard text-space perception tasks.
 2. **Pretraining / SSL**: `(image, conversion params, rendered text)` triples are an automatic,
    self-supervised task on any image corpus. Emitting the conversion parameters in prose ties
@@ -86,14 +86,16 @@ static transforms, tests).
 
 ```python
 class TextifyConfig(BaseConfig):
-    mode: Literal["image", "ascii", "braille"] = "image"   # "image" = off (identity)
-    width: int = 80              # output columns (drives everything)
+    enabled: bool = False        # identity when false; no existing eval changes
+    mode: Literal["ascii", "braille"] = "ascii"  # ascii default when enabled
+    width: int = 160             # output columns
+    height: int | None = None    # explicit rows; None preserves image aspect
     char_aspect: float = 0.5     # cell height/width correction
     gamma: float = 1.0           # brightness curve (lum **= gamma)
-    invert: bool = False         # dark-on-light vs light-on-dark
+    invert: bool | None = None   # None auto-inverts predominantly-light diagrams
     ramp: str = " .:-=+*#%@"     # ascii glyph ramp, dark -> light
     threshold: float = 0.5       # braille on/off cutoff
-    max_chars: int | None = None # hard budget; clamp width/height to fit
+    max_chars: int | None = 40_000 # hard budget; clamp width/height to fit
 
 def image_to_text(image, cfg) -> str            # pure numpy render, no fence
 def describe(cfg) -> str                        # config as prose (SSL use-case)
@@ -103,12 +105,13 @@ def textify_messages(messages, cfg) -> Messages # typed-Messages transform (buil
 `BaseConfig` (pydantic-config), so it is CLI/TOML-tunable. Note vs the old draft: no
 `placement` field — see §5.
 
-Core algorithm (benchmarked in the earlier draft, carried over): decode → RGB uint8 →
+Core algorithm (benchmarked in the earlier draft, carried over): decode/resize directly toward
+the target grid (before float conversion) → RGB uint8 →
 `height = round(width * (H/W) * char_aspect)` (braille: 2×4 sub-dots per cell) →
 nearest-neighbour integer subsample → Rec.601 luminance → gamma/invert → ramp index (ascii)
 or dot-bit packing to `U+2800+code` (braille). Pure numpy, deterministic, sub-ms even at 4K
-(ASCII 224²: 0.53ms, 4K: 0.13ms; braille similar). Pillow imported lazily, only for decoding
-encoded bytes; data-URI decode needs it, ndarray input does not.
+(ASCII 224²: 0.53ms, 4K: 0.13ms; braille similar). Pillow is a core dependency (imported lazily) because interception receives encoded data-URI
+images; ndarray input itself needs only numpy.
 
 Token-economics note (goes in the docstring): braille packs 8 dots/char but braille
 codepoints are 3 UTF-8 bytes and tokenize badly (often ~1–3 tokens/char); the default ASCII
@@ -137,8 +140,9 @@ message whose content collapses to all-text stays a content list — no structur
 **Config flow.** Textify is a framework concern (same argument as `max_turns`: it must apply
 to any harness, enforced where model traffic passes):
 
-- `EnvConfig.textify: TextifyConfig = TextifyConfig()` → `--textify.mode ascii`,
-  `--textify.width 120`, ... on eval/validate/serve; rides the env-server wire via
+- `EnvConfig.textify: TextifyConfig = TextifyConfig()` → `--textify.enabled true`,
+  `--textify.width 160`, ... on eval/validate/serve; ascii is the default mode once enabled;
+  rides the env-server wire via
   `EnvServerConfig` automatically; TOML `[textify]`.
 - `Environment` passes it to each `Rollout`, which puts it on the `RolloutSession`
   (alongside `RolloutLimits`) — the server already routes every request to its session, so
@@ -147,7 +151,7 @@ to any harness, enforced where model traffic passes):
 
 **Insertion points** (both in `interception/server.py`):
 1. `handle_request`: `body = dialect.textify_body(body, render)` right after body parse,
-   gated on `session.textify.mode != "image"`; covers stream + non-stream + every turn of
+   gated on `session.textify.enabled`; covers stream + non-stream + every turn of
    the user-sim loop (the loop reuses `body`).
 2. user-sim injection: textify `user_messages` (typed `Messages` → `textify_messages`)
    before `dialect.extend(...)` and before `prompt` extension, so simulator-emitted images
@@ -157,6 +161,11 @@ to any harness, enforced where model traffic passes):
 through unchanged with a rate-limited warning — the interception server must not do network
 fetches on the hot path (latency, credentials, nondeterminism). If real demand appears,
 fetching becomes an explicit opt-in later (`fetch: bool = False`), not a default.
+
+**Concurrency / safety.** Decode + render runs in `asyncio.to_thread` so one large image does not
+stall the shared aiohttp/interception loop. Encoded images have a 25 MP decode ceiling, output has
+a 40k-character default budget and 1M hard ceiling, and the per-rollout resend cache is bounded to
+32 renderings.
 
 **Failure policy.** A decode/render failure must not kill the rollout silently-weirdly:
 raise `TaskError` through the existing `_fail` path (the rollout records it as data, like
@@ -194,35 +203,72 @@ evidence that placement matters for model performance.
   on `TaskData`).
 - Determinism: render is a pure function of (image bytes, config) — same rollout, same text.
 
-## 7. Implementation plan (incremental, each step green)
+## 7. Text-heavy images: future hybrid mode
+
+Plain luminance ASCII preserves coarse geometry but destroys small text, labels, equations,
+and chemical notation — exactly what the blind width-160 description experiment showed. Merely
+raising width helps only until token cost dominates. Future work should be a **hybrid layout
+renderer**, not a larger ramp:
+
+1. detect text regions (OCR/layout model, opt-in dependency),
+2. OCR their contents verbatim with bounding boxes/confidence,
+3. render non-text regions as ASCII,
+4. place OCR strings approximately at their image coordinates or emit a compact legend such as
+   `[text x=0.42 y=0.18: "NAD+"]`,
+5. preserve equations via OCR/LaTeX when available.
+
+This is explicitly deferred: network-free deterministic rendering is phase one. The extension
+belongs behind a separate mode/config (`ascii_ocr` or nested `ocr.enabled`) because OCR is slower,
+non-deterministic across model/version changes, and introduces a new dependency/licensing surface.
+
+## 8. Implementation plan (incremental, each step green)
 
 1. `utils/textify.py`: config + render core (`image_to_text`, ascii + braille) + fence +
-   `describe` + `textify_messages`. Unit tests (deterministic known-array renders, braille
+   `describe` + `textify_messages`; Pillow core dependency. Unit tests (deterministic known-array renders, braille
    bit-packing, config edge cases, no-Pillow ndarray path).
 2. `Dialect.textify_body` default + chat implementation. Unit tests on wire dicts.
 3. responses + anthropic implementations. Unit tests.
 4. `EnvConfig.textify` → `Rollout` → `RolloutSession`; insertion in `handle_request` +
-   user-sim injection. E2E: a small vision env (e.g. `mmmu-v1`) with `--textify.mode ascii`
+   user-sim injection. E2E: a small vision env (e.g. `mmmu-v1`) with `--textify.enabled true`
    on subprocess + docker; `mode=image` byte-identical passthrough.
 5. Exports (`vf.TextifyConfig`, `vf.image_to_text`, `vf.textify_messages`, `vf.describe`),
    docs page.
 
-## 8. Open questions (co-design)
+## 9. Open questions (co-design)
 
 - **Config granularity**: one global `EnvConfig.textify` for everything, or allow per-source
   overrides later (prompt vs tool-result images)? Start global; per-source only with a use case.
-- **`describe()` output format**: prose vs key=value lines; whether the fence tag should
-  carry the mode only or also width (lean: mode only, keep framing minimal).
+- **`describe()` output format**: currently one deterministic key=value-like prose line;
+  whether the fence tag should carry mode only or dimensions too (lean: mode only).
 - **Color**: luminance-only for now; ANSI color codes explode token counts. Revisit never?
 - **Braille default params**: threshold vs adaptive (Otsu)? Start fixed threshold, keep the
   config door open.
+- **Default width evidence**: width 160 is the current starting default, not settled. A blind
+  six-image MMMU test at 160 matched all originals to shuffled ASCII correctly, but ASCII-only
+  semantic descriptions lost text and misidentified anatomy/physics symbols; coarse geometry
+  survived. An initial 5-question Physics sweep favored wider renderings but was confounded by
+  large sampling/reasoning variance; a controlled sweep is required before claiming a threshold.
 - **Where the eval CLI surfaces it**: `--textify.*` top-level (current plan, mirrors
   `max_turns`) vs nested under something. Lean top-level on `EnvConfig`.
 - **Old draft cleanup**: delete the untracked `verifiers/v1/TEXTIFY_PLAN.md` from the main
   worktree once this branch exists (it is superseded by this document).
 
-## 9. Log
+## 10. Log
 
 - v1 (initial commit): refined from the Slack sketch + earlier builder-level draft; decided
   interception-server chokepoint, dialect `textify_body` hook, in-place replacement only,
   no network fetch, framework-level `EnvConfig.textify`.
+- v2 (implementation): textify remains disabled by default but ascii is the default enabled mode;
+  width 160 initial default; explicit height + arbitrary aspect ratio; auto-invert predominantly
+  light diagrams/documents; off-event-loop decode/resize with 25 MP / 40k char safety budgets;
+  bounded per-rollout render cache; nested tool-result images and aux token-count routes covered;
+  fresh-process 4K PNG render measured ~65 MB above import baseline (vs reviewer-observed ~536 MB
+  before resize-first refactor); text-heavy OCR/layout rendering deferred to future work.
+- v3 (initial experiments): blind shuffled matching of six MMMU originals to ASCII was 6/6 at
+  widths 40, 120, and 160, but 4/6 at 80 (two sparse horizontal diagrams swapped — evidence that
+  nearest-neighbor phase/alignment matters, not just width). Width-160 blind descriptions preserved
+  geometry but hallucinated semantics (leg anatomy -> Saturn, current wires -> frying pans) and
+  could not read labels/equations. Live deepseek-v4-flash evals ran end-to-end through subprocess
+  and Docker (final Docker smoke reward 1.0); tiny MMMU slices were highly noisy across generation
+  budgets/settings, so no monotonic resolution threshold is claimed. Width 160 remains a conservative
+  initial default; 120-160 is the plausible coarse-geometry range pending larger experiments.

@@ -50,6 +50,7 @@ from verifiers.v1.interception.tunnel import (
 )
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import Messages, Tool
+from verifiers.v1.utils.textify import textify_messages
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,28 @@ class InterceptionServer(Interception):
             status=getattr(error, "status_code", 502),
         )
 
+    async def _textify_body(
+        self, session: RolloutSession, dialect: Dialect, body: dict
+    ) -> dict:
+        if not session.textify.enabled:
+            return body
+        try:
+            return await asyncio.to_thread(
+                dialect.textify_body, body, session.render_image
+            )
+        except Exception as e:
+            raise TaskError(f"textify failed: {type(e).__name__}: {e}") from e
+
+    async def _textify_messages(
+        self, session: RolloutSession, messages: Messages
+    ) -> Messages:
+        if not session.textify.enabled:
+            return messages
+        try:
+            return await asyncio.to_thread(textify_messages, messages, session.textify)
+        except Exception as e:
+            raise TaskError(f"textify failed: {type(e).__name__}: {e}") from e
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -233,6 +256,14 @@ class InterceptionServer(Interception):
             session.trace.id,
             dialect.streaming(body),
         )
+        # Textify before parsing so every consumer of `body` — the trace (via
+        # `parse_request`), the proxied provider call, the renderer, the stream path, and
+        # each user-sim loop turn (which reuses `body`) — sees the same rendered text: the
+        # trace records exactly what the model saw.
+        try:
+            body = await self._textify_body(session, dialect, body)
+        except TaskError as e:
+            return self._fail(session, dialect, e)
         # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
         # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
         # A user simulator extends both each turn (`dialect.extend` for wire, `prompt` for trace).
@@ -248,7 +279,11 @@ class InterceptionServer(Interception):
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
-                session.opening = await session.user("")
+                opening = await session.user("")
+                try:
+                    session.opening = await self._textify_messages(session, opening)
+                except TaskError as e:
+                    return self._fail(session, dialect, e)
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
@@ -351,6 +386,10 @@ class InterceptionServer(Interception):
                     dialect,
                     UserError(f"user simulator failed: {type(e).__name__}: {e}"),
                 )
+            try:
+                user_messages = await self._textify_messages(session, user_messages)
+            except TaskError as e:
+                return self._fail(session, dialect, e)
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
             # survives) and into the typed prompt for the trace. The simulator ends the trajectory
@@ -503,8 +542,10 @@ class InterceptionServer(Interception):
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
+            body = await request.json()
+            body = await self._textify_body(session, dialect, body)
             result = await session.ctx.client.relay_aux(
-                dialect, route, await request.json(), headers=request.headers
+                dialect, route, body, headers=request.headers
             )
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.

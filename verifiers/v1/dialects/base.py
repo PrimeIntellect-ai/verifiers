@@ -163,6 +163,11 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
+    def textify_body(self, body: ReqT, render: Callable[[str], str | None]) -> ReqT:
+        """Return `body` with each image part `render` maps to text replaced by a text
+        part in place (`None` leaves the part untouched). Default: no image parts."""
+        return body
+
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
         """The native request -> vf prompt + tools (for the trace)."""

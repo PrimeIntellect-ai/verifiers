@@ -333,3 +333,20 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
             messages.append(completion["choices"][0]["message"])
         messages.extend(message_to_wire(m) for m in user_messages)
         return {**body, "messages": messages}
+
+    def textify_body(self, body: dict, render) -> dict:
+        messages = []
+        for raw in body.get("messages", []):
+            content = raw.get("content")
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    text = (
+                        render((part.get("image_url") or {}).get("url", ""))
+                        if isinstance(part, dict) and part.get("type") == "image_url"
+                        else None
+                    )
+                    parts.append({"type": "text", "text": text} if text else part)
+                raw = {**raw, "content": parts}
+            messages.append(raw)
+        return {**body, "messages": messages}
