@@ -82,8 +82,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
         ]
 ```
 
-If a config class is not explicitly created, it means that no configurable values are exposed to the user. In this example, there is no `vf.TaskConfig`, so no task values (like judge models) are configurable.
-
+If a config class is not explicitly created, it means that no configurable, custom values are exposed to the user. In this example, there is no `vf.TaskConfig`, so no task values (like judge models) are configurable.
 
 The scaffold also exports the taskset from `addition_v1/__init__.py`:
 
