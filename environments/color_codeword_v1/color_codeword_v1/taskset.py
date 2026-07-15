@@ -18,7 +18,7 @@ from PIL import Image
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.image import image_data_url
+from verifiers.utils.image_utils import image_data_url
 
 from color_codeword_v1.servers.user import (
     COLOR_RGB,
