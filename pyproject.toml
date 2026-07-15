@@ -84,7 +84,7 @@ examples = [
     "compact",
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "reverse-text-v1", "color-codeword-v1",
-    "wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
+    "wordle-v1", "alphabet-sort-v1", "scratchpad-v1", "mmmu-v1",
 ]
 
 [project.optional-dependencies]
@@ -152,6 +152,7 @@ wordle-v1 = { path = "environments/wordle_v1", editable = true }
 color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
+mmmu-v1 = { path = "environments/mmmu_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
@@ -174,6 +175,7 @@ debug = "verifiers.v1.cli.debug:main"
 replay = "verifiers.v1.cli.replay:main"
 serve = "verifiers.v1.cli.serve:main"
 init = "verifiers.v1.cli.init:main"
+gepa = "verifiers.v1.cli.gepa:main"
 vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"

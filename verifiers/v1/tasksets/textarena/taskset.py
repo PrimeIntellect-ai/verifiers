@@ -6,8 +6,10 @@ outcome there; scoring reads that file instead of trusting conversational text.
 """
 
 import copy
+import itertools
 import json
 import random
+from collections.abc import Iterator
 from typing import Literal
 
 import verifiers.v1 as vf
@@ -36,6 +38,8 @@ class TextArenaState(vf.State):
 
 class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
     """Keep a seeded game alive across user turns in the harness process."""
+
+    EXTRAS = ("ta",)
 
     async def setup(self) -> None:
         if not self.config.colocated:
@@ -71,9 +75,9 @@ class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
             with open(OUTCOME_FILE, "w") as f:
                 json.dump({"reward": reward, "reason": reason}, f)
             self.state.game_over = True
-            return [{"role": "user", "content": reason}]
+            return [vf.UserMessage(content=reason)]
         _, observation = env.get_observation()
-        return [{"role": "user", "content": self._latest_feedback(str(observation))}]
+        return [vf.UserMessage(content=self._latest_feedback(str(observation)))]
 
 
 class TextArenaTaskConfig(vf.TaskConfig):
@@ -88,7 +92,6 @@ class TextArenaConfig(vf.TasksetConfig):
         "WordLadder-v0",
         "WordSearch-v0",
     ]
-    num_tasks: int = 1000
     task: TextArenaTaskConfig = TextArenaTaskConfig()
 
 
@@ -115,7 +118,9 @@ class TextArenaTask(vf.Task[TextArenaData, TextArenaState, TextArenaTaskConfig])
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
-    def load(self) -> list[TextArenaTask]:
+    INFINITE = True
+
+    def load(self) -> Iterator[TextArenaTask]:
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
         template = ta.make(env_id=self.config.game)
@@ -130,8 +135,8 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         # seed-invariant; otherwise each task must expose its seeded board.
         first = observation(0)
         seed_specific = observation(1) != first
-        return [
-            TextArenaTask(
+        for i in itertools.count():
+            yield TextArenaTask(
                 TextArenaData(
                     idx=i,
                     name=f"{self.config.game}#{i}",
@@ -141,8 +146,6 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
                 ),
                 self.config.task,
             )
-            for i in range(self.config.num_tasks)
-        ]
 
 
 if __name__ == "__main__":

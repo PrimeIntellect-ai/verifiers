@@ -1,9 +1,7 @@
-import base64
-from io import BytesIO
-
 from PIL import Image
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.image import image_data_url
 
 COLOR_RGB = {
     "red": (255, 0, 0),
@@ -34,15 +32,6 @@ class ColorCodewordUser(vf.User[vf.UserConfig, ColorCodewordState]):
         self.max_turns = task.info["max_turns"]  # per-task input
         self.turns = 0  # per-rollout mutable state
 
-    def _content(self, colors: list[str], text: str) -> list[dict]:
-        parts = []
-        for color in colors:
-            buf = BytesIO()
-            Image.new("RGB", (100, 100), COLOR_RGB[color]).save(buf, format="PNG")
-            url = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
-            parts.append({"type": "image_url", "image_url": {"url": url}})
-        return parts + [{"type": "text", "text": text}]
-
     async def respond(self, message: str) -> vf.Messages:
         self.turns += 1
         if self.turns >= self.max_turns:
@@ -57,7 +46,15 @@ class ColorCodewordUser(vf.User[vf.UserConfig, ColorCodewordState]):
             if last
             else f"Here are {len(colors)} more squares."
         )
-        return [{"role": "user", "content": self._content(colors, text)}]
+        parts = [
+            vf.ImageUrlContentPart(
+                image_url=vf.ImageUrlSource(
+                    url=image_data_url(Image.new("RGB", (100, 100), COLOR_RGB[color]))
+                )
+            )
+            for color in colors
+        ] + [vf.TextContentPart(text=text)]
+        return [vf.UserMessage(content=parts)]
 
 
 if __name__ == "__main__":

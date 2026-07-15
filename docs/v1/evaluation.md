@@ -1,6 +1,6 @@
 # Evaluation
 
-To evaluate any environment, use the `eval` entrypoint:
+To evaluate any taskset, use the `eval` entrypoint:
 
 ```bash
 uv run eval primeintellect/terminal-bench-2
@@ -33,11 +33,12 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `taskset.id` / `harness.id` — pick the taskset and harness
-- `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks
+- `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
+  infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — rollouts per task
 - `max_concurrent` — caps how many rollouts are in flight at once
 - `verbose` — log at debug instead of info
-- `shuffle` — randomizes the order of tasks (fixed seed)
+- `shuffle` — randomizes the order of tasks (fixed seed); a no-op on an infinite taskset
 
 ## Resuming evaluations
 

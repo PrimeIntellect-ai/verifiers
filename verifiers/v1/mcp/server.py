@@ -116,6 +116,9 @@ class ServerBase(Generic[ConfigT, StateT]):
     # The empty value falls back to the snake-cased class name.
     TOOL_PREFIX: ClassVar[str] = ""
 
+    EXTRAS: ClassVar[tuple[str, ...]] = ()
+    """Package extras the server's module needs, applied at sandbox install."""
+
     def __init__(self, config: ConfigT) -> None:
         self.config = config
         self._state_cls = state_cls(type(self))

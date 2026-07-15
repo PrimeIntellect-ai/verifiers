@@ -3,8 +3,8 @@
 `expose` (sandbox port -> public internet) uses Modal's own forwarding — a port named via
 `encrypted_ports` at `Sandbox.create`, read back from `sandbox.tunnels()` — so a host-side
 harness/framework can reach a tool/user server hosted in the sandbox. The reverse direction (a
-program in the sandbox reaching a host service) is the shared host-side `host_endpoint` tunnel,
-not the runtime's concern.
+program in the sandbox reaching a host service) is the shared host-side `Tunnel`
+(interception.tunnel), not the runtime's concern.
 """
 
 import asyncio
@@ -187,7 +187,7 @@ class ModalRuntime(Runtime):
         # the sandbox via Modal's sync API so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` handles the normal path, and a second terminate is a no-op.
         sandbox, self._sandbox = self._sandbox, None
-        if sandbox is not None:  # `info.id` kept so descriptor survives teardown
+        if sandbox is not None:  # keep info.id available after teardown
             with contextlib.suppress(Exception):
                 sandbox.terminate()
 

@@ -9,25 +9,20 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import ClassVar, TypeVar
+from typing import ClassVar
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.retries import retrying
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
-# Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
-# if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
-# first installing curl + CA certs from the distro package manager when the image has no
-# downloader at all (bare task images, e.g. Harbor's). It installs to ~/.local/bin, which
-# we prepend to PATH so the provisioning command finds it; uv resolves each script's inline
-# deps into its own cache, isolated from the eval process. (Needs network + one of
-# uv / pip / curl / wget / apt-get / apk.)
+# Ensure the latest `uv` is available for our PEP 723 scripts: prefer pip on Python images,
+# then fall back to the standalone installer (curl/wget), installing curl + CA certs when a
+# bare image has no downloader. Both paths install to ~/.local/bin, which we prepend to PATH.
+# (Needs network + one of pip / curl / wget / apt-get / apk.)
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
     "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
     "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
@@ -39,12 +34,8 @@ _DOWNLOAD_UV = (
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    # Always install the latest uv into $HOME/.local/bin (ahead of any image uv on PATH) rather
-    # than reusing whatever the image ships: base images carry wildly varying uvs (too old for the
-    # `uv sync --script` / `uv python find --script` that prepare_uv_script runs, or stale/shadowed
-    # on PATH). Installing fresh sidesteps all version probing. Falls back to pip when no downloader.
-    f"{{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} "
-    "|| pip install -q -U uv 2>/dev/null"
+    "pip install -q -U --user uv 2>/dev/null "
+    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
 
 # The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
@@ -112,7 +103,7 @@ class Runtime(ABC):
     """Whether this runtime shares the host network — a program inside it reaches a host service
     at localhost (no tunnel) and a service inside it is reachable at localhost. True for
     subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
-    need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
+    need a tunnel each way: a host `Tunnel` (interception.tunnel) inward, `expose` outward)."""
 
     info: BaseRuntimeInfo
 
@@ -124,10 +115,6 @@ class Runtime(ABC):
     @property
     def type(self) -> str:
         return self.config.type
-
-    @property
-    def descriptor(self) -> str | None:
-        return self.info.id
 
     @abstractmethod
     async def start(self) -> None:
@@ -189,12 +176,10 @@ class Runtime(ABC):
                 if digest not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
-                    await self.run(
-                        ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"],
-                        {},
-                    )
                     command = (
-                        f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q --no-config "
+                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                        f"&& {{ {_ENSURE_UV}; }} "
+                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
                     )
                     result = await self.run(["sh", "-c", command], env or {})
@@ -246,6 +231,10 @@ class Runtime(ABC):
     async def write(self, path: str, data: bytes) -> None:
         pass
 
+    def host_url(self, url: str) -> str:
+        """The URL a program inside this runtime uses to reach a host-bound `url`."""
+        return url
+
     @property
     def published_port(self) -> int | None:
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
@@ -259,96 +248,6 @@ class Runtime(ABC):
         """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
         or None when local (it's on the host network — reach it at localhost). A remote runtime
         overrides this with the provider's native port exposure (modal `tunnels()`, prime
-        `client.expose`), torn down with the sandbox in `stop()`. The reverse of `host_endpoint`
-        (which reaches a host port from inside a runtime)."""
+        `client.expose`), torn down with the sandbox in `stop()`. The reverse of a host `Tunnel`
+        (interception.tunnel, which reaches a host port from inside a runtime)."""
         return None
-
-
-TunnelT = TypeVar("TunnelT")
-
-
-async def open_tunnel(
-    start: Callable[[], Awaitable[TunnelT]], what: str, *, retries: int = 3
-) -> TunnelT:
-    """Open the host interception-server tunnel via `start`, retrying transient failures and raise
-    `TunnelError` if it still fails. Tunnel creation is network-bound and globally rate-capped
-    (`prime_tunnel` — 512/min shared across runtimes), so a transient failure is common and worth a
-    few retries before failing the rollout. `what` names the tunnel in the error."""
-    from verifiers.v1.errors import TunnelError
-
-    try:
-        async for attempt in retrying(retries=retries, label=what):
-            with attempt:
-                return await start()
-    except Exception as e:
-        raise TunnelError(f"{what} failed after {retries} retries: {e}") from e
-    raise TunnelError(f"{what} failed")  # unreachable: retrying() returns or reraises
-
-
-@contextlib.asynccontextmanager
-async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = None):
-    """Yield a URL a program *inside a runtime* uses to reach a HOST service on `port`. A local
-    runtime shares the host network → localhost; a remote one needs a host-side reverse tunnel
-    (`prime_tunnel`), torn down on exit. This is the host-side, provider-agnostic counterpart to
-    `Runtime.expose` (which publishes a port running *inside* a runtime) — so the runtime only
-    reports `is_local` and callers (interception pool, rollout, tool serving) bridge to the host
-    here, rather than every runtime reimplementing the tunnel."""
-    if is_local:
-        yield f"http://127.0.0.1:{port}"
-        return
-    from prime_tunnel import Tunnel
-
-    from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER
-
-    async def _start() -> tuple[Tunnel, str]:
-        tunnel = Tunnel(local_port=port, labels=labels or None)
-        async with (
-            TUNNEL_LIMITER
-        ):  # shared prime_tunnel rate (512/min, runtime-independent)
-            return tunnel, str(await tunnel.start()).rstrip("/")
-
-    tunnel, url = await open_tunnel(_start, f"host tunnel (port {port})")
-    try:
-        yield url
-    finally:
-        # Run the synchronous stop to completion even under cancellation (`run_shielded`
-        # re-raises the cancellation after); tunnel-stop failures are best-effort.
-        with contextlib.suppress(Exception):
-            await run_shielded(asyncio.to_thread(tunnel.sync_stop))
-
-
-class _Host:
-    is_local = True
-
-
-HOST = _Host()
-
-
-@contextlib.asynccontextmanager
-async def reachable_url(
-    service, port: int, *, consumer=None, consumer_is_local: bool = True
-):
-    """Yield a URL for the service at (`service`, `port`) reachable from its consumer — the single
-    place tool / user / interception reachability is decided, over the two primitives `expose`
-    (publish *out* of a runtime) and `host_endpoint` (reach *into* the host from a runtime).
-
-    `service` is the `Runtime` the service runs in, or `HOST` (a host-network service). `consumer` is
-    the consuming `Runtime` (used for the colocated check and its locality); leave it `None` for a
-    host consumer or a worker-shared tool with no single harness instance, and pass its locality as
-    `consumer_is_local`:
-
-    - same location (a colocated tool in the consumer's own runtime, or host -> host): localhost;
-    - the service runs in a sandbox (a remote runtime): its own published URL (`expose`), reachable
-      from anywhere;
-    - the service is on the host network: localhost to a host-network consumer, else a host tunnel
-      (`host_endpoint`)."""
-    is_local = consumer.is_local if consumer is not None else consumer_is_local
-    if service is consumer:  # colocated in the consumer's runtime (or host -> host)
-        yield f"http://127.0.0.1:{port}"
-    elif (
-        service is not HOST and not service.is_local
-    ):  # in a sandbox → it publishes its own port
-        yield await service.expose(port)
-    else:  # on the host network → reach it from wherever the consumer runs
-        async with host_endpoint(port, is_local) as url:
-            yield url

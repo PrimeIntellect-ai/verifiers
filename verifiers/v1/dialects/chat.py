@@ -30,6 +30,16 @@ from verifiers.v1.types import (
     content_to_parts,
 )
 
+
+class ModdedChatCompletion(ChatCompletion):
+    """The OpenAI SDK closes `service_tier` to a fixed `Literal`, but providers return tiers
+    outside it (e.g. Prime's `provisioned`), which makes `model_validate` reject an otherwise
+    valid completion. Widen the field to a plain string — we don't consume it — so parsing stays
+    lenient about the label instead of dropping it."""
+
+    service_tier: str | None = None
+
+
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
@@ -96,6 +106,9 @@ def parse_message(raw: dict) -> Message:
 
 
 def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
+    # `or None` so a tools array with no function entries (e.g. only `custom`/built-in
+    # tools) parses to None, not [] — the same contract as the anthropic/responses
+    # dialects, and what keeps an empty parse from clearing `Trace.tools`.
     if not raw:
         return None
     return [
@@ -107,7 +120,7 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
         )
         for t in raw
         if t.get("type", "function") == "function"
-    ]
+    ] or None
 
 
 # --- vf -> chat wire ----------------------------------------------------------
@@ -259,7 +272,7 @@ class ChatStreamParser(StreamParser):
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
         return response_from_wire(
-            ChatCompletion.model_validate(
+            ModdedChatCompletion.model_validate(
                 {
                     "id": head.get("id", "vf-intercept"),
                     "object": "chat.completion",
@@ -281,7 +294,7 @@ class ChatStreamParser(StreamParser):
 class ChatDialect(Dialect[dict, ChatCompletion]):
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
-    response_type = ChatCompletion
+    response_type = ModdedChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         messages: Messages = []

@@ -22,8 +22,10 @@ from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
+    KeptTokens,
     Messages,
     StrictBaseModel,
+    Tool,
     ToolMessage,
     Usage,
     content_text,
@@ -45,6 +47,7 @@ class TimeSpan(StrictBaseModel):
 
 class Timing(StrictBaseModel):
     start: float = Field(default_factory=time.time)
+    boot: TimeSpan = Field(default_factory=TimeSpan)
     setup: TimeSpan = Field(default_factory=TimeSpan)
     generation: TimeSpan = Field(default_factory=TimeSpan)
     finalize: TimeSpan = Field(default_factory=TimeSpan)
@@ -139,6 +142,32 @@ class Branch(StrictBaseModel):
         return merged if merged.shape[0] == total else None
 
     @property
+    def kept_tokens(self) -> KeptTokens | None:
+        """The branch's kept-set sampling masks: `counts` is int32 aligned 1:1 with
+        `token_ids` (0 = no mask, safe under partial coverage — unlike `routed_experts`
+        this is not all-or-nothing), `ids` the flat int32 concatenation of the kept
+        sets in position order. None when no node carries kept-set data."""
+        if all(n.kept_tokens is None for n in self.nodes):
+            return None
+        # `_attribute_kept_tokens` validates counts/ids against the node's sampled
+        # tokens before setting the field, so this is a straight scatter+concat
+        # (a corrupted node would fail loudly on the scatter shape mismatch).
+        ids_parts: list[np.ndarray] = []
+        counts_parts: list[np.ndarray] = []
+        for node in self.nodes:
+            counts = np.zeros(len(node.mask), dtype=np.int32)
+            if node.kept_tokens is not None and len(node.kept_tokens.counts):
+                counts[np.nonzero(node.mask)[0]] = node.kept_tokens.counts
+                ids_parts.append(node.kept_tokens.ids)
+            counts_parts.append(counts)
+        ids = (
+            np.concatenate(ids_parts).astype(np.int32, copy=False)
+            if ids_parts
+            else np.zeros(0, dtype=np.int32)
+        )
+        return KeptTokens(ids=ids, counts=np.concatenate(counts_parts))
+
+    @property
     def num_total_tokens(self) -> int:
         return sum(len(n.token_ids) for n in self.nodes)
 
@@ -171,7 +200,13 @@ class Branch(StrictBaseModel):
 
 
 _NODE_DUMP_EXCLUDE: dict = {
-    "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
+    "nodes": {
+        "__all__": {
+            "multi_modal_data",
+            "routed_experts",
+            "kept_tokens",
+        }
+    }
 }
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
@@ -200,6 +235,11 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The runtime's full config plus its provisioned resource ID."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
+    tools: list[Tool] | None = None
+    """The tools advertised to the model, recorded when an intercepted turn commits (last
+    committed turn wins) — never from a refused/failed request the model never saw. The full
+    advertised list (not just tools called), so tool-use SFT can re-render the exact prompt;
+    a trace-level snapshot: mid-rollout changes collapse to the last set the model saw."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Weighted contributions from task rewards, group rewards, and judges."""

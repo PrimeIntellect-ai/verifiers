@@ -11,7 +11,7 @@
             "v1/overview",
             "v1/getting_started",
             "v1/architecture",
-            "v1/environments",
+            "v1/tasksets",
             "v1/evaluation",
             "v1/harnesses",
             "v1/harbor"
