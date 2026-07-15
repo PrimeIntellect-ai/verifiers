@@ -1,4 +1,9 @@
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTaskset
+from verifiers.v1.tasksets.nemo_gym import NeMoGymConfig, NeMoGymTaskset
+from verifiers.v1.tasksets.nemo_gym_weather import (
+    NeMoGymWeatherConfig,
+    NeMoGymWeatherTaskset,
+)
 from verifiers.v1.tasksets.lean import (
     LeanConfig,
     LeanDatasetConfig,
@@ -17,6 +22,10 @@ from verifiers.v1.tasksets.openenv import (
 __all__ = [
     "HarborConfig",
     "HarborTaskset",
+    "NeMoGymConfig",
+    "NeMoGymTaskset",
+    "NeMoGymWeatherConfig",
+    "NeMoGymWeatherTaskset",
     "LeanConfig",
     "LeanDatasetConfig",
     "LeanTask",
