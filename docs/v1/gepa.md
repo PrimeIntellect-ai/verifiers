@@ -3,7 +3,7 @@
 verifiers offers built in support for GEPA, an algorithm that optimizes a system prompt to maximize the downstream reward for a given taskset:
 
 ```bash
-uv run gepa reverse-text-v1 --model google/gemini-3-flash-preview
+uv run gepa reverse-text-v1
 ```
 
 `gepa` runs [GEPA](https://github.com/gepa-ai/gepa) where a number of rollouts are done then a teacher LLM reflects on the results to propose a better `Task.system_prompt` without any gradient based training. It runs against native v1 tasksets. Legacy v0 environments can be run with `vf-gepa`.
@@ -11,7 +11,7 @@ uv run gepa reverse-text-v1 --model google/gemini-3-flash-preview
 GEPA reuses the same `taskset` / `harness` / `client` / `sampling` config as eval, so the `.toml` config remains very similar:
 
 ```toml
-model = "google/gemini-3-flash-preview"
+model = "deepseek/deepseek-v4-flash"
 
 [taskset]
 id = "reverse-text-v1"
@@ -46,5 +46,4 @@ The output from gepa runs are written into `outputs/<taskset>--<model>--<harness
 ## Limitations
 
 - **Group-reward tasksets are not supported** -- GEPA scores one rollout per task, but `@group_reward` compares two or more, so tasksets like these are rejected upfront.
-- **Single taskset per run**
-- **v1-native only** - legacy v0 environments are rejected; those should be run with `vf-gepa`
+
