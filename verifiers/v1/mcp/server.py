@@ -113,10 +113,10 @@ def _import_ref(ref: str) -> object:
 
 
 class ServerBase(Generic[ConfigT, StateT]):
-    # The empty value falls back to the snake-cased class name. None advertises the server's
-    # tools bare (no `<server>_` prefix); name collisions across servers are then the
-    # taskset author's concern.
     TOOL_PREFIX: ClassVar[str | None] = ""
+    """The empty value falls back to the snake-cased class name. None advertises the server's
+    tools bare (no `<server>_` prefix); name collisions across servers are then the taskset
+    author's concern."""
 
     EXTRAS: ClassVar[tuple[str, ...]] = ()
     """Package extras the server's module needs, applied at sandbox install."""
