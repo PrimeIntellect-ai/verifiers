@@ -11,7 +11,14 @@ from verifiers.v1.clients import (
     ModelContext,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, has_decorated, metric, reward, stop, tool
+from verifiers.v1.decorators import (
+    group_reward,
+    has_decorated,
+    metric,
+    reward,
+    stop,
+    tool,
+)
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
