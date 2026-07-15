@@ -50,7 +50,7 @@ from verifiers.v1.interception.tunnel import (
     make_tunnel,
 )
 from verifiers.v1.session import RolloutSession
-from verifiers.v1.types import Messages, Tool
+from verifiers.v1.types import Messages, Response, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,23 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
+# blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
+# millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
+# loop instead — see `_request_digest`.
+_HASH_INLINE_MAX = 1024**2  # 1 MiB
+
+
+def _body_digest(raw: bytes) -> bytes:
+    return hashlib.blake2b(raw, digest_size=16).digest()
+
+
+async def _request_digest(raw: bytes) -> bytes:
+    """Digest a request body for the retry-replay guard. Hash a small body inline; offload a
+    large one to a thread so it does not stall every multiplexed rollout on the event loop
+    (blake2b releases the GIL, so the thread runs the hash off the loop)."""
+    if len(raw) <= _HASH_INLINE_MAX:
+        return _body_digest(raw)
+    return await asyncio.to_thread(_body_digest, raw)
 
 
 def _completion_response(completion: dict | None) -> web.Response:
@@ -224,20 +241,34 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        # Graph atomicity under retries: the harness SDK retries a transient failure by
-        # re-sending the byte-identical request. If we already fully served this exact request,
-        # replay the recorded completion instead of re-sampling — a second sample would commit a
-        # second turn and fork the graph into a dead-end branch. A growing conversation never
-        # repeats a body, so this only ever matches a real retry; a failed attempt was not cached
-        # and re-runs normally.
-        req_hash = hashlib.blake2b(raw, digest_size=16).digest()
-        if session.last_request == req_hash and session.last_response is not None:
-            logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return _completion_response(session.last_response)
+        req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
+        # Graph atomicity under retries. The harness SDK retries a transient failure by
+        # re-sending the byte-identical request; sampling it again would commit a second turn and
+        # fork the graph into a dead-end branch. Two cases, both resolved without re-sampling:
+        #   1. the first attempt already finished -> replay the recorded response;
+        #   2. the first attempt is still computing (a slow turn) -> await it and return its
+        #      result, so a slow turn is safe without an inflated client timeout.
+        # A growing conversation never repeats a body, so these only ever match a real retry; a
+        # failed attempt caches nothing and re-runs normally.
+        if session.last_request == req_hash and session.last_response is not None:
+            logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
+            return _completion_response(session.last_response)
+        if (inflight := session.inflight.get(req_hash)) is not None:
+            logger.debug(
+                "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
+            )
+            # Await the first attempt instead of re-sampling. None means it produced no servable
+            # response (it errored/refused), so let the SDK retry afresh.
+            completion = await inflight
+            if completion is None:
+                return web.json_response(
+                    dialect.error_body("upstream attempt failed"), status=503
+                )
+            return _completion_response(completion)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -267,120 +298,134 @@ class InterceptionServer(Interception):
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt, tools)
         headers = request.headers.copy()
+        # Publish this attempt so a retry that arrives while it is still computing coalesces onto
+        # it (see the in-flight guard above) instead of starting a second inference.
+        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
+        session.inflight[req_hash] = fut
+
+        def serve(response: Response) -> web.Response:
+            # Record the served turn and hand it to any coalesced retry, so a retried
+            # byte-identical request replays instead of re-sampling and forking the graph.
+            # `Response.raw` is the full native provider object (or the renderer's synthesized
+            # completion) that the server serializes back to the program.
+            session.last_request = req_hash
+            session.last_response = response.raw
+            if not fut.done():
+                fut.set_result(response.raw)
+            return _completion_response(response.raw)
+
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
         # re-prompted, so a whole game plays out here and only the final assistant message
         # returns to the (simulator-unaware) program. Without a simulator the loop runs once.
-        completion: dict | None = (
-            None  # the latest turn's response, returned to the program
+        response: Response | None = (
+            None  # the latest committed turn (None until the first)
         )
-
-        def serve(response: dict) -> web.Response:
-            # Record the served turn so a retried (byte-identical) request replays it instead
-            # of re-sampling and forking the graph.
-            session.last_request = req_hash
-            session.last_response = response
-            return _completion_response(response)
-
-        while True:
-            try:
-                refused = await session.refused()
-            except RolloutError as e:
-                return self._fail(session, dialect, e)
-            except Exception as e:
-                return self._fail(
-                    session,
-                    dialect,
-                    TaskError(f"@stop failed: {type(e).__name__}: {e}"),
-                )
-            if refused is not None:
-                # Refuse the first model call to halt the harness; once a simulated
-                # conversation is under way, just end it and return the last turn cleanly.
-                if completion is None:
-                    return web.json_response(
-                        dialect.error_body(f"rollout stopped: {refused}"), status=400
+        try:
+            while True:
+                try:
+                    refused = await session.refused()
+                except RolloutError as e:
+                    return self._fail(session, dialect, e)
+                except Exception as e:
+                    return self._fail(
+                        session,
+                        dialect,
+                        TaskError(f"@stop failed: {type(e).__name__}: {e}"),
                     )
-                return serve(completion)
-            turn = graph.prepare_turn(session.trace, prompt)
-            session.error = None
-            try:
-                response = await session.ctx.client.get_response(
-                    dialect,
-                    body,
-                    session.ctx.model,
-                    session.ctx.sampling,
-                    headers=headers,
-                    session_id=session.trace.id,
-                    turn=turn,
-                )
-            except OverlongPromptError:
-                # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
-                # as a truncation — return the last turn if there is one, else refuse to halt
-                # the harness (same shape as `refused` above).
-                session.trace.stop("context_length")
-                logger.debug("prompt too long: id=%s", session.trace.id)
-                if completion is None:
-                    return web.json_response(
-                        dialect.error_body("rollout stopped: context_length"),
-                        status=400,
+                if refused is not None:
+                    # Refuse the first model call to halt the harness; once a simulated
+                    # conversation is under way, just end it and return the last turn cleanly.
+                    if response is None:
+                        return web.json_response(
+                            dialect.error_body(f"rollout stopped: {refused}"),
+                            status=400,
+                        )
+                    return serve(response)
+                turn = graph.prepare_turn(session.trace, prompt)
+                session.error = None
+                try:
+                    response = await session.ctx.client.get_response(
+                        dialect,
+                        body,
+                        session.ctx.model,
+                        session.ctx.sampling,
+                        headers=headers,
+                        session_id=session.trace.id,
+                        turn=turn,
                     )
-                return serve(completion)
-            except RolloutError as e:
-                # Stash the real cause; the rollout re-raises it after the harness returns. Relay
-                # the provider's status so the harness SDK retries 5xx/429 and not 4xx.
-                session.error = e
-                logger.warning(
-                    "model call failed: id=%s %s: %s",
+                except OverlongPromptError:
+                    # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
+                    # as a truncation — return the last turn if there is one, else refuse to halt
+                    # the harness (same shape as `refused` above).
+                    session.trace.stop("context_length")
+                    logger.debug("prompt too long: id=%s", session.trace.id)
+                    if response is None:
+                        return web.json_response(
+                            dialect.error_body("rollout stopped: context_length"),
+                            status=400,
+                        )
+                    return serve(response)
+                except RolloutError as e:
+                    # Stash the real cause; the rollout re-raises it after the harness returns.
+                    # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
+                    session.error = e
+                    logger.warning(
+                        "model call failed: id=%s %s: %s",
+                        session.trace.id,
+                        type(e).__name__,
+                        e,
+                    )
+                    return web.json_response(
+                        dialect.error_body(str(e)),
+                        status=getattr(e, "status_code", 502),
+                    )
+                except Exception as e:  # surface to the program as an API error
+                    logger.warning(
+                        "model call failed: id=%s %s: %s",
+                        session.trace.id,
+                        type(e).__name__,
+                        e,
+                    )
+                    return web.json_response(dialect.error_body(str(e)), status=502)
+                logger.debug(
+                    "intercept turn: id=%s tools=%d",
                     session.trace.id,
-                    type(e).__name__,
-                    e,
+                    len(response.message.tool_calls or []),
                 )
-                return web.json_response(
-                    dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
-                )
-            except Exception as e:  # surface to the program as an API error
-                logger.warning(
-                    "model call failed: id=%s %s: %s",
-                    session.trace.id,
-                    type(e).__name__,
-                    e,
-                )
-                return web.json_response(dialect.error_body(str(e)), status=502)
-            # `Response.raw` is the full native provider object, or the renderer's synthesized
-            # completion object, that the server serializes for the program.
-            completion = response.raw
-            logger.debug(
-                "intercept turn: id=%s tools=%d",
-                session.trace.id,
-                len(response.message.tool_calls or []),
-            )
-            turn.commit(response, tools)  # one node per new message;
-            # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
-            # Hand back to the program when the model wants a tool (the program runs it) or
-            # when there's no user simulator to keep the conversation going.
-            if response.message.tool_calls or session.user is None:
-                return serve(completion)
-            try:
-                user_messages = await session.user(response.message.content or "")
-            except RolloutError as e:
-                return self._fail(session, dialect, e)
-            except Exception as e:
-                return self._fail(
-                    session,
-                    dialect,
-                    UserError(f"user simulator failed: {type(e).__name__}: {e}"),
-                )
-            # Inject the model turn + the simulator's user turn(s): into the wire request for the
-            # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
-            # survives) and into the typed prompt for the trace. The simulator ends the trajectory
-            # through its task's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
-            # caught by `refused()` at the top of the next iteration — the interception server holds
-            # no opinion about the state's contents.
-            body = dialect.extend(body, completion, user_messages)
-            prompt = [*prompt, response.message, *user_messages]
-            # The simulator changed the payload, so this is a new operation rather than a retry.
-            headers.popall("idempotency-key", None)
-            headers.popall("x-idempotency-key", None)
+                turn.commit(response, tools)  # one node per new message;
+                # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
+                # Hand back to the program when the model wants a tool (the program runs it) or
+                # when there's no user simulator to keep the conversation going.
+                if response.message.tool_calls or session.user is None:
+                    return serve(response)
+                try:
+                    user_messages = await session.user(response.message.content or "")
+                except RolloutError as e:
+                    return self._fail(session, dialect, e)
+                except Exception as e:
+                    return self._fail(
+                        session,
+                        dialect,
+                        UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                    )
+                # Inject the model turn + the simulator's user turn(s): into the wire request for
+                # the next model call (`dialect.extend`, which keeps the model turn verbatim so
+                # reasoning survives) and into the typed prompt for the trace. The simulator ends
+                # the trajectory through its task's `@stop` (e.g. a `user_finished` flag it set on
+                # `self.state`), caught by `refused()` at the top of the next iteration — the
+                # interception server holds no opinion about the state's contents.
+                body = dialect.extend(body, response.raw, user_messages)
+                prompt = [*prompt, response.message, *user_messages]
+                # The simulator changed the payload, so this is a new operation not a retry.
+                headers.popall("idempotency-key", None)
+                headers.popall("x-idempotency-key", None)
+        finally:
+            # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
+            # response" (an error/refuse return above), so the waiter surfaces a retryable error.
+            session.inflight.pop(req_hash, None)
+            if not fut.done():
+                fut.set_result(None)
 
     async def _stream(
         self,
