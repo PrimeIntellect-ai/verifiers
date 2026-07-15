@@ -63,14 +63,6 @@ def task_info(task) -> dict[str, Any]:
     return {"idx": task.data.idx, "name": task.data.name, "workdir": task.data.workdir}
 
 
-def runtime_info(runtime: Runtime) -> dict[str, Any]:
-    return {
-        "type": runtime.type,
-        "name": runtime.name,
-        "descriptor": runtime.descriptor,
-    }
-
-
 def result_info(result: ProgramResult, start: float) -> dict[str, Any]:
     ok = result.exit_code == 0
     return {
@@ -132,7 +124,6 @@ def capture_trace_error(trace: Trace, error: BaseException) -> None:
 def record_debug_error(
     trace: Trace,
     debug: dict[str, Any],
-    runtime: Runtime,
     error: BaseException,
     setup_timeout: float | None,
     action_timeout: float | None,
@@ -152,7 +143,6 @@ def record_debug_error(
         else trace.timing.setup.start or trace.timing.boot.start
     )
     debug.update(error_info(error, error_start, timeout, stage))
-    debug.setdefault("runtime", runtime_info(runtime))
     capture_trace_error(trace, error)
 
 
@@ -223,6 +213,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         resolve_runtime_config(config.runtime, task),
         name=f"debug-{task.data.idx}-{uuid4().hex[:8]}",
     )
+    trace.runtime = runtime.info
     setup_timeout = (
         config.timeout.setup
         if config.timeout.setup is not None
@@ -234,7 +225,6 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         now = time.time()
         trace.timing.boot.end = now
         trace.timing.setup.start = now
-        debug["runtime"] = runtime_info(runtime)
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
@@ -249,13 +239,9 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         trace.stop(str(debug["reason"]))
     except asyncio.CancelledError as e:
         cancelled = True
-        record_debug_error(
-            trace, debug, runtime, e, setup_timeout, config.timeout.total
-        )
+        record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
     except Exception as e:
-        record_debug_error(
-            trace, debug, runtime, e, setup_timeout, config.timeout.total
-        )
+        record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
     finally:
         trace.info["debug"] = debug
         try:
