@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> None:
     # signals during that cleanup are swallowed so an impatient second Ctrl-C can't orphan them.
     install_interrupt()
 
-    from verifiers.v1.topology import resolve_topology_runner
+    from verifiers.v1.runner import resolve_topology_runner
 
     runner = resolve_topology_runner(config)
     try:

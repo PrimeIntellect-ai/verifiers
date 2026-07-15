@@ -111,6 +111,7 @@ from verifiers.v1.task import (
     TaskTimeout,
     WireTaskData,
 )
+from verifiers.v1.runner import TopologyRunner, resolve_topology_runner
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.topology import (
     AgentBinding,
@@ -123,8 +124,6 @@ from verifiers.v1.topology import (
     SingleAgentTopologyConfig,
     Topology,
     TopologyConfig,
-    TopologyRunner,
-    resolve_topology_runner,
 )
 from verifiers.v1.trace import (
     Branch,

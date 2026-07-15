@@ -19,7 +19,8 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.serve.types import RunResponse
 from verifiers.v1.topologies.agentic_judge import TRACE_PATH, AgenticJudgeTask
 from verifiers.v1.topologies.llm_judge import JudgeTask
-from verifiers.v1.topology import AgentGraph, TopologyRunner
+from verifiers.v1.runner import TopologyRunner
+from verifiers.v1.topology import AgentGraph
 from verifiers.v1.trace import Trace, TraceTask, WireTrace
 from verifiers.v1.types import AssistantMessage, UserMessage
 

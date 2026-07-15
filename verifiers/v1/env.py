@@ -1,7 +1,7 @@
 """Native environment configuration and execution-policy helpers."""
 
 import logging
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
@@ -19,11 +19,9 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.topology import TopologyConfig
 from verifiers.v1.types import ID
 from verifiers.v1.utils.generic import generic_type
-
-if TYPE_CHECKING:
-    from verifiers.v1.topology import TopologyConfig
 
 
 class TimeoutConfig(BaseConfig):
@@ -86,12 +84,11 @@ class EnvConfig(BaseConfig):
     # env-server subconfig the orchestrator writes would lose taskset/harness-specific knobs.
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
-    topology: "SerializeAsAny[TopologyConfig] | None" = None
+    topology: SerializeAsAny[TopologyConfig] | None = None
     """A multi-agent topology to run *instead of* the single `taskset` × `harness` pair
     (see `verifiers.v1.topology`), selected by `--topology.id`. Seeds come from its
     `taskset` slot (`--topology.taskset.id <id>`); each agent binds its own
-    harness/routing (`--topology.<agent>.harness.id`, ...). Forward-referenced: env.py is
-    below topology.py, which finalizes this model (`model_rebuild`) when it loads."""
+    harness/routing (`--topology.<agent>.harness.id`, ...)."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     max_turns: int | None = None

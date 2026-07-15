@@ -19,7 +19,7 @@ from verifiers.v1.serve.types import (
     RunRequest,
     RunResponse,
 )
-from verifiers.v1.topology import resolve_topology_runner
+from verifiers.v1.runner import resolve_topology_runner
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)

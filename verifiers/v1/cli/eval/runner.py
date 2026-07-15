@@ -15,7 +15,7 @@ from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.topology import resolve_topology_runner
+from verifiers.v1.runner import resolve_topology_runner
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.sampling import sample
 

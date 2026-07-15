@@ -19,7 +19,7 @@ from pydantic_core import to_jsonable_python
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.task import Task
-from verifiers.v1.topology import TopologyRunner
+from verifiers.v1.runner import TopologyRunner
 from verifiers.v1.trace import Trace
 
 Candidate = dict[str, str]

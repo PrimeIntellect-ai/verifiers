@@ -21,7 +21,7 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
-from verifiers.v1.topology import TopologyRunner
+from verifiers.v1.runner import TopologyRunner
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
