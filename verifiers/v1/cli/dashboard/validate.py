@@ -30,6 +30,8 @@ _MARK_WIDTH = max(len(state) for state in _STYLE)
 # literal: Rich parses `[name]` in a cell as markup and would otherwise drop it.
 _MARK = {state: escape(f"[{state:<{_MARK_WIDTH}}]") for state in _STYLE}
 _DONE = ("valid", "invalid", "error", "timeout")
+# State -> (visible label, color); insertion order is the summary order.
+_OUTCOMES = {state: (state, _STYLE[state]) for state in _DONE}
 
 
 @dataclass
@@ -49,13 +51,17 @@ def Overview(config: ValidateConfig) -> Table:
     return grid
 
 
-def Progress(states: list[TaskProgress], start: float) -> Table:
-    done = [s for s in states if s.state in _DONE]
+def Progress(
+    states: list[TaskProgress],
+    start: float,
+    outcomes: dict[str, tuple[str, str]] = _OUTCOMES,
+) -> Table:
+    done = [s for s in states if s.state in outcomes]
     counts = Counter(s.state for s in done)
     stats = Text(f" {len(done)}/{len(states)} · {format_time(time.time() - start)}")
-    for state in _DONE:
+    for state, (label, style) in outcomes.items():
         stats.append(" · ")
-        stats.append(f"{state} {counts[state]}", style=_STYLE[state])
+        stats.append(f"{label} {counts[state]}", style=style)
     row = Table.grid()
     row.add_column()
     row.add_column()
