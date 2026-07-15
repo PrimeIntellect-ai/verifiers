@@ -198,7 +198,8 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
-            full = f"{name}_{tool.name}"
+            # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
+            full = f"{name}_{tool.name}" if name else tool.name
             tool_schemas.append(
                 {
                     "type": "function",

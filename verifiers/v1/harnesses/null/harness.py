@@ -11,9 +11,7 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class NullHarnessConfig(HarnessConfig):
-    qualify_tools: bool = True
-    """Advertise MCP tools as `<server>_<tool>`. Disable to expose raw tool names (useful for
-    benchmark fidelity); requires names to be unique across the rollout's tool servers."""
+    pass
 
 
 class NullHarness(Harness[NullHarnessConfig]):
@@ -56,8 +54,6 @@ class NullHarness(Harness[NullHarnessConfig]):
                     }
                 )
             )
-            if not self.config.qualify_tools:
-                args.append("--bare-tools")
         if isinstance(prompt, str):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:

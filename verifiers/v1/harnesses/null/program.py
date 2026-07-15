@@ -22,13 +22,11 @@ async def chat(
     return completion.choices[0].message
 
 
-async def connect_mcp(
-    stack: AsyncExitStack, config: dict, bare_tools: bool = False
-) -> tuple[list[dict], dict]:
+async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
     """Connect to each configured MCP server (a streamable-HTTP `url`); return
     (tool schemas, dispatch mapping advertised name -> (session, raw tool name)). Tools are
-    advertised as `<server>_<tool>`, or raw with `bare_tools` (names must then be unique
-    across servers)."""
+    advertised as `<server>_<tool>`; a server named `""` (TOOL_PREFIX = None) advertises its
+    tools bare, so names must be unique across the rollout's servers."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
@@ -47,7 +45,7 @@ async def connect_mcp(
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
-            full = tool.name if bare_tools else f"{name}_{tool.name}"
+            full = f"{name}_{tool.name}" if name else tool.name
             if full in dispatch:
                 raise ValueError(
                     f"duplicate tool name {full!r} across servers; keep qualified names"
@@ -98,7 +96,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
-    parser.add_argument("--bare-tools", action="store_true")
     return parser.parse_args()
 
 
@@ -117,7 +114,7 @@ async def main() -> None:
         # `stack` must be exited by this task, not a wait_for-spawned child task.
         if config.get("mcpServers"):
             async with asyncio.timeout(60):
-                tools, dispatch = await connect_mcp(stack, config, args.bare_tools)
+                tools, dispatch = await connect_mcp(stack, config)
         else:
             tools, dispatch = [], {}
         messages = (
