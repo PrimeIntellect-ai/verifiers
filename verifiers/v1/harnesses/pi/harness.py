@@ -193,7 +193,7 @@ class PiHarness(Harness[PiHarnessConfig]):
             PI_BIN,
             "--print",
             "--no-session",
-            "--approve",
+            "--no-approve",
             "--offline",
             "--provider",
             PROVIDER,
