@@ -22,7 +22,7 @@ from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
 from verifiers.v1.cli.output import (
     CONFIG_FILE,
     append_trace,
-    read_traces,
+    read_records,
     save_config,
     write_config,
 )
@@ -65,7 +65,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     task_cls = vf.task_type(config.taskset.id)
     data_cls = task_data_cls(task_cls)
     # `WireTaskData` reads any taskset's saved task without importing its Task type.
-    traces = read_traces(source, Trace[WireTaskData, state_cls(task_cls)])
+    # Records flatten to their traces here: replay re-scores per trace (a re-scored
+    # multi-trace record re-writes as single-trace records).
+    records = read_records(source, Trace[WireTaskData, state_cls(task_cls)])
+    traces = [trace for record in records for trace in record.traces]
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
 

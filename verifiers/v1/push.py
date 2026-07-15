@@ -8,6 +8,7 @@ later from disk. Auth + base URL come from `$PRIME_API_KEY` / `~/.prime/config.j
 (written by `prime login`), like the rest of the CLI.
 """
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -35,8 +36,14 @@ class PushState:
     error: str | None = None
 
 
-def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
-    """One rollout -> the platform's sample dict (the "old" v0 eval-sample format).
+def trace_to_sample(
+    trace: Trace, rollout_number: int = 1, record_id: str | None = None
+) -> dict[str, Any]:
+    """One trace -> the platform's sample dict (the "old" v0 eval-sample format).
+
+    The hub table stays flat — one row per trace: a multi-trace rollout uploads one
+    row per role, each stamped with the shared `record_id` (plus its `role` and
+    `trainable`), so the grouping is reconstructable without a nested schema.
 
     The conversation is the unit — no prompt/completion split (meaningless mid-branch):
     `completion` is the final branch's messages and `trajectory` carries one message list per
@@ -52,6 +59,9 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "sample_id": trace.id,
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
+        "record_id": record_id,
+        "role": trace.role,
+        "trainable": trace.trainable,
         "task": task,
         "prompt": [],
         "completion": dump(branches[-1].messages) if branches else [],
@@ -111,6 +121,26 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     return api_key, base, frontend, team_id
 
 
+def _record_ids(config: EvalConfig) -> dict[str, str]:
+    """trace id -> rollout-record id, read off the run's own traces.jsonl (the durable
+    source of the grouping); pre-record lines (bare traces) simply aren't in the map."""
+    from verifiers.v1.cli.output import TRACES_FILE, output_path, sniff_record
+
+    ids: dict[str, str] = {}
+    path = output_path(config) / TRACES_FILE
+    if not path.exists():
+        return ids
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if sniff_record(row):
+                for trace_row in row.get("traces") or []:
+                    ids[trace_row["id"]] = row["id"]
+    return ids
+
+
 def push_traces(
     traces: list[Trace], config: EvalConfig, state: "PushState | None" = None
 ) -> str | None:
@@ -154,11 +184,16 @@ def push_traces(
 
     env_name = config.taskset.id or config.id
     metrics = compute_metrics()
+    record_ids = _record_ids(config)
     counts: dict[int, int] = {}
     samples = []
     for trace in traces:
         counts[trace.task.data.idx] = counts.get(trace.task.data.idx, 0) + 1
-        samples.append(trace_to_sample(trace, counts[trace.task.data.idx]))
+        samples.append(
+            trace_to_sample(
+                trace, counts[trace.task.data.idx], record_id=record_ids.get(trace.id)
+            )
+        )
 
     metadata = {
         "framework": "verifiers",

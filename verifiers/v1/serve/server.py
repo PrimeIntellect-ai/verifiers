@@ -14,6 +14,7 @@ from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
 from verifiers.v1.serve.types import (
+    PROTOCOL_VERSION,
     BaseResponse,
     HealthResponse,
     InfoResponse,
@@ -22,6 +23,7 @@ from verifiers.v1.serve.types import (
     RunRolloutRequest,
     RunRolloutResponse,
 )
+from verifiers.v1.trace import RolloutRecord
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -130,8 +132,10 @@ class EnvServer:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self._task(req.task_idx), ctx, n=1)
         traces = await episode.run()
-        # Trust the concrete trace; serialize it once before client-side re-typing.
-        return RunRolloutResponse.model_construct(trace=traces[0])
+        # Trust the concrete record; serialize it once before client-side re-typing.
+        return RunRolloutResponse.model_construct(
+            record=RolloutRecord.of(traces[0], env=self.taskset_id)
+        )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
@@ -152,6 +156,7 @@ class EnvServer:
                 response = InfoResponse(
                     num_tasks=self.num_tasks,
                     requires_group_scoring=self.requires_group_scoring,
+                    protocol=PROTOCOL_VERSION,
                 )
             elif route == "run_rollout":
                 response = await self._run_rollout(

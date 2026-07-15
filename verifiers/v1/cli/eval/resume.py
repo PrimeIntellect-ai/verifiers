@@ -18,9 +18,9 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_record
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.trace import Trace, WireTrace
+from verifiers.v1.trace import RolloutRecord, WireRecord, WireTrace
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -52,16 +52,30 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     return config
 
 
+def _good_row(row: dict) -> bool:
+    """Whether a parsed traces.jsonl row is a keepable finished rollout. A record row
+    is good iff it has no rollout-level error and none of its traces errored; a
+    pre-record row (one bare trace) is good iff the trace didn't error."""
+    if sniff_record(row):
+        return not row.get("error") and not any(
+            t.get("errors") for t in row.get("traces") or []
+        )
+    return not row.get("errors")
+
+
 def load(
     resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group: bool
-) -> tuple[list[Trace], dict[int, int]]:
-    """Load the good saved rollouts back into memory as finished traces and diff them against
-    the run's target (`num_rollouts` per selected task): returns (the kept traces, rollouts
-    owed per task idx). An errored trace is dropped and re-run; a group-scored task is kept
-    only if fully complete, else its whole group is redone. Rewrites `traces.jsonl` to just
-    the kept rows — verbatim, via a temp file + atomic rename, so an interrupted resume can't
-    corrupt the prior good results — and the resumed rollouts then append. `WireTrace` reads
-    any taskset's saved traces without importing it."""
+) -> tuple[list[RolloutRecord], dict[int, int]]:
+    """Load the good saved rollouts back into memory as finished records and diff them
+    against the run's target (`num_rollouts` per selected task): returns (the kept
+    records, rollouts owed per task idx). A rollout is kept or redone as a unit — the
+    record — so a multi-trace rollout interrupted mid-write is simply owed again. An
+    errored rollout is dropped and re-run; a group-scored task is kept only if fully
+    complete, else its whole group is redone. Rewrites `traces.jsonl` to just the kept
+    rows — verbatim, via a temp file + atomic rename, so an interrupted resume can't
+    corrupt the prior good results — and the resumed rollouts then append. Pre-record
+    files (one bare trace per line) load the same way, each trace as a single-trace
+    record. `WireRecord`/`WireTrace` read any taskset's file without importing it."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
     good: dict[int, list[bytes]] = defaultdict(list)
@@ -75,11 +89,7 @@ def load(
                 except ValueError:
                     row = json.loads(line)
                 idx = row["task"]["data"]["idx"]
-                if (
-                    idx in selected
-                    and not row.get("errors")
-                    and len(good[idx]) < num_rollouts
-                ):
+                if idx in selected and _good_row(row) and len(good[idx]) < num_rollouts:
                     good[idx].append(line if line.endswith(b"\n") else line + b"\n")
     keep: list[bytes] = []
     owed: dict[int, int] = {}
@@ -94,7 +104,14 @@ def load(
     tmp = path.with_suffix(".jsonl.tmp")
     tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
-    return [WireTrace.model_validate_json(line) for line in keep], owed
+
+    def parse(line: bytes) -> RolloutRecord:
+        row = from_json(line)
+        if sniff_record(row):
+            return WireRecord.model_validate(row)
+        return RolloutRecord.of(WireTrace.model_validate(row))
+
+    return [parse(line) for line in keep], owed
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:

@@ -9,7 +9,12 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
-from verifiers.v1.cli.output import append_trace, output_path, save_config
+from verifiers.v1.cli.output import (
+    append_record,
+    append_trace,
+    output_path,
+    save_config,
+)
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
 from verifiers.v1.episode import RunSlot
@@ -41,9 +46,10 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     if config.resume is not None:
         # Resume incomplete group-reward tasks whole so every rollout is present.
         group = bool(tasks) and bool(discover_decorated(tasks[0], "group_reward"))
-        finished, owed = resume.load(
+        records, owed = resume.load(
             out, [t.data.idx for t in tasks], config.num_rollouts, group
         )
+        finished = [trace for record in records for trace in record.traces]
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
@@ -68,7 +74,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     write_lock = asyncio.Lock()
 
     async def on_complete(trace: Trace) -> None:
-        await append_trace(out, trace, write_lock)
+        await append_trace(out, trace, write_lock, env=config.env_id)
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
     # (non-shared ones start per rollout inside the episodes); the interception comes up
@@ -180,7 +186,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:
-            finished, owed = resume.load(out, idxs, config.num_rollouts, group_scored)
+            records, owed = resume.load(out, idxs, config.num_rollouts, group_scored)
+            finished = [trace for record in records for trace in record.traces]
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
@@ -222,19 +229,19 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     sampling=config.sampling,
                 )
             for trace in traces:
-                await append_trace(out, trace, write_lock)
+                await append_trace(out, trace, write_lock, env=config.env_id)
             return traces
 
         async def run_rollout_unit(idx: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
-                trace = await client.run_rollout(
+                record = await client.run_rollout(
                     task_idx=idx,
                     client=config.client,
                     model=config.model,
                     sampling=config.sampling,
                 )
-            await append_trace(out, trace, write_lock)
-            return [trace]
+            await append_record(out, record, write_lock)
+            return list(record.traces)
 
         # A group-scored task must run its rollouts together (cross-rollout scoring) →
         # one `run_group` request per task (one worker); otherwise rollouts are

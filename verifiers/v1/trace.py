@@ -247,6 +247,13 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """Unweighted metrics from tasks, harnesses, and judges."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Persistent JSON scratch space for task metadata that is not a reward or metric."""
+    role: str | None = None
+    """Which env role produced this trace (`None` for the single-agent default, where
+    there's only one). Stamped by the env layer; first-class so training can filter
+    and baseline per role without digging through `info`."""
+    trainable: bool = True
+    """Whether this trace's tokens are training data for the run's policy. An env
+    marks fixed-model roles (a frozen judge, a pinned user sim) untrainable."""
     state: StateT = Field(default_factory=State, exclude=True)
     """Transient state shared with servers and scoring; excluded from every dump."""
 
@@ -441,3 +448,35 @@ TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
 
 WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""
+
+
+class RolloutRecord(StrictBaseModel, Generic[DataT, StateT]):
+    """One rollout of the env, as it rides the wire: the atom of `traces.jsonl` (one
+    record per line) and of the serve protocol. A single-agent rollout carries one
+    trace; a multi-agent env's rollout carries one per role — they succeed, resume,
+    and score as a unit, which is exactly what the record makes atomic. `error` is a
+    rollout-level failure not attributable to any one trace (e.g. the env's `rollout`
+    hook itself); per-trace failures stay on the traces."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    env: str = ""
+    """The env (taskset) id that produced this rollout — provenance for mixed files."""
+    task: TraceTask[DataT]
+    """The task rolled out, as recorded on its traces (class name + row)."""
+    error: Error | None = None
+    traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """Whether the whole rollout is good — no record-level error and no trace
+        errors. The resume unit: anything less is redone."""
+        return self.error is None and not any(t.errors for t in self.traces)
+
+    @classmethod
+    def of(cls, trace: Trace, env: str = "") -> "RolloutRecord":
+        """The single-agent record: one trace, task lifted off it."""
+        return cls(env=env, task=trace.task, traces=[trace])
+
+
+WireRecord = RolloutRecord[WireTaskData, State]
+"""Record loader that preserves unknown task fields in `task.model_extra`."""
