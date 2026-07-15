@@ -27,6 +27,7 @@ the rollout.
 """
 
 import logging
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -41,6 +42,7 @@ from verifiers.v1.env import (
 )
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import ElasticInterceptionPool, Interception
+from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     Runtime,
@@ -106,7 +108,12 @@ class Agent:
     `Interception` to borrow — whoever entered it owns its lifecycle, this agent only
     acquires slots. Pass one pool to several agents so they share servers (and tunnels,
     behind remote runtimes). Without it, an entered agent owns an elastic pool; an
-    un-entered agent's runs each bring up their own per-rollout server."""
+    un-entered agent's runs each bring up their own per-rollout server.
+
+    `shared_tools` completes the borrowing set: live `SharedToolServer`s (taskset-scoped
+    MCP, served once by their owner — an eval's `serving()`, or a program via
+    `serve_shared`) that every run of this agent reuses. Borrowed like the others: never
+    started or torn down here."""
 
     def __init__(
         self,
@@ -115,6 +122,7 @@ class Agent:
         runtime: RuntimeConfig | None = None,
         *,
         interception: Interception | None = None,
+        shared_tools: Mapping[str, SharedToolServer] | None = None,
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
     ) -> None:
@@ -124,6 +132,7 @@ class Agent:
             runtime if runtime is not None else harness.config.runtime
         )
         self.interception = interception
+        self.shared_tools = dict(shared_tools) if shared_tools else {}
         self.limits = RolloutLimits() if limits is None else limits
         self.timeout = TimeoutConfig() if timeout is None else timeout
         self._entered = False
@@ -154,15 +163,18 @@ class Agent:
         its reach over its consumers, like an eval injecting into every rollout. The
         owned pool only when provably reachable from all of this run's consumers: always
         when it tunnels (a tunnel URL works from anywhere), else for a local run whose
-        task brings no tool/user servers (a task-owned server may sit in its own remote
-        runtime and must reach `/state`). Otherwise `None` — the rollout brings up a
-        per-run server sized to the task."""
+        task brings no tool/user servers and this agent no shared ones (any such server
+        may sit in its own remote runtime and must reach `/state`). Otherwise `None` —
+        the rollout brings up a per-run server sized to the task."""
         if self.interception is not None:
             return self.interception
         if self._pool is None:
             return None
         if self._pool.requires_tunnel or (
-            run_is_local and not type(task).tools and type(task).user is None
+            run_is_local
+            and not self.shared_tools
+            and not type(task).tools
+            and type(task).user is None
         ):
             return self._pool
         return None
@@ -188,7 +200,9 @@ class Agent:
                 self.runtime_config, task, self._warned_resources
             )
             run_is_local = runtime_is_local(runtime_config)
-        validate_pairing(self.harness, type(task), runtime_config)
+        validate_pairing(
+            self.harness, type(task), runtime_config, shared_tools=self.shared_tools
+        )
         # Timeout precedence as in `Environment.episode`, with the agent standing in
         # for cli/toml: agent-level wins, else the task's, else no limit.
         setup_timeout = (
@@ -224,6 +238,7 @@ class Agent:
             finalize_timeout=finalize_timeout,
             scoring_timeout=scoring_timeout,
             limits=self.limits,
+            shared_tools=self.shared_tools,
             interception=self._interception_for(run_is_local, task),
             runtime=runtime,
         )

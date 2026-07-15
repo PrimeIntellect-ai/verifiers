@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+from collections.abc import Collection
 from typing import Annotated, Literal
 
 from pydantic import Field, SerializeAsAny, model_validator
@@ -30,7 +31,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.generic import generic_type
-from verifiers.v1.mcp import SharedToolServer, Toolset, serve_shared
+from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
 class TimeoutConfig(BaseConfig):
@@ -224,15 +225,17 @@ def validate_pairing(
     task_cls: type[Task],
     runtime_config: RuntimeConfig,
     *,
-    shared_tools: tuple[type[Toolset], ...] = (),
+    shared_tools: Collection = (),
 ) -> None:
     """Reject an impossible harness/task/runtime combination before any work happens.
     Every check reads class-level facts (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`,
-    plus the taskset's `shared_tools` when there is one), so a failure here holds for
+    plus whatever shared MCP the caller brings), so a failure here holds for
     every row the task class can carry. Shared by `Environment` (once, at init, with the
-    task type read off the `Taskset[TaskT, ...]` generic — on the env server it fails
-    worker startup instead of every request) and `Agent.run` (per run, with the concrete
-    task's type, against the resolved runtime)."""
+    task type read off the `Taskset[TaskT, ...]` generic and the taskset's declared
+    `tools` — on the env server it fails worker startup instead of every request) and
+    `Agent.run` (per run, with the concrete task's type and the agent's borrowed
+    `shared_tools` servers, against the resolved runtime). Only the collection's
+    emptiness matters — declarations and live servers alike mean MCP is in play."""
     if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "

@@ -47,3 +47,23 @@ def test_borrowed_matching_box_is_silent():
     with patch.object(verifiers.v1.agent.logger, "warning") as warn:
         _check_borrowed_placement(task, box)
     warn.assert_not_called()
+
+
+async def test_shared_tools_hit_the_mcp_pairing_guard():
+    """`shared_tools` puts MCP in play exactly like a task's own tool servers, so a
+    non-MCP harness must be refused — the same `validate_pairing` check an eval runs
+    at init against the taskset's declared tools. Raises before any runtime or model
+    I/O, so a stub server value is safe."""
+
+    class NoMcpHarness(DefaultHarness):
+        SUPPORTS_MCP = False
+
+    ctx = vf.ModelContext(model="test-model", client=None)  # type: ignore[arg-type]
+    agent = vf.Agent(
+        NoMcpHarness(DefaultHarnessConfig()),
+        ctx,
+        shared_tools={"search": object()},  # type: ignore[dict-item]
+    )
+    task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
+    with pytest.raises(ValueError, match="does not support MCP"):
+        await agent.run(task)
