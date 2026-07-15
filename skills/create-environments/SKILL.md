@@ -1,13 +1,13 @@
 ---
 name: create-environments
-description: Create or migrate native verifiers.v1 taskset and harness packages. Use to build an environment, port a benchmark, add task tools or user simulation, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
+description: Create or migrate native verifiers.v1 taskset and harness packages. Use to build a taskset, port a benchmark, add task tools or user simulation, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
 ---
 
-# Create Environments
+# Create Tasksets
 
 ## Goal
 
-Create native V1 environments that are installable and runnable with verifiers.
+Create native v1 tasksets that are installable and runnable with verifiers.
 
 To start, ALWAYS use the CLI to create a package with the correct files:
 
@@ -50,7 +50,7 @@ Ask the user about unresolved semantic choices instead of inventing them. Presen
 
 ## Native package contract
 
-A package exports one `vf.Taskset` subclass and optionally one `vf.Harness` subclass through `__all__`. This happens automatically when you bootstrap a new environment using `prime env init`.
+A package exports one `vf.Taskset` subclass and optionally one `vf.Harness` subclass through `__all__`. This happens automatically when you bootstrap a new taskset using `prime env init`.
 
 Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader
 resolves classes and their config types from `__all__` and generic bases.
@@ -61,7 +61,7 @@ Use:
 import verifiers.v1 as vf
 ```
 
-Never mix v0 `Environment`, `Rubric`, `Parser`, `SingleTurnEnv`, `MultiTurnEnv`, or `ToolEnv` objects into a v1 environment. Exclusively use functions, classes and objects from `verifiers.v1`.
+Never mix v0 `Environment`, `Rubric`, `Parser`, `SingleTurnEnv`, `MultiTurnEnv`, or `ToolEnv` objects into a v1 taskset. Exclusively use functions, classes and objects from `verifiers.v1`.
 
 ## Minimal implementation
 
@@ -151,7 +151,7 @@ Persist inspectable artifacts in JSON-serializable `trace.info`. Put counters an
 
 ## Tools
 
-Some environments require custom tools. These should be the exception as they don’t work with every harness and are registered as MCP servers.
+Some tasksets require custom tools. These should be the exception as they don’t work with every harness and are registered as MCP servers.
 
 ```python
 class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
@@ -187,7 +187,7 @@ Choose placement from the tool's lifetime and filesystem needs:
 
 ## User simulation
 
-Use a `vf.User` when the environment, not the harness, is able to drive the conversation.
+Use a `vf.User` when the taskset, not the harness, drives the conversation.
 
 The selected harness must support user simulation, which a lot of the built-in, especially the CLI-based ones, don't. The built-in default harness does support user sim.
 
@@ -208,8 +208,8 @@ Return the `vf.ProgramResult` from `runtime.run_program()` or `runtime.run_uv_sc
 
 ## Dependencies and credentials
 
-- Add package import-time dependencies to the environment's own `pyproject.toml`.
-- Never edit the repository root `pyproject.toml` or `uv.lock` for an environment dependency.
+- Add package import-time dependencies to the taskset's own `pyproject.toml`.
+- Never edit the repository root `pyproject.toml` or `uv.lock` for a taskset dependency.
 - Read required external credentials at the earliest owning boundary so missing values fail clearly.
 - Do not require a user-managed background server unless the contract explicitly uses a remote URL.
 

@@ -3,12 +3,12 @@ name: train-with-environments
 description: Configure and diagnose prime-rl training with native verifiers.v1 tasksets, harnesses, runtimes, and trace branches. Use for RL experiment setup, environment-server configuration, group sizing, difficulty filtering, renderer selection, periodic eval, or rollout/training failure diagnosis.
 ---
 
-# Train With Environments
+# Train With Tasksets
 
 ## Goal
 
-Move a validated v1 environment into `prime-rl` without changing its task, harness, runtime, or
-scoring semantics, and diagnose environment failures separately from training instability.
+Move a validated v1 taskset into `prime-rl` without changing its task, harness, runtime, or
+scoring semantics, and diagnose rollout failures separately from training instability.
 
 ## Supported native path
 
@@ -107,7 +107,7 @@ can override it.
 
 - Start at `8` or more; `16` is a common baseline.
 - Larger groups improve the chance of mixed outcomes but increase rollout cost and group latency.
-- If groups are mostly all-zero, fix difficulty, model fit, or environment behavior before
+- If groups are mostly all-zero, fix difficulty, model fit, or taskset behavior before
   increasing optimizer effort.
 - If groups are mostly all-one, increase difficulty or sample a harder task distribution.
 - Choose `batch_size` with whole groups, packing, sequence length, and GPU memory in mind.
@@ -232,4 +232,4 @@ Report:
 3. Pretraining validation/eval evidence.
 4. Expected resource/cost envelope and external dependencies.
 5. Monitoring and stop criteria.
-6. Any environment, rollout, or trainer failures with their correct boundary classification.
+6. Any taskset, rollout, or trainer failures with their correct boundary classification.

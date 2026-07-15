@@ -40,6 +40,7 @@ _LABEL_WIDTH = len("timeouts")
 
 _STYLE = {
     "pending": "dim",
+    "boot": "orange3",
     "setup": "yellow",
     "running": "cyan",
     "finalize": "magenta",
@@ -49,6 +50,7 @@ _STYLE = {
 }
 _MARK_LABEL = {
     "pending": "pending",
+    "boot": "boot",
     "setup": "setup",
     "running": "rollout",
     "finalize": "finalize",
@@ -317,7 +319,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
             if judge.cost is not None:
                 total_judge_cost += judge.cost
             have_judge = True
-        for phase in ("setup", "generation", "finalize", "scoring"):
+        for phase in ("boot", "setup", "generation", "finalize", "scoring"):
             span = getattr(trace.timing, phase)
             if span.end:  # phase was timed for this rollout
                 phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
@@ -351,7 +353,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = [
         f"{phase} {format_time(phase_secs[phase] / phase_count[phase])}"
-        for phase in ("setup", "generation", "finalize", "scoring")
+        for phase in ("boot", "setup", "generation", "finalize", "scoring")
         if phase_count.get(phase)
     ]
     if time_segments:
@@ -383,11 +385,12 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
 
 
 def _started(rollout: Rollout) -> float:
-    # Sort key: when a rollout began (its setup start). A still-pending rollout has no trace
-    # yet, so it sorts last (+inf) — behind everything already in flight, in task order.
-    return (
-        rollout.trace.timing.setup.start if rollout.trace is not None else float("inf")
-    )
+    # Sort key: when a rollout began (its boot start; setup for pre-boot-span traces on
+    # resume). A still-pending rollout has no trace yet, so it sorts last (+inf) — behind
+    # everything already in flight, in task order.
+    if rollout.trace is None:
+        return float("inf")
+    return rollout.trace.timing.boot.start or rollout.trace.timing.setup.start
 
 
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
@@ -445,19 +448,17 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                         stop = f"{stop} (truncated)".strip()
             else:
                 state, result, stop = rollout.phase, "", ""
-            descriptor = (
-                rollout.runtime.descriptor if rollout.runtime is not None else None
-            )
-            runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
+            runtime_id = t.runtime.id if t.runtime is not None else None
+            runtime = f"{runtime_type}({runtime_id})" if runtime_id else runtime_type
             turns = t.num_turns
-            start = t.timing.setup.start
+            start = t.timing.boot.start or t.timing.setup.start
             end = (
                 t.timing.scoring.end
                 or t.timing.finalize.end
                 or t.timing.generation.end
-                # a rollout that errored in setup has only setup.end — freeze there once done,
-                # else (still running) the timer would grow off `now` forever
-                or (t.timing.setup.end if t.is_completed else 0)
+                # a rollout that errored in boot/setup has only that span's end — freeze there
+                # once done, else (still running) the timer would grow off `now` forever
+                or ((t.timing.setup.end or t.timing.boot.end) if t.is_completed else 0)
                 or now
             )
             prompt, completion, cached, reasoning, nbranches = _tokens(t)

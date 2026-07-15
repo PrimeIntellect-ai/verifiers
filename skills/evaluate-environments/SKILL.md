@@ -1,13 +1,13 @@
 ---
 name: evaluate-environments
-description: Run and evaluate verifiers environments. Set up the necessary config files and observe the runs and their results.
+description: Run and evaluate verifiers tasksets. Set up the necessary config files and observe the runs and their results.
 ---
 
-# Evaluate Environments
+# Evaluate Tasksets
 
 ## Goal
 
-Set up an evaluation for an environment in the correct way to reproduce results from others or evaluate a model and harness combination on a given environment.
+Set up an evaluation for a taskset in the correct way to reproduce results from others or evaluate a model and harness combination on a given taskset.
 
 ## Canonical path
 
@@ -44,7 +44,7 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 
 ## IDs and plugin resolution
 
-- `my-environment` resolves an importable local package.
+- `my-taskset` resolves an importable local package.
 - `owner/name` installs a Hub package on demand.
 - `owner/name@version` pins a Hub version.
 
@@ -54,7 +54,7 @@ The leading ID is shorthand for `--taskset.id`. Select a harness independently:
 prime eval run owner/name --harness.id codex --harness.runtime.type prime
 ```
 
-When specifying environments, always include the owner to resolve it correctly.
+When specifying Hub tasksets, always include the owner to resolve them correctly.
 
 ## Disabling tools
 
@@ -67,7 +67,7 @@ disabled_tools = ["shell_tool"]
 
 The names of these tools are set by the respective harness. Research the relevant first party documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
 
-## Typed environment overrides
+## Typed taskset overrides
 
 Taskset settings:
 

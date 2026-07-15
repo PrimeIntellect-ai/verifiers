@@ -9,15 +9,16 @@ metric tracks per-position accuracy. Images carry through the v1 message graph a
 for training.
 """
 
-import base64
+import itertools
 import random
 import re
-from io import BytesIO
+from collections.abc import Iterator
 
 from PIL import Image
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.image import image_data_url
 
 from color_codeword_v1.servers.user import (
     COLOR_RGB,
@@ -51,14 +52,6 @@ MAX_TURNS = 3
 SEED = 42
 
 
-def color_data_url(color: str, size: int = 100) -> str:
-    """A solid-color PNG square as a base64 `data:` URL."""
-    img = Image.new("RGB", (size, size), COLOR_RGB[color])
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
-
-
 def turn_text(turn: int, count: int, max_turns: int, total: int) -> str:
     """The user text shown alongside a turn's squares (mirrors the v0 wording)."""
     if turn == 0:
@@ -87,8 +80,6 @@ class ColorCodewordTaskConfig(vf.TaskConfig):
 
 
 class ColorCodewordConfig(vf.TasksetConfig):
-    num_examples: int = 1000
-    """Number of synthetic episodes to generate."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
     task: ColorCodewordTaskConfig = ColorCodewordTaskConfig()
@@ -129,14 +120,18 @@ class ColorCodewordTask(
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
-    def load(self) -> list[ColorCodewordTask]:
+    INFINITE = True
+
+    def load(self) -> Iterator[ColorCodewordTask]:
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
-        color_urls = {color: color_data_url(color) for color in colors}
+        color_urls = {
+            color: image_data_url(Image.new("RGB", (100, 100), COLOR_RGB[color]))
+            for color in colors
+        }
         length = c.images_per_turn * MAX_TURNS
-        tasks: list[ColorCodewordTask] = []
-        for idx in range(c.num_examples):
+        for idx in itertools.count():
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
             colors_per_turn = [
@@ -149,19 +144,16 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
                 vf.ImageUrlContentPart(image_url=vf.ImageUrlSource(url=color_urls[col]))
                 for col in turn0
             ] + [vf.TextContentPart(text=text)]
-            tasks.append(
-                ColorCodewordTask(
-                    ColorCodewordTaskData(
-                        idx=idx,
-                        prompt=[vf.UserMessage(content=parts)],
-                        system_prompt=SYSTEM_PROMPT,
-                        answer=answer,
-                        info={
-                            "colors_per_turn": colors_per_turn,
-                            "max_turns": MAX_TURNS,
-                        },
-                    ),
-                    c.task,
-                )
+            yield ColorCodewordTask(
+                ColorCodewordTaskData(
+                    idx=idx,
+                    prompt=[vf.UserMessage(content=parts)],
+                    system_prompt=SYSTEM_PROMPT,
+                    answer=answer,
+                    info={
+                        "colors_per_turn": colors_per_turn,
+                        "max_turns": MAX_TURNS,
+                    },
+                ),
+                c.task,
             )
-        return tasks

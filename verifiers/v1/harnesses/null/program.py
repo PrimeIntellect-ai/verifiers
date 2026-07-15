@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = ["openai", "mcp"]
 # ///
 """The interception endpoint and secret arrive through argv rather than the environment."""
@@ -7,8 +7,8 @@
 import argparse
 import asyncio
 import json
-import os
 from contextlib import AsyncExitStack
+from pathlib import Path
 
 from openai import AsyncOpenAI
 
@@ -24,7 +24,9 @@ async def chat(
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
     """Connect to each configured MCP server (a streamable-HTTP `url`); return
-    (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw tool name))."""
+    (tool schemas, dispatch mapping advertised name -> (session, raw tool name)). Tools are
+    advertised as `<server>_<tool>`; a server named `""` (TOOL_PREFIX = None) advertises its
+    tools bare, so names must be unique across the rollout's servers."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
@@ -43,7 +45,11 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
-            full = f"{name}_{tool.name}"
+            full = f"{name}_{tool.name}" if name else tool.name
+            if full in dispatch:
+                raise ValueError(
+                    f"duplicate tool name {full!r} across servers; keep qualified names"
+                )
             tool_schemas.append(
                 {
                     "type": "function",
@@ -88,28 +94,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
+    parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
+    initial = []
+    if args.initial_messages_file:
+        path = Path(args.initial_messages_file)
+        payload = path.read_bytes()
+        path.unlink()
+        initial = json.loads(payload)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
-        tools, dispatch = (
-            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
-        )
+        # asyncio.timeout, not wait_for: the MCP/httpx cancel scopes entered onto
+        # `stack` must be exited by this task, not a wait_for-spawned child task.
+        if config.get("mcpServers"):
+            async with asyncio.timeout(60):
+                tools, dispatch = await connect_mcp(stack, config)
+        else:
+            tools, dispatch = [], {}
         messages = (
             [{"role": "system", "content": args.system_prompt}]
             if args.system_prompt
             else []
         )
-        # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
-        # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
-        # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
-        # message. Both empty means the task has no prompt — the user simulator seeds the opening.
-        initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
         if initial:
             messages.extend(initial)
         elif args.prompt:
