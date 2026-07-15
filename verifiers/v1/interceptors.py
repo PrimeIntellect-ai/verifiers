@@ -202,9 +202,6 @@ def block_with_judge(
         self, message: Message, trace: Trace, prompt: Messages | None = None
     ) -> str | None:
         candidate = message.model_dump_json(exclude_none=True, indent=2)
-        cache_key = hashlib.sha256(f"{policy}\n{candidate}".encode()).hexdigest()
-        if cache_key in trace.info.get("interception_judge", {}):
-            return reply
         context = (
             json.dumps(
                 [item.model_dump(mode="json", exclude_none=True) for item in prompt],
@@ -213,6 +210,11 @@ def block_with_judge(
             if prompt is not None
             else trace.transcript
         )
+        cache_key = hashlib.sha256(
+            f"{policy}\n{context}\n{candidate}".encode()
+        ).hexdigest()
+        if cache_key in trace.info.get("interception_judge", {}):
+            return reply
 
         response = await policy_judge.complete(
             [
