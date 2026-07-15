@@ -41,6 +41,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TaskError,
     UserError,
+    model_error,
 )
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, Tool
@@ -142,6 +143,9 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+    active_requests: set[asyncio.Task] = field(default_factory=set, repr=False)
+    """Model request handlers still serving this rollout. The rollout timeout cancels them so
+    an upstream provider stream cannot outlive its harness."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -182,7 +186,16 @@ class InterceptionServer:
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
-            return await self.handle_request(request, dialect)
+            session = self.sessions.get(dialect.secret(request.headers))
+            if session is None:
+                return await self.handle_request(request, dialect)
+            task = asyncio.current_task()
+            assert task is not None
+            session.active_requests.add(task)
+            try:
+                return await self.handle_request(request, dialect)
+            finally:
+                session.active_requests.discard(task)
 
         return handler
 
@@ -511,12 +524,25 @@ class InterceptionServer:
         try:
             if parser_error is not None:
                 raise parser_error
-            turn.commit(parser.finish())
+            response = parser.finish()
+        except (ValueError, ValidationError) as e:
+            session.error = model_error(
+                f"malformed upstream response: {type(e).__name__}: {e}",
+                status_code=502,
+            )
+            logger.warning(
+                "model call failed: id=%s %s: %s",
+                session.trace.id,
+                type(session.error).__name__,
+                session.error,
+            )
+        else:
+            turn.commit(response)
             if tools:  # record only on commit, like the non-streaming path
                 session.trace.tools = tools
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         finally:
-            # Release the withheld events only now — after the commit — then close.
+            # Release terminal events only after the turn is committed or its failure captured.
             with contextlib.suppress(ConnectionResetError):
                 for event in deferred:
                     await resp.write(event)
