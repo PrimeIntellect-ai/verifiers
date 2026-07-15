@@ -17,7 +17,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import invoke
 from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, Message, Messages
+from verifiers.v1.types import AssistantMessage, Message, Messages, ToolMessage
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
@@ -90,6 +90,18 @@ class RolloutSession:
     ) -> Message | None:
         """Return the first interceptor replacement, or None for native pass-through."""
         try:
+            if isinstance(message, ToolMessage) and message.name is None:
+                name = next(
+                    (
+                        call.name
+                        for assistant in reversed(self.trace.assistant_messages)
+                        for call in assistant.tool_calls or []
+                        if call.id == message.tool_call_id
+                    ),
+                    None,
+                )
+                if name is not None:
+                    message = message.model_copy(update={"name": name})
             for interceptor in self.intercepts:
                 hint = get_type_hints(interceptor).get("message")
                 allowed = tuple(t for t in get_args(hint) if isinstance(t, type))

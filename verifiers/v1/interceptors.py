@@ -21,15 +21,12 @@ from verifiers.v1.types import (
 
 Interceptor = Callable[..., Awaitable[str | None]]
 _SHELL_TOOLS = (
-    "bash",
-    "*shell",
-    "shell_command",
-    "exec",
-    "exec_command",
-    "execute_command",
-    "run_command",
-    "terminal",
-    "*code_execution",
+    "*bash*",
+    "*shell*",
+    "*terminal*",
+    "*exec*",
+    "*command*",
+    "*code_execution*",
     "*code_interpreter*",
 )
 _CODE_SEARCH_TOOLS = (
@@ -60,7 +57,7 @@ def find_tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
     calls = list(message.tool_calls or [])
     for item in message.provider_state or []:
         kind = item.get("type", "")
-        if kind == "server_tool_use":
+        if kind in ("server_tool_use", "mcp_tool_use"):
             name = item.get("name")
         elif kind != "function_call" and kind.endswith("_call"):
             name = item.get("name") or kind.removesuffix("_call")
@@ -161,7 +158,11 @@ def block_web_search(
 ) -> Interceptor:
     """Block client or provider-hosted web search, optionally by response content."""
     return block_tool_calls(
-        "*web*search*", containing=containing, reply=reply, priority=priority
+        "*web*search*",
+        "*search*web*",
+        containing=containing,
+        reply=reply,
+        priority=priority,
     )
 
 

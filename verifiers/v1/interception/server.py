@@ -635,18 +635,20 @@ class InterceptionServer(Interception):
                     await end_stream()
                     return resp
 
-                try:
+            try:
+                if buffer is not None:
+                    # The commit is the boundary before any intercepted payload is visible.
+                    await keepalive()
+                turn.commit(response, tools)
+                logger.debug("intercept stream turn: id=%s", session.trace.id)
+                if buffer is not None:
                     for event in events:
                         if deferred or dialect.is_terminal_event(event):
                             deferred.append(event)
                         else:
                             await resp.write(event)
-                except ConnectionResetError:
-                    return resp
-
-            try:
-                turn.commit(response, tools)
-                logger.debug("intercept stream turn: id=%s", session.trace.id)
+            except ConnectionResetError:
+                return resp
             finally:
                 # Release the withheld terminal events only now — after the commit.
                 await end_stream()
