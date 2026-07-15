@@ -17,11 +17,16 @@ class ToolsetConfig(BaseConfig):
     colocated: bool = False
     runtime: RuntimeConfig = SubprocessConfig()
     url: str | None = None
+    scratch_dir: str = "/tmp"
+    """Where a sandbox-launched server keeps its venv and uv caches. Point it at a disk-backed
+    writable path when the sandbox's /tmp is a small tmpfs (e.g. prime VM-image sandboxes)."""
 
 
 class SharedToolsetConfig(BaseConfig):
     runtime: RuntimeConfig = SubprocessConfig()
     url: str | None = None
+    scratch_dir: str = "/tmp"
+    """See `ToolsetConfig.scratch_dir`."""
 
 
 class Toolset(ServerBase[ConfigT, StateT]):

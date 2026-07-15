@@ -116,17 +116,26 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
             "a local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
-    root = "/tmp/vf-src"
+    scratch = (getattr(server.config, "scratch_dir", None) or "/tmp").rstrip("/") or "/tmp"
+    root = f"{scratch}/vf-src"
     vf, env = _verifiers_root(), Path(source_dir)
     await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS))
     await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
-    venv = "/tmp/vf-venv"
+    venv = f"{scratch}/vf-venv"
     # The upload carries no .git, so hatch-vcs falls back to version 0.0.0 — an env
     # package's `verifiers>=...` floor would then resolve PyPI verifiers OVER the local
     # build, silently running the server against a released (older) API. Pretend the
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
     setup = (
+        # Some sandboxes (e.g. prime VM-image sandboxes) exec jobs with an unset or read-only
+        # HOME; uv's installer and caches need a writable one. Probe with a real write — `[ -w ]`
+        # is always true for root, even on a read-only mount.
+        '_p="$HOME/.vf-wtest.$$"; { [ -n "$HOME" ] && touch "$_p" 2>/dev/null && rm -f "$_p"; } '
+        "|| export HOME=/tmp; "
+        # The venv's dependency tree can outgrow a small tmpfs /tmp — keep uv's cache and managed
+        # pythons on the scratch dir alongside the venv.
+        f'export UV_CACHE_DIR="{scratch}/vf-uv-cache" UV_PYTHON_INSTALL_DIR="{scratch}/vf-uv-python"; '
         f"{_ENSURE_UV}; set -e; "
         f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
         f"uv venv {venv} && "
