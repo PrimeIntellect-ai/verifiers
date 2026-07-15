@@ -9,12 +9,10 @@ metric tracks per-position accuracy. Images carry through the v1 message graph a
 for training.
 """
 
-import base64
 import itertools
 import random
 import re
 from collections.abc import Iterator
-from io import BytesIO
 
 from PIL import Image
 from pydantic import Field
@@ -51,14 +49,6 @@ After each turn, output your accumulated codeword so far. Output ONLY the letter
 MAX_TURNS = 3
 # RNG seed for reproducible color sequences.
 SEED = 42
-
-
-def color_data_url(color: str, size: int = 100) -> str:
-    """A solid-color PNG square as a base64 `data:` URL."""
-    img = Image.new("RGB", (size, size), COLOR_RGB[color])
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
 
 def turn_text(turn: int, count: int, max_turns: int, total: int) -> str:
@@ -135,7 +125,10 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
-        color_urls = {color: color_data_url(color) for color in colors}
+        color_urls = {
+            color: vf.image_data_url(Image.new("RGB", (100, 100), COLOR_RGB[color]))
+            for color in colors
+        }
         length = c.images_per_turn * MAX_TURNS
         for idx in itertools.count():
             sequence = [rng.choice(colors) for _ in range(length)]

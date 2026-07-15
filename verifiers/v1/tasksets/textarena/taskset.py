@@ -75,9 +75,9 @@ class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
             with open(OUTCOME_FILE, "w") as f:
                 json.dump({"reward": reward, "reason": reason}, f)
             self.state.game_over = True
-            return [{"role": "user", "content": reason}]
+            return [vf.UserMessage(content=reason)]
         _, observation = env.get_observation()
-        return [{"role": "user", "content": self._latest_feedback(str(observation))}]
+        return [vf.UserMessage(content=self._latest_feedback(str(observation)))]
 
 
 class TextArenaTaskConfig(vf.TaskConfig):

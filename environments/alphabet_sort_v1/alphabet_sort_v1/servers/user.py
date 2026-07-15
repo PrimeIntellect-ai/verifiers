@@ -22,7 +22,7 @@ class AlphabetSortUser(vf.User[vf.UserConfig, AlphabetSortState]):
             return []
         content = self.queue[self.i]
         self.i += 1
-        return [{"role": "user", "content": content}]
+        return [vf.UserMessage(content=content)]
 
 
 if __name__ == "__main__":

@@ -9,9 +9,7 @@ lettered A.. dynamically (MMMU rows range from 2 to 9 choices); open-ended rows
 """
 
 import ast
-import base64
 import re
-from io import BytesIO
 from typing import Literal
 
 import verifiers.v1 as vf
@@ -50,13 +48,6 @@ ALL_SUBSETS = [
 ]
 
 LETTERS = "ABCDEFGHI"
-
-
-def image_data_url(pil_image) -> str:
-    """The row's PIL image as a base64 PNG `data:` URL."""
-    buffer = BytesIO()
-    pil_image.save(buffer, format="PNG")
-    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
 
 
 def question_text(question: str, options: list[str]) -> str:
@@ -122,7 +113,9 @@ class MMMUTaskset(vf.Taskset[MMMUTask, MMMUConfig]):
                         image = row[f"image_{segment}"]
                         parts.append(
                             vf.ImageUrlContentPart(
-                                image_url=vf.ImageUrlSource(url=image_data_url(image))
+                                image_url=vf.ImageUrlSource(
+                                    url=vf.image_data_url(image)
+                                )
                             )
                         )
                     elif segment:

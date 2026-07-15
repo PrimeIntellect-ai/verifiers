@@ -130,6 +130,7 @@ from verifiers.v1.types import (
     ToolMessage,
     Usage,
     UserMessage,
+    image_data_url,
 )
 
 __all__ = [
@@ -153,6 +154,7 @@ __all__ = [
     "ToolMessage",
     "Usage",
     "UserMessage",
+    "image_data_url",
     # task / trace / state
     "Task",
     "TaskData",

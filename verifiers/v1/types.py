@@ -1,5 +1,7 @@
+import base64
 from collections.abc import Iterable
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
@@ -55,6 +57,13 @@ def content_text(content: "MessageContent | None") -> str:
     return "\n".join(
         part.text for part in content or [] if isinstance(part, TextContentPart)
     )
+
+
+def image_data_url(image) -> str:
+    """Encode a PIL-compatible image as a base64 PNG data URL."""
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
 
 
 class SystemMessage(StrictBaseModel):
