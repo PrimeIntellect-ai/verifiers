@@ -30,9 +30,10 @@ from __future__ import annotations
 import itertools
 import logging
 from collections.abc import Iterable
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic
 
-from pydantic import SerializeAsAny
+from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
@@ -52,6 +53,16 @@ class TasksetConfig(BaseConfig):
     """Local package or Hub `org/name[@version]`, set with `--taskset.id`."""
     task: SerializeAsAny[TaskConfig] = TaskConfig()
     """Config passed to each task, under `--taskset.task.*`."""
+    system_prompt: str | None = None
+    """Override `TaskData.system_prompt` for tasksets that honor it in `load()`."""
+    system_prompt_file: Path | None = None
+    """File override for `system_prompt`, mutually exclusive with `system_prompt`."""
+
+    @model_validator(mode="after")
+    def check_system_prompt_source(self) -> TasksetConfig:
+        if self.system_prompt is not None and self.system_prompt_file is not None:
+            raise ValueError("set `system_prompt` or `system_prompt_file`, not both")
+        return self
 
     @property
     def name(self) -> str:
@@ -59,6 +70,13 @@ class TasksetConfig(BaseConfig):
 
 
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
+
+
+def resolve_system_prompt(config: TasksetConfig) -> str | None:
+    """Inline `system_prompt`, else contents of `system_prompt_file`, else None."""
+    if config.system_prompt_file is not None:
+        return config.system_prompt_file.read_text(encoding="utf-8")
+    return config.system_prompt
 
 
 class Taskset(Generic[TaskT, TasksetConfigT]):

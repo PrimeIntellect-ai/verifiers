@@ -37,23 +37,22 @@ def split_tasks(
     return tasks[:num_train], tasks[num_train : num_train + num_val]
 
 
-def resolve_gepa_seed_prompt(tasks: list[Task], initial_prompt: str | None) -> str:
-    """The system prompt GEPA starts optimizing from: `initial_prompt` if given, else the first
-    task that sets `system_prompt`. Some tasksets (e.g. `gsm8k-v1`) bake instructions into
-    `prompt` rather than `system_prompt` and can't be optimized this way — pass `--initial-prompt`
-    to seed one explicitly.
+def resolve_gepa_seed_prompt(tasks: list[Task]) -> str:
+    """The system prompt GEPA starts optimizing from: the first task that sets
+    `system_prompt`. Override via `--taskset.system-prompt` / `--taskset.system-prompt-file`
+    on tasksets that honor those fields in `load()`. Some tasksets (e.g. `gsm8k-v1`) bake
+    instructions into `prompt` rather than `system_prompt` and can't be optimized this way.
 
     How the resolved prompt reaches the model at rollout time — a real system message vs. folded
     into the user prompt — is the harness's call: `Harness.resolve_prompt` owns that policy and
     warns when it folds, so it isn't re-policed here."""
-    if initial_prompt is not None:
-        return initial_prompt
     for task in tasks:
         if task.data.system_prompt is not None:
             return task.data.system_prompt
     raise ValueError(
         "no task in this taskset sets Task.system_prompt — some tasksets bake instructions "
         "directly into `prompt` instead (e.g. gsm8k-v1) and can't be optimized this way. Pass "
-        "--initial-prompt to seed one explicitly, or pick a taskset whose load() sets "
-        "system_prompt on its task data (e.g. reverse-text-v1, lean, textarena)."
+        "--taskset.system-prompt or --taskset.system-prompt-file (on a taskset whose load() "
+        "honors them), or pick a taskset that sets system_prompt by default (e.g. "
+        "reverse-text-v1, lean, textarena)."
     )

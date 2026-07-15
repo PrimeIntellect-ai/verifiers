@@ -35,10 +35,17 @@ Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA,
 
 ## Output
 
-Results go under `outputs/<taskset>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is printed when the run finishes.
+Results go under `outputs/<taskset>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is written to `best_system_prompt.txt` and printed when the run finishes.
+
+Reuse it in eval or training via the same taskset knobs:
+
+```bash
+uv run eval reverse-text-v1 \
+  --taskset.system-prompt-file outputs/<run>/best_system_prompt.txt
+```
 
 ## Limitations
 
 **Tasksets** — GEPA optimizes `Task.system_prompt`, so the taskset must provide one. Tasksets that bake instructions into the user `prompt` instead (e.g. `gsm8k-v1`) are not supported out of the box.
 
-**Harnesses** — any eval harness works. With `APPENDS_SYSTEM_PROMPT`, the optimized prompt is used as a system message but otherwise is folded into the user prompt.
+**Harnesses** — any eval harness works. With `APPENDS_SYSTEM_PROMPT`, the optimized prompt is used as a system message; otherwise it is folded into the user prompt.

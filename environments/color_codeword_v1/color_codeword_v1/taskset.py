@@ -131,6 +131,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
             for color in colors
         }
         length = c.images_per_turn * MAX_TURNS
+        system_prompt = vf.resolve_system_prompt(c) or SYSTEM_PROMPT
         for idx in itertools.count():
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
@@ -148,7 +149,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
                 ColorCodewordTaskData(
                     idx=idx,
                     prompt=[vf.UserMessage(content=parts)],
-                    system_prompt=SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     answer=answer,
                     info={
                         "colors_per_turn": colors_per_turn,

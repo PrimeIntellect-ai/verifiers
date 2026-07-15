@@ -33,6 +33,9 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `taskset.id` / `harness.id` — pick the taskset and harness
+- `taskset.system_prompt` / `taskset.system_prompt_file` — override the task
+  system prompt (mutually exclusive; honored by tasksets that use them in `load()`,
+  e.g. after a GEPA run's `best_system_prompt.txt`)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — rollouts per task

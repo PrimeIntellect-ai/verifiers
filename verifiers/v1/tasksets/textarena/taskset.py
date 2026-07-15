@@ -135,13 +135,14 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         # seed-invariant; otherwise each task must expose its seeded board.
         first = observation(0)
         seed_specific = observation(1) != first
+        system_prompt = vf.resolve_system_prompt(self.config) or SYSTEM_PROMPT
         for i in itertools.count():
             yield TextArenaTask(
                 TextArenaData(
                     idx=i,
                     name=f"{self.config.game}#{i}",
                     prompt=observation(i) if seed_specific else first,
-                    system_prompt=SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     info={"game": self.config.game, "seed": i},
                 ),
                 self.config.task,

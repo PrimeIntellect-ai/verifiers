@@ -216,6 +216,8 @@ fields become typed dotted flags such as `--taskset.split test`.
 |---|---|---|---|
 | `id` | `ID` | `""` | Local package or Hub `org/name[@version]`; selects the taskset and its config type. Set via `--taskset.id`. |
 | `task` | `TaskConfig` | `TaskConfig()` | Task-facing config passed to every constructed task. `SerializeAsAny` preserves a narrowed subclass. Set through `--taskset.task.*`. |
+| `system_prompt` | `str \| None` | `None` | Override `TaskData.system_prompt` for tasksets that honor it in `load()`. Mutually exclusive with `system_prompt_file`. |
+| `system_prompt_file` | `Path \| None` | `None` | File override for `system_prompt` (read as UTF-8 text), same mutual-exclusion pattern as `JudgeConfig.prompt` / `prompt_file`. |
 
 `.name` → the package name (id with org / version stripped).
 

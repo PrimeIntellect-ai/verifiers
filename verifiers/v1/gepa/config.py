@@ -55,9 +55,6 @@ class GEPAConfig(EnvConfig):
     """Train tasks sampled per reflection step."""
     reflection_columns: list[str] = Field(default_factory=list)
     """Extra per-trace fields (from `trace.info`, else `task`) to surface to the teacher LM."""
-    initial_prompt: str | None = None
-    """Seed system prompt. None = the first loaded task's `Task.system_prompt`, if any task
-    sets one (see `resolve_gepa_seed_prompt`)."""
 
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
@@ -67,7 +64,7 @@ class GEPAConfig(EnvConfig):
         None, validation_alias=AliasChoices("output_dir", "o")
     )
     """Where to write results (config.toml + the streamed traces.jsonl, alongside GEPA's own
-    candidates.json / run_log.json). None = a fresh per-run dir under
+    candidates.json / run_log.json / best_system_prompt.txt). None = a fresh per-run dir under
     `outputs/<taskset>--<model>--<harness>/<uuid>` (via `output_path`)."""
     save_results: bool = True
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))

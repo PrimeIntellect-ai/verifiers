@@ -46,12 +46,13 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
         from datasets import load_dataset
 
         rows = load_dataset(self.config.dataset_name, split=self.config.dataset_split)
+        system_prompt = vf.resolve_system_prompt(self.config) or SYSTEM
         return [
             ReverseTextTask(
                 ReverseTextData(
                     idx=i,
                     prompt=row["prompt"],
-                    system_prompt=SYSTEM,
+                    system_prompt=system_prompt,
                     answer=row["prompt"][::-1],
                 ),
                 self.config.task,
