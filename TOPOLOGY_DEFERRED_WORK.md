@@ -11,6 +11,32 @@ have been removed.
 
 ## Execution and scalability
 
+### Choose the interception at rollout time, not config time
+
+The run's one `Interception` is built in `TopologyRunner.serving()` with a single
+run-level `requires_tunnel` verdict, decided before any instance runs. That forces a
+prediction: agent placements are knowable from config, but the tool/user servers of
+tasks minted inside `run()` are not — `taskset_server_configs()` (env.py) guesses from
+the *seed* taskset's task class and conservatively assumes remote when the pairing
+isn't statically derivable. Two consequences: in a mixed placement (remote solver +
+local judge) the local agent's model calls transit the tunnel needlessly, and an
+all-local topology whose `run()` mints a task with a remote tool server gets a
+localhost-only interception that server cannot reach.
+
+The agreed future shape: `serving()` holds *two* interception pools built from the same
+`EnvConfig.interception` config — one plain, one tunneled — and each `Rollout` picks at
+acquire time from facts it already has in hand (its actual runtime plus its actual
+tool/user servers; the exact `requires_tunnel` computation its no-injection fallback
+already performs). The default `elastic` shape spawns servers only on acquire, so an
+all-local run never mints a tunnel and the idle pool costs nothing; the `server`/`static`
+shapes need an explicit don't-start-until-first-acquire tweak. This deletes
+`taskset_server_configs()` and the whole statically-knowable hedge, and is really an
+upstream interception-layer improvement (main's `Environment` used the same static
+logic) — best done as its own small PR, coordinated with main.
+
+Done when the guesser is gone, a mixed-placement run keeps local agents on loopback
+(tested), and the minted-remote-tool case is served correctly.
+
 ### Account for variable topology cost
 
 The server currently charges every topology invocation as one unit of capacity regardless of
