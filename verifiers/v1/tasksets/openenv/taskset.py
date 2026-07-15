@@ -113,10 +113,12 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
             "action"
         ]
         action_type = self.action_schema.get("properties", {}).get("type", {})
-        if action_type.get("const") == "call_tool" or "call_tool" in action_type.get(
-            "enum", []
+        # OpenEnv's generic MCP Action omits the type discriminator.
+        if (
+            self.action_schema.get("title") == "Action"
+            or action_type.get("const") == "call_tool"
+            or "call_tool" in action_type.get("enum", [])
         ):
-            # MCP's generic call action needs the server's concrete tool catalog.
             result = await self.client.step({"type": "list_tools"})
             self.action_schema["available_tools"] = result.observation["tools"]
         self.result = await self.client.reset(**task.reset)
