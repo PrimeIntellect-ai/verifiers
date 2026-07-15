@@ -149,7 +149,7 @@ class EnvClient:
         task_idx: int | None = None,
     ) -> Trace[WireTaskData]:
         """Run one rollout; return a typed `Trace[WireTaskData]`. A v1 server takes the
-        task itself (`task_data`, a `TaskData.full_dump()`); the legacy bridge addresses
+        task itself (`task_data`, its dumped `TaskData`); the legacy bridge addresses
         its server-side dataset by `task_idx`."""
         response = await self._request(
             RunRolloutRequest(

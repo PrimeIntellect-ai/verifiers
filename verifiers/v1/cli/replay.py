@@ -75,11 +75,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # time — `trace.task` keeps its wire form, because the trace persists through the
     # `Trace[WireTaskData, ...]` schema it was read as: a sibling `TaskData` assigned onto
     # it would have its subclass fields silently dropped from the replay's own output
-    # (they're real fields, not `model_extra`). A row that can't be rebuilt from the wire
-    # (a load-time-only field excluded from serialization, like harbor's `task_dir`) is
-    # scored by the base `Task` on the wire row (judges + base signals only; the
-    # subclass's own `@reward`s don't run — runtime-dependent ones would be skipped
-    # offline anyway).
+    # (they're real fields, not `model_extra`). A row that still can't be rebuilt from
+    # the wire (e.g. saved before its data type grew a required field) is scored by the
+    # base `Task` on the wire row (judges + base signals only; the subclass's own
+    # `@reward`s don't run — runtime-dependent ones would be skipped offline anyway).
     def rebuild(trace: Trace) -> vf.TaskData:
         if trace.task.type != task_cls.__name__:
             # The trace records which class produced it — a mismatch means this row is

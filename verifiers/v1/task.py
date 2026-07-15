@@ -47,7 +47,7 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import ConfigDict, model_validator
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
@@ -156,26 +156,23 @@ class TaskData(StrictBaseModel):
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        excluded = [name for name, field in cls.model_fields.items() if field.exclude]
+        if excluded:
+            raise TypeError(
+                f"{cls.__name__}: task data fields cannot be excluded from serialization "
+                f"({excluded}) — a task must survive the wire whole, or the env server "
+                f"rebuilds it with silently-defaulted fields"
+            )
+
     @property
     def prompt_text(self) -> str:
         if isinstance(self.prompt, str):
             return self.prompt
         texts = [content_text(message.content) for message in self.prompt or []]
         return "\n\n".join(text for text in texts if text)
-
-    def full_dump(self) -> dict:
-        """`model_dump(mode="json")` plus the fields excluded from serialization —
-        load-time-only values (e.g. a local task directory) that must not persist in saved
-        traces but that the env server needs to rebuild the task from a dispatch request."""
-        dumped = self.model_dump(mode="json")
-        for name, field in type(self).model_fields.items():
-            if not field.exclude:
-                continue
-            value = getattr(self, name)
-            if isinstance(value, BaseModel):
-                value = value.model_dump(mode="json")
-            dumped[name] = value
-        return dumped
 
 
 class WireTaskData(TaskData):

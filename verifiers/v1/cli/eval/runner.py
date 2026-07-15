@@ -180,7 +180,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             )
             idxs = [task.data.idx for task in tasks]
             payloads = {
-                task.data.idx: {"task_data": task.data.full_dump()} for task in tasks
+                task.data.idx: {"task_data": task.data.model_dump(mode="json")}
+                for task in tasks
             }
         out = output_path(config)
         finished: list[Trace] = []

@@ -40,8 +40,8 @@ class InfoResponse(BaseResponse):
 
 
 class TaskAddressing(BaseModel):
-    """How a run request names its task: v1 ships the task itself (`task_data`, a
-    `TaskData.full_dump()` the server validates into the taskset's declared type); the
+    """How a run request names its task: v1 ships the task itself (`task_data`, the
+    dumped `TaskData` the server validates into the taskset's declared type); the
     legacy bridge addresses its server-side dataset by row (`task_idx`)."""
 
     task_data: dict | None = None
