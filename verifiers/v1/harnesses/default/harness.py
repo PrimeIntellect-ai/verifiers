@@ -42,6 +42,14 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
     SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
 
+    def system_prompt(self) -> str | None:
+        fragments = [BASH_SYSTEM_PROMPT]
+        if self.config.edit:
+            fragments.append(EDIT_SYSTEM_PROMPT)
+        if self.config.search:
+            fragments.append(SEARCH_PROMPT)
+        return " ".join(fragments)
+
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
 
@@ -54,15 +62,8 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task.data)
-        fragments = [BASH_SYSTEM_PROMPT]
-        if self.config.edit:
-            fragments.append(EDIT_SYSTEM_PROMPT)
-        if self.config.search:
-            fragments.append(SEARCH_PROMPT)
-        system_prompt = "\n\n".join(
-            p for p in (" ".join(fragments), system_prompt) if p
-        )
+        task_system, prompt = self.resolve_prompt(trace.task.data)
+        system_prompt = self.compose_system_prompt(task_system)
         env = {**self.config.resolved_env}
         args = [
             f"--base-url={endpoint}",

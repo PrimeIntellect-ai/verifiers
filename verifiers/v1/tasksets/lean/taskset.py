@@ -18,7 +18,7 @@ from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskConfig, TaskData, TaskResources
-from verifiers.v1.taskset import Taskset, TasksetConfig, resolve_system_prompt
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tasksets.lean.scoring import (
     build_starter_file,
     expected_protected_signature,
@@ -168,7 +168,6 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                 )
 
         resources = TaskResources(cpu=4, memory=4, disk=10)
-        system_prompt = resolve_system_prompt(config) or DEFAULT_SYSTEM_PROMPT
         for index, row in enumerate(raw):
             # An empty statement would reduce the signature guard to `:= by`.
             formal_statement = row[ds.statement_column]
@@ -185,7 +184,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     idx=index,
                     name=str(name) if name else f"task_{index:05d}",
                     prompt=self._build_prompt(formal_statement, header),
-                    system_prompt=system_prompt,
+                    system_prompt=DEFAULT_SYSTEM_PROMPT,
                     image=config.docker_image,
                     workdir=config.task.lean_project_path,
                     resources=resources,

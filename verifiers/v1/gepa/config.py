@@ -1,7 +1,8 @@
 """The `GEPAConfig`: the single config object the `gepa` CLI parses.
 
-GEPA optimizes one taskset's `Task.system_prompt` by alternating rollouts (`evaluate`) with a
-teacher LM reflecting on the reflective dataset (`make_reflective_dataset`) — see
+GEPA optimizes the taskset config-layer system prompt (`taskset.system_prompt` /
+`system_prompt_file`) by alternating rollouts (`evaluate`) with a teacher LM reflecting
+on the reflective dataset (`make_reflective_dataset`) — see
 `verifiers.v1.gepa.adapter.GEPAAdapter`. This inherits `EnvConfig`'s fields (`taskset`,
 `harness`, `max_turns`, token limits, timeouts) as top-level flags, the same way `EvalConfig`
 does, and adds the optimization loop's own knobs (model, reflection model, train/val split,

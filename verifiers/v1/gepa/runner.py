@@ -38,15 +38,18 @@ class _GEPALog:
 
 def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
-    all_tasks = env.taskset.select(config.num_train + config.num_val, config.shuffle)
+    all_tasks = env.taskset.select(
+        config.num_train + config.num_val,
+        config.shuffle,
+        apply_config=False,
+    )
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
     selected_tasks = [*train_tasks, *val_tasks]
     reject_group_reward_tasksets(
         selected_tasks
     )  # GEPA scores n=1 per task; groups need >=2
-    # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
-    # a taskset with per-task system prompts could otherwise seed from a task in neither split.
-    seed_prompt = resolve_gepa_seed_prompt(selected_tasks)
+    # Config-layer seed (explicit override, else bake-in from train ∪ val tasks).
+    seed_prompt = resolve_gepa_seed_prompt(env.taskset.config, selected_tasks)
     tasks_by_idx = {task.data.idx: task for task in selected_tasks}
 
     run_dir = output_path(config) if config.save_results else None

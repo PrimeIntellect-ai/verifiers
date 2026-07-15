@@ -9,8 +9,8 @@ config's task-facing subtree:
 
 `load` may also be a generator — yielding each task as it's built, possibly forever (a
 procedural taskset; declare `INFINITE = True`). Runs materialize the tasks they need
-through `select`, which pulls only that many off a generator; the env server instead
-pulls `load` on demand, task by task.
+through `select` / `iter_tasks`, which pull off `load` and apply the config-layer
+`system_prompt` / `system_prompt_file` override; the env server uses `iter_tasks` too.
 
 Load-time knobs (dataset, split, seed) live on the taskset config; the task-facing knobs
 under its `task` subtree (`TasksetConfig.task`, a `TaskConfig`, everything under
@@ -54,7 +54,8 @@ class TasksetConfig(BaseConfig):
     task: SerializeAsAny[TaskConfig] = TaskConfig()
     """Config passed to each task, under `--taskset.task.*`."""
     system_prompt: str | None = None
-    """Override `TaskData.system_prompt` for tasksets that honor it in `load()`."""
+    """Config-layer system prompt: replaces baked-in `TaskData.system_prompt` after `load()`
+    (GEPA optimizes this layer; pass a GEPA `best_system_prompt.txt` via `system_prompt_file`)."""
     system_prompt_file: Path | None = None
     """File override for `system_prompt`, mutually exclusive with `system_prompt`."""
 
@@ -94,15 +95,44 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
     def load(self) -> Iterable[TaskT]:
         raise NotImplementedError
 
+    def apply_system_prompt(self, task: TaskT, override: str | None = None) -> TaskT:
+        """Config-layer replace of `TaskData.system_prompt`.
+
+        When `override` is omitted, reads `resolve_system_prompt(self.config)`. GEPA
+        passes each candidate as `override` so rollouts share the same path as
+        `--taskset.system-prompt` / `--taskset.system-prompt-file` without mutating
+        `TasksetConfig`.
+        """
+        prompt = resolve_system_prompt(self.config) if override is None else override
+        if prompt is None or task.data.system_prompt == prompt:
+            return task
+        return type(task)(
+            task.data.model_copy(update={"system_prompt": prompt}),
+            task.config,
+        )
+
+    def iter_tasks(self) -> Iterable[TaskT]:
+        """`load()` with the config-layer system prompt overlay applied."""
+        for task in self.load():
+            yield self.apply_system_prompt(task)
+
     def select(
-        self, num_tasks: int | None = None, shuffle: bool = False
+        self,
+        num_tasks: int | None = None,
+        shuffle: bool = False,
+        *,
+        apply_config: bool = True,
     ) -> list[TaskT]:
-        """Materialize the tasks a run needs: the first `num_tasks` off `load` (all of
-        them when `None`), pulled lazily — a generator `load` only builds what the run
-        takes. `shuffle` samples the subset from the whole taskset instead (the shared
-        fixed-seed shuffle, `verifiers.v1.utils.sampling`), which materializes everything
-        first; on an `INFINITE` taskset it's a no-op (warned) — the first `num_tasks`
-        generated tasks are already an arbitrary sample."""
+        """Materialize the tasks a run needs: the first `num_tasks` off `iter_tasks`
+        (or `load` when `apply_config=False`), all of them when `None`, pulled lazily —
+        a generator `load` only builds what the run takes. `shuffle` samples the subset
+        from the whole taskset instead (the shared fixed-seed shuffle,
+        `verifiers.v1.utils.sampling`), which materializes everything first; on an
+        `INFINITE` taskset it's a no-op (warned) — the first `num_tasks` generated
+        tasks are already an arbitrary sample. GEPA passes `apply_config=False` so the
+        adapter can apply each candidate via `apply_system_prompt` onto bake-in prompts.
+        """
+        source: Iterable[TaskT] = self.iter_tasks() if apply_config else self.load()
         if type(self).INFINITE:
             if num_tasks is None:
                 raise ValueError(
@@ -115,10 +145,10 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
                     "taking the first %d generated tasks",
                     num_tasks,
                 )
-            return list(itertools.islice(self.load(), num_tasks))
+            return list(itertools.islice(source, num_tasks))
         if shuffle:
-            return sample(self.load(), shuffle=True, limit=num_tasks)
-        return list(itertools.islice(self.load(), num_tasks))
+            return sample(source, shuffle=True, limit=num_tasks)
+        return list(itertools.islice(source, num_tasks))
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a `tools` entry is built with, resolved off `self.config` (the

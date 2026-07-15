@@ -26,12 +26,14 @@ Candidate = dict[str, str]
 
 @dataclass
 class GEPAAdapter:
-    """Bridges GEPA's optimization loop with a native v1 `Environment`. `tasks` covers only the
-    trainset + valset tasks GEPA was given (not the whole taskset), keyed by `task.data.idx` —
-    GEPA's `batch` is a list of those idxs, and injecting the candidate rebuilds each `Task`
-    around a `data` row carrying the new `system_prompt`. `loop` is the runner's persistent event
-    loop (which holds `env.serving()` open); `evaluate` drives its rollouts on it with
-    `run_until_complete`."""
+    """Bridges GEPA's optimization loop with a native v1 `Environment`.
+
+    `tasks` are bake-in rows (pre config-overlay), keyed by `task.data.idx`. Each
+    candidate is applied as a config-layer override via
+    `Taskset.apply_system_prompt(..., override=...)` — the same path as
+    `--taskset.system-prompt`. `loop` holds `env.serving()` open; `evaluate` drives
+    rollouts with `run_until_complete`.
+    """
 
     env: Environment
     ctx: ModelContext
@@ -53,9 +55,10 @@ class GEPAAdapter:
         candidate: Candidate,
         capture_traces: bool = False,
     ) -> EvaluationBatch[Trace, Trace]:
-        """Run `candidate`'s system prompt on the tasks named by `batch` (`Task.idx` values)
-        and score them. Called synchronously by GEPA on the main thread; each batch's rollouts
-        run on the runner's persistent loop via `run_until_complete`."""
+        """Run `candidate`'s config-layer system prompt on the tasks named by `batch`
+        (`Task.idx` values) and score them. Called synchronously by GEPA on the main
+        thread; each batch's rollouts run on the runner's persistent loop via
+        `run_until_complete`."""
         system_prompt = candidate.get("system_prompt", "")
         traces = self.loop.run_until_complete(self._run_batch(batch, system_prompt))
         scores = [trace.reward for trace in traces]
@@ -66,13 +69,11 @@ class GEPAAdapter:
         )
 
     async def _run_batch(self, batch: list[int], system_prompt: str) -> list[Trace]:
-        # Inject the candidate by rebuilding each Task around a data row with the new
-        # system_prompt (TaskData is frozen; behavior/config carry over unchanged).
         tasks = [
-            type(t)(
-                t.data.model_copy(update={"system_prompt": system_prompt}), t.config
+            self.env.taskset.apply_system_prompt(
+                self.tasks[idx], override=system_prompt
             )
-            for t in (self.tasks[idx] for idx in batch)
+            for idx in batch
         ]
         episodes = [self.env.episode(task, self.ctx, n=1) for task in tasks]
         results = await asyncio.gather(

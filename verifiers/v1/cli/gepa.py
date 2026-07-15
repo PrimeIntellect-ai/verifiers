@@ -1,7 +1,8 @@
 """The GEPA entrypoint: `uv run gepa [<taskset-id>] --model <model> [options]`.
 
-Registered as the `gepa` console script. Optimizes a v1 taskset's `Task.system_prompt` via
-GEPA (Genetic-Pareto): alternating rollouts with a teacher LM reflecting on results — see
+Registered as the `gepa` console script. Optimizes a v1 taskset's config-layer system
+prompt (`--taskset.system-prompt` / `--taskset.system-prompt-file`) via GEPA
+(Genetic-Pareto): alternating rollouts with a teacher LM reflecting on results — see
 `verifiers.v1.gepa`. CLI resolution mirrors `eval`/`serve` (`verifiers.v1.cli.resolve`): a
 leading bare token is the taskset id, the taskset/harness subconfigs are narrowed from their
 `id`s so `--taskset.*` / `--harness.*` stay typed and `-h` renders them, `@ file.toml` loads,
