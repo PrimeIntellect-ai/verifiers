@@ -20,11 +20,14 @@ logger = logging.getLogger(__name__)
 
 PROVIDER = "intercept"
 KEY_VAR = "PI_INTERCEPT_KEY"
+VERSION_VAR = "VF_PI_VERSION"
+MCP_VERSION_VAR = "VF_PI_MCP_VERSION"
+HOME_VAR = "VF_PI_ORIGINAL_HOME"
 
 PI_DIR = "/tmp/vf-pi"
 PI_BIN = f"{PI_DIR}/pi"
 MCP_VERSION = "2.11.0"
-MCP_EXTENSION = f"{PI_DIR}/mcp/node_modules/pi-mcp-adapter/index.ts"
+MCP_ADAPTER = f"{PI_DIR}/mcp/node_modules/pi-mcp-adapter/index.ts"
 
 INSTALL = r"""
 set -e
@@ -37,16 +40,50 @@ if ! command -v curl >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
         || apk add --no-cache curl ca-certificates nodejs npm >/dev/null
 fi
 
-if [ ! -x "$bin" ] || [ "$("$bin" --version 2>/dev/null)" != "{version}" ]; then
+if [ ! -x "$bin" ] || [ "$("$bin" --version 2>/dev/null)" != "$VF_PI_VERSION" ]; then
     case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=x64 ;; esac
-    curl -fsSL "https://github.com/earendil-works/pi/releases/download/v{version}/pi-linux-${arch}.tar.gz" \
+    curl -fsSL "https://github.com/earendil-works/pi/releases/download/v$VF_PI_VERSION/pi-linux-${arch}.tar.gz" \
         | tar -xz -C "$dir" --strip-components=1
 fi
 
-[ "$(node -p "require('$mcp/node_modules/pi-mcp-adapter/package.json').version" 2>/dev/null)" = "{mcp_version}" ] \
+[ "$(node -p "require('$mcp/node_modules/pi-mcp-adapter/package.json').version" 2>/dev/null)" = "$VF_PI_MCP_VERSION" ] \
     || npm install --prefix "$mcp" --ignore-scripts --no-audit --no-fund --omit=dev \
-        "pi-mcp-adapter@{mcp_version}" >/dev/null
+        "pi-mcp-adapter@$VF_PI_MCP_VERSION" >/dev/null
 """
+
+# pi-mcp-adapter treats --mcp-config as additive, so isolate its automatic discovery
+# roots, then restore Pi's task environment before agent tools run.
+MCP_WRAPPER = f"""
+export default async function isolatedMcp(pi) {{
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  if (!agentDir) throw new Error("PI_CODING_AGENT_DIR is required");
+
+  const cwd = process.cwd();
+  const home = process.env.{HOME_VAR};
+  process.chdir(agentDir);
+  process.env.HOME = agentDir;
+  try {{
+    const {{ default: mcpAdapter }} = await import("{MCP_ADAPTER}");
+    const isolatedPi = {{
+      ...pi,
+      on(event, handler) {{
+        pi.on(
+          event,
+          event === "session_start"
+            ? (event, ctx) => handler(event, {{ ...ctx, cwd: agentDir }})
+            : handler,
+        );
+      }},
+    }};
+    mcpAdapter(isolatedPi);
+  }} finally {{
+    process.chdir(cwd);
+    if (home === undefined) delete process.env.HOME;
+    else process.env.HOME = home;
+    delete process.env.{HOME_VAR};
+  }}
+}}
+""".strip()
 
 
 class PiHarnessConfig(HarnessConfig):
@@ -65,9 +102,6 @@ class PiHarness(Harness[PiHarnessConfig]):
             self.config.version,
             MCP_VERSION,
         )
-        script = INSTALL.replace("{version}", self.config.version).replace(
-            "{mcp_version}", MCP_VERSION
-        )
         lock = f"{PI_DIR}/install.lock"
         guarded = (
             f"mkdir -p {PI_DIR} && "
@@ -77,9 +111,12 @@ class PiHarness(Harness[PiHarnessConfig]):
             f'[ "$(readlink {lock})" != "$owner" ] || rm -f {lock}; fi; '
             f"sleep 0.1; done; "
             f'trap \'[ "$(readlink {lock})" != "$$" ] || rm -f {lock}\' EXIT; '
-            f"sh -c {shlex.quote(script)}"
+            f"sh -c {shlex.quote(INSTALL)}"
         )
-        install = await runtime.run(["sh", "-c", guarded], {})
+        install = await runtime.run(
+            ["sh", "-c", guarded],
+            {VERSION_VAR: self.config.version, MCP_VERSION_VAR: MCP_VERSION},
+        )
         if install.exit_code != 0:
             raise RuntimeError(f"pi install failed: {install.stderr.strip()[-500:]}")
 
@@ -167,9 +204,11 @@ class PiHarness(Harness[PiHarnessConfig]):
             }
         }
         prompt_path = f"{agent_dir}/prompt.txt"
+        extension_path = f"{agent_dir}/mcp.js"
         await runtime.write(prompt_path, prompt.encode())
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
         await runtime.write(f"{agent_dir}/mcp.json", json.dumps(mcp).encode())
+        await runtime.write(extension_path, MCP_WRAPPER.encode())
 
         env = {
             **self.config.resolved_env,
@@ -187,7 +226,9 @@ class PiHarness(Harness[PiHarnessConfig]):
         argv = [
             "sh",
             "-c",
-            # Pi has no `--` terminator, so the prompt must not be parsed as argv.
+            # Isolate adapter global discovery before Bun caches HOME; Pi has no `--`
+            # terminator, so the prompt must not be parsed as argv either.
+            f'export {HOME_VAR}="$HOME"; export HOME="$PI_CODING_AGENT_DIR"; '
             'exec "$@" < "$0"',
             prompt_path,
             PI_BIN,
@@ -200,7 +241,7 @@ class PiHarness(Harness[PiHarnessConfig]):
             "--model",
             ctx.model,
             "--extension",
-            MCP_EXTENSION,
+            extension_path,
             "--mcp-config",
             f"{agent_dir}/mcp.json",
             *tool_args,
