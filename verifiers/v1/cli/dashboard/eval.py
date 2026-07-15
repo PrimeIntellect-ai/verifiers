@@ -16,7 +16,7 @@ from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
 from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.rollout import Phase, Rollout
+from verifiers.v1.episode import RunSlot
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import (
@@ -236,14 +236,14 @@ def _push_footer(push: "PushState | None") -> Group | None:
 
 
 def Progress(
-    rollouts: list[Rollout],
+    slots: list[RunSlot],
     start: float,
     page: tuple[int, int] | None = None,
 ) -> Group:
-    # On resume, `rollouts` includes the previous session's kept rollouts (as `Finished`), so
+    # On resume, `slots` includes the previous session's kept rollouts (as finished slots), so
     # progress, reward, err, and the breakdown cover the whole run, not just this session's.
-    done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
-    total = len(rollouts)
+    done = [s.trace for s in slots if s.done]  # fully scored
+    total = len(slots)
     # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
     reward = format_mean(done, lambda t: t.reward)
@@ -384,23 +384,43 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
     return prompt, completion, cached, reasoning, nbranches
 
 
-def _started(rollout: Rollout) -> float:
+def _stage(trace: Trace) -> str:
+    """The stage a live (not-yet-done) rollout is in, derived from its trace's timing
+    spans — the engine opens and closes each span exactly at the stage transitions, so
+    the current stage is the latest span started but not yet ended. A completed trace
+    that isn't done is waiting on its group's other rollouts before `@group_reward`s —
+    that's scoring."""
+    if trace.is_completed:
+        return "scoring"
+    for stage, span in (
+        ("scoring", trace.timing.scoring),
+        ("finalize", trace.timing.finalize),
+        ("running", trace.timing.generation),
+        ("setup", trace.timing.setup),
+        ("boot", trace.timing.boot),
+    ):
+        if span.start and not span.end:
+            return stage
+    return "boot"  # trace minted, first span not yet opened (an instant)
+
+
+def _started(slot: RunSlot) -> float:
     # Sort key: when a rollout began (its boot start; setup for pre-boot-span traces on
     # resume). A still-pending rollout has no trace yet, so it sorts last (+inf) — behind
     # everything already in flight, in task order.
-    if rollout.trace is None:
+    if slot.trace is None:
         return float("inf")
-    return rollout.trace.timing.boot.start or rollout.trace.timing.setup.start
+    return slot.trace.timing.boot.start or slot.trace.timing.setup.start
 
 
-def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
+def _groups(slots: list[RunSlot]) -> list[list[RunSlot]]:
     # The n rollouts of each task, grouped together (so they sit adjacent); groups ordered by
-    # earliest start, rollouts within a group by start. Every rollout carries its `task` from
+    # earliest start, rollouts within a group by start. Every slot carries its `task` from
     # construction, so ones still queued behind the concurrency cap (no trace yet) are grouped
     # and shown too — as `[pending]`. Finished ones stay (never removed).
-    by_task: dict[int, list[Rollout]] = {}
-    for rollout in rollouts:
-        by_task.setdefault(rollout.task.data.idx, []).append(rollout)
+    by_task: dict[int, list[RunSlot]] = {}
+    for slot in slots:
+        by_task.setdefault(slot.task.data.idx, []).append(slot)
     groups = list(by_task.values())
     for group in groups:
         group.sort(key=_started)
@@ -414,13 +434,13 @@ def _brace(i: int, size: int) -> str:
     return "╭" if i == 0 else "╰" if i == size - 1 else "│"
 
 
-def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
+def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
     # (brace, state, left sections, result, time)
     rows: list[tuple[str, str, list[str], str, str]] = []
     for group in groups:
-        for i, rollout in enumerate(group):
-            t = rollout.trace
-            task = rollout.task.data
+        for i, slot in enumerate(group):
+            t = slot.trace
+            task = slot.task.data
             label = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
             if (
                 t is None
@@ -435,7 +455,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                     )
                 )
                 continue
-            if rollout.phase == Phase.DONE:  # fully scored — reward is final
+            if slot.done:  # fully scored — reward is final
                 state = "error" if t.has_error else "success"
                 result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
                 if t.has_error:
@@ -447,10 +467,8 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                     ):  # flag a clipped rollout next to its stop condition
                         stop = f"{stop} (truncated)".strip()
             else:
-                state, result, stop = rollout.phase, "", ""
-            descriptor = (
-                rollout.runtime.descriptor if rollout.runtime is not None else None
-            )
+                state, result, stop = _stage(t), "", ""
+            descriptor = t.runtime.id if t.runtime is not None else None
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
             start = t.timing.boot.start or t.timing.setup.start
@@ -544,8 +562,8 @@ class Pager:
 
 
 def _paginate(
-    groups: list[list[Rollout]], rows_per_page: int, pager: Pager, now: float
-) -> tuple[list[list[Rollout]], int, int]:
+    groups: list[list[RunSlot]], rows_per_page: int, pager: Pager, now: float
+) -> tuple[list[list[RunSlot]], int, int]:
     """Pack groups (a task's rollouts kept together) into pages of at most `rows_per_page` rows,
     selecting the one `pager` points at. Returns (this page's groups, 0-based index, page count) —
     a single page when everything already fits."""
@@ -555,8 +573,8 @@ def _paginate(
         pager.count = 1
         pager.origin = None
         return groups, 0, 1
-    pages: list[list[list[Rollout]]] = []
-    current: list[list[Rollout]] = []
+    pages: list[list[list[RunSlot]]] = []
+    current: list[list[RunSlot]] = []
     used = 0
     for group in groups:
         if current and used + len(group) > rows_per_page:
@@ -572,7 +590,7 @@ def _paginate(
 
 
 def _render(
-    rollouts: list[Rollout],
+    slots: list[RunSlot],
     config: EvalConfig,
     start: float,
     pager: Pager,
@@ -586,14 +604,14 @@ def _render(
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
     footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
     footer = Group(*footers) if footers else None
-    top = Group(header, Progress(rollouts, start), Rule(style="dim"))
+    top = Group(header, Progress(slots, start), Rule(style="dim"))
     reserved = len(_CONSOLE.render_lines(top))
     if footer is not None:
         reserved += len(_CONSOLE.render_lines(footer))
     rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
-    page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, pager, now)
+    page_groups, index, count = _paginate(_groups(slots), rows_per_page, pager, now)
     progress = Progress(
-        rollouts,
+        slots,
         start,
         page=(index + 1, count) if count > 1 else None,
     )
@@ -610,14 +628,14 @@ def _render(
 
 @contextlib.asynccontextmanager
 async def dashboard(
-    rollouts: list[Rollout],
+    slots: list[RunSlot],
     config: EvalConfig,
     start: float,
     push: "PushState | None" = None,
 ):
     pager = Pager()
     async with live_view(
-        lambda: _render(rollouts, config, start, pager, push),
+        lambda: _render(slots, config, start, pager, push),
         on_key=pager.on_key,
     ):
         yield

@@ -12,6 +12,7 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
+from verifiers.v1.episode import RunSlot
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.sampling import sample
 
@@ -72,7 +73,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
     # (non-shared ones start per rollout inside the episodes); the interception comes up
     # here too, so concurrent rollouts share its servers + tunnels rather than one each. Build
-    # episodes inside `serving` so each rollout is wired to those resources at construction.
+    # episodes inside `serving` so their agent borrows those resources at construction.
     async with env.serving():
         episodes = [
             env.episode(
@@ -80,8 +81,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             )
             for task in tasks
         ]
-        rollouts = [resume.Finished(trace) for trace in finished] + [
-            rollout for episode in episodes for rollout in episode.rollouts
+        slots = [RunSlot.finished(trace) for trace in finished] + [
+            slot for episode in episodes for slot in episode.slots
         ]
         push_state = None
         if config.push and config.rich:
@@ -89,7 +90,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
 
             push_state = PushState()
         display = (
-            dashboard(rollouts, config, start, push=push_state)
+            dashboard(slots, config, start, push=push_state)
             if config.rich
             else contextlib.nullcontext()
         )

@@ -16,7 +16,7 @@ even if `run()` crashes.
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
@@ -75,6 +75,7 @@ class Rollout:
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
         runtime: Runtime | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -91,6 +92,10 @@ class Rollout:
         """A live runtime to run in instead of provisioning one (an agent program placing this
         run into an existing box — see `verifiers.v1.agent`). Creator owns teardown: `run()`
         neither starts nor stops a borrowed runtime."""
+        self.on_trace = on_trace
+        """Observer for the run's trace, called the moment it's minted (before any I/O) —
+        how a caller watches the run live (stage from the trace's timing spans, tokens and
+        turns as the session records them). See `episode.RunSlot`."""
         self.phase = Phase.PENDING
         self.runtime: Runtime | None = None
         self.trace: Trace | None = None
@@ -130,7 +135,9 @@ class Rollout:
             task=TraceTask(type=type(self.task).__name__, data=self.task.data),
             state=state_cls(type(self.task))(),
         )
-        self.trace = trace  # expose for the --rich dashboard
+        self.trace = trace
+        if self.on_trace is not None:
+            self.on_trace(trace)
         self.phase = Phase.BOOT  # leaving the queue: the runtime boots now
         trace.timing.boot.start = time.time()
         owns_runtime = self._borrowed_runtime is None

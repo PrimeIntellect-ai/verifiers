@@ -3,14 +3,13 @@
 import contextlib
 import logging
 from collections.abc import Collection
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import ID
 from verifiers.v1.interception import (
@@ -22,7 +21,6 @@ from verifiers.v1.interception import (
 )
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.retries import RetryConfig
-from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
@@ -32,6 +30,9 @@ from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.mcp import SharedToolServer, serve_shared
+
+if TYPE_CHECKING:
+    from verifiers.v1.agent import Agent
 
 
 class TimeoutConfig(BaseConfig):
@@ -184,7 +185,7 @@ def resolve_runtime_config(
     an image must run in a container — refuse subprocess), and apply its `workdir` and
     requested `resources` to the fields the runtime supports. Precedence is cli/toml > task >
     default; a resource the runtime doesn't support warns once (deduped via `warned`). Shared
-    by `Environment.runtime_for` (rollouts) and the `validate` entrypoint."""
+    by `Agent.run` (every rollout resolves through it) and the `validate` entrypoint."""
     config = base
     updates: dict = {}
     if task.data.image is not None:
@@ -306,96 +307,57 @@ class Environment:
                 "run.",
                 self.harness.config.id,
             )
-        self.setup_timeout = config.timeout.setup
-        self.harness_timeout = config.timeout.rollout
-        self.finalize_timeout = config.timeout.finalize
-        self.scoring_timeout = config.timeout.scoring
         self.limits = RolloutLimits(
             max_turns=config.max_turns,
             max_input_tokens=config.max_input_tokens,
             max_output_tokens=config.max_output_tokens,
             max_total_tokens=config.max_total_tokens,
         )
-        self._warned_resources: set[tuple[str, str]] = set()
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
-        ({name: SharedToolServer}) and the interception. `episode()` injects them into every rollout
-        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
+        ({name: SharedToolServer}) and the interception. The env's agent borrows them, so
+        every `episode()` built inside the context rides them — neither runner has to
+        thread them through `Episode.run`."""
+        self._agent: "Agent | None" = None
 
-    def runtime_for(self, task: Task) -> RuntimeConfig:
-        """Resolve the runtime config for a task off the harness's runtime (see
-        `resolve_runtime_config`)."""
-        return resolve_runtime_config(
-            self.harness.config.runtime, task, self._warned_resources
-        )
+    def _agent_for(self, ctx: ModelContext) -> "Agent":
+        """The agent that runs this env's rollouts for `ctx`: the env's harness, limits,
+        and timeouts, borrowing whatever serving resources (shared tool servers +
+        interception) are live right now. Single-slot cache keyed by ctx value: the eval
+        runner uses one ctx for the whole run (always hits), and the env server minting a
+        ctx per request still hits (its clients are cached by config, so equal configs
+        make equal ctxs). Constructing on a miss is cheap — agents are values."""
+        from verifiers.v1.agent import (
+            Agent,
+        )  # env ↔ agent cycle, like `loaders` in init
+
+        if self._agent is None or self._agent.ctx != ctx:
+            self._agent = Agent(
+                self.harness,
+                ctx,
+                interception=self._interception,
+                shared_tools=self._shared_tools,
+                limits=self.limits,
+                timeout=self.config.timeout,
+            )
+        return self._agent
 
     def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
-        """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
-        (image + resources) and its
-        timeouts (cli/toml > task > default, None = no limit), build one `Rollout` per
-        sample sharing them, and wrap them in an `Episode` (which runs them and applies
-        the task's `@group_reward`s across their traces).
-
-        A task with `@group_reward`s compares its rollouts, so it needs >=2 of
-        them — refuse `n < 2` there (rather than silently scoring a group of one).
-        Harness capability (tools / user sim / container) is class-level and already
-        checked at construction (`validate_pairing`)."""
-        if n < 2 and discover_decorated(task, "group_reward"):
-            raise ValueError(
-                f"task {task.data.idx!r} defines @group_reward(s), which compare a task's rollouts "
-                f"and need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
-            )
-        runtime_config = self.runtime_for(task)
-        setup_timeout = (
-            self.setup_timeout
-            if self.setup_timeout is not None
-            else task.data.timeout.setup
-        )
-        harness_timeout = (
-            self.harness_timeout
-            if self.harness_timeout is not None
-            else task.data.timeout.harness
-        )
-        harness_timeout = cap_remote_harness_timeout(
-            harness_timeout, runtime_config, task
-        )
-        finalize_timeout = (
-            self.finalize_timeout
-            if self.finalize_timeout is not None
-            else task.data.timeout.finalize
-        )
-        scoring_timeout = (
-            self.scoring_timeout
-            if self.scoring_timeout is not None
-            else task.data.timeout.scoring
-        )
-        retries = self.config.retries
-        rollouts = [
-            Rollout(
-                task=task,
-                harness=self.harness,
-                ctx=ctx,
-                runtime_config=runtime_config,
-                setup_timeout=setup_timeout,
-                harness_timeout=harness_timeout,
-                finalize_timeout=finalize_timeout,
-                scoring_timeout=scoring_timeout,
-                limits=self.limits,
-                shared_tools=self._shared_tools,
-                interception=self._interception,
-            )
-            for _ in range(n)
-        ]
-        return Episode(rollouts, retry=retries.rollout)
+        """Resolve `task` into a runnable episode: its `n` rollouts, each run by the
+        env's agent for `ctx` (which resolves the task's runtime and timeouts per run —
+        cli/toml > task > default, None = no limit), scored together (the task's
+        `@group_reward`s). Harness capability (tools / user sim / container) is
+        class-level and already checked at construction (`validate_pairing`)."""
+        return Episode(self._agent_for(ctx), task, n, retry=self.config.retries.rollout)
 
     @contextlib.asynccontextmanager
     async def serving(self):
         """Hold the env-level serving resources for the duration of an eval: the shared tool
         servers (built once, see `shared_tools`) and the interception. Stash them so
-        every `episode()` built inside this context injects them into its rollouts — that's
-        what keeps both eval runners (in-process and env-server) on one serving path. Build
-        episodes inside this context; the resources are torn down on exit."""
+        every `episode()` built inside this context rides them (through the env's agent) —
+        that's what keeps both eval runners (in-process and env-server) on one serving
+        path. Build episodes inside this context; the resources are torn down on exit."""
         async with self.shared_tools() as shared:
             interception = make_interception(
                 self.config.interception, requires_tunnel=self._requires_tunnel(shared)
@@ -403,11 +365,13 @@ class Environment:
             async with interception:
                 self._shared_tools = shared
                 self._interception = interception
+                self._agent = None  # rebuilt on the live resources (and dropped after)
                 try:
                     yield
                 finally:
                     self._shared_tools = {}
                     self._interception = None
+                    self._agent = None
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: the harness

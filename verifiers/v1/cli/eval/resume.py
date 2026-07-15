@@ -20,8 +20,6 @@ from pydantic_core import from_json
 
 from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.rollout import Phase, Rollout
-from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, WireTrace
 
 
@@ -52,14 +50,6 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     config.resume = resume_dir
     config.output_dir = resume_dir
     return config
-
-
-class Finished(Rollout):
-    def __init__(self, trace: Trace) -> None:
-        self.trace = trace
-        self.task = Task(trace.task.data)
-        self.phase = Phase.DONE
-        self.runtime = None
 
 
 def load(

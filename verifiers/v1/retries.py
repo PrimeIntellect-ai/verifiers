@@ -12,6 +12,7 @@ attempt's error onto the returned trace's `errors`; off by default.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -27,7 +28,6 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.rollout import Rollout
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -104,15 +104,16 @@ def should_retry(trace: Trace, retry: RolloutRetryConfig) -> bool:
 
 
 async def run_with_retry(
-    rollout: Rollout,
+    run: Callable[[], Awaitable[Trace]],
     retry: RolloutRetryConfig,
 ) -> Trace:
-    """Run the whole rollout, retrying it while its trace ends with a retryable error.
+    """Run the whole rollout (`run` — e.g. `lambda: agent.run(task)`; each call must
+    mint a fresh trajectory), retrying it while its trace ends with a retryable error.
     Each retry-causing attempt's error is collected onto the returned trace's `errors`,
     so the final trace shows the full history; the last attempt's trace is returned
     as-is once attempts run out (or the rollout succeeds / hits a non-retryable error)."""
     if retry.max_retries < 1:
-        return await rollout.run()
+        return await run()
 
     history: list = []
 
@@ -135,7 +136,13 @@ async def run_with_retry(
         before_sleep=record,
         retry_error_callback=lambda state: state.outcome.result(),
     )
-    trace = await retrying(rollout.run)
+
+    async def attempt() -> Trace:
+        # tenacity only awaits a coroutine *function*; adapt so a plain callable
+        # returning an awaitable (e.g. `lambda: agent.run(task)`) works too.
+        return await run()
+
+    trace = await retrying(attempt)
     if trace.errors:  # final attempt errored too → prepend the earlier attempts'
         trace.errors = history + trace.errors
     return trace

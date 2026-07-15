@@ -27,7 +27,7 @@ the rollout.
 """
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -184,13 +184,16 @@ class Agent:
         task: Task,
         *,
         runtime: Runtime | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace.
 
         The task carries its own judgement (its hooks + `@reward`/`@metric` run as in
         any eval); a plain base `Task` makes the run unscored. `runtime` places the run
         into a live box (borrowed — not started or torn down here) instead of
-        provisioning a fresh one from the agent's runtime policy."""
+        provisioning a fresh one from the agent's runtime policy. `on_trace` observes
+        the run's trace the moment it's minted (before any I/O) — how a caller watches
+        the run live (the eval dashboard reads stage, tokens, and turns off it)."""
         if runtime is not None:
             _check_borrowed_placement(task, runtime)
             runtime_config = runtime.config
@@ -241,6 +244,7 @@ class Agent:
             shared_tools=self.shared_tools,
             interception=self._interception_for(run_is_local, task),
             runtime=runtime,
+            on_trace=on_trace,
         )
         trace = await rollout.run()
         # Who produced this trace — so a program's traces stay attributable after the
