@@ -187,7 +187,7 @@ class ModalRuntime(Runtime):
         # the sandbox via Modal's sync API so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` handles the normal path, and a second terminate is a no-op.
         sandbox, self._sandbox = self._sandbox, None
-        if sandbox is not None:  # `info.id` kept so descriptor survives teardown
+        if sandbox is not None:  # keep info.id available after teardown
             with contextlib.suppress(Exception):
                 sandbox.terminate()
 
