@@ -179,7 +179,7 @@ async def chat(
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
     """Connect to each configured MCP server (a streamable-HTTP `url`); return
-    (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw tool name))."""
+    (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw name, read-only))."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
@@ -210,7 +210,8 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
                     },
                 }
             )
-            dispatch[full] = (session, tool.name)
+            read_only = getattr(tool.annotations, "readOnlyHint", False) is True
+            dispatch[full] = (session, tool.name, read_only)
     return tool_schemas, dispatch
 
 
@@ -232,7 +233,7 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 
 
 async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dict]:
-    session, raw = dispatch[name]
+    session, raw, _ = dispatch[name]
     result = await session.call_tool(raw, arguments)
     return mcp_content_to_chat_content(result.content)
 
@@ -282,6 +283,34 @@ async def execute_tool_call(
         else:
             content = f"error: unknown tool {name!r}"
     return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+
+async def execute_tool_calls(
+    calls,
+    dispatch: dict,
+    *,
+    edit: bool,
+    search: bool,
+    serper_key: str,
+) -> list[dict]:
+    """Run read-only calls concurrently; treat mutating calls as ordered barriers."""
+    results = []
+    pending = []
+    options = {"edit": edit, "search": search, "serper_key": serper_key}
+
+    for call in calls:
+        name = call.function.name
+        entry = dispatch.get(name)
+        if (name == "search" and search) or (entry is not None and entry[2]):
+            pending.append(execute_tool_call(call, dispatch, **options))
+            continue
+        if pending:
+            results.extend(await asyncio.gather(*pending))
+            pending.clear()
+        results.append(await execute_tool_call(call, dispatch, **options))
+    if pending:
+        results.extend(await asyncio.gather(*pending))
+    return results
 
 
 def parse_args() -> argparse.Namespace:
@@ -334,17 +363,12 @@ async def main() -> None:
             if not message.tool_calls:
                 break
             messages.extend(
-                await asyncio.gather(
-                    *(
-                        execute_tool_call(
-                            call,
-                            dispatch,
-                            edit=args.edit,
-                            search=args.search,
-                            serper_key=args.serper_key,
-                        )
-                        for call in message.tool_calls
-                    )
+                await execute_tool_calls(
+                    message.tool_calls,
+                    dispatch,
+                    edit=args.edit,
+                    search=args.search,
+                    serper_key=args.serper_key,
                 )
             )
 

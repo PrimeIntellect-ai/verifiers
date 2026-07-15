@@ -24,9 +24,9 @@ async def chat(
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
     """Connect to each configured MCP server (a streamable-HTTP `url`); return
-    (tool schemas, dispatch mapping advertised name -> (session, raw tool name)). Tools are
-    advertised as `<server>_<tool>`; a server named `""` (TOOL_PREFIX = None) advertises its
-    tools bare, so names must be unique across the rollout's servers."""
+    (tool schemas, dispatch mapping advertised name -> (session, raw name, read-only)).
+    Tools are advertised as `<server>_<tool>`; a server named `""` (TOOL_PREFIX = None)
+    advertises its tools bare, so names must be unique across the rollout's servers."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
@@ -60,7 +60,8 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
                     },
                 }
             )
-            dispatch[full] = (session, tool.name)
+            read_only = getattr(tool.annotations, "readOnlyHint", False) is True
+            dispatch[full] = (session, tool.name, read_only)
     return tool_schemas, dispatch
 
 
@@ -82,7 +83,7 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 
 
 async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dict]:
-    session, raw = dispatch[name]
+    session, raw, _ = dispatch[name]
     result = await session.call_tool(raw, arguments)
     return mcp_content_to_chat_content(result.content)
 
@@ -109,6 +110,25 @@ async def execute_tool_call(call, dispatch: dict) -> dict:
         else:
             content = f"error: unknown tool {name!r}"
     return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+
+async def execute_tool_calls(calls, dispatch: dict) -> list[dict]:
+    """Run explicitly read-only MCP calls concurrently; serialize all others."""
+    results = []
+    pending = []
+
+    for call in calls:
+        entry = dispatch.get(call.function.name)
+        if entry is not None and entry[2]:
+            pending.append(execute_tool_call(call, dispatch))
+            continue
+        if pending:
+            results.extend(await asyncio.gather(*pending))
+            pending.clear()
+        results.append(await execute_tool_call(call, dispatch))
+    if pending:
+        results.extend(await asyncio.gather(*pending))
+    return results
 
 
 def parse_args() -> argparse.Namespace:
@@ -155,11 +175,7 @@ async def main() -> None:
             messages.append(message.model_dump(exclude_none=True))
             if not message.tool_calls:
                 break
-            messages.extend(
-                await asyncio.gather(
-                    *(execute_tool_call(call, dispatch) for call in message.tool_calls)
-                )
-            )
+            messages.extend(await execute_tool_calls(message.tool_calls, dispatch))
 
 
 if __name__ == "__main__":
