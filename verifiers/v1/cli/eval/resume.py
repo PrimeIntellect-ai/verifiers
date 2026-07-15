@@ -62,7 +62,11 @@ class Finished(Rollout):
 
 
 def load(
-    resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group: bool
+    resume_dir: Path,
+    selected_idxs: list[int],
+    num_rollouts: int,
+    group: bool,
+    data_idx_to_pos: dict[int, int] | None = None,
 ) -> tuple[list[Trace], dict[int, int]]:
     """Load the good saved rollouts back into memory as finished traces and diff them against
     the run's target (`num_rollouts` per selected task): returns (the kept traces, rollouts
@@ -70,7 +74,11 @@ def load(
     only if fully complete, else its whole group is redone. Rewrites `traces.jsonl` to just
     the kept rows — verbatim, via a temp file + atomic rename, so an interrupted resume can't
     corrupt the prior good results — and the resumed rollouts then append. `WireTrace` reads
-    any taskset's saved traces without importing it."""
+    any taskset's saved traces without importing it.
+
+    For traces written before `info.task_idx` existed, `data_idx_to_pos` maps the saved
+    `task.data.idx` to its current load position. If the mapping is absent, `data.idx` is
+    compared directly against `selected_idxs` (the legacy behavior)."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
     good: dict[int, list[bytes]] = defaultdict(list)
@@ -83,9 +91,16 @@ def load(
                     row = from_json(line)
                 except ValueError:
                     row = json.loads(line)
-                idx = row["task"]["data"]["idx"]
+                idx = (row.get("info") or {}).get("task_idx")
+                if idx is None:
+                    data_idx = row["task"]["data"]["idx"]
+                    if data_idx_to_pos is not None:
+                        idx = data_idx_to_pos.get(data_idx)
+                    else:
+                        idx = data_idx
                 if (
-                    idx in selected
+                    idx is not None
+                    and idx in selected
                     and not row.get("errors")
                     and len(good[idx]) < num_rollouts
                 ):

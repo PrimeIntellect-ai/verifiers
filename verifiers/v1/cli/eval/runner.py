@@ -32,21 +32,30 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # Write config.toml up front, then persist each trace as it completes (so the results are
     # durable mid-run, not only at the end). One lock serializes worker-thread appends from
     # concurrent rollouts while keeping large trace serialization off the event loop.
-    owed: dict[str, int] | None = None
+    owed: dict[int, int] | None = None
     # On resume, the kept (good) on-disk rollouts rejoin the run as finished traces: displayed,
     # returned, pushed, and printed alongside this session's, with only the owed rollouts re-run
     # — so the resumed run is indistinguishable from one that was never interrupted.
+    # Map each task's `data.idx` to its load position in the selected slice; this
+    # is what the runner dispatches by and what resume must match (not the raw
+    # dataset row index a taskset like Lean may use for `data.idx`).
+    task_positions = {task.data.idx: pos for pos, task in enumerate(tasks)}
+
     finished: list[Trace] = []
     if config.resume is not None:
         # Resume incomplete group-reward tasks whole so every rollout is present.
         group = bool(tasks) and bool(discover_decorated(tasks[0], "group_reward"))
         finished, owed = resume.load(
-            out, [t.data.idx for t in tasks], config.num_rollouts, group
+            out,
+            [task_positions[t.data.idx] for t in tasks],
+            config.num_rollouts,
+            group,
+            task_positions,
         )
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
-        tasks = [task for task in tasks if owed.get(task.data.idx)]
+        tasks = [task for task in tasks if owed.get(task_positions[task.data.idx])]
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
@@ -67,7 +76,10 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     write_lock = asyncio.Lock()
 
     async def on_complete(trace: Trace) -> None:
-        trace.stamp(EvalRunInfo(id=config.uuid))
+        trace.stamp(
+            EvalRunInfo(id=config.uuid),
+            task_idx=task_positions.get(trace.task.data.idx),
+        )
         await append_trace(out, trace, write_lock)
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
@@ -77,7 +89,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     async with env.serving():
         episodes = [
             env.episode(
-                task, ctx, n=owed[task.data.idx] if owed else config.num_rollouts
+                task,
+                ctx,
+                n=owed[task_positions[task.data.idx]] if owed else config.num_rollouts,
             )
             for task in tasks
         ]
@@ -222,7 +236,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     sampling=config.sampling,
                 )
             for trace in traces:
-                trace.stamp(EvalRunInfo(id=config.uuid))
+                trace.stamp(EvalRunInfo(id=config.uuid), task_idx=idx)
                 await append_trace(out, trace, write_lock)
             return traces
 
@@ -234,7 +248,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     model=config.model,
                     sampling=config.sampling,
                 )
-            trace.stamp(EvalRunInfo(id=config.uuid))
+            trace.stamp(EvalRunInfo(id=config.uuid), task_idx=idx)
             await append_trace(out, trace, write_lock)
             return [trace]
 
