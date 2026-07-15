@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
@@ -10,7 +11,7 @@ from typing import TYPE_CHECKING
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.retries import run_with_retry
 from verifiers.v1.rollout import Phase, Rollout
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.memory import trim_memory_periodically
 
 if TYPE_CHECKING:
@@ -46,10 +47,34 @@ class Episode:
 
         traces = await asyncio.gather(*(run_one(r) for r in self.rollouts))
         if group_scored:
-            await self.task.score_group(traces)  # cross-rollout @group_rewards
-            for rollout in self.rollouts:
-                rollout.phase = Phase.DONE
-            for trace in traces:
-                if on_complete is not None:
-                    await on_complete(trace)
+            group_error: Exception | None = None
+            group_traceback: str | None = None
+            try:
+                await self.task.score_group(traces)  # cross-rollout @group_rewards
+            except Exception as exc:
+                group_error = exc
+                group_traceback = "".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                )
+            finally:
+                # A raising group reward must not discard the completed traces: mark
+                # every rollout done, record the scoring failure, and run the completion
+                # callbacks before re-raising. Recording the error stops a later resume
+                # from treating a failed group-scored run as complete.
+                for rollout in self.rollouts:
+                    rollout.phase = Phase.DONE
+                if group_error is not None and group_traceback is not None:
+                    for trace in traces:
+                        trace.errors.append(
+                            Error(
+                                type=type(group_error).__name__,
+                                message=str(group_error),
+                                traceback=group_traceback,
+                            )
+                        )
+                for trace in traces:
+                    if on_complete is not None:
+                        await on_complete(trace)
+                if group_error is not None:
+                    raise group_error
         return traces
