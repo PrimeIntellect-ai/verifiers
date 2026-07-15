@@ -37,9 +37,9 @@ Everything beyond the arrow is a parameter, not a concept:
   subprocess runtime.
 - **`runtime=`** places the run into a live box (borrowed — the run neither starts nor
   tears it down) instead of provisioning a fresh one. `agent.provision(task)` hands the
-  program a box to place runs into.
-- **`ctx=`** replaces the agent's model context per run
-  (`dataclasses.replace(agent.ctx, model=...)` for a judge sweeping models).
+  program a box to place runs into. A different model is a different agent — construct
+  another `Agent` (sharing the client, and the interception pool via `interception=`)
+  rather than swapping contexts per run.
 
 Interception follows the same borrowing story as runtimes: pass a live, already-entered
 `Interception` at construction (`vf.Agent(..., interception=pool)`) and several agents

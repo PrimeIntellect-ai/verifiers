@@ -172,17 +172,13 @@ class Agent:
         task: Task,
         *,
         runtime: Runtime | None = None,
-        ctx: ModelContext | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace.
 
         The task carries its own judgement (its hooks + `@reward`/`@metric` run as in
         any eval); a plain base `Task` makes the run unscored. `runtime` places the run
         into a live box (borrowed — not started or torn down here) instead of
-        provisioning a fresh one from the agent's runtime policy. `ctx` replaces the
-        agent's model context for this run — `dataclasses.replace(agent.ctx, model=...)`
-        for a judge sweeping models."""
-        ctx = ctx if ctx is not None else self.ctx
+        provisioning a fresh one from the agent's runtime policy."""
         if runtime is not None:
             _check_borrowed_placement(task, runtime)
             runtime_config = runtime.config
@@ -221,7 +217,7 @@ class Agent:
         rollout = Rollout(
             task=task,
             harness=self.harness,
-            ctx=ctx,
+            ctx=self.ctx,
             runtime_config=runtime_config,
             setup_timeout=setup_timeout,
             harness_timeout=harness_timeout,
@@ -233,10 +229,10 @@ class Agent:
         )
         trace = await rollout.run()
         # Who produced this trace — so a program's traces stay attributable after the
-        # Agent objects are gone. Resolved per run: overrides and the live box win.
+        # Agent objects are gone. Resolved per run: a borrowed box wins over the policy.
         trace.info["agent"] = {
             "harness": self.harness.config.id,
-            "model": ctx.model,
+            "model": self.ctx.model,
             "runtime": {
                 "type": runtime_config.type,
                 "descriptor": rollout.runtime.descriptor if rollout.runtime else None,
