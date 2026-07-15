@@ -101,7 +101,7 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
-    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key, max_retries=0)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
         # asyncio.timeout, not wait_for: the MCP/httpx cancel scopes entered onto
