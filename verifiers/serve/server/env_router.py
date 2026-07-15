@@ -422,7 +422,7 @@ class EnvRouter:
         for path in self.ipc_paths:
             try:
                 os.unlink(path)
-            except FileNotFoundError:
+            except OSError:
                 pass
 
         self.logger.info("Router shut down")
