@@ -197,18 +197,30 @@ class PiHarness(Harness[PiHarnessConfig]):
                 }
             }
         }
-        mcp = {
-            "mcpServers": {
-                name: {"url": url, "lifecycle": "eager"}
-                for name, url in mcp_urls.items()
-            }
-        }
         prompt_path = f"{agent_dir}/prompt.txt"
-        extension_path = f"{agent_dir}/mcp.js"
         await runtime.write(prompt_path, prompt.encode())
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
-        await runtime.write(f"{agent_dir}/mcp.json", json.dumps(mcp).encode())
-        await runtime.write(extension_path, MCP_WRAPPER.encode())
+
+        launch = 'exec "$@" < "$0"'
+        mcp_args: list[str] = []
+        if mcp_urls:
+            extension_path = f"{agent_dir}/mcp.js"
+            mcp = {
+                "mcpServers": {
+                    name: {"url": url, "lifecycle": "eager"}
+                    for name, url in mcp_urls.items()
+                }
+            }
+            await runtime.write(f"{agent_dir}/mcp.json", json.dumps(mcp).encode())
+            await runtime.write(extension_path, MCP_WRAPPER.encode())
+            mcp_args = [
+                "--extension",
+                extension_path,
+                "--mcp-config",
+                f"{agent_dir}/mcp.json",
+            ]
+            # Isolate adapter global discovery before Bun caches HOME.
+            launch = f'export {HOME_VAR}="$HOME"; export HOME="$PI_CODING_AGENT_DIR"; {launch}'
 
         env = {
             **self.config.resolved_env,
@@ -226,10 +238,8 @@ class PiHarness(Harness[PiHarnessConfig]):
         argv = [
             "sh",
             "-c",
-            # Isolate adapter global discovery before Bun caches HOME; Pi has no `--`
-            # terminator, so the prompt must not be parsed as argv either.
-            f'export {HOME_VAR}="$HOME"; export HOME="$PI_CODING_AGENT_DIR"; '
-            'exec "$@" < "$0"',
+            # Pi has no `--` terminator, so the prompt must not be parsed as argv.
+            launch,
             prompt_path,
             PI_BIN,
             "--print",
@@ -240,10 +250,7 @@ class PiHarness(Harness[PiHarnessConfig]):
             PROVIDER,
             "--model",
             ctx.model,
-            "--extension",
-            extension_path,
-            "--mcp-config",
-            f"{agent_dir}/mcp.json",
+            *mcp_args,
             *tool_args,
             *system_args,
             *image_args,
