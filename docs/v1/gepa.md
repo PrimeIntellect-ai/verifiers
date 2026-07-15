@@ -48,4 +48,4 @@ uv run eval reverse-text-v1 \
 
 **Tasksets** — GEPA optimizes `Task.system_prompt`, so the taskset must provide one. Tasksets that bake instructions into the user `prompt` instead (e.g. `gsm8k-v1`) are not supported out of the box.
 
-**Harnesses** — any eval harness works. With `APPENDS_SYSTEM_PROMPT`, the optimized prompt is used as a system message; otherwise it is folded into the user prompt.
+**Harnesses** — any eval harness works. With `APPENDS_SYSTEM_PROMPT`, the optimized prompt is used as a system message but otherwise is folded into the user prompt.
