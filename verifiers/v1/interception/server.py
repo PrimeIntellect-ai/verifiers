@@ -257,18 +257,22 @@ class InterceptionServer(Interception):
         if session.last_request == req_hash and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
-        if (inflight := session.inflight.get(req_hash)) is not None:
+
+        async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
+            # Await the first attempt instead of re-sampling. None means it produced no servable
+            # response (it errored/refused), so let the SDK retry afresh.
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
-            # Await the first attempt instead of re-sampling. None means it produced no servable
-            # response (it errored/refused), so let the SDK retry afresh.
             completion = await inflight
             if completion is None:
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
             return _completion_response(completion)
+
+        if (inflight := session.inflight.get(req_hash)) is not None:
+            return await coalesced(inflight)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -298,8 +302,12 @@ class InterceptionServer(Interception):
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt, tools)
         headers = request.headers.copy()
-        # Publish this attempt so a retry that arrives while it is still computing coalesces onto
-        # it (see the in-flight guard above) instead of starting a second inference.
+        # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above) rather
+        # than starting a second inference. Re-check first: an identical request may have claimed
+        # it while we awaited the simulator opening. The get / create / assign below run with no
+        # await between them, so two concurrent identical requests can never both become owner.
+        if (inflight := session.inflight.get(req_hash)) is not None:
+            return await coalesced(inflight)
         fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
         session.inflight[req_hash] = fut
 
@@ -423,7 +431,9 @@ class InterceptionServer(Interception):
         finally:
             # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
             # response" (an error/refuse return above), so the waiter surfaces a retryable error.
-            session.inflight.pop(req_hash, None)
+            # Only clear our own entry — never one a later owner may have installed.
+            if session.inflight.get(req_hash) is fut:
+                session.inflight.pop(req_hash, None)
             if not fut.done():
                 fut.set_result(None)
 
