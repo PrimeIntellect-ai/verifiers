@@ -87,6 +87,30 @@ async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dic
     return mcp_content_to_chat_content(result.content)
 
 
+async def execute_tool_call(call, dispatch: dict) -> dict:
+    name = call.function.name
+    try:
+        tool_args = json.loads(call.function.arguments or "{}")
+    except json.JSONDecodeError as e:
+        content = (
+            f"error: invalid JSON in tool arguments ({e}); "
+            "resend the call with valid JSON"
+        )
+    else:
+        # Valid JSON can still be a non-object (`[]`, `42`, `null`); the MCP dispatch
+        # assumes a dict, so reject anything else as a tool error rather than crashing.
+        if not isinstance(tool_args, dict):
+            content = (
+                "error: tool arguments must be a JSON object, "
+                f"got {type(tool_args).__name__}; resend as an object"
+            )
+        elif name in dispatch:
+            content = await call_mcp(dispatch, name, tool_args)
+        else:
+            content = f"error: unknown tool {name!r}"
+    return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
@@ -131,37 +155,11 @@ async def main() -> None:
             messages.append(message.model_dump(exclude_none=True))
             if not message.tool_calls:
                 break
-            for call in message.tool_calls:
-                name = call.function.name
-                try:
-                    tool_args = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError as e:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
-                        }
-                    )
-                    continue
-                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the MCP dispatch
-                # assumes a dict, so reject anything else as a tool error rather than crashing.
-                if not isinstance(tool_args, dict):
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
-                        }
-                    )
-                    continue
-                if name in dispatch:
-                    content = await call_mcp(dispatch, name, tool_args)
-                else:
-                    content = f"error: unknown tool {name!r}"
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
+            messages.extend(
+                await asyncio.gather(
+                    *(execute_tool_call(call, dispatch) for call in message.tool_calls)
                 )
+            )
 
 
 if __name__ == "__main__":
