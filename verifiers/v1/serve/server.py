@@ -35,14 +35,10 @@ class EnvServer:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # The client owns the taskset and ships each request's task data; the server is
-        # stateless — it rebuilds the task from the wire (the taskset is never `load()`ed
-        # here, so pool workers don't each pull the dataset). `num_tasks` stays None: only
-        # the legacy bridge, whose dataset does live server-side, reports a count.
-        self._task_cls = type(self.env.taskset).task_type()
-        self._data_cls = task_data_cls(self._task_cls)
+        self.task_cls = type(self.env.taskset).task_type()
+        self.data_cls = task_data_cls(self.task_cls)
         self.num_tasks: int | None = None
-        self.requires_group_scoring = has_decorated(self._task_cls, "group_reward")
+        self.requires_group_scoring = has_decorated(self.task_cls, "group_reward")
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -84,8 +80,8 @@ class EnvServer:
             raise ValueError(
                 "v1 env server requests carry task_data (task_idx addresses the legacy bridge)"
             )
-        data = self._data_cls.model_validate(task_data)
-        return self._task_cls(data, self.env.config.taskset.task)
+        data = self.data_cls.model_validate(task_data)
+        return self.task_cls(data, self.env.config.taskset.task)
 
     def _client(self, client_config: ClientConfig, model: str) -> Client:
         """Cache clients because renderer initialization builds a tokenizer pool."""

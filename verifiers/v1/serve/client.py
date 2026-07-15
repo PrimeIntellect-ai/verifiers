@@ -145,6 +145,7 @@ class EnvClient:
         model: str,
         sampling: SamplingConfig,
         task_data: dict | None = None,
+        # TODO: remove task_idx addressing once v0 (the legacy bridge) is deprecated.
         task_idx: int | None = None,
     ) -> Trace[WireTaskData]:
         """Run one rollout; return a typed `Trace[WireTaskData]`. A v1 server takes the
@@ -169,6 +170,7 @@ class EnvClient:
         model: str,
         sampling: SamplingConfig,
         task_data: dict | None = None,
+        # TODO: remove task_idx addressing once v0 (the legacy bridge) is deprecated.
         task_idx: int | None = None,
     ) -> list[Trace[WireTaskData]]:
         """Run `n` rollouts of one task as a scored group; return typed
