@@ -74,7 +74,6 @@ from verifiers.v1.scoring import (
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
-from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     DockerConfig,
     PrimeConfig,
@@ -222,7 +221,6 @@ __all__ = [
     "RolloutRetryConfig",
     "TimeoutConfig",
     "Episode",
-    "Rollout",
     # agent
     "Agent",
     # loaders

@@ -114,7 +114,7 @@ class Harness(ABC, Generic[ConfigT]):
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Run this harness's `@metric` methods over the finished trace, concurrently,
         recording each into `trace.metrics`. Mirrors `Task.score` (which the
-        Rollout runs in parallel with this); metrics declare what they need (`task`,
+        rollout runs in parallel with this); metrics declare what they need (`task`,
         `trace`, `runtime`) and can read what the harness left behind in the runtime.
         No-op for an harness with no `@metric`s."""
         available = {"task": trace.task.data, "trace": trace, "runtime": runtime}

@@ -67,8 +67,8 @@ def main(argv: list[str] | None = None) -> None:
     if config.is_legacy and config.resume is not None:
         raise SystemExit("--resume is not supported for legacy (v0) evals")
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
-    # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
-    # state, so it's in-process only (`server + rich` is rejected at config validation). Legacy
+    # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
+    # slots, so it's in-process only (`server + rich` is rejected at config validation). Legacy
     # always runs in-process via the bridge.
     rich = config.rich and not config.is_legacy
     # Always tee the run's logs to a file under the output dir (in-process and server mode).

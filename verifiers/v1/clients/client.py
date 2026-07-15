@@ -82,7 +82,7 @@ class Client(ABC):
 class ModelContext:
     """The model leg, as one value: which model (`model`), over which wire (`client`),
     with which defaults (`sampling` — provider defaults when omitted). Everything that
-    does model I/O consumes one: a `Rollout` for its turns, an `Agent` binds one at
+    does model I/O consumes one: a rollout for its turns, an `Agent` binds one at
     construction, the Environment builds one per eval. The client is the expensive,
     shareable part — consumers on one endpoint should share one `Client` (one
     connection pool)."""

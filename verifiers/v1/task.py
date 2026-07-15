@@ -22,7 +22,7 @@ on a type field; a taskset yields one task type (its `load` constructs it), and
 instances differ per row through their data.
 
 The task is the single judgement authority, scored at two granularities (execution
-lives in the Rollout — per-rollout — and the Episode — group — which call these):
+lives in the rollout engine — per-rollout — and the Episode — group — which call these):
   - `score` runs `@metric`/`@reward` — plus the plugged judges resolved from
     `config.judges` (see `verifiers.v1.judge`) — over one trace (in its live runtime).
   - `score_group` runs `@group_reward` over all the rollouts of this task at once —

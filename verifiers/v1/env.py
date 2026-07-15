@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 class TimeoutConfig(BaseConfig):
     """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit). Each bounds one stage of `Rollout.run`: task and harness setup, the harness
+    limit). Each bounds one stage of `run_rollout`: task and harness setup, the harness
     run, the task's `finalize` hook, then scoring."""
 
     setup: float | None = None

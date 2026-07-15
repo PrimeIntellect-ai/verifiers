@@ -25,7 +25,7 @@ yours to build and **share**: agents on the same endpoint should share one `Clie
 connection pool). prime-rl hands agents its renderer client through the same
 `ModelContext`.
 
-Every run is a standard `Rollout` — staged lifecycle, typed error attribution,
+Every run is a standard rollout — staged lifecycle, typed error attribution,
 token-true trace capture — so anything a program produces is evaluable and trainable.
 Everything beyond the arrow is a parameter, not a concept:
 
@@ -47,6 +47,12 @@ share one pool of servers and tunnels — its owner keeps the lifecycle, the age
 acquires slots. Without one, an Agent entered as an async context manager owns an
 elastic pool so concurrent runs share servers (`async with agent: ...`); un-entered,
 each run brings up its own per-rollout server — fine for scripts.
+
+`shared_tools=` completes the borrowing set: live `SharedToolServer`s (taskset-scoped
+MCP, served once by their owner — an eval's `serving()`, or a program via
+`serve_shared`) that every run of the agent reuses. Like the others, they're borrowed —
+never started or torn down by the agent — and they count in the up-front pairing check
+(a harness that can't drive MCP tools is refused).
 
 Chaining needs no framework: mint the next task's `TaskData` from earlier traces with a
 plain function, stamping `sources` (trace ids) and `relation` so lineage survives into

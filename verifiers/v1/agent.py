@@ -21,7 +21,7 @@ agents share one pool of servers and tunnels). Without one, entering the agent
 share interception servers like an eval does. Un-entered, each run brings up its own
 per-rollout interception server — fine for scripts and small programs.
 
-The execution machinery is unchanged: every run is a standard `Rollout` (staged lifecycle,
+The execution machinery is the standard rollout engine (`run_rollout`: staged lifecycle,
 typed error attribution, token-true trace capture). The Agent only decides what goes into
 the rollout.
 """
@@ -43,7 +43,7 @@ from verifiers.v1.env import (
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import ElasticInterceptionPool, Interception
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import Rollout
+from verifiers.v1.rollout import run_rollout
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -231,7 +231,7 @@ class Agent:
             if self.timeout.scoring is not None
             else task.data.timeout.scoring
         )
-        rollout = Rollout(
+        trace = await run_rollout(
             task=task,
             harness=self.harness,
             ctx=self.ctx,
@@ -246,7 +246,6 @@ class Agent:
             runtime=runtime,
             on_trace=on_trace,
         )
-        trace = await rollout.run()
         # Who produced this trace — so a program's traces stay attributable after the
         # Agent objects are gone. Resolved per run: a borrowed box wins over the policy.
         trace.info["agent"] = {
@@ -254,7 +253,7 @@ class Agent:
             "model": self.ctx.model,
             "runtime": {
                 "type": runtime_config.type,
-                "descriptor": rollout.runtime.descriptor if rollout.runtime else None,
+                "descriptor": trace.runtime.id if trace.runtime is not None else None,
                 "borrowed": runtime is not None,
             },
         }
@@ -275,7 +274,7 @@ class Agent:
         try:
             # start inside the try: a failed start may already hold a remote sandbox,
             # so it must reach `stop()` (safe on a partially-started runtime) like in
-            # `Rollout.run`.
+            # `run_rollout`.
             await runtime.start()
             yield runtime
         finally:
