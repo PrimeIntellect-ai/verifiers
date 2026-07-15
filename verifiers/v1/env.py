@@ -29,7 +29,6 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
@@ -226,7 +225,7 @@ def validate_pairing(harness: Harness, taskset: Taskset) -> None:
     taskset, read off the `Taskset[TaskT, ...]` generic), so a failure here holds for
     every row the taskset can produce; on the env server it fails worker startup instead
     of every request."""
-    task_cls = generic_type(type(taskset), Task, origin=Taskset) or Task
+    task_cls = type(taskset).task_type()
     if not harness.SUPPORTS_MCP and (task_cls.tools or type(taskset).tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
@@ -390,7 +389,7 @@ class Environment:
         the way `Task.server_config` resolves them. A task that *overrides* that pairing
         isn't statically knowable, so it conservatively counts as remote (the tunnel then
         reaches everything; a wrongly-assumed localhost would reach nothing remote)."""
-        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
+        task_cls = type(self.taskset).task_type()
         server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
         if server_classes and task_cls.server_config is not Task.server_config:
             return True

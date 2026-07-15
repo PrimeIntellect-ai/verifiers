@@ -25,6 +25,19 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
     return methods
 
 
+def has_decorated(cls: type, attr: str) -> bool:
+    """Whether `cls` defines any method tagged with `attr` — `discover_decorated` for a
+    class, no instance needed. An undecorated override still suppresses a decorated base
+    method."""
+    names = {
+        name
+        for klass in cls.__mro__
+        for name, fn in vars(klass).items()
+        if callable(fn) and hasattr(fn, attr)
+    }
+    return any(hasattr(getattr(cls, name), attr) for name in names)
+
+
 def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
     params = inspect.signature(fn).parameters
     return fn(**{name: value for name, value in available.items() if name in params})

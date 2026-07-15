@@ -144,4 +144,4 @@ def task_type(taskset_id: str) -> type[Task]:
     """The taskset's `Task` subclass from its `Taskset[TaskT, ConfigT]` generic — no
     data is loaded, so replay can cheaply recover the task data type. Falls back to
     the base `Task` when no subclass is given."""
-    return generic_type(taskset_class(taskset_id), Task, origin=Taskset) or Task
+    return taskset_class(taskset_id).task_type()

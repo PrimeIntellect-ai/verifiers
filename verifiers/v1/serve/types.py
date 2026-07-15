@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTaskData
@@ -33,14 +33,33 @@ class InfoRequest(BaseRequest):
 
 class InfoResponse(BaseResponse):
     num_tasks: int | None = None
-    """Task count; `None` means the taskset is infinite (bound runs with `num_tasks`)."""
+    """Task count. Only the legacy bridge (whose dataset lives server-side) reports one;
+    a v1 server is stateless — its tasks live on the client — so this stays `None`."""
     requires_group_scoring: bool = False
     """Whether tasks must be run and resumed as whole groups."""
 
 
-class RunRolloutRequest(BaseRequest):
+class TaskAddressing(BaseModel):
+    """How a run request names its task: v1 ships the task itself (`task_data`, a
+    `TaskData.full_dump()` the server validates into the taskset's declared type); the
+    legacy bridge addresses its server-side dataset by row (`task_idx`)."""
+
+    task_data: dict | None = None
+    """The task's wire data (v1). The server rebuilds and pydantic-validates it."""
+    task_idx: int | None = Field(None, ge=0)
+    """Dataset row index (legacy v0 bridge only)."""
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "TaskAddressing":
+        if (self.task_data is None) == (self.task_idx is None):
+            raise ValueError(
+                "exactly one of task_data (v1) or task_idx (legacy) must be set"
+            )
+        return self
+
+
+class RunRolloutRequest(TaskAddressing, BaseRequest):
     method: ClassVar[str] = "run_rollout"
-    task_idx: int = Field(ge=0)
     client: ClientConfig
     model: str
     sampling: SamplingConfig
@@ -55,9 +74,8 @@ class RunRolloutResponse(BaseResponse):
         return trace.model_dump() if trace is not None else None
 
 
-class RunGroupRequest(BaseRequest):
+class RunGroupRequest(TaskAddressing, BaseRequest):
     method: ClassVar[str] = "run_group"
-    task_idx: int = Field(ge=0)
     n: int
     client: ClientConfig
     model: str

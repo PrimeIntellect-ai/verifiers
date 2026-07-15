@@ -130,6 +130,13 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         if legacy
         else {"config_data": env_config_data(config)}  # picklable across the spawn
     )
+    tasks = []
+    if not legacy:
+        from verifiers.v1.loaders import load_taskset
+
+        # The client owns the taskset: load it here, once — the server (and its pool
+        # workers) never load data, they rebuild each dispatched task from its request.
+        tasks = load_taskset(config.taskset).select(config.num_tasks, config.shuffle)
     # The pool broker + workers are spawned (fresh interpreters, no logging) — hand them
     # the same loguru setup the main process uses (stderr + the run's log file) so their
     # rollout logs come back and land in the output dir.
@@ -160,22 +167,21 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         address = await asyncio.to_thread(address_queue.get, timeout=600)
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
-        info = await client.info()
-        group_scored = info.requires_group_scoring
-        if info.num_tasks is None:  # infinite taskset - the run must be bounded
-            if config.num_tasks is None:
-                raise ValueError(
-                    f"{config.env_id} is infinite - bound the run with -n/--num-tasks"
-                )
-            if config.shuffle:
-                logger.warning(
-                    "shuffle is a no-op on an infinite taskset - "
-                    "taking the first %d generated tasks",
-                    config.num_tasks,
-                )
-            idxs = list(range(config.num_tasks))
-        else:
+        # Dispatch (and resume) in the tasks' own coordinate system: `data.idx`. Only the
+        # legacy bridge is addressed by dataset row, where idx and row coincide.
+        if legacy:
+            info = await client.info()
+            group_scored = info.requires_group_scoring
             idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
+            payloads: dict[int, dict] = {idx: {"task_idx": idx} for idx in idxs}
+        else:
+            group_scored = bool(tasks) and bool(
+                discover_decorated(tasks[0], "group_reward")
+            )
+            idxs = [task.data.idx for task in tasks]
+            payloads = {
+                task.data.idx: {"task_data": task.data.full_dump()} for task in tasks
+            }
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:
@@ -214,11 +220,11 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         async def run_group_unit(idx: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
                 traces = await client.run_group(
-                    task_idx=idx,
                     n=config.num_rollouts,
                     client=config.client,
                     model=config.model,
                     sampling=config.sampling,
+                    **payloads[idx],
                 )
             for trace in traces:
                 await append_trace(out, trace, write_lock)
@@ -227,10 +233,10 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         async def run_rollout_unit(idx: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
                 trace = await client.run_rollout(
-                    task_idx=idx,
                     client=config.client,
                     model=config.model,
                     sampling=config.sampling,
+                    **payloads[idx],
                 )
             await append_trace(out, trace, write_lock)
             return [trace]

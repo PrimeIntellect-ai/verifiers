@@ -136,16 +136,27 @@ class EnvClient:
         )
 
     async def info(self) -> InfoResponse:
-        """Return the taskset `num_tasks` + whether its tasks group-score."""
+        """Return whether tasks group-score (+ `num_tasks`, legacy bridge only)."""
         return await self._request(InfoRequest(), InfoResponse)
 
     async def run_rollout(
-        self, task_idx: int, client: ClientConfig, model: str, sampling: SamplingConfig
+        self,
+        client: ClientConfig,
+        model: str,
+        sampling: SamplingConfig,
+        task_data: dict | None = None,
+        task_idx: int | None = None,
     ) -> Trace[WireTaskData]:
-        """Run one rollout for `task_idx`; return a typed `Trace[WireTaskData]`."""
+        """Run one rollout; return a typed `Trace[WireTaskData]`. A v1 server takes the
+        task itself (`task_data`, a `TaskData.full_dump()`); the legacy bridge addresses
+        its server-side dataset by `task_idx`."""
         response = await self._request(
             RunRolloutRequest(
-                task_idx=task_idx, client=client, model=model, sampling=sampling
+                task_data=task_data,
+                task_idx=task_idx,
+                client=client,
+                model=model,
+                sampling=sampling,
             ),
             RunRolloutResponse,
         )
@@ -153,16 +164,23 @@ class EnvClient:
 
     async def run_group(
         self,
-        task_idx: int,
         n: int,
         client: ClientConfig,
         model: str,
         sampling: SamplingConfig,
+        task_data: dict | None = None,
+        task_idx: int | None = None,
     ) -> list[Trace[WireTaskData]]:
-        """Run `n` rollouts for `task_idx` as a scored group; return typed `Trace[WireTaskData]`s."""
+        """Run `n` rollouts of one task as a scored group; return typed
+        `Trace[WireTaskData]`s. Task addressing as in `run_rollout`."""
         response = await self._request(
             RunGroupRequest(
-                task_idx=task_idx, n=n, client=client, model=model, sampling=sampling
+                task_data=task_data,
+                task_idx=task_idx,
+                n=n,
+                client=client,
+                model=model,
+                sampling=sampling,
             ),
             RunGroupResponse,
         )

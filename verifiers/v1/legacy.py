@@ -383,6 +383,16 @@ class LegacyEnvServer(EnvServer):
             self._clients[key] = resolve_client(v0_config)
         return self._clients[key]
 
+    @staticmethod
+    def _row(req: RunRolloutRequest | RunGroupRequest) -> int:
+        """The dataset row a request addresses — the bridge's dataset lives server-side,
+        so requests must carry `task_idx` (v1 servers take `task_data` instead)."""
+        if req.task_idx is None:
+            raise ValueError(
+                "legacy env server requests address the dataset by task_idx"
+            )
+        return req.task_idx
+
     async def _run_v0(
         self,
         task_idx: int,
@@ -400,24 +410,24 @@ class LegacyEnvServer(EnvServer):
         )
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
-        out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
+        task_idx = self._row(req)
+        out = await self._run_v0(task_idx, req.client, req.model, req.sampling)
         return RunRolloutResponse(
-            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
+            trace=rollout_output_to_trace(out, task_idx).model_dump()
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
+        task_idx = self._row(req)
         client = self._v0_client(req.client, req.model)
         # run_group scores the rollouts together so group/preference reward funcs apply.
         outs = await self.env.run_group(
-            group_inputs=[dict(self.dataset[req.task_idx]) for _ in range(req.n)],
+            group_inputs=[dict(self.dataset[task_idx]) for _ in range(req.n)],
             client=client,
             model=req.model,
             sampling_args=req.sampling.model_dump(exclude_none=True),
             state_columns=["trajectory"],
         )
-        traces = [
-            rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
-        ]
+        traces = [rollout_output_to_trace(out, task_idx).model_dump() for out in outs]
         return RunGroupResponse(traces=traces)
 
 
