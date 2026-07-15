@@ -62,14 +62,11 @@ class StaticInterceptionPool(Interception):
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
-        # min + register have no await between them, so concurrent acquires can't all
-        # land on the same "least-loaded" server.
+        # server.acquire registers before its first yield, so concurrent acquires see the
+        # updated load before choosing their own least-loaded server.
         server = min(self.servers, key=lambda s: s.load)
-        secret = server.register(session)
-        try:
-            yield server.base_url, secret
-        finally:
-            server.unregister(secret)
+        async with server.acquire(session) as slot:
+            yield slot
 
 
 class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
