@@ -1,6 +1,6 @@
 # Evaluation
 
-To evaluate any environment, use the `eval` entrypoint:
+To evaluate any taskset, use the `eval` entrypoint:
 
 ```bash
 uv run eval primeintellect/terminal-bench-2
