@@ -56,12 +56,6 @@ from verifiers.v1.trace import Trace
 logger = logging.getLogger(__name__)
 
 
-def _merge(agent_timeout: float | None, task_timeout: float | None) -> float | None:
-    """Agent-level timeout wins; else the task's; else no limit (`Environment.episode`'s
-    precedence, with the agent standing in for cli/toml)."""
-    return agent_timeout if agent_timeout is not None else task_timeout
-
-
 def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
     """A borrowed box is never re-provisioned, so a task's placement fields can't be
     honored. Parity with the provisioning path where it refuses: a task `image` on a
@@ -199,19 +193,40 @@ class Agent:
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(self.harness, type(task), runtime_config)
+        # Timeout precedence as in `Environment.episode`, with the agent standing in
+        # for cli/toml: agent-level wins, else the task's, else no limit.
+        setup_timeout = (
+            self.timeout.setup
+            if self.timeout.setup is not None
+            else task.data.timeout.setup
+        )
+        harness_timeout = (
+            self.timeout.rollout
+            if self.timeout.rollout is not None
+            else task.data.timeout.harness
+        )
+        harness_timeout = cap_remote_harness_timeout(
+            harness_timeout, runtime_config, task
+        )
+        finalize_timeout = (
+            self.timeout.finalize
+            if self.timeout.finalize is not None
+            else task.data.timeout.finalize
+        )
+        scoring_timeout = (
+            self.timeout.scoring
+            if self.timeout.scoring is not None
+            else task.data.timeout.scoring
+        )
         rollout = Rollout(
             task=task,
             harness=self.harness,
             ctx=ctx,
             runtime_config=runtime_config,
-            setup_timeout=_merge(self.timeout.setup, task.data.timeout.setup),
-            harness_timeout=cap_remote_harness_timeout(
-                _merge(self.timeout.rollout, task.data.timeout.harness),
-                runtime_config,
-                task,
-            ),
-            finalize_timeout=_merge(self.timeout.finalize, task.data.timeout.finalize),
-            scoring_timeout=_merge(self.timeout.scoring, task.data.timeout.scoring),
+            setup_timeout=setup_timeout,
+            harness_timeout=harness_timeout,
+            finalize_timeout=finalize_timeout,
+            scoring_timeout=scoring_timeout,
             limits=self.limits,
             interception=self._interception_for(run_is_local, task),
             runtime=runtime,
