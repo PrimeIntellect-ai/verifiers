@@ -15,7 +15,7 @@ from verifiers.types import (
     RolloutOutput,
     SamplingArgs,
 )
-from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.client_utils import _build_headers_and_api_key, resolve_client_config
 from verifiers.utils.message_utils import message_to_printable
 from verifiers.utils.save_utils import make_serializable
 
@@ -35,15 +35,15 @@ def make_reflection_lm(
 
     GEPA expects: reflection_lm(prompt: str) -> str
     """
-    import os
-
     resolved_client_config = resolve_client_config(client_config)
+    headers, api_key = _build_headers_and_api_key(resolved_client_config)
 
     client = OpenAI(
-        api_key=os.environ.get(resolved_client_config.api_key_var, ""),
+        api_key=api_key or "EMPTY",
         base_url=resolved_client_config.api_base_url,
         timeout=resolved_client_config.timeout,
         max_retries=resolved_client_config.max_retries,
+        default_headers=headers,
     )
 
     def reflection_lm(prompt: str) -> str:
