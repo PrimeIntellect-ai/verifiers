@@ -127,6 +127,10 @@ Reward/metric handlers are `async def` — a sync handler fails at scoring time.
   its owner already tore down raises immediately, and a box torn down mid-run raises at
   the awaited `run()` (the raw failure chained underneath) — lifetime bugs in the
   program, not rollout errors on the trace.
+- A borrowed box is never **re-provisioned**, so a task's placement fields can't be
+  honored there. Where the provisioning path refuses, borrowing refuses the same: a
+  task `image` on a subprocess-backed box raises. A container box running a different
+  image only logs a warning — running in an existing world is the point of borrowing.
 - An adversarial caveat: an agent that runs in a box can tamper with evidence already in
   it. For hack detection, prefer writing the evidence *after* the suspect run (as above),
   or judge in a separate box.

@@ -45,6 +45,7 @@ from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
+    SubprocessConfig,
     make_runtime,
     runtime_is_local,
 )
@@ -59,6 +60,33 @@ def _merge(agent_timeout: float | None, task_timeout: float | None) -> float | N
     """Agent-level timeout wins; else the task's; else no limit (`Environment.episode`'s
     precedence, with the agent standing in for cli/toml)."""
     return agent_timeout if agent_timeout is not None else task_timeout
+
+
+def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
+    """A borrowed box is never re-provisioned, so a task's placement fields can't be
+    honored. Parity with the provisioning path where it refuses: a task `image` on a
+    subprocess box raises (`resolve_runtime_config` raises the same on a subprocess
+    policy — a lifetime/wiring bug in the borrowing program, so it goes to the caller,
+    not the trace). A container box whose image differs only warns: placing a run into
+    an existing world is the point of borrowing (e.g. a judge in a solver's box)."""
+    if task.data.image is None:
+        return
+    if isinstance(runtime.config, SubprocessConfig):
+        raise ValueError(
+            f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
+            "borrowed runtime is subprocess-backed (no container); borrow a container "
+            "box (e.g. agent.provision(task)) or drop the task's image"
+        )
+    box_image = getattr(runtime.config, "image", None)
+    if box_image != task.data.image:
+        logger.warning(
+            "task %r requires image %r, but borrowed box %r runs %r; a borrowed box "
+            "is never re-provisioned, so the run proceeds in the box's world",
+            task.data.idx,
+            task.data.image,
+            runtime.name,
+            box_image,
+        )
 
 
 class Agent:
@@ -162,6 +190,7 @@ class Agent:
         for a judge sweeping models."""
         ctx = ctx if ctx is not None else self.ctx
         if runtime is not None:
+            _check_borrowed_placement(task, runtime)
             runtime_config = runtime.config
             run_is_local = runtime.is_local
         else:
