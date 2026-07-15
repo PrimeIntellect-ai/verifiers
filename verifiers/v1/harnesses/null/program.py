@@ -24,7 +24,9 @@ async def chat(
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
     """Connect to each configured MCP server (a streamable-HTTP `url`); return
-    (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw tool name))."""
+    (tool schemas, dispatch mapping advertised name -> (session, raw tool name)). Tools are
+    advertised as `<server>_<tool>`; a server named `""` (TOOL_PREFIX = None) advertises its
+    tools bare, so names must be unique across the rollout's servers."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
@@ -43,7 +45,11 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
-            full = f"{name}_{tool.name}"
+            full = f"{name}_{tool.name}" if name else tool.name
+            if full in dispatch:
+                raise ValueError(
+                    f"duplicate tool name {full!r} across servers; keep qualified names"
+                )
             tool_schemas.append(
                 {
                     "type": "function",
