@@ -21,6 +21,7 @@ handled out-of-band (run by the harness).
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import secrets
@@ -223,6 +224,16 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
+        # Graph atomicity under retries: the harness SDK retries a transient failure by
+        # re-sending the byte-identical request. If we already fully served this exact request,
+        # replay the recorded completion instead of re-sampling — a second sample would commit a
+        # second turn and fork the graph into a dead-end branch. A growing conversation never
+        # repeats a body, so this only ever matches a real retry; a failed attempt was not cached
+        # and re-runs normally.
+        req_hash = hashlib.blake2b(raw, digest_size=16).digest()
+        if session.last_request == req_hash and session.last_completion is not None:
+            logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
+            return _completion_response(session.last_completion)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
@@ -263,6 +274,14 @@ class InterceptionServer(Interception):
         completion: dict | None = (
             None  # the latest turn's response, returned to the program
         )
+
+        def serve(served: dict) -> web.Response:
+            # Record the served turn so a retried (byte-identical) request replays it instead
+            # of re-sampling and forking the graph.
+            session.last_request = req_hash
+            session.last_completion = served
+            return _completion_response(served)
+
         while True:
             try:
                 refused = await session.refused()
@@ -281,7 +300,7 @@ class InterceptionServer(Interception):
                     return web.json_response(
                         dialect.error_body(f"rollout stopped: {refused}"), status=400
                     )
-                return _completion_response(completion)
+                return serve(completion)
             turn = graph.prepare_turn(session.trace, prompt)
             session.error = None
             try:
@@ -305,7 +324,7 @@ class InterceptionServer(Interception):
                         dialect.error_body("rollout stopped: context_length"),
                         status=400,
                     )
-                return _completion_response(completion)
+                return serve(completion)
             except RolloutError as e:
                 # Stash the real cause; the rollout re-raises it after the harness returns. Relay
                 # the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -340,7 +359,7 @@ class InterceptionServer(Interception):
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
-                return _completion_response(completion)
+                return serve(completion)
             try:
                 user_messages = await session.user(response.message.content or "")
             except RolloutError as e:

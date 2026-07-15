@@ -101,7 +101,12 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
-    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    # Retries are safe: the interception server records each committed turn and replays a
+    # retried (byte-identical) request from that record instead of re-sampling, so a retry after
+    # a committed turn returns the recorded completion rather than forking the trace into a
+    # dead-end branch. Retries ride out transient transport/provider blips; the generous timeout
+    # lets a slow turn finish instead of being cut short and re-sent.
+    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key, timeout=1800.0)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
         # asyncio.timeout, not wait_for: the MCP/httpx cancel scopes entered onto

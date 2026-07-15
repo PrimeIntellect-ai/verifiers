@@ -81,6 +81,16 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+    last_request: bytes | None = None
+    """Digest of the most recently served request body; with `last_completion`, the replay cache
+    that keeps the message graph atomic under harness-SDK retries. A retry re-sends the
+    byte-identical request; when it matches, the interception server replays the recorded
+    completion instead of re-sampling and committing a second turn — which would fork the graph
+    into a dead-end branch. Only a fully served request is cached, so a genuinely failed attempt
+    still re-runs. Turns are issued sequentially (one outstanding request at a time), so a retry
+    is always of the most recent request — keeping only the last one is sufficient and bounded."""
+    last_completion: dict | None = None
+    """The completion returned for `last_request`, replayed verbatim on a retry."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each

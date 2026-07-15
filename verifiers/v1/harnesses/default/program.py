@@ -259,12 +259,12 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
-    # No client-side retries: re-sending a request whose turn the interception already committed
-    # re-samples it and forks the trace into an extra dead-end branch. A generous timeout lets a
-    # slow turn finish instead of timing out and re-sending; genuine failures surface as error rows.
-    client = AsyncOpenAI(
-        base_url=args.base_url, api_key=args.api_key, timeout=1800.0, max_retries=0
-    )
+    # Retries are safe: the interception server records each committed turn and replays a
+    # retried (byte-identical) request from that record instead of re-sampling, so a retry after
+    # a committed turn returns the recorded completion rather than forking the trace into a
+    # dead-end branch. Retries ride out transient transport/provider blips; the generous timeout
+    # lets a slow turn finish instead of being cut short and re-sent.
+    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key, timeout=1800.0)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
         mcp_tools, dispatch = (
