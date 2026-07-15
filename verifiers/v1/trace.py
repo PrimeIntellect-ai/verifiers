@@ -292,8 +292,24 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def num_total_tokens(self) -> int:
-        """Sequence lengths summed across training branches for token batching."""
-        return sum(branch.num_total_tokens for branch in self.branches)
+        """Sequence lengths summed across training branches for token batching.
+
+        Falls back to the last provider usage on each branch when token IDs are absent
+        (relay/eval). This mirrors the final sequence length and avoids double-counting
+        repeated prompt context across turns, while still counting each training branch.
+        """
+        total = sum(branch.num_total_tokens for branch in self.branches)
+        if total:
+            return total
+        usages: list[Usage] = []
+        for branch in self.branches:
+            last = next(
+                (n.usage for n in reversed(branch.nodes) if n.usage is not None), None
+            )
+            if last is not None:
+                usages.append(last)
+        usage = Usage.aggregate(usages) if usages else None
+        return usage.total_tokens if usage is not None else 0
 
     @property
     def usage(self) -> Usage | None:
