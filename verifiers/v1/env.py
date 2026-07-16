@@ -720,7 +720,7 @@ class Environment(Generic[ParamsT]):
             else self.limits.max_total_tokens,
         )
 
-    async def run_record(
+    async def run_episode(
         self,
         task: Task,
         ctx: ModelContext,
@@ -806,7 +806,7 @@ class Environment(Generic[ParamsT]):
 
         async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
-            return await self.run_record(slot.task, ctx, on_trace=slot.traces.append)
+            return await self.run_episode(slot.task, ctx, on_trace=slot.traces.append)
 
         async with semaphore or contextlib.nullcontext():
             episode = await run_episode_with_retry(attempt, self.config.retries.rollout)

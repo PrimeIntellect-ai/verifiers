@@ -66,7 +66,7 @@ async def test_base_env_mints_single_agent_records():
     env = vf.Environment(_env_config())
     assert list(env._roles) == ["solver"]
     agents = _stub_agents(env)
-    episode = await env.run_record(_task(env), None)
+    episode = await env.run_episode(_task(env), None)
     assert episode.ok and episode.env == "echo-v1"
     assert agents["solver"].runs == 1
     assert len(episode.traces) == 1
@@ -79,7 +79,7 @@ async def test_multi_role_records_stamp_roles():
     env = DuetEnv(_env_config(env=DuetParams()))
     _stub_agents(env)
     seen_live: list[str | None] = []
-    episode = await env.run_record(
+    episode = await env.run_episode(
         _task(env), None, on_trace=lambda t: seen_live.append(t.role)
     )
     assert episode.ok and len(episode.traces) == 2
@@ -93,7 +93,7 @@ async def test_multi_role_records_stamp_roles():
 async def test_agent_failures_are_trace_data_not_record_errors():
     env = vf.Environment(_env_config())
     env._agents_for = lambda ctx: {"solver": StubAgent(error=RuntimeError("boom"))}  # type: ignore[method-assign]
-    episode = await env.run_record(_task(env), None)
+    episode = await env.run_episode(_task(env), None)
     assert not episode.ok and not episode.errors  # the failure lives on the trace
     assert episode.traces[0].error is not None
 
@@ -109,7 +109,7 @@ async def test_hook_crash_keeps_completed_traces():
 
     env = Crashy(_env_config())
     _stub_agents(env)
-    episode = await env.run_record(_task(env), None)
+    episode = await env.run_episode(_task(env), None)
     assert not episode.ok
     assert episode.error is not None and episode.error.type == "RuntimeError"
     assert len(episode.traces) == 1 and episode.traces[0].error is None
@@ -122,7 +122,7 @@ async def test_score_deadline_is_a_record_error():
 
     env = Slow(_env_config(timeout={"score": 0.05}))
     _stub_agents(env)
-    episode = await env.run_record(_task(env), None)
+    episode = await env.run_episode(_task(env), None)
     assert not episode.ok
     assert episode.error is not None and episode.error.type == "TimeoutError"
     assert len(episode.traces) == 1  # the finished traces survive the score failure

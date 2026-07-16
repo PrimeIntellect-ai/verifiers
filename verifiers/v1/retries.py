@@ -130,19 +130,19 @@ async def run_episode_with_retry(
     def note(state: RetryCallState) -> None:
         # before_sleep fires only between attempts (a retry is imminent), so this
         # collects exactly the errors that caused a retry — never the final attempt's.
-        attempt_record = state.outcome.result()
-        cause = attempt_record.error or next(
-            (t.error for t in attempt_record.traces if t.error), None
+        attempt_episode = state.outcome.result()
+        cause = attempt_episode.error or next(
+            (t.error for t in attempt_episode.traces if t.error), None
         )
         logger.warning(
             "retrying env-rollout %s (retry %d/%d) after error: %s",
-            attempt_record.id,
+            attempt_episode.id,
             state.attempt_number,
             retry.max_retries,
             cause.type if cause else "?",
         )
-        history.extend(attempt_record.errors)
-        for trace in attempt_record.traces:
+        history.extend(attempt_episode.errors)
+        for trace in attempt_episode.traces:
             history.extend(trace.errors)
 
     retrying = AsyncRetrying(
