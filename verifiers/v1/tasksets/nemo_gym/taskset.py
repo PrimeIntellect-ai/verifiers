@@ -7,7 +7,6 @@ launcher; Verifiers owns the model loop, trace, runtime, and harness.
 
 from __future__ import annotations
 
-import copy
 import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -19,7 +18,7 @@ import httpx
 from pydantic import Field
 
 from verifiers.v1.decorators import reward
-from verifiers.v1.dialects.responses import ResponsesDialect
+from verifiers.v1.dialects.responses import ResponsesDialect, messages_to_wire
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskConfig, TaskData
@@ -44,7 +43,7 @@ class NeMoGymTaskConfig(TaskConfig):
 
 
 class NeMoGymConfig(TasksetConfig):
-    dataset_path: Path | None = None
+    dataset_path: Path
     """JSONL rows containing ``responses_create_params`` and verifier metadata."""
 
     task: NeMoGymTaskConfig = NeMoGymTaskConfig()
@@ -77,7 +76,7 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
     rollout session on every request.
     """
 
-    TOOL_PREFIX = "nemo_gym"
+    TOOL_PREFIX = None
 
     def _register(self, mcp: FastMCP) -> None:
         server = mcp._mcp_server
@@ -124,8 +123,6 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         from mcp.types import CallToolResult, TextContent
 
-        if name not in self.state.tool_names:
-            raise ValueError(f"unknown NeMo Gym tool: {name}")
         if self.state.mcp_url is not None:
             async with self._upstream() as session:
                 return await session.call_tool(name, arguments)
@@ -157,29 +154,12 @@ def _trace_to_nemo_response(
             f"NeMo Gym scoring requires exactly one trace branch, got {len(branches)}"
         )
 
-    known_names = set(tool_names)
-    known_names.update(
+    known_names = set(tool_names) | {
         spec["name"]
         for spec in responses_create_params.get("tools") or []
         if spec.get("type") == "function" and isinstance(spec.get("name"), str)
-    )
-    aliases = {
-        name: {
-            name,
-            f"nemo_gym_{name}",
-            f"nemo_gym__{name}",
-            f"mcp__nemo_gym__{name}",
-        }
-        for name in known_names
     }
-    response_item_types = {
-        "reasoning",
-        "message",
-        "function_call",
-        "mcp_call",
-        "mcp_list_tools",
-        "mcp_approval_request",
-    }
+    response_item_types = {"reasoning", "message", "function_call"}
     output: list[dict[str, Any]] = []
     started = False
 
@@ -187,24 +167,12 @@ def _trace_to_nemo_response(
         message = node.message
         if isinstance(message, AssistantMessage) and node.sampled:
             started = True
-            provider_items = message.provider_state or []
-            if provider_items and all(
+            if message.provider_state and not all(
                 isinstance(item, dict) and item.get("type") in response_item_types
-                for item in provider_items
+                for item in message.provider_state
             ):
-                items = copy.deepcopy(provider_items)
-                for item in items:
-                    if item.get("type") != "function_call":
-                        continue
-                    emitted_name = str(item.get("name"))
-                    for raw_name in sorted(known_names, key=len, reverse=True):
-                        if emitted_name in aliases[raw_name]:
-                            item["name"] = raw_name
-                            break
-                output.extend(items)
-                continue
-
-            if message.reasoning_content:
+                message = message.model_copy(update={"provider_state": None})
+            if message.reasoning_content and not message.provider_state:
                 output.append(
                     {
                         "id": f"rs_{trace.id}_{len(output)}",
@@ -217,48 +185,23 @@ def _trace_to_nemo_response(
                         ],
                     }
                 )
-            for call in message.tool_calls or []:
-                name = call.name
-                for raw_name in sorted(known_names, key=len, reverse=True):
-                    if name in aliases[raw_name]:
-                        name = raw_name
-                        break
-                output.append(
-                    {
-                        "id": call.id,
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": name,
-                        "arguments": call.arguments,
-                        "status": "completed",
-                    }
-                )
-            if message.content:
-                output.append(
-                    {
-                        "id": f"msg_{trace.id}_{len(output)}",
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": message.content,
-                                "annotations": [],
-                            }
-                        ],
-                    }
-                )
+            output.extend(dict(item) for item in messages_to_wire([message]))
         elif started and isinstance(message, ToolMessage):
             output.append(
                 {
-                    "id": f"fco_{trace.id}_{len(output)}",
                     "type": "function_call_output",
                     "call_id": message.tool_call_id,
                     "output": content_text(message.content),
-                    "status": "completed",
                 }
             )
+
+    for item in output:
+        if item.get("type") != "function_call":
+            continue
+        name = str(item.get("name", ""))
+        bare_name = name.removeprefix("_")
+        if bare_name in known_names:
+            item["name"] = bare_name
 
     model = responses_create_params.get("model") or "verifiers"
     return {
@@ -344,29 +287,15 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
     tools = (_NeMoGymToolset,)
 
     def load(self) -> Iterator[NeMoGymTask]:
-        if self.config.dataset_path is None:
-            raise ValueError("NeMoGymConfig.dataset_path is required")
         path = self.config.dataset_path.expanduser().resolve()
         dialect = ResponsesDialect()
         count = 0
 
         with path.open(encoding="utf-8") as dataset:
-            for line_number, line in enumerate(dataset, start=1):
+            for line in dataset:
                 if not line.strip():
                     continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"invalid JSON in {path} line {line_number}: {exc.msg}"
-                    ) from exc
-                if not isinstance(row, dict) or not isinstance(
-                    row.get("responses_create_params"), dict
-                ):
-                    raise ValueError(
-                        f"{path} line {line_number} must be an object with "
-                        "responses_create_params"
-                    )
+                row = json.loads(line)
                 params = row["responses_create_params"]
                 prompt, _ = dialect.parse_request(params)
                 yield NeMoGymTask(

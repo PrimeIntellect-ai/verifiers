@@ -6,7 +6,6 @@ any MCP-capable Verifiers V1 harness. Override ``task.resources_url`` when
 ``NEMO_GYM_PORT`` is not 8000.
 """
 
-from collections.abc import Iterator
 from pathlib import Path
 
 from verifiers.v1.taskset import Taskset
@@ -18,13 +17,8 @@ from verifiers.v1.tasksets.nemo_gym import (
 
 
 class NeMoGymWeatherConfig(NeMoGymConfig):
-    dataset_path: Path | None = None
+    dataset_path: Path = Path(__file__).with_name("example.jsonl")
 
 
 class NeMoGymWeatherTaskset(NeMoGymTaskset, Taskset[NeMoGymTask, NeMoGymWeatherConfig]):
-    def load(self) -> Iterator[NeMoGymTask]:
-        if self.config.dataset_path is None:
-            self.config = self.config.model_copy(
-                update={"dataset_path": Path(__file__).with_name("example.jsonl")}
-            )
-        return super().load()
+    pass
