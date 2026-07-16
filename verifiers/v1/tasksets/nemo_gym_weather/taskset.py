@@ -1,10 +1,4 @@
-"""Upstream NeMo Gym ``example_mcp_weather`` as a zero-data-config taskset.
-
-Start only that resources server with
-``uv run verifiers/v1/tasksets/nemo_gym_weather/server.py``, then run this taskset with
-any MCP-capable Verifiers V1 harness. Override ``task.resources_url`` when
-``NEMO_GYM_PORT`` is not 8000.
-"""
+"""Zero-config wrapper around NeMo Gym's example MCP weather task."""
 
 from pathlib import Path
 

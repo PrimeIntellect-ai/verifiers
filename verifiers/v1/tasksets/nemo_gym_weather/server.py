@@ -4,11 +4,7 @@
 #   "nemo-gym==0.4.0",
 # ]
 # ///
-"""Launch only NeMo Gym's upstream ``example_mcp_weather`` resources server.
-
-This module intentionally bypasses Gym's agent/model/head stack. Its inline dependency
-pins the published version this adapter is verified against.
-"""
+"""Launch the upstream weather resources server without NeMo's agent stack."""
 
 import os
 
@@ -27,20 +23,17 @@ PORT = int(os.environ.get("NEMO_GYM_PORT", "8000"))
 
 
 def main() -> None:
-    config = ExampleMCPWeatherResourcesServerConfig(
-        name="example_mcp_weather",
-        host=HOST,
-        port=PORT,
-        entrypoint="app.py",
-        domain="agent",
-    )
-    client = ServerClient(
-        head_server_config=BaseServerConfig(host=HOST, port=11000),
-        global_config_dict=OmegaConf.create({}),
-    )
     server = ExampleMCPWeatherResourcesServer(
-        config=config,
-        server_client=client,
+        config=ExampleMCPWeatherResourcesServerConfig(
+            name="example_mcp_weather",
+            host=HOST,
+            port=PORT,
+            entrypoint="app.py",
+        ),
+        server_client=ServerClient(
+            head_server_config=BaseServerConfig(host=HOST, port=11000),
+            global_config_dict=OmegaConf.create({}),
+        ),
     )
     app = server.setup_webserver()
     server.setup_liveness(app)

@@ -1,6 +1,3 @@
-from verifiers.v1.tasksets.nemo_gym_weather.taskset import (
-    NeMoGymWeatherConfig,
-    NeMoGymWeatherTaskset,
-)
+from verifiers.v1.tasksets.nemo_gym_weather.taskset import NeMoGymWeatherTaskset
 
-__all__ = ["NeMoGymWeatherConfig", "NeMoGymWeatherTaskset"]
+__all__ = ["NeMoGymWeatherTaskset"]
