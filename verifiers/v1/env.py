@@ -442,6 +442,14 @@ def cap_remote_harness_timeout(
     return harness_timeout
 
 
+def _as_error(e: Exception) -> Error:
+    """`e` as a recorded episode-level `Error`, with the traceback formatted from
+    the active exception context (call inside the `except` handling `e`)."""
+    return Error(
+        type=type(e).__name__, message=str(e), traceback=traceback.format_exc()
+    )
+
+
 @dataclass
 class RunSlot:
     """One planned env-rollout of a task, observable while it happens: `traces`
@@ -807,12 +815,13 @@ class Environment(Generic[ParamsT]):
 
         The handed-in agents are wrapped so every trace is stamped (`role`/`trainable`)
         the moment it's minted (`on_trace` observes it then — how the dashboard watches
-        live) and captured the moment its run completes — so a hook that raises after
-        some runs finished still yields a episode containing them (the completed subset,
-        in completion order; on success the hook's returned order is authoritative).
-        A `rollout()`/`score()` exception is a rollout-level failure: it lands on the
-        episode's `errors`, never on a trace — per-agent failures are data on their
-        traces, and what a failed participant means is the hook's call."""
+        live) and captured the moment its run completes — so a `rollout()` that raises
+        after some runs finished still yields an episode containing them (the completed
+        subset, in completion order). Once `rollout()` returns, its list is
+        authoritative — membership and order — and stays so even when `score()` then
+        fails. A `rollout()`/`score()` exception is a rollout-level failure: it lands
+        on the episode's `errors`, never on a trace — per-agent failures are data on
+        their traces, and what a failed participant means is the hook's call."""
         agents = self._agents_for(ctx)
         completed: list[Trace] = []
         handed = {
@@ -831,29 +840,29 @@ class Environment(Generic[ParamsT]):
         )
         try:
             traces = list(await self.rollout(task, handed))
-            try:
-                async with asyncio.timeout(self.config.timeout.score) as deadline:
-                    await self.score(task, traces)
-            except TimeoutError:
-                # Only the deadline's own expiry is re-worded; a TimeoutError raised
-                # INSIDE score() (an env awaiting its own timeouts) stays the real
-                # error — with no deadline set it must not hit the `:g` format below.
-                if not deadline.expired():
-                    raise
-                raise TimeoutError(
+        except Exception as e:
+            episode.errors.append(_as_error(e))
+            # The hook never returned a list: the completed buffer (finish order)
+            # is the crash-safe subset.
+            episode.traces = list(completed)
+            return episode
+        # The hook's returned list is authoritative — membership and order — set
+        # before scoring, so a score() failure can't demote the episode to the
+        # completion-order buffer (a fan-out's finish order may differ).
+        episode.traces = traces
+        try:
+            async with asyncio.timeout(self.config.timeout.score) as deadline:
+                await self.score(task, traces)
+        except Exception as e:
+            # Only the deadline's own expiry is re-worded; a TimeoutError raised
+            # INSIDE score() (an env awaiting its own timeouts) stays the real
+            # error — with no deadline set it must not hit the `:g` format below.
+            if isinstance(e, TimeoutError) and deadline.expired():
+                e = TimeoutError(
                     f"{type(self).__name__}.score() exceeded its "
                     f"{self.config.timeout.score:g}s deadline (--timeout.score)"
-                ) from None
-            episode.traces = traces
-        except Exception as e:
-            episode.errors.append(
-                Error(
-                    type=type(e).__name__,
-                    message=str(e),
-                    traceback=traceback.format_exc(),
                 )
-            )
-            episode.traces = list(completed)
+            episode.errors.append(_as_error(e))
         return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:

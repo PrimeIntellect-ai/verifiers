@@ -128,6 +128,47 @@ async def test_score_deadline_is_a_record_error():
     assert len(episode.traces) == 1  # the finished traces survive the score failure
 
 
+async def test_score_failure_keeps_rollout_order():
+    """Once rollout() returns, its list is authoritative — a score() failure must
+    not demote the episode to the completion-order buffer (a fan-out's finish
+    order may differ from the declared one)."""
+
+    class Reordered(DuetEnv):
+        async def rollout(self, task, agents):
+            a = await agents["a"].run(task)
+            b = await agents["b"].run(task)
+            return [b, a]  # declared order != completion order
+
+        async def score(self, task, traces):
+            raise RuntimeError("judge crashed")
+
+    env = Reordered(_env_config(env=DuetParams()))
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert not episode.ok
+    assert episode.error is not None and episode.error.type == "RuntimeError"
+    assert [t.role for t in episode.traces] == ["b", "a"]
+
+
+async def test_score_failure_keeps_rollout_membership():
+    """rollout() may deliberately return a subset (a dropped warm-up, a forfeited
+    seat); a score() failure keeps that membership, not the completed buffer."""
+
+    class Subset(DuetEnv):
+        async def rollout(self, task, agents):
+            await agents["a"].run(task)  # ran, but the hook drops it
+            return [await agents["b"].run(task)]
+
+        async def score(self, task, traces):
+            raise RuntimeError("judge crashed")
+
+    env = Subset(_env_config(env=DuetParams()))
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert not episode.ok
+    assert [t.role for t in episode.traces] == ["b"]
+
+
 async def test_decorated_signals_cross_agent():
     """`@vf.reward`/`@vf.metric` on an Environment run in the default score(): once
     per target trace (`role=` narrows to one role's traces, unset is every trace),
