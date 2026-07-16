@@ -392,13 +392,12 @@ def validate_pairing(
     """Reject an impossible harness/task/runtime combination before any work happens.
     Every check reads class-level facts (`Task.tools` / `Task.user` /
     `NEEDS_CONTAINER`, plus whatever shared MCP the caller brings), so a failure here
-    holds for every row the task class can carry. Shared by `Environment` (once, at
-    init, with the task type read off the `Taskset[TaskT, ...]` generic and the
-    taskset's declared `tools` — on the env server it fails worker startup instead of
-    every request) and `Agent.run` (per run, with the concrete task's type and the
-    agent's borrowed `shared_tools` servers, against the resolved runtime). Only the
-    collection's emptiness matters — declarations and live servers alike mean MCP is
-    in play."""
+    holds for every row the task class can carry. `Agent.run`'s per-run backstop (the
+    concrete task's type and the agent's borrowed `shared_tools` servers, against the
+    resolved runtime) — the same three rules an `Environment` applies role-need-aware
+    at construction (its per-role loop covers tasks the env mints itself, which this
+    class-level check can't see). Only the collection's emptiness matters —
+    declarations and live servers alike mean MCP is in play."""
     if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
@@ -870,7 +869,7 @@ class Environment(Generic[ParamsT]):
         each, run to a episode by `run_slot`. `-r n` means exactly this: n episodes per
         task, nothing coupling them (env-internal multiplicity is the env's own knob).
         Harness capability (tools / container) is class-level and already
-        checked per role at construction (`validate_pairing`)."""
+        checked per role at construction."""
         if n < 1:
             raise ValueError("a task needs at least one rollout (n >= 1)")
         return [RunSlot(task) for _ in range(n)]
