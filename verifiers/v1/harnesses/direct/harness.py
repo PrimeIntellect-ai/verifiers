@@ -1,8 +1,8 @@
 """The built-in direct harness: an in-process chat loop — no subprocess, no uv script, no tools.
 
 The cheapest possible rollout: the chat loop runs inside the eval process itself, POSTing to
-its interception endpoint like any program would — so the trace, stops, limits, user
-injection, and per-agent routing all work unmodified — but with nothing to provision or
+its interception endpoint like any program would — so the trace, stops, limits, and
+per-agent routing all work unmodified — but with nothing to provision or
 launch. Cost per rollout is essentially the model call itself, which makes an agent-as-judge
 (a judge agent in a topology) as cheap as a plain judge call while still producing a real,
 inspectable trace.
@@ -17,6 +17,7 @@ from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
+from verifiers.v1.task import TaskData
 
 
 class DirectHarnessConfig(HarnessConfig):
@@ -28,7 +29,6 @@ class DirectHarnessConfig(HarnessConfig):
 class DirectHarness(Harness[DirectHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = False
-    SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
 
     async def launch(
@@ -39,8 +39,9 @@ class DirectHarness(Harness[DirectHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task.data)
+        system_prompt, prompt = self.resolve_prompt(data)
         messages: list[dict] = (
             [{"role": "system", "content": system_prompt}] if system_prompt else []
         )
@@ -75,15 +76,6 @@ class DirectHarness(Harness[DirectHarnessConfig]):
                 ):  # exactly one chance to answer directly — never an open loop
                     break
                 bounced = True
-                # A user-driven run's injected turns exist only in the server's
-                # per-request body — this local list never saw them. The loop is
-                # in-process and holds the live trace (every served turn already
-                # committed), so rebuild from it before re-requesting; the bounce
-                # must carry the whole exchange, not amputate it. (Provider-native
-                # extras like raw reasoning don't survive the rebuild — acceptable
-                # for the rare hallucinated-tool-call resend.)
-                if branches := trace.branches:
-                    messages = [message_to_wire(m) for m in branches[-1].messages]
                 # Tool-less by design: bounce the hallucinated call back with an error result.
                 messages.extend(
                     {

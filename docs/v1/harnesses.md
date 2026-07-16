@@ -20,10 +20,13 @@ class MyHarness(Harness[MyHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     # When the taskset exports a toolset, they are added as MCP. To show that your harness is able to install MCPs, you have to set this flag to true.
     SUPPORTS_MCP = True
-    # The harness's program can consume injected user turns: with a run-supplied user
-    # (`Agent.run(user=...)` / `agent.chat()`), the interception drives a multi-turn
-    # exchange inside one program request
-    SUPPORTS_USER_SIM = True
+    # The task prompt may be a Messages conversation, not just a string. This also
+    # makes the harness multi-turn-capable for free: a chat session
+    # (`agent.chat()`) advances segment by segment, and the
+    # default `Harness.resume` relaunches the program on the accreted conversation
+    # as a Messages prompt. A harness with its own session state overrides
+    # `resume()` with a native continuation instead (codex: `codex exec resume`).
+    SUPPORTS_MESSAGE_PROMPT = True
 
     async def setup(self, runtime: Runtime) -> None:
         # Install the harness in its rollout runtime

@@ -2,9 +2,9 @@
 
 Each turn shows colored squares that map to letters (Red=A, Green=B, ...); the model accumulates
 the codeword across turns and, on the final turn, outputs the whole thing. Turn 0's squares are
-seeded in the task's `prompt` (a `Messages` prompt carrying images); the later turns are
-injected by a scripted user — a closure the env's `rollout()` passes via `user=` — after each
-assistant turn, ending the exchange once every turn is answered. Reward is an exact match of
+seeded in the task's `prompt` (a `Messages` prompt carrying images); the later turns come
+from a scripted user — a closure the env's `rollout()` passes via `user=` — answering each
+assistant turn between segments, ending the exchange once every turn is answered. Reward is an exact match of
 the final codeword; a partial-match metric tracks per-position accuracy. Images carry through
 the v1 message graph as `mm_kwargs` for training.
 """
@@ -119,30 +119,32 @@ class ColorCodewordEnv(vf.Environment):
     async def rollout(self, task, agents):
         colors_per_turn = task.data.info["colors_per_turn"]
         max_turns = task.data.info["max_turns"]
-        turns = 0
-
-        async def reveal(message: str) -> vf.Messages:
-            nonlocal turns
-            turns += 1
-            if turns >= max_turns:
-                return []  # every turn answered — end the exchange
-            colors = colors_per_turn[turns]
-            total = sum(len(colors_per_turn[t]) for t in range(turns + 1))
-            parts = [
-                vf.ImageUrlContentPart(
-                    image_url=vf.ImageUrlSource(
-                        url=image_data_url(
-                            Image.new("RGB", (100, 100), COLOR_RGB[color])
+        # Turn 0's squares ride the task prompt, so the model answers first (a bare
+        # turn()); each later turn reveals its squares as the session's next user
+        # message until every turn is answered.
+        async with agents["solver"].chat(task) as session:
+            reply = await session.turn()
+            for turns in range(1, max_turns):
+                if reply.stopped:
+                    break
+                colors = colors_per_turn[turns]
+                total = sum(len(colors_per_turn[t]) for t in range(turns + 1))
+                parts = [
+                    vf.ImageUrlContentPart(
+                        image_url=vf.ImageUrlSource(
+                            url=image_data_url(
+                                Image.new("RGB", (100, 100), COLOR_RGB[color])
+                            )
                         )
                     )
-                )
-                for color in colors
-            ] + [
-                vf.TextContentPart(text=turn_text(turns, len(colors), max_turns, total))
-            ]
-            return [vf.UserMessage(content=parts)]
-
-        return [await agents["solver"].run(task, user=reveal)]
+                    for color in colors
+                ] + [
+                    vf.TextContentPart(
+                        text=turn_text(turns, len(colors), max_turns, total)
+                    )
+                ]
+                reply = await session.turn([vf.UserMessage(content=parts)])
+        return [session.trace]
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):

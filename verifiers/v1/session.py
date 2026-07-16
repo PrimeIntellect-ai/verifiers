@@ -1,11 +1,10 @@
 """The per-rollout unit the interception layer serves.
 
 One `RolloutSession` per rollout, registered on an interception server under the rollout's
-secret. The rollout constructs it (model ctx, trace, task `@stop`s, limits, the run's
-`user`) and the server drives it: routes each intercepted model call to it, runs
-`refused()` before each turn, injects the user's replies, and stashes the real failure on
-`error`. `RolloutLimits` is the framework's per-rollout budget (turns / tokens), checked
-between turns.
+secret. The rollout constructs it (model ctx, trace, task `@stop`s, limits) and the server
+drives it: routes each intercepted model call to it, runs `refused()` before each turn,
+and stashes the real failure on `error`. `RolloutLimits` is the framework's per-rollout
+budget (turns / tokens), checked between turns.
 """
 
 import asyncio
@@ -16,20 +15,11 @@ from typing import TYPE_CHECKING
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
     from verifiers.v1.errors import RolloutError
 
 logger = logging.getLogger(__name__)
-
-
-Respond = Callable[[str], Awaitable[Messages]]
-"""The user half of a conversation: an async callable from the assistant's latest text to
-the next user `Messages`. Any async function fits — a scripted closure in an env's
-`rollout()`, another agent's live `ChatSession.turn`, a game engine. Returning no messages
-ends the exchange (the trace stops as `user_closed`); for a task with no prompt, an opening
-call with `""` supplies the first user message before the model ever speaks."""
 
 
 @dataclass(frozen=True)
@@ -74,16 +64,6 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    user: Respond | None = None
-    """The run's user, supplied by whoever started the rollout (`Agent.run(user=...)`).
-    When set, each model turn with no tool call is followed by the user's reply, injected
-    as a user turn, and the model is re-prompted — all within one program request,
-    transparently to the harness. The user ends the exchange by returning no messages."""
-    opening: Messages | None = None
-    """Cached opening `user("")` messages for a no-prompt task. Computed once and re-injected on
-    every request until the first turn lands on the trace — so a retried opening request (e.g. the
-    harness SDK retrying a transient model 502, before any turn is recorded) never calls the user
-    twice and advances a scripted user past the opening."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the

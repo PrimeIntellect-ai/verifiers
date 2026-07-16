@@ -73,7 +73,10 @@ async def test_shared_tools_hit_the_mcp_pairing_guard():
 
 
 class NoUserSimHarness(DefaultHarness):
-    SUPPORTS_USER_SIM = False
+    # No Messages prompt and no native resume(): the exchange has no way to advance
+    # past the first segment, so a user can't be hosted (the capability is derived,
+    # not declared).
+    SUPPORTS_MESSAGE_PROMPT = False
 
 
 def _no_user_agent() -> vf.Agent:
@@ -81,31 +84,21 @@ def _no_user_agent() -> vf.Agent:
     return vf.Agent(NoUserSimHarness(DefaultHarnessConfig()), ctx)
 
 
-async def _noop_user(message: str) -> vf.Messages:
-    return []
-
-
-async def test_user_requires_supporting_harness():
-    """`user=` needs a harness whose program consumes injected user turns; the guard
-    fires per run (the channel is run-scoped, not task-scoped) before any I/O."""
-    task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
-    with pytest.raises(ValueError, match="cannot host a user"):
-        await _no_user_agent().run(task, user=_noop_user)
-
-
 async def test_chat_requires_supporting_harness():
+    """chat() needs a harness that can resume an exchange (a Messages prompt for the
+    default relaunch, or a native resume()); the guard fires before any I/O."""
     task = vf.Task(vf.TaskData(idx=0, prompt=None))
     with pytest.raises(ValueError, match="cannot host a user"):
         async with _no_user_agent().chat(task):
             pass
 
 
-async def test_chat_refuses_prompted_task():
-    """chat() opens the conversation itself, so a prompted task is a shape error —
-    its first reply would answer the prompt, not the first `turn()`."""
-    task = vf.Task(vf.TaskData(idx=0, prompt="already opened"))
-    with pytest.raises(ValueError, match="must have no prompt"):
-        async with _agent().chat(task):
+async def test_chat_mask_needs_a_prompt():
+    """mask_prompt hides the task's prompt from the wire; a prompt-less task has
+    nothing to hide and is already caller-opened."""
+    task = vf.Task(vf.TaskData(idx=0, prompt=None))
+    with pytest.raises(ValueError, match="mask_prompt"):
+        async with _agent().chat(task, mask_prompt=True):
             pass
 
 
@@ -115,121 +108,125 @@ def _stub_trace() -> vf.Trace:
     return Trace(task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)))
 
 
-async def test_chat_session_turn_roundtrip(monkeypatch):
-    """The full session protocol against a stubbed run that speaks the interception's
-    user contract: opening ping first (no assistant turn yet), one user call per
-    model turn, empty return ends the exchange. Every turn() round-trips, the trace
-    is live mid-session, and closing the context stops the run as user_closed."""
-    agent = _agent()
-    trace = _stub_trace()
+class _FakeRun:
+    """A `RolloutRun` stand-in speaking the surface `ChatSession` drives: each
+    `step()` pops one scripted action (append an answer, fire a stop, ...) and
+    reports continuability the way the real run does."""
 
-    async def fake_run(task, *, runtime=None, user=None, on_trace=None):
-        on_trace(trace)
-        messages = await user("")  # the opening ping: prompt-less task
-        while True:
-            messages = await user(f"echo: {messages[0].content}")
-            if not messages:
-                trace.stop("user_closed")
-                return trace
+    def __init__(self, trace: vf.Trace, script) -> None:
+        self.trace = trace
+        self._script = list(script)
+        self.closed = False
 
-    monkeypatch.setattr(agent, "run", fake_run)
-    task = vf.Task(vf.TaskData(idx=0, prompt=None))
-    async with agent.chat(task) as session:
-        first = await session.turn("one")
-        assert (first.text, first.stopped) == ("echo: one", False)
-        assert session.trace is trace  # live before close
-        second = await session.turn("two")
-        assert second.text == "echo: two"
+    @property
+    def ok(self) -> bool:
+        return self.trace.stop_condition is None
+
+    async def step(self, messages=None) -> bool:
+        if self.closed or not self.ok:
+            return False
+        turns = self.trace.num_turns
+        if self._script:
+            self._script.pop(0)(self.trace)
+        return self.ok and self.trace.num_turns > turns
+
+    async def close(self) -> vf.Trace:
+        self.closed = True
+        self.trace.is_completed = True
+        return self.trace
+
+
+def _answer(text: str):
+    """A scripted segment that answers: one sampled assistant turn on the trace."""
+    from verifiers.v1.graph import MessageNode
+    from verifiers.v1.types import AssistantMessage
+
+    def act(trace: vf.Trace) -> None:
+        trace.nodes.append(
+            MessageNode(message=AssistantMessage(content=text), sampled=True)
+        )
+
+    return act
+
+
+def _session(script) -> vf.ChatSession:
+    from verifiers.v1.agent import ChatSession
+
+    return ChatSession(_FakeRun(_stub_trace(), script))  # type: ignore[arg-type]
+
+
+async def test_chat_session_turn_roundtrip():
+    """The session protocol over segments: each turn() runs one segment and returns
+    its answer, the trace is live mid-session, and close() stops the exchange as
+    user_closed."""
+    session = _session([_answer("echo: one"), _answer("echo: two")])
+    first = await session.turn("one")
+    assert (first.text, first.stopped) == ("echo: one", False)
+    assert session.trace.num_turns == 1  # live before close
+    second = await session.turn("two")
+    assert second.text == "echo: two"
+    trace = await session.close()
     assert trace.stop_condition == "user_closed"
 
 
-async def test_chat_close_without_turns(monkeypatch):
-    """Leaving the context before any turn() still runs the rollout to a clean end:
-    the opening ping resolves empty (the caller closed) and the run finishes."""
-    agent = _agent()
-    trace = _stub_trace()
-
-    async def fake_run(task, *, runtime=None, user=None, on_trace=None):
-        on_trace(trace)
-        opening = await user("")
-        assert opening == []  # the close resolved the opening: user gone
-        trace.stop("user_closed")
-        return trace
-
-    monkeypatch.setattr(agent, "run", fake_run)
-    async with agent.chat(vf.Task(vf.TaskData(idx=0, prompt=None))):
-        pass
+async def test_chat_close_without_turns():
+    """Closing before any turn() still finishes the rollout cleanly as user_closed."""
+    session = _session([])
+    trace = await session.close()
     assert trace.stop_condition == "user_closed"
+    assert trace.is_completed
 
 
-async def test_chat_run_ending_first_stops_the_session(monkeypatch):
-    """When the run ends on its own (a limit, a @stop, a harness exit), a caller
-    mid-turn() gets the stopped marker instead of hanging, and further turns raise."""
-    agent = _agent()
-    trace = _stub_trace()
-
-    async def fake_run(task, *, runtime=None, user=None, on_trace=None):
-        on_trace(trace)
-        await user("")  # consume the first turn's message...
-        trace.stop("max_turns")  # ...then end without answering (limit refused)
-        return trace
-
-    monkeypatch.setattr(agent, "run", fake_run)
-    async with agent.chat(vf.Task(vf.TaskData(idx=0, prompt=None))) as session:
-        reply = await session.turn("hello?")
-        assert reply.stopped and reply.text == ""
-        with pytest.raises(RuntimeError, match="over"):
-            await session.turn("still there?")
-    assert trace.stop_condition == "max_turns"
+async def test_chat_run_ending_first_stops_the_session():
+    """When the segment ends the run instead of answering (a limit, a @stop), the
+    caller gets the stopped marker, and further turns raise."""
+    session = _session([lambda trace: trace.stop("max_turns")])
+    reply = await session.turn("hello?")
+    assert reply.stopped and reply.text == ""
+    with pytest.raises(RuntimeError, match="over"):
+        await session.turn("still there?")
+    assert session.trace.stop_condition == "max_turns"
 
 
-async def test_chat_run_end_before_turn_still_returns_stopped(monkeypatch):
-    """The run's end has one surface: landing between turns (not mid-turn), the next
-    turn() drains the queued stopped marker instead of racing to a RuntimeError — a
-    seat that fails fast forfeits deterministically (kuhn-poker's ask())."""
-    import asyncio
+async def test_chat_answer_then_stop_delivers_both():
+    """A segment that answers AND ends the exchange (a limit fired after the turn
+    committed) delivers the answer now and the stopped marker on the next turn —
+    an answer is never swallowed by the stop that followed it."""
 
-    agent = _agent()
-    trace = _stub_trace()
+    def answer_then_stop(trace: vf.Trace) -> None:
+        _answer("last words")(trace)
+        trace.stop("max_turns")
 
-    async def fake_run(task, *, runtime=None, user=None, on_trace=None):
-        on_trace(trace)
-        trace.stop("harness_timeout")  # dies before ever consulting the user
-        return trace
-
-    monkeypatch.setattr(agent, "run", fake_run)
-    async with agent.chat(vf.Task(vf.TaskData(idx=0, prompt=None))) as session:
-        while not session._ended:  # let the run land its done-callback first
-            await asyncio.sleep(0)
-        reply = await session.turn("hello?")
-        assert reply.stopped
-        with pytest.raises(RuntimeError, match="over"):
-            await session.turn("anyone?")
-    assert trace.stop_condition == "harness_timeout"
+    session = _session([answer_then_stop])
+    reply = await session.turn("hello?")
+    assert (reply.text, reply.stopped) == ("last words", False)
+    final = await session.turn("more?")
+    assert final.stopped
 
 
-async def test_chat_closed_user_is_idempotent(monkeypatch):
-    """A run that consults its user again after consuming the close sentinel gets []
-    forever instead of hanging on the drained queue."""
-    agent = _agent()
-    trace = _stub_trace()
-
-    async def fake_run(task, *, runtime=None, user=None, on_trace=None):
-        on_trace(trace)
-        assert await user("") == []  # the close resolved the opening...
-        assert await user("one more?") == []  # ...and every consult after it
-        trace.stop("user_closed")
-        return trace
-
-    monkeypatch.setattr(agent, "run", fake_run)
-    async with agent.chat(vf.Task(vf.TaskData(idx=0, prompt=None))):
-        pass
-    assert trace.stop_condition == "user_closed"
+async def test_chat_closed_session_refuses_turns():
+    """close() is idempotent, and a turn() after it is a caller bug, not a hang."""
+    session = _session([_answer("hi")])
+    await session.turn("hello")
+    trace = await session.close()
+    assert trace is await session.close()  # idempotent
+    with pytest.raises(RuntimeError, match="closed"):
+        await session.turn("anyone?")
 
 
-async def test_user_opens_requires_a_user():
-    """`user_opens` hides the prompt so the user can open with it — without a user
-    there is nobody to open the conversation."""
-    task = vf.Task(vf.TaskData(idx=0, prompt="the user's scenario"))
-    with pytest.raises(ValueError, match="user_opens"):
-        await _agent().run(task, user_opens=True)
+async def test_prompted_chat_opens_with_a_bare_turn():
+    """A prompted task speaks first: turn(message) before the opening reply is a
+    shape error, and a bare turn() on an already-open exchange is too."""
+    from verifiers.v1.agent import ChatSession
+    from verifiers.v1.trace import Trace, TraceTask
+
+    trace = Trace(
+        task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="the board"))
+    )
+    session = ChatSession(_FakeRun(trace, [_answer("first move")]))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="bare turn()"):
+        await session.turn("eager reply")
+    first = await session.turn()
+    assert first.text == "first move"
+    with pytest.raises(ValueError, match="nothing to run"):
+        await session.turn()

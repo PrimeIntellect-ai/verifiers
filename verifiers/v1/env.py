@@ -21,7 +21,7 @@ from verifiers.v1.interception import (
     make_interception,
     requires_tunnel,
 )
-from verifiers.v1.session import Respond, RolloutLimits
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.retries import RetryConfig, run_record_with_retry
 from verifiers.v1.runtimes import (
     RuntimeConfig,
@@ -397,8 +397,8 @@ def validate_pairing(
     `Agent.run` (per run, with the concrete task's type and the agent's borrowed
     `shared_tools` servers, against the resolved runtime). Only the collection's
     emptiness matters — declarations and live servers alike mean MCP is in play.
-    (Hosting a user is run-scoped, not task-scoped — `Agent.run` checks
-    `SUPPORTS_USER_SIM` when a `user=` is actually passed.)"""
+    (Hosting a user is run-scoped, not task-scoped — `Agent.run` checks the
+    harness can resume an exchange when a `user=` is actually passed.)"""
     if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
@@ -921,8 +921,6 @@ class _RoleAgent:
         task: Task,
         *,
         runtime: "Runtime | None" = None,
-        user: "Respond | None" = None,
-        user_opens: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         def watch(trace: Trace) -> None:
@@ -933,15 +931,32 @@ class _RoleAgent:
             if on_trace is not None:
                 on_trace(trace)
 
-        trace = await self._agent.run(
-            task, runtime=runtime, user=user, user_opens=user_opens, on_trace=watch
-        )
+        trace = await self._agent.run(task, runtime=runtime, on_trace=watch)
         self._completed.append(trace)
         return trace
 
-    def chat(self, task: Task, *, runtime: "Runtime | None" = None):
-        """`Agent.chat`, but the run underneath is this wrapper's `run` — so a chat
-        driven from `Environment.rollout` still stamps roles and stays crash-safe."""
-        from verifiers.v1.agent import Agent
+    @contextlib.asynccontextmanager
+    async def chat(
+        self,
+        task: Task,
+        *,
+        runtime: "Runtime | None" = None,
+        mask_prompt: bool = False,
+    ):
+        """The agent's `chat`, with every trace stamped (`role`/`trainable`) at mint
+        and captured in `completed` at close — so a chat driven from
+        `Environment.rollout` stays crash-safe."""
 
-        return Agent.chat(self, task, runtime=runtime)  # type: ignore[arg-type]
+        def watch(trace: Trace) -> None:
+            trace.role = self._role
+            trace.trainable = self._trainable
+            if self._on_trace is not None:
+                self._on_trace(trace)
+
+        async with self._agent.chat(
+            task, runtime=runtime, mask_prompt=mask_prompt, on_trace=watch
+        ) as session:
+            try:
+                yield session
+            finally:
+                self._completed.append(session.trace)

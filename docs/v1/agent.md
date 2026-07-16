@@ -40,17 +40,18 @@ Everything beyond the arrow is a parameter, not a concept:
   program a box to place runs into. A different model is a different agent — construct
   another `Agent` (sharing the client, and the interception pool via `interception=`)
   rather than swapping contexts per run.
-- **`user=`** supplies the other half of the conversation: any async `str -> Messages`
-  callable (`vf.Respond`). The interception injects its replies as user turns after each
-  tool-less model turn — a whole multi-turn exchange inside one harness request — and it
-  ends the exchange by returning no messages (the trace stops as `user_closed`). A task
-  with no `prompt` is opened BY the user (it's asked first, before any model call). A
-  scripted user is a plain closure; there is no user-server machinery to declare or place.
-  Needs a harness with `SUPPORTS_USER_SIM` (default / null / direct).
-- **`user_opens=`** says the task's `prompt` is the USER's side of the story — a scenario
-  the user pursues, not the assistant's seed. The run hides the prompt from the harness
-  (the user opens instead), while the task's hooks, rewards, and judges still score the
-  real row. This is how the bundled `user-sim` env runs the assistant on the original task.
+- **the exchange** is `chat()`, the one multi-turn surface: whoever calls `turn()` is the
+  run's user, and each turn runs one harness SEGMENT — the program runs until it yields
+  (exits), the caller answers its final message, and the next segment resumes the
+  exchange with the answer (`Harness.resume`: a relaunch on the accreted conversation by
+  default; codex continues its own recorded session natively). The harness's own tool
+  loop runs entirely inside a segment, so tools and a simulated user compose freely.
+  Needs a harness that can resume (a Messages prompt, or a native `resume()` — default /
+  null / direct / codex).
+- **`chat(mask_prompt=True)`** says the task's `prompt` is the USER's side of the story —
+  a scenario the caller pursues, not the assistant's seed. The wire hides the prompt (the
+  caller opens instead), while the task's hooks, rewards, and judges still score the real
+  row. This is how the bundled `user-sim` env runs the assistant on the original task.
 
 ## chat(): be the user yourself
 
@@ -73,11 +74,16 @@ speak the same channel, "the user is just another agent" — a modeled user is a
 session relayed into another agent's run:
 
 ```python
-async with user_agent.chat(user_task) as sim:      # the modeled user (its own trace!)
-    async def relay(text: str) -> vf.Messages:
-        reply = await sim.turn(text)
-        return [] if reply.stopped else [{"role": "user", "content": reply.text}]
-    trace = await assistant.run(assistant_task, user=relay)
+async with (
+    user_agent.chat(user_task) as sim,             # the modeled user (its own trace!)
+    assistant.chat(task, mask_prompt=True) as helper,
+):
+    ask = await sim.turn("Hello! How can I help you today?")
+    while not ask.stopped:
+        reply = await helper.turn(ask.text)
+        if reply.stopped:
+            break
+        ask = await sim.turn(reply.text)
 ```
 
 Modeled-user runs stay cheap with the in-process `direct` harness

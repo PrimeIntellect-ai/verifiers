@@ -24,11 +24,12 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
 
 @pytest.mark.e2e
 async def test_user(run_v1, harness_runtime, tmp_path):
-    """Multi-turn, driven by a scripted user — a plain closure the env's `rollout()`
-    passes via `user=` — across the harness runtime matrix. The task is prompt-less, so
-    one run covers the whole channel: the opening ping (the user speaks first), the
-    mid-exchange injected user turns, and the empty-return termination (`user_closed`).
-    The user runs in the eval process itself, so there is no placement axis."""
+    """Multi-turn, driven by a scripted user — a chat-session loop in the env's
+    `rollout()` — across the harness runtime matrix. The task is prompt-less, so one
+    run covers the whole exchange shape: the caller opens (the user speaks first),
+    each later turn resumes the harness onto the conversation, and leaving the loop
+    ends the exchange (`user_closed`). The user runs in the eval process itself, so
+    there is no placement axis."""
     (trace,) = await run_v1(
         "echo-user-sim-v1",
         harness="null",
@@ -45,7 +46,7 @@ async def test_user(run_v1, harness_runtime, tmp_path):
 @pytest.mark.e2e
 async def test_chat(live_ctx):
     """Drive an agent turn-by-turn through `agent.chat()` — the caller IS the run's
-    user, over the same channel `user=` uses. Runs on the in-process `direct` harness
+    user. Runs on the in-process `direct` harness
     (its live coverage too): no subprocess, nothing provisioned, yet a real rollout —
     trace, scoring, and the `user_closed` stop all apply."""
     import verifiers.v1 as vf
@@ -375,7 +376,7 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     assert user.trainable is False
     assert user.num_turns >= 1  # the modeled user actually spoke
     assert assistant.metrics["user_turns"] >= 1
-    # `user_opens`: the scenario is hidden from the assistant's harness (the run's
+    # `mask_prompt`: the scenario is hidden from the assistant's harness (the run's
     # visible data) while the task's own rewards still scored the real row — and the
     # record keeps the unmasked task for provenance.
     assert assistant.task.data.prompt is None
@@ -385,6 +386,33 @@ async def test_env_id_user_sim(run_v1, tmp_path):
 
     (record,) = read_records(tmp_path, WireTrace)
     assert record.task.data.prompt is not None
+
+
+@pytest.mark.e2e
+async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
+    """THE tau-bench shape — a tool-using assistant composed with a modeled user.
+    The assistant's MCP tool loop runs entirely inside a harness segment and the
+    user exchange advances between segments, so the two can never race or amputate
+    each other (the failure mode of injecting user turns at the model boundary).
+    Reward 1.0 proves the tool actually ran mid-conversation: its token never
+    appears in any prompt."""
+    traces = await run_v1(
+        "echo-tool-v1",
+        harness="null",
+        env={"id": "user-sim"},
+        output_dir=tmp_path,
+        max_turns=8,
+        rollout_timeout=300,
+    )
+    (assistant,) = [t for t in traces if t.role == "assistant"]
+    (user,) = [t for t in traces if t.role == "user"]
+    assert assistant.errors == [] and user.errors == []
+    assert assistant.task.data.prompt is None  # the scenario stayed off the wire
+    assert user.num_turns >= 1  # the modeled user actually drove the exchange
+    assert assistant.rewards["echoed"] == 1.0  # the tool ran, mid-conversation
+    # The tool was advertised to the masked chat exactly as to any run.
+    assert assistant.tools is not None
+    assert any(tool.name == "echo_back" for tool in assistant.tools)
 
 
 @pytest.mark.e2e

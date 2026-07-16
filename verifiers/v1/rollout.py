@@ -1,27 +1,41 @@
-"""A rollout: one trajectory — drive a harness in a runtime and score its trace.
+"""A rollout: one trajectory — drive a harness segment by segment and score its trace.
 
-`run_rollout` owns a single trajectory end-to-end, including its runtime's lifecycle. It
-makes and starts the runtime (unless handed a live one to borrow — then its creator owns
-start and teardown), gets an interception endpoint (a slot on the shared interception if
-one is given, else a per-rollout server exposed via its own runtime), then drives the
-staged lifecycle while the runtime is live — task + harness setup, the harness run,
-task `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
-timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
-then tears the runtime down in a `finally`. Cross-trace judgement runs afterwards
-(`Environment.score`, over the finished sibling traces alone — it never needs a live
-runtime), so a runtime is never kept up past its own rollout. `Agent.run` is the only
-caller: an agent decides what goes into a rollout, this module runs it.
+A rollout's exchange is a sequence of SEGMENTS: the harness program runs until it
+yields (= exits), the run's user answers its final message, and the next segment
+resumes the exchange with that answer (`Harness.resume` — a relaunch on the accreted
+conversation by default, a native continuation for harnesses with their own session
+state). The user loop lives HERE, between segments, at the exchange's natural turn
+granularity — never inside the model boundary, so a harness's own tool loop can
+never race or amputate it.
+
+`RolloutRun` holds one rollout open across segments — runtime, interception slot,
+and tool servers stay live between `step()`s — with the staged lifecycle around
+them: task + harness setup, the segments, task `finalize`, and per-rollout
+`@reward`/`@metric` scoring, each under its own stage timeout
+(`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`), then
+runtime teardown on `close()`. It makes and starts the runtime (unless handed a
+live one to borrow — then its creator owns start and teardown). Cross-trace
+judgement runs afterwards (`Environment.score`, over the finished sibling traces
+alone), so a runtime is never kept up past its own rollout.
+
+`run_rollout` is the one-call single-segment form. `Agent.chat` holds a
+`RolloutRun` open instead and lets the caller supply each user turn, one `turn()`
+per segment — the ONLY exchange surface: who answers the program (an env's control
+flow, a simulator agent, a game engine, a human) is the caller's business, never
+this module's. `Agent` is the only caller of either: an agent decides what goes
+into a rollout, this module runs it.
 """
 
 import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.dialects import parse_message
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -35,7 +49,7 @@ from verifiers.v1.interception import (
     Slot,
     requires_tunnel,
 )
-from verifiers.v1.session import Respond, RolloutLimits, RolloutSession
+from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -43,10 +57,18 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import TraceTask, Trace
+from verifiers.v1.types import Messages
 
 logger = logging.getLogger(__name__)
+
+
+def _as_messages(raw: Messages) -> Messages:
+    """A user callable may return typed messages or wire dicts (a plain closure
+    naturally writes `{"role": "user", ...}`); the trace speaks typed, so
+    normalize here."""
+    return [parse_message(m) if isinstance(m, dict) else m for m in raw]
 
 
 @asynccontextmanager
@@ -75,6 +97,319 @@ async def _serve_interception(
             yield slot
 
 
+class RolloutRun:
+    """One rollout held open segment by segment.
+
+    `open()` boots the world (runtime, setup, interception, tool servers); each
+    `step()` runs ONE harness segment — a program run to its exit — resuming the
+    exchange with the user turn(s) it's given; `close()` finalizes, scores, and
+    tears the world down, returning the finished trace. Expected `RolloutError`s
+    are captured onto the trace (a bad rollout is data, not a crash): `open` and
+    `step` report continuability as a bool, and `close` always returns the trace.
+
+    `wire_data` is the run's recorded view of the task — what `trace.task.data`
+    says the harness saw (`Agent.chat(mask_prompt=True)` masks the prompt here
+    while the `task` object keeps the full row for its hooks and judges).
+    `runtime` is a
+    live box to run in instead of provisioning one; its creator owns teardown: a
+    borrowed runtime is neither started nor stopped here. `on_trace` observes the
+    run's trace the moment it's minted (before any I/O) — how a caller watches the
+    run live (stage from the trace's timing spans, tokens and turns as the session
+    records them; see `env.RunSlot`)."""
+
+    def __init__(
+        self,
+        *,
+        task: Task,
+        harness: Harness,
+        ctx: ModelContext,
+        runtime_config: RuntimeConfig,
+        wire_data: TaskData | None = None,
+        has_user: bool = False,
+        setup_timeout: float | None = None,
+        harness_timeout: float | None = None,
+        finalize_timeout: float | None = None,
+        scoring_timeout: float | None = None,
+        limits: RolloutLimits | None = None,
+        shared_tools: dict[str, SharedToolServer] | None = None,
+        interception: Interception | None = None,
+        runtime: Runtime | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> None:
+        self.task = task
+        self.harness = harness
+        self.ctx = ctx
+        self.runtime_config = runtime_config
+        self._has_user = has_user
+        self._setup_timeout = setup_timeout
+        self._harness_timeout = harness_timeout
+        self._finalize_timeout = finalize_timeout
+        self._scoring_timeout = scoring_timeout
+        self._shared_tools = shared_tools or {}
+        self._interception = interception
+        self.runtime = runtime
+        self._owns_runtime = runtime is None
+        # The trace carries the DATA (the wire half); behavior stays on the task.
+        self.trace: Trace = Trace(
+            task=TraceTask(
+                type=type(task).__name__,
+                data=task.data if wire_data is None else wire_data,
+            ),
+            state=state_cls(type(task))(),
+            # The resolved sampling this run's calls are made with (role overrides
+            # included) — policy metadata a training consumer reads off the trace.
+            sampling=ctx.sampling,
+        )
+        if on_trace is not None:
+            on_trace(self.trace)
+        self._session = RolloutSession(
+            ctx, self.trace, discover_decorated(task, "stop"), limits or RolloutLimits()
+        )
+        self._stack = AsyncExitStack()
+        self._failed = False
+        self._opened = False
+        self._closed = False
+        self._endpoint: str | None = None
+        self._urls: dict[str, str] = {}
+        self.deadline_at: float | None = None
+        """The exchange's absolute deadline (event-loop clock) from
+        `harness_timeout`, fixed when generation starts; None = unbounded. Segments
+        and user consults both run against it."""
+
+    @property
+    def ok(self) -> bool:
+        """Whether the exchange can continue: nothing failed, nothing stopped it."""
+        return not self._failed and self.trace.stop_condition is None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def fail(self, error: Exception) -> None:
+        """Record `error` as this rollout's outcome (captured onto the trace, the
+        remaining stages skipped) — the run's owner reporting a failure the run
+        itself couldn't see, e.g. its user raising between segments."""
+        if not self._owns_runtime and self.runtime is not None and self.runtime.stopped:
+            # The owner tore the borrowed box down mid-run — a lifetime bug in the
+            # borrowing program, not a property of this rollout's world: raise to
+            # the caller instead of capturing a misattributed error onto the trace.
+            raise ValueError(
+                f"borrowed runtime {self.runtime.name!r} was torn down by its owner "
+                "mid-run; keep the provisioning context open until every run "
+                "placed into the box has completed"
+            ) from error
+        if not isinstance(error, RolloutError):
+            logger.exception("unexpected error in rollout %s", self.trace.id)
+        self._failed = True
+        self.trace.capture_error(error)
+
+    async def open(self) -> bool:
+        """Boot the rollout's world up to the point where segments can run: start
+        (or borrow) the runtime, run task + harness setup, bring up the
+        interception slot and tool servers. Returns whether the exchange can
+        proceed; a setup failure is captured onto the trace."""
+        self._opened = True
+        self.trace.timing.boot.start = time.time()
+        if self._owns_runtime:
+            # Named after the rollout for traceability.
+            self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
+        elif self.runtime.stopped:
+            # A lifetime bug in the borrowing program, not a property of this
+            # rollout's world: raise to the caller instead of capturing onto the trace.
+            raise ValueError(
+                f"borrowed runtime {self.runtime.name!r} was already torn "
+                "down by its owner; keep the provisioning context open for every run "
+                "placed into the box"
+            )
+        runtime = self.runtime
+        self.trace.runtime = runtime.info
+        logger.info(
+            "rollout start: id=%s task=%s harness=%s runtime=%s",
+            self.trace.id,
+            self.task.data.idx,
+            self.harness.config.name,
+            self.runtime_config.type,
+        )
+        try:
+            if self.task.data.prompt is None and not self._has_user:
+                raise TaskError(
+                    "task has no prompt and no user to open the conversation; set "
+                    "task.prompt, or pass user= to Agent.run (or drive the run "
+                    "through agent.chat())"
+                )
+            if self._owns_runtime:
+                await runtime.start()
+            now = time.time()
+            self.trace.timing.boot.end = now
+            self.trace.timing.setup.start = now
+            # Task setup and harness provisioning share one setup-stage deadline.
+            setup_deadline = (
+                None
+                if self._setup_timeout is None
+                else asyncio.get_running_loop().time() + self._setup_timeout
+            )
+            async with (
+                boundary(TaskError, "task setup"),
+                asyncio.timeout_at(setup_deadline),
+            ):
+                await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
+            async with (
+                boundary(HarnessError, "harness setup"),
+                asyncio.timeout_at(setup_deadline),
+            ):
+                await self.harness.setup(runtime)
+            async with boundary(ToolsetError, "building tool servers"):
+                tool_servers = self.task.tool_servers()
+            # `base_url` is the interception server's reachable URL for this rollout.
+            # The harness reaches the model at `{base_url}/v1`; tool servers reach this
+            # rollout's `/state` + `/task` at `base_url` — it's universally reachable
+            # (the interception is exposed whenever any consumer is remote).
+            base_url, secret = await self._stack.enter_async_context(
+                _serve_interception(
+                    self._interception,
+                    runtime,
+                    self._session,
+                    tool_servers,
+                    self._shared_tools,
+                )
+            )
+            self._endpoint = f"{runtime.host_url(base_url)}/v1"
+            self._secret = secret
+            self._urls = await self._stack.enter_async_context(
+                serve_tools(
+                    tool_servers,
+                    runtime,
+                    shared=self._shared_tools,
+                    state_secret=secret,
+                    state_base=base_url,
+                )
+            )
+        except Exception as e:
+            self.fail(e)
+            return False
+        now = time.time()
+        self.trace.timing.setup.end = now
+        self.trace.timing.generation.start = now
+        if self._harness_timeout is not None:
+            self.deadline_at = asyncio.get_running_loop().time() + self._harness_timeout
+        return True
+
+    async def step(self, messages: Messages | None = None) -> bool:
+        """Run ONE segment: the harness program to its exit. With `messages`, the
+        segment resumes the exchange with the user's turn(s) (`Harness.resume` —
+        for an exchange the user opens, this is also the first segment, on an
+        empty conversation); without, it launches on the task's own prompt.
+        Returns whether the exchange can continue — a refused turn (limit, @stop),
+        a timeout, a failure, or a segment that made no progress all end it."""
+        if not self._opened or self._closed or not self.ok:
+            return False
+        trace = self.trace
+        turns_before = trace.num_turns
+        # Prefer an intercepted model/tool error to the harness exit it caused.
+        # A timeout still scores the partial trajectory.
+        try:
+            async with asyncio.timeout_at(self.deadline_at):
+                await self.harness.run(
+                    self.ctx,
+                    trace,
+                    self.runtime,
+                    self._endpoint,
+                    self._secret,
+                    self._urls,
+                    trace.task.data,
+                    messages,
+                )
+        except TimeoutError:
+            trace.stop("harness_timeout")
+            return False
+        except Exception as e:
+            real = self._session.error
+            if real is not None and isinstance(e, RolloutError):
+                real.__cause__ = e
+                self.fail(real)
+            else:
+                self.fail(e)
+            return False
+        if self._session.error is not None:
+            self.fail(self._session.error)
+            return False
+        # A segment that committed nothing can't be waiting on the user; treating
+        # it as continuable would consult the user against a conversation that
+        # never moved, forever.
+        return self.ok and trace.num_turns > turns_before
+
+    async def close(self) -> Trace:
+        """Finish the rollout: tool servers and interception down, task `finalize`
+        and per-rollout scoring (skipped when the run already failed — but a
+        stopped run is a complete one and scores its partial trajectory), then
+        runtime teardown. Idempotent; always returns the trace."""
+        if self._closed:
+            return self.trace
+        self._closed = True
+        trace = self.trace
+        runtime = self.runtime
+        try:
+            try:
+                await self._stack.aclose()
+            finally:
+                if trace.timing.generation.start and not trace.timing.generation.end:
+                    trace.timing.generation.end = time.time()
+            if not self._failed and self._opened:
+                trace.timing.finalize.start = time.time()
+                async with boundary(TaskError, "task finalize"):
+                    await asyncio.wait_for(
+                        invoke(
+                            self.task.finalize, {"trace": trace, "runtime": runtime}
+                        ),
+                        self._finalize_timeout,
+                    )
+                now = time.time()
+                trace.timing.finalize.end = now
+                trace.timing.scoring.start = now
+                async with boundary(TaskError, "scoring"):
+                    # Cross-trace judgement runs later, after the runtime is gone.
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            self.task.score(trace, runtime),
+                            self.harness.score(trace, runtime),
+                        ),
+                        self._scoring_timeout,
+                    )
+                trace.timing.scoring.end = time.time()
+        except Exception as e:
+            self.fail(e)
+        finally:
+            trace.is_completed = True
+            now = time.time()
+            for span in (
+                trace.timing.boot,
+                trace.timing.setup,
+                trace.timing.generation,
+                trace.timing.finalize,
+            ):
+                if span.start and not span.end:
+                    span.end = now
+            # Tear down here — the env's `score()` (later) needs only the traces,
+            # not a live runtime. A borrowed runtime is its creator's to tear down,
+            # not this rollout's.
+            if self._owns_runtime and runtime is not None:
+                try:
+                    await runtime.stop()
+                except Exception:
+                    logger.warning(
+                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
+                    )
+        logger.info(
+            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
+            trace.id,
+            self.task.data.idx,
+            trace.reward,
+            trace.num_turns,
+            trace.error.type if trace.error else trace.stop_condition,
+        )
+        return trace
+
+
 async def run_rollout(
     *,
     task: Task,
@@ -89,199 +424,29 @@ async def run_rollout(
     shared_tools: dict[str, SharedToolServer] | None = None,
     interception: Interception | None = None,
     runtime: Runtime | None = None,
-    user: Respond | None = None,
-    user_opens: bool = False,
     on_trace: Callable[[Trace], None] | None = None,
 ) -> Trace:
-    """Run one rollout and return its trace. Captures expected `RolloutError`s onto
-    the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
-    the runtime is live, then tears the runtime down in a `finally`.
-
-    `runtime` is a live box to run in instead of provisioning one (an agent program
-    placing this run into an existing world — see `verifiers.v1.agent`); its creator
-    owns teardown: a borrowed runtime is neither started nor stopped here. `user` is
-    the run's user half (see `session.Respond`): the interception injects its replies
-    as user turns after each tool-less model turn, and — for a task with no prompt —
-    asks it to open the conversation. `user_opens` says the task's prompt belongs to
-    the USER side (a scenario, not the assistant's seed): the run's visible data
-    hides it — the harness seeds nothing, the user opens — while the task object
-    keeps the full row, so its hooks, rewards, and judges score the real question.
-    `on_trace` observes the run's trace the moment it's minted (before any I/O) —
-    how a caller watches the run live (stage from the trace's timing spans, tokens
-    and turns as the session records them; see `env.RunSlot`)."""
-    if user_opens and user is None:
-        raise ValueError(
-            "user_opens=True needs a user to open the conversation; pass user= "
-            "alongside it"
-        )
-    limits = limits or RolloutLimits()
-    shared_tools = shared_tools or {}
-    # The trace carries the DATA (the wire half); behavior stays on the task.
-    run_data = (
-        task.data.model_copy(update={"prompt": None}) if user_opens else task.data
+    """Run one rollout to completion and return its trace: a single segment — the
+    program runs on the task's prompt until it exits, which completes the trace
+    (`agent_completed`). A multi-turn exchange is a `ChatSession` (`Agent.chat`):
+    the caller — an env's control flow, a user-simulator agent, a game engine, a
+    human — supplies each user turn and the rollout advances one segment per
+    turn over this same machinery."""
+    run = RolloutRun(
+        task=task,
+        harness=harness,
+        ctx=ctx,
+        runtime_config=runtime_config,
+        setup_timeout=setup_timeout,
+        harness_timeout=harness_timeout,
+        finalize_timeout=finalize_timeout,
+        scoring_timeout=scoring_timeout,
+        limits=limits,
+        shared_tools=shared_tools,
+        interception=interception,
+        runtime=runtime,
+        on_trace=on_trace,
     )
-    trace: Trace = Trace(
-        task=TraceTask(type=type(task).__name__, data=run_data),
-        state=state_cls(type(task))(),
-        # The resolved sampling this run's calls are made with (role overrides
-        # included) — policy metadata a training consumer reads off the trace.
-        sampling=ctx.sampling,
-    )
-    if on_trace is not None:
-        on_trace(trace)
-    trace.timing.boot.start = time.time()
-    owns_runtime = runtime is None
-    if owns_runtime:
-        # Named after the rollout for traceability.
-        runtime = make_runtime(runtime_config, name=trace.id)
-    elif runtime.stopped:
-        # A lifetime bug in the borrowing program, not a property of this rollout's
-        # world: raise to the caller instead of capturing onto the trace.
-        raise ValueError(
-            f"borrowed runtime {runtime.name!r} was already torn "
-            "down by its owner; keep the provisioning context open for every run "
-            "placed into the box"
-        )
-    trace.runtime = runtime.info
-    stops = discover_decorated(task, "stop")
-    logger.info(
-        "rollout start: id=%s task=%s harness=%s runtime=%s",
-        trace.id,
-        task.data.idx,
-        harness.config.name,
-        runtime_config.type,
-    )
-    try:
-        session = RolloutSession(ctx, trace, stops, limits, user)
-        if task.data.prompt is None and user is None:
-            raise TaskError(
-                "task has no prompt and no user to open the conversation; set "
-                "task.prompt, or pass user= to Agent.run (or drive the run through "
-                "agent.chat())"
-            )
-        if owns_runtime:
-            await runtime.start()
-        now = time.time()
-        trace.timing.boot.end = now
-        trace.timing.setup.start = now
-        # Task setup and harness provisioning share one setup-stage deadline.
-        setup_deadline = (
-            None
-            if setup_timeout is None
-            else asyncio.get_running_loop().time() + setup_timeout
-        )
-        async with (
-            boundary(TaskError, "task setup"),
-            asyncio.timeout_at(setup_deadline),
-        ):
-            await invoke(task.setup, {"trace": trace, "runtime": runtime})
-        async with (
-            boundary(HarnessError, "harness setup"),
-            asyncio.timeout_at(setup_deadline),
-        ):
-            await harness.setup(runtime)
-        async with boundary(ToolsetError, "building tool servers"):
-            tool_servers = task.tool_servers()
-        # `base_url` is the interception server's reachable URL for this rollout. The
-        # harness reaches the model at `{base_url}/v1`; tool servers reach this
-        # rollout's `/state` + `/task` at `base_url` — it's universally reachable (the
-        # interception is exposed whenever any consumer is remote).
-        async with _serve_interception(
-            interception,
-            runtime,
-            session,
-            tool_servers,
-            shared_tools,
-        ) as (base_url, secret):
-            endpoint = f"{runtime.host_url(base_url)}/v1"
-            async with serve_tools(
-                tool_servers,
-                runtime,
-                shared=shared_tools,
-                state_secret=secret,
-                state_base=base_url,
-            ) as urls:
-                now = time.time()
-                trace.timing.setup.end = now
-                trace.timing.generation.start = now
-                # Prefer an intercepted model/tool/user error to the harness exit it caused.
-                # A timeout still scores the partial trajectory.
-                try:
-                    await asyncio.wait_for(
-                        harness.run(ctx, trace, runtime, endpoint, secret, urls),
-                        harness_timeout,
-                    )
-                except TimeoutError:
-                    trace.stop("harness_timeout")
-                except RolloutError as e:
-                    if session.error is not None:
-                        raise session.error from e
-                    raise
-                else:
-                    if session.error is not None:
-                        raise session.error
-        now = time.time()
-        trace.timing.generation.end = now
-        trace.timing.finalize.start = now
-        async with boundary(TaskError, "task finalize"):
-            await asyncio.wait_for(
-                invoke(task.finalize, {"trace": trace, "runtime": runtime}),
-                finalize_timeout,
-            )
-        now = time.time()
-        trace.timing.finalize.end = now
-        trace.timing.scoring.start = now
-        async with boundary(TaskError, "scoring"):
-            # Group rewards run later, after the runtime is gone.
-            await asyncio.wait_for(
-                asyncio.gather(
-                    task.score(trace, runtime),
-                    harness.score(trace, runtime),
-                ),
-                scoring_timeout,
-            )
-        trace.timing.scoring.end = time.time()
-    except Exception as e:
-        if not owns_runtime and runtime.stopped:
-            # The owner tore the borrowed box down mid-run — the same lifetime bug
-            # as borrowing a stopped runtime, surfaced through the same channel:
-            # raise to the caller (raw failure chained) instead of capturing a
-            # misattributed world error onto the trace.
-            raise ValueError(
-                f"borrowed runtime {runtime.name!r} was torn down by its owner "
-                "mid-run; keep the provisioning context open until every run "
-                "placed into the box has completed"
-            ) from e
-        if not isinstance(e, RolloutError):
-            logger.exception("unexpected error in rollout %s", trace.id)
-        trace.capture_error(e)
-    finally:
-        trace.is_completed = True
-        now = time.time()
-        for span in (
-            trace.timing.boot,
-            trace.timing.setup,
-            trace.timing.generation,
-            trace.timing.finalize,
-        ):
-            if span.start and not span.end:
-                span.end = now
-        # Tear down here — the env's `score()` (later) needs only the traces, not a
-        # live runtime. `runtime` is always set: make_runtime() ran before the `try`.
-        # A borrowed runtime is its creator's to tear down, not this rollout's.
-        if owns_runtime:
-            try:
-                await runtime.stop()
-            except Exception:
-                logger.warning(
-                    "runtime teardown failed (rollout %s)", trace.id, exc_info=True
-                )
-    logger.info(
-        "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
-        trace.id,
-        task.data.idx,
-        trace.reward,
-        trace.num_turns,
-        trace.error.type if trace.error else trace.stop_condition,
-    )
-    return trace
+    if await run.open() and await run.step():
+        run.trace.stop("agent_completed")
+    return await run.close()

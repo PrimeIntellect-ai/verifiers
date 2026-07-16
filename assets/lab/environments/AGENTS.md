@@ -350,33 +350,31 @@ Bundled envs (`verifiers/v1/envs/`):
 | --- | --- | --- |
 | `best-of-n` | `solver` | `--env.n` independent attempts per rollout; `score()` marks the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
 | `judge` | `solver`, `judge` | the solver plays the task; a judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, same registry and format as `taskset.task.judges`) — write your grading criteria once, run them as a bare call or as an agent. Verdict + per-criterion metrics land on the solver's trace; point `--env.judge.harness.id` at a real harness and the judge investigates with tools, `--env.spec.view full_trace` shows it the whole transcript. |
-| `user-sim` | `assistant`, `user` | a modeled user (direct harness, untrainable) opens and drives the conversation from the task's prompt-as-scenario (`--env.persona`); the assistant plays the same task with `user_opens` — the prompt is hidden from its harness while the task's own rewards and judges still score the real row. The substrate for tau-bench-style evals. |
+| `user-sim` | `assistant`, `user` | a modeled user (direct harness, untrainable) opens and drives the conversation from the task's prompt-as-scenario (`--env.persona`); the assistant plays the same task through a masked chat session (`mask_prompt`) — the prompt is hidden from its harness while the task's own rewards and judges still score the real row. The substrate for tau-bench-style evals. |
 
 ### User simulation: the user is just another agent
 
-There is exactly one user-sim mechanism: `user=` on `Agent.run` — any async
-`str -> Messages` callable whose replies the interception injects as user turns
-(returning no messages ends the exchange; a task with no `prompt` is opened by the
-user). Who computes those replies is the env's control flow, not framework machinery:
+There is exactly one exchange mechanism: the chat session (`agents[...].chat(task)`)
+— whoever calls `turn()` is the run's user, and each turn runs one harness segment
+(the program runs until it yields, the caller answers its final message, the next
+segment resumes the exchange with the answer). A prompt-less task is opened by the
+first `turn(message)`; a prompted task speaks first (take its opening reply with a
+bare `turn()`). Who computes the turns is the env's control flow, not framework
+machinery:
 
 ```python
 class SortEnv(vf.Environment):
     async def rollout(self, task, agents):
-        queue = task.data.info["user_turns"]     # a pre-scripted episode
-        i = 0
-
-        async def replay(message: str) -> vf.Messages:
-            nonlocal i
-            if i >= len(queue):
-                return []                        # out of turns — end the exchange
-            i += 1
-            return [vf.UserMessage(content=queue[i - 1])]
-
-        return [await agents["solver"].run(task, user=replay)]
+        # a pre-scripted episode: the task is prompt-less, so the first turn opens
+        async with agents["solver"].chat(task) as session:
+            for prompt in task.data.info["user_turns"]:
+                if (await session.turn(prompt)).stopped:
+                    break                        # a limit or @stop ended the run
+        return [session.trace]
 ```
 
-A *scripted* user is a plain closure like this (a game engine stepping in-process works
+A *scripted* user is a plain loop like this (a game engine stepping in-process works
 the same way — see the bundled `textarena` taskset). A *modeled* user is another agent
-role: open it with `agents["user"].chat(user_task)` and relay its `turn()` replies into
-the assistant's run — see [chat() in the Agent docs](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/agent.md). The user runs in the
-eval process, so there is nothing to declare, place, or serve.
+role: open both sessions and relay their `turn()`s into each other — see the bundled
+`user-sim` env, and [chat() in the Agent docs](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/agent.md). The user runs in the eval
+process, so there is nothing to declare, place, or serve.

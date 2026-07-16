@@ -26,9 +26,7 @@ class StubAgent:
         self.runs = 0
         self.error = error
 
-    async def run(
-        self, task: vf.Task, *, runtime=None, user=None, user_opens=False, on_trace=None
-    ) -> Trace:
+    async def run(self, task: vf.Task, *, runtime=None, on_trace=None) -> Trace:
         self.runs += 1
         trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
         if on_trace is not None:
@@ -290,32 +288,36 @@ def test_env_config_data_keeps_env_params():
 
 
 async def test_role_agent_chat_stamps_roles():
-    """`agents[...].chat()` inside an env rollout rides the wrapper's `run`, so the
-    chat's trace is role-stamped and captured exactly like a plain role run."""
+    """`agents[...].chat()` inside an env rollout delegates to the agent's chat with
+    the wrapper's stamping watch, so the chat's trace is role-stamped at mint and
+    captured exactly like a plain role run."""
+    import contextlib
+
     from verifiers.v1.env import _RoleAgent
 
     class ChatStubAgent(StubAgent):
-        """Speaks the interception's user contract: opening ping, echo turns,
-        empty return ends."""
+        """Yields a stub session speaking the segment contract: each turn() echoes,
+        the trace is minted (and watched) at entry, closing stops it user_closed."""
 
-        SUPPORTS = True
-
-        def _check_user_support(self):
-            pass
-
-        async def run(
-            self, task, *, runtime=None, user=None, user_opens=False, on_trace=None
-        ):
+        @contextlib.asynccontextmanager
+        async def chat(self, task, *, runtime=None, mask_prompt=False, on_trace=None):
             self.runs += 1
             trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
             if on_trace is not None:
                 on_trace(trace)
-            messages = await user("")  # opening: prompt-less chat task
-            while messages:
-                messages = await user(f"echo: {messages[0].content}")
-            trace.stop("user_closed")
-            trace.is_completed = True
-            return trace
+
+            class _Session:
+                def __init__(self) -> None:
+                    self.trace = trace
+
+                async def turn(self, message: str) -> vf.Reply:
+                    return vf.Reply(text=f"echo: {message}")
+
+            try:
+                yield _Session()
+            finally:
+                trace.stop("user_closed")
+                trace.is_completed = True
 
     completed: list[Trace] = []
     live: list[Trace] = []

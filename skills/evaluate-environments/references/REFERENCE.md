@@ -435,7 +435,7 @@ value in the run's `TimeoutConfig` wins; otherwise the corresponding row value i
 | `idx` | `int` | — | Stable integer index within the taskset. Used for selection, grouping, display, and reproducibility. |
 | `name` | `str \| None` | `None` | Optional human-readable label used in logs and dashboards. |
 | `description` | `str \| None` | `None` | Optional human-readable description. |
-| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` means the run's user opens the conversation (`Agent.run(user=...)` / `agent.chat()` — the env's control flow supplies it). |
+| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` means the caller opens the conversation (`agent.chat()` — the env's control flow supplies each turn). |
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
@@ -506,7 +506,7 @@ else the taskset id) so everything renders typed in `-h`.
 | *(env-declared)* | — | — | An env subclass declares roles as `vf.AgentConfig` fields (`--env.<role>.model`, `--env.<role>.harness.id`, `--env.<role>.trainable`, per-role `max_*` caps) plus plain knobs (`--env.n`, `--env.rubric`, ...). Partial role overrides deep-merge into the role's declared defaults. |
 
 User simulation has no server or placement config: the run's user is a callable the env's
-control flow supplies (`user=` / `agent.chat()`); see the `user-sim` bundled env.
+control flow supplies (`agent.chat()`); see the `user-sim` bundled env.
 
 ---
 

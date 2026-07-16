@@ -104,7 +104,6 @@ from verifiers.v1.mcp import (
     SharedToolsetConfig,
     ToolsetConfig,
 )
-from verifiers.v1.session import Respond
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
@@ -273,7 +272,6 @@ __all__ = [
     "SharedToolsetConfig",
     "ToolsetConfig",
     # the user channel
-    "Respond",
     "ChatSession",
     "Reply",
 ]

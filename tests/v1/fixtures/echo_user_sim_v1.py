@@ -39,17 +39,13 @@ class EchoUserSimEnv(vf.Environment):
     """Scripts the user side: opens with the first phrase, follows with the rest."""
 
     async def rollout(self, task, agents):
-        phrases = task.data.phrases
-        sent = 0
-
-        async def script(message: str) -> vf.Messages:
-            nonlocal sent
-            if sent == len(phrases):
-                return []  # out of phrases — end the exchange
-            sent += 1
-            return [vf.UserMessage(content=phrases[sent - 1])]
-
-        return [await agents["solver"].run(task, user=script)]
+        # A chat session scripting the user: the task carries no prompt, so the
+        # first turn opens the conversation.
+        async with agents["solver"].chat(task) as session:
+            for phrase in task.data.phrases:
+                if (await session.turn(phrase)).stopped:
+                    break
+        return [session.trace]
 
 
 class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):

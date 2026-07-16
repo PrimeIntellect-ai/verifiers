@@ -39,7 +39,7 @@ Use the naming convention `<env>.x86.<task>:latest` for the image name (e.g. `ab
 Before starting with the implementation, think about the following things:
 - What is the dataset about, which fields does it have?
 - Does it come with custom tools that are strictly necessary and not added by common harnesses? For example, a lot of harnesses come with bash or web search tools, which makes custom tools obsolete. Always prefer harnesses over custom tools
-- Is the conversation driven by a user (scripted turns, a game engine, a modeled user)? That is env control flow (`user=` / `agent.chat()`), not a server.
+- Is the conversation driven by a user (scripted turns, a game engine, a modeled user)? That is env control flow (a chat-session loop in `rollout()`), not a server.
 - Does one rollout involve more than one agent run (attempts, a judge, game players)? Then the package also exports an `Environment` subclass — or an existing bundled env (`--env.id best-of-n|judge|user-sim`) already covers it.
 - Which rewards are needed for scoring? What additional metrics might be nice to have, either for debugging, training or potentially in the future?
 - How should the tasks be scored, is a judge needed?
@@ -187,12 +187,12 @@ Choose placement from the tool's lifetime and filesystem needs:
 
 ## User simulation
 
-There is one mechanism: `user=` on `Agent.run` — any async `str -> vf.Messages` callable whose replies are injected as user turns (returning no messages ends the exchange; a task with no `prompt` is opened by the user). There is no user server to declare or place; who computes the replies is env control flow:
+There is one mechanism: the chat session — `agents[...].chat(task)` in the env's `rollout()`; whoever calls `turn()` is the run's user, one harness segment per turn (the program yields, the caller answers, the next segment resumes the exchange with the answer). A prompt-less task is opened by the first `turn(message)`; a prompted task speaks first (bare `turn()`); `chat(mask_prompt=True)` hides a scenario prompt from the wire while the task still scores the real row. There is no user server to declare or place; who computes the turns is env control flow:
 
 - **Scripted user** (replay pre-generated turns, step a game engine): a plain closure inside an `Environment.rollout()` override — see `environments/alphabet_sort_v1` or the bundled `textarena` taskset.
 - **Modeled user** (an LLM playing the user): another agent role, driven live via `agents["user"].chat(...)` and relayed into the assistant's run — or just use the bundled `user-sim` env (`--env.id user-sim`), which does exactly this from the task's prompt-as-scenario.
 
-The harness running the *assistant* must support injected user turns (`SUPPORTS_USER_SIM`): `default`, `null`, and the in-process `direct` harness do; most CLI-agent harnesses don't.
+The harness running the *assistant* must be able to resume an exchange: a Messages prompt (`SUPPORTS_MESSAGE_PROMPT`) covers the default relaunch-on-the-conversation (`default`, `null`, the in-process `direct`), and a harness with its own session state overrides `resume()` natively (`codex`).
 
 ## Multi-agent environments
 
@@ -231,7 +231,7 @@ Map concepts directly:
 | `Rubric` reward function | Task `@vf.reward` method |
 | Parser object | Ordinary parsing inside task scoring |
 | `ToolEnv` tools | `vf.Toolset` declared on `Task.tools` or `Taskset.tools` |
-| `MultiTurnEnv.env_response` | a user closure the env's `rollout()` passes via `user=` |
+| `MultiTurnEnv.env_response` | a chat-session loop in the env's `rollout()` |
 | Dict state | Typed `vf.State` |
 | Sandbox subclass | Runtime config + task hooks |
 

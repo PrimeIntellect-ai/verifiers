@@ -15,6 +15,7 @@ from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
+from verifiers.v1.task import TaskData
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +129,9 @@ class PiHarness(Harness[PiHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task.data)
+        system_prompt, prompt = self.resolve_prompt(data)
 
         agent_dir = f"{PI_DIR}/agent-{trace.id}"
         image_args: list[str] = []

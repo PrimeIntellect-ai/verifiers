@@ -130,7 +130,7 @@ def test_legacy_bridge_run_rollout_wraps_a_record():
 
 def test_prompt_less_record_round_trips(tmp_path):
     """The wire drops `None`s, so a prompt-less task's row must still read back
-    (chat-driven runs, `user_opens` masking, prompt-less tasksets all write them)."""
+    (chat-driven runs, `mask_prompt` masking, prompt-less tasksets all write them)."""
     trace = Trace(task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)))
     write_record(tmp_path, RolloutRecord.of(trace, env="demo-v1"))
     (loaded,) = read_records(tmp_path, WireTrace)

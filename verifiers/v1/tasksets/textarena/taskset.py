@@ -71,17 +71,19 @@ class TextArenaEnv(vf.Environment[TextArenaParams]):
         game = ta.make(env_id=task.data.info["game"])
         game.reset(num_players=1)
         outcome: dict = {}
-
-        async def engine(move: str) -> vf.Messages:
-            game.step(move)
-            if game.state.done:
-                outcome["reward"] = float((game.state.rewards or {}).get(0, 0.0))
-                outcome["reason"] = str(game.state.game_info[0]["reason"])
-                return []  # game over — end the exchange
-            _, observation = game.get_observation()
-            return [vf.UserMessage(content=_latest_feedback(str(observation)))]
-
-        trace = await agents["player"].run(task, user=engine)
+        # The seeded board is the task prompt, so the model moves first (a bare
+        # turn()); the engine steps host-side and answers with each observation.
+        async with agents["player"].chat(task) as session:
+            reply = await session.turn()
+            while not reply.stopped:
+                game.step(reply.text)
+                if game.state.done:
+                    outcome["reward"] = float((game.state.rewards or {}).get(0, 0.0))
+                    outcome["reason"] = str(game.state.game_info[0]["reason"])
+                    break  # game over — end the exchange
+                _, observation = game.get_observation()
+                reply = await session.turn(_latest_feedback(str(observation)))
+        trace = session.trace
         trace.record_reward("game_reward", outcome.get("reward", 0.0), 1.0)
         if "reason" in outcome:
             trace.info["game_outcome"] = outcome["reason"]

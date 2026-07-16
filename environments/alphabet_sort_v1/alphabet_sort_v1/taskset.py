@@ -9,9 +9,9 @@ ground truth, power-scaled.
 The whole conversation is driven by a scripted user: the env's `rollout()` replays the
 episode's pre-generated `user_turns` through `user=` — a plain closure. The task carries no
 prompt (`prompt=None`), so the closure also opens the conversation with the initial sort
-prompt — before the model is ever called — and then injects each follow-up after the
-assistant turn; when the turns run out it returns no messages, which ends the exchange. The
-episode is one rollout the harness only ever sees as a single exchange. The taskset is
+prompt — before the model is ever called — and then supplies each follow-up between
+segments (the assistant yields, the closure answers, the exchange resumes); when the turns
+run out it returns no messages, which ends the exchange. The taskset is
 `INFINITE`: `load` generates episodes on demand, forever — each pass over the source name
 lists draws fresh turn splits, so the stream never repeats; runs bound it with `-n`.
 """
@@ -101,17 +101,13 @@ class AlphabetSortEnv(vf.Environment):
     """Replays each episode's pre-generated user turns as the run's user."""
 
     async def rollout(self, task, agents):
-        queue = task.data.info["user_turns"]
-        i = 0
-
-        async def replay(message: str) -> vf.Messages:
-            nonlocal i
-            if i >= len(queue):
-                return []  # out of turns — end the exchange
-            i += 1
-            return [vf.UserMessage(content=queue[i - 1])]
-
-        return [await agents["solver"].run(task, user=replay)]
+        # A chat session replaying the pre-generated episode: the task carries no
+        # prompt, so the first turn opens the conversation with the initial sort.
+        async with agents["solver"].chat(task) as session:
+            for prompt in task.data.info["user_turns"]:
+                if (await session.turn(prompt)).stopped:
+                    break
+        return [session.trace]
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):

@@ -3,8 +3,8 @@
 The generic two-sided conversation (`--env.id user-sim` over any taskset) — the
 substrate a tau2-style benchmark builds on. The taskset's row is read as the USER's
 side of the world: its prompt text becomes the scenario in the user's system prompt
-(`--env.persona`), and the assistant plays the same task with `user_opens` — the
-prompt is hidden from its harness, so it learns the user's goal only through
+(`--env.persona`), and the assistant plays the same task with a masked prompt — it
+is hidden from its harness, so it learns the user's goal only through
 conversation (its own instructions stay in `system_prompt`), while the task's
 rewards and judges still score the real row. The user role rides the in-process `direct` harness by default
 (`trainable=False`), opens the conversation, and ends it with the done marker; the
@@ -65,26 +65,27 @@ class UserSimEnv(vf.Environment[UserSimParams]):
                 ).replace("{done}", self.params.done_marker),
             )
         )
-        async with agents["user"].chat(user_task) as sim:
-
-            async def relay(text: str) -> vf.Messages:
-                # The assistant's opening ping is empty (the user opens); seed the
-                # user-model with a neutral greeting instead — the tau convention:
-                # the assistant "answers the phone", the user states the goal. The
-                # greeting exists only on the user's side. A run-away exchange ends
-                # through the user role's own `max_turns` (the reply comes back
-                # `stopped`), not a separate counter.
-                reply = await sim.turn(text or "Hello! How can I help you today?")
-                if reply.stopped or self.params.done_marker in reply.text:
-                    return []
-                return [vf.UserMessage(content=reply.text)]
-
-            # The assistant plays the SAME task with `user_opens`: the scenario is
-            # the user's knowledge, so the harness seeds nothing and the user opens —
-            # while the task's hooks, rewards, and plugged judges still score the
-            # real row (they read the task object, not the run's masked view).
-            trace = await agents["assistant"].run(task, user=relay, user_opens=True)
-        return [trace, sim.trace]
+        # Two sessions, relayed: the user is just another agent, and the env is
+        # the control flow between them. The assistant plays the SAME task with a
+        # masked prompt: the scenario is the user's knowledge, so the wire seeds
+        # nothing and the user opens — while the task's hooks, rewards, and plugged
+        # judges still score the real row (they read the task object, not the
+        # run's masked view).
+        async with (
+            agents["user"].chat(user_task) as sim,
+            agents["assistant"].chat(task, mask_prompt=True) as assistant,
+        ):
+            # The tau convention: the assistant "answers the phone", the user
+            # states the goal. The greeting exists only on the user's side. A
+            # run-away exchange ends through the user role's own `max_turns`
+            # (its reply comes back `stopped`), not a separate counter.
+            ask = await sim.turn("Hello! How can I help you today?")
+            while not ask.stopped and self.params.done_marker not in ask.text:
+                reply = await assistant.turn(ask.text)
+                if reply.stopped:
+                    break
+                ask = await sim.turn(reply.text)
+        return [assistant.trace, sim.trace]
 
     async def score(self, task, traces):
         assistant, user = traces
