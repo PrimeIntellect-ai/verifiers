@@ -42,9 +42,8 @@ class WorldTask(vf.Task):
 async def main() -> None:
     agent = vf.Agent(
         MiniSWEAgentHarness(MiniSWEAgentHarnessConfig(id="mini-swe-agent")),
-        vf.ModelContext(
-            model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
-        ),
+        "z-ai/glm-5.2",
+        vf.resolve_client(vf.EvalClientConfig()),
         vf.PrimeConfig(labels=["agent-programs-demo"]),
         timeout=vf.TimeoutConfig(rollout=420, scoring=60),  # scoring runs agent code
     )

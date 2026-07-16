@@ -8,10 +8,11 @@ from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
 
 async def main() -> None:
-    ctx = vf.ModelContext(
-        model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
+    solver = vf.Agent(
+        DefaultHarness(DefaultHarnessConfig()),
+        "z-ai/glm-5.2",
+        vf.resolve_client(vf.EvalClientConfig()),
     )
-    solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), ctx)
     task = vf.Task(
         vf.TaskData(idx=0, prompt="What is 2+2? Answer with just the number.")
     )

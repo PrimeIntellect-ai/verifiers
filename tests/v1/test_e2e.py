@@ -52,7 +52,12 @@ async def test_chat(live_ctx):
     import verifiers.v1 as vf
     from verifiers.v1.harnesses.direct import DirectHarness, DirectHarnessConfig
 
-    agent = vf.Agent(DirectHarness(DirectHarnessConfig()), live_ctx)
+    agent = vf.Agent(
+        DirectHarness(DirectHarnessConfig()),
+        live_ctx.model,
+        live_ctx.client,
+        sampling=live_ctx.sampling,
+    )
     task = vf.Task(
         vf.TaskData(
             idx=0,
