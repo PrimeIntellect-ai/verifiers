@@ -79,8 +79,11 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         ]
         if system_prompt:
             argv += ["--append-system-prompt", system_prompt]
-        if self.config.disabled_tools:
-            argv += ["--disallowedTools", *self.config.disabled_tools]
+        argv += [
+            arg
+            for tool in self.config.disabled_tools or []
+            for arg in ("--disallowedTools", tool)
+        ]
         mcp = {
             "mcpServers": {
                 name: {"type": "http", "url": url} for name, url in mcp_urls.items()
