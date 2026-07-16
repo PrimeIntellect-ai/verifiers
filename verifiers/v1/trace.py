@@ -218,6 +218,16 @@ TRACE_VERSION = 1
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
 
+class RunInfo(StrictBaseModel):
+    """The run this trace belongs to, stamped by the consumer (eval CLI / trainer)."""
+
+    id: str | None = None
+    """The producing run: the eval CLI stamps its run uuid (a resumed eval counts as
+    a new run; kept traces keep their original id), trainers stamp their own."""
+    type: Literal["train", "eval"] | None = None
+    """What the rollout was for."""
+
+
 class VersionInfo(StrictBaseModel):
     """The verifiers build that produced this trace."""
 
@@ -266,12 +276,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     verifiers: VersionInfo | None = None
     """The verifiers build that produced this trace, stamped at rollout start —
     replayed/re-read traces keep the build that originally produced them."""
-    run_id: str | None = None
-    """The producing run, stamped by the consumer: the eval CLI stamps its run uuid
-    (a resumed eval counts as a new run; kept traces keep their original id),
-    trainers stamp their own run identifier."""
-    tag: Literal["train", "eval"] | None = None
-    """What the rollout was for, stamped by the consumer (eval CLI / trainer)."""
+    run: RunInfo | None = None
+    """The run this trace belongs to (id + train/eval type), consumer-stamped."""
     step: int | None = None
     """The training step this rollout belongs to, stamped by the trainer."""
     agent: AgentInfo | None = None
@@ -460,16 +466,19 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         self,
         *,
         run_id: str | None = None,
-        tag: Literal["train", "eval"] | None = None,
+        run_type: Literal["train", "eval"] | None = None,
         step: int | None = None,
         **info: Any,
     ) -> None:
         """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the
         trace; anything beyond the first-class fields lands in `info`."""
-        if run_id is not None:
-            self.run_id = run_id
-        if tag is not None:
-            self.tag = tag
+        if run_id is not None or run_type is not None:
+            run = self.run or RunInfo()
+            if run_id is not None:
+                run.id = run_id
+            if run_type is not None:
+                run.type = run_type
+            self.run = run
         if step is not None:
             self.step = step
         self.info.update(info)
