@@ -35,13 +35,13 @@ from verifiers.v1.interception import (
     Slot,
     requires_tunnel,
 )
-from verifiers.v1.session import RolloutLimits, RolloutSession
+from verifiers.v1.session import Respond, RolloutLimits, RolloutSession
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     make_runtime,
 )
-from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
+from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import TraceTask, Trace
@@ -89,6 +89,7 @@ async def run_rollout(
     shared_tools: dict[str, SharedToolServer] | None = None,
     interception: Interception | None = None,
     runtime: Runtime | None = None,
+    user: Respond | None = None,
     on_trace: Callable[[Trace], None] | None = None,
 ) -> Trace:
     """Run one rollout and return its trace. Captures expected `RolloutError`s onto
@@ -97,10 +98,13 @@ async def run_rollout(
 
     `runtime` is a live box to run in instead of provisioning one (an agent program
     placing this run into an existing world — see `verifiers.v1.agent`); its creator
-    owns teardown: a borrowed runtime is neither started nor stopped here. `on_trace`
-    observes the run's trace the moment it's minted (before any I/O) — how a caller
-    watches the run live (stage from the trace's timing spans, tokens and turns as the
-    session records them; see `env.RunSlot`)."""
+    owns teardown: a borrowed runtime is neither started nor stopped here. `user` is
+    the run's user half (see `session.Respond`): the interception injects its replies
+    as user turns after each tool-less model turn, and — for a task with no prompt —
+    asks it to open the conversation. `on_trace` observes the run's trace the moment
+    it's minted (before any I/O) — how a caller watches the run live (stage from the
+    trace's timing spans, tokens and turns as the session records them; see
+    `env.RunSlot`)."""
     limits = limits or RolloutLimits()
     shared_tools = shared_tools or {}
     # The trace carries the DATA (the wire half); behavior stays on the task.
@@ -133,7 +137,13 @@ async def run_rollout(
         runtime_config.type,
     )
     try:
-        session = RolloutSession(ctx, trace, stops, limits)
+        session = RolloutSession(ctx, trace, stops, limits, user)
+        if task.data.prompt is None and user is None:
+            raise TaskError(
+                "task has no prompt and no user to open the conversation; set "
+                "task.prompt, or pass user= to Agent.run (or drive the run through "
+                "agent.chat())"
+            )
         if owns_runtime:
             await runtime.start()
         now = time.time()
@@ -157,40 +167,25 @@ async def run_rollout(
             await harness.setup(runtime)
         async with boundary(ToolsetError, "building tool servers"):
             tool_servers = task.tool_servers()
-        user = task.user_server()
         # `base_url` is the interception server's reachable URL for this rollout. The
-        # harness reaches the model at `{base_url}/v1`; tool/user servers reach this
+        # harness reaches the model at `{base_url}/v1`; tool servers reach this
         # rollout's `/state` + `/task` at `base_url` — it's universally reachable (the
         # interception is exposed whenever any consumer is remote).
         async with _serve_interception(
             interception,
             runtime,
             session,
-            [*tool_servers, *([user] if user else [])],
+            tool_servers,
             shared_tools,
         ) as (base_url, secret):
             endpoint = f"{runtime.host_url(base_url)}/v1"
-            async with (
-                serve_tools(
-                    tool_servers,
-                    runtime,
-                    shared=shared_tools,
-                    state_secret=secret,
-                    state_base=base_url,
-                ) as urls,
-                serve_user(
-                    user,
-                    harness_runtime=runtime,
-                    state_secret=secret,
-                    state_base=base_url,
-                ) as session.user,
-            ):
-                if task.data.prompt is None and session.user is None:
-                    raise TaskError(
-                        "task has no prompt and no user simulator to open the "
-                        "conversation; set task.prompt or declare a simulator "
-                        "class on Task.user"
-                    )
+            async with serve_tools(
+                tool_servers,
+                runtime,
+                shared=shared_tools,
+                state_secret=secret,
+                state_base=base_url,
+            ) as urls:
                 now = time.time()
                 trace.timing.setup.end = now
                 trace.timing.generation.start = now

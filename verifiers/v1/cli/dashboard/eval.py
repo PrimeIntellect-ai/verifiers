@@ -151,7 +151,7 @@ def overrides(
     field's declared default. Not `model_fields_set`: a `--resume` run reloads its config via
     `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
     `model_fields_set` would flag them all. `default` is the reference instance, threaded through
-    recursion so a pinned nested default (`taskset.task.user`) reads as
+    recursion so a pinned nested default (`taskset.task.tools`) reads as
     unchanged. `skip` holds dotted paths (`harness.runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
@@ -206,7 +206,7 @@ def Overview(config: EvalConfig) -> Table:
     # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
     # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
     # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
-    # here), but only for the harness — `taskset.task.user.runtime.type` has no other display.
+    # here), but only for the harness — `taskset.task.tools.runtime.type` has no other display.
     if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
     if harness_over := overrides(

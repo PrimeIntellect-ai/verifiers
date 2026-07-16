@@ -4,7 +4,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent
+from verifiers.v1.agent import Agent, ChatSession, Reply
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -101,9 +101,8 @@ from verifiers.v1.mcp import (
     Toolset,
     SharedToolsetConfig,
     ToolsetConfig,
-    User,
-    UserConfig,
 )
+from verifiers.v1.session import Respond
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
@@ -269,9 +268,10 @@ __all__ = [
     "Toolset",
     "SharedToolsetConfig",
     "ToolsetConfig",
-    # user simulator
-    "User",
-    "UserConfig",
+    # the user channel
+    "Respond",
+    "ChatSession",
+    "Reply",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

@@ -26,7 +26,9 @@ class StubAgent:
         self.runs = 0
         self.error = error
 
-    async def run(self, task: vf.Task, *, runtime=None, on_trace=None) -> Trace:
+    async def run(
+        self, task: vf.Task, *, runtime=None, user=None, on_trace=None
+    ) -> Trace:
         self.runs += 1
         trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
         if on_trace is not None:
@@ -260,3 +262,48 @@ def test_env_config_data_keeps_env_params():
     assert isinstance(rebuilt.env, vf.env_params_type("duet-v1"))
     assert rebuilt.env.a.max_turns == 3
     assert rebuilt.env.a.harness.id == "null"  # the fixture's pin rode the wire
+
+
+async def test_role_agent_chat_stamps_roles():
+    """`agents[...].chat()` inside an env rollout rides the wrapper's `run`, so the
+    chat's trace is role-stamped and captured exactly like a plain role run."""
+    from verifiers.v1.env import _RoleAgent
+
+    class ChatStubAgent(StubAgent):
+        """Speaks the interception's user contract: opening ping, echo turns,
+        empty return ends."""
+
+        SUPPORTS = True
+
+        def _check_user_support(self):
+            pass
+
+        async def run(self, task, *, runtime=None, user=None, on_trace=None):
+            self.runs += 1
+            trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
+            if on_trace is not None:
+                on_trace(trace)
+            messages = await user("")  # opening: prompt-less chat task
+            while messages:
+                messages = await user(f"echo: {messages[0].content}")
+            trace.stop("user_closed")
+            trace.is_completed = True
+            return trace
+
+    completed: list[Trace] = []
+    live: list[Trace] = []
+    wrapper = _RoleAgent(
+        ChatStubAgent(),  # type: ignore[arg-type]
+        role="user_sim",
+        trainable=False,
+        completed=completed,
+        on_trace=live.append,
+    )
+    task = vf.Task(vf.TaskData(idx=0, prompt=None))
+    async with wrapper.chat(task) as session:
+        reply = await session.turn("hi")
+        assert reply.text == "echo: hi"
+        # stamped the moment the run minted it, mid-exchange
+        assert live and live[0].role == "user_sim" and live[0].trainable is False
+    assert completed == [session.trace]
+    assert session.trace.stop_condition == "user_closed"

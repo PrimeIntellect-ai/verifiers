@@ -56,7 +56,7 @@ class ToolsetError(RolloutError):
 
 
 class UserError(RolloutError):
-    """A task's `User` simulator could not be served, or its `respond` raised."""
+    """The run's user callable (`Agent.run(user=...)`) raised."""
 
 
 class SandboxError(RolloutError):

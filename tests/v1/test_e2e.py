@@ -21,32 +21,53 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
-    """Multi-turn, driven by a (container-safe) `vf.User` simulator, across the full matrix of the
-    user's runtime (`user_runtime`: colocated in the harness's runtime, or its own runtime) x the
-    harness `runtime`. Either way the framework drives the user and must reach it from wherever the
-    harness runs."""
-    # A user sim in a prime sandbox — its own, or colocated in a prime harness — must be reached by
-    # the host framework via prime port exposure, whose URL isn't reachable from the host here
-    # (region=us doesn't help). Skip until it is.
-    user_rt = user_runtime.get("runtime", {}).get("type")
-    if user_rt == "prime" or (
-        user_runtime.get("colocated") and harness_runtime == "prime"
-    ):
-        pytest.skip(
-            "user sim in a prime sandbox needs prime port exposure (unreachable from host here)"
-        )
+async def test_user(run_v1, harness_runtime, tmp_path):
+    """Multi-turn, driven by a scripted user — a plain closure the env's `rollout()`
+    passes via `user=` — across the harness runtime matrix. The task is prompt-less, so
+    one run covers the whole channel: the opening ping (the user speaks first), the
+    mid-exchange injected user turns, and the empty-return termination (`user_closed`).
+    The user runs in the eval process itself, so there is no placement axis."""
     (trace,) = await run_v1(
         "echo-user-sim-v1",
         harness="null",
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=6,
-        taskset_overrides={"task": {"user": user_runtime}},
     )
     assert trace.errors == []
     assert trace.num_turns >= 2  # genuinely multi-turn
+    assert trace.stop_condition == "user_closed"  # the closure's empty return ended it
     assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+async def test_chat(live_ctx):
+    """Drive an agent turn-by-turn through `agent.chat()` — the caller IS the run's
+    user, over the same channel `user=` uses. Runs on the in-process `direct` harness
+    (its live coverage too): no subprocess, nothing provisioned, yet a real rollout —
+    trace, scoring, and the `user_closed` stop all apply."""
+    import verifiers.v1 as vf
+    from verifiers.v1.harnesses.direct import DirectHarness, DirectHarnessConfig
+
+    agent = vf.Agent(DirectHarness(DirectHarnessConfig()), live_ctx)
+    task = vf.Task(
+        vf.TaskData(
+            idx=0,
+            prompt=None,  # chat opens the conversation
+            system_prompt="Repeat the user's message back exactly, no extra words.",
+        )
+    )
+    async with agent.chat(task) as session:
+        first = await session.turn("hello world")
+        assert not first.stopped
+        assert "hello world" in first.text.lower()
+        second = await session.turn("goodbye world")
+        assert not second.stopped
+        assert "goodbye world" in second.text.lower()
+    trace = session.trace
+    assert trace is not None and trace.errors == []
+    assert trace.stop_condition == "user_closed"  # closing the chat ended the run
+    assert trace.num_turns == 2
 
 
 @pytest.mark.e2e

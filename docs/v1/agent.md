@@ -32,14 +32,53 @@ Everything beyond the arrow is a parameter, not a concept:
 - **judgement rides on the task.** A `Task` subclass's hooks (`setup` / `finalize`) and
   signals (`@reward` / `@metric`) run exactly as in an eval; a plain base
   `vf.Task(data)` has neither, so the run is unscored — a pure `Task -> Trace` arrow.
-  Impossible pairings are refused up front, exactly as in an eval: a task whose tools or
-  user simulator the harness doesn't drive, or a `NEEDS_CONTAINER` task on the
+  Impossible pairings are refused up front, exactly as in an eval: a task whose tools the
+  harness doesn't drive, or a `NEEDS_CONTAINER` task on the
   subprocess runtime.
 - **`runtime=`** places the run into a live box (borrowed — the run neither starts nor
   tears it down) instead of provisioning a fresh one. `agent.provision(task)` hands the
   program a box to place runs into. A different model is a different agent — construct
   another `Agent` (sharing the client, and the interception pool via `interception=`)
   rather than swapping contexts per run.
+- **`user=`** supplies the other half of the conversation: any async `str -> Messages`
+  callable (`vf.Respond`). The interception injects its replies as user turns after each
+  tool-less model turn — a whole multi-turn exchange inside one harness request — and it
+  ends the exchange by returning no messages (the trace stops as `user_closed`). A task
+  with no `prompt` is opened BY the user (it's asked first, before any model call). A
+  scripted user is a plain closure; there is no user-server machinery to declare or place.
+  Needs a harness with `SUPPORTS_USER_SIM` (default / null / direct).
+
+## chat(): be the user yourself
+
+`agent.chat(task)` is the caller side of the same channel — a full run of the task where
+YOU (or another agent's program) supply each user turn live:
+
+```python
+async with agent.chat(task) as session:          # task has no prompt: chat opens it
+    reply = await session.turn("hello there")    # one user message -> one vf.Reply
+    if not reply.stopped:
+        followup = await session.turn(f"you said: {reply.text}")
+    print(session.trace.num_turns)               # the trace is live mid-exchange
+# leaving the context ends the exchange (user_closed) and finishes the run:
+# hooks and scoring included — session.trace is the final, scored trace
+```
+
+`turn()` returns a `vf.Reply` (`text`, `stopped`); a `stopped` reply means the run ended
+(a limit, a `@stop`, the harness finishing) instead of answering. And because both sides
+speak the same channel, "the user is just another agent" — a modeled user is a chat
+session relayed into another agent's run:
+
+```python
+async with user_agent.chat(user_task) as sim:      # the modeled user (its own trace!)
+    async def relay(text: str) -> vf.Messages:
+        reply = await sim.turn(text)
+        return [] if reply.stopped else [{"role": "user", "content": reply.text}]
+    trace = await assistant.run(assistant_task, user=relay)
+```
+
+Modeled-user runs stay cheap with the in-process `direct` harness
+(`--harness.id direct`): no subprocess, no runtime work — the rollout is essentially
+just the model calls.
 
 Interception follows the same borrowing story as runtimes: pass a live, already-entered
 `Interception` at construction (`vf.Agent(..., interception=pool)`) and several agents

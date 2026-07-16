@@ -8,7 +8,7 @@ from pydantic_config import cli
 from verifiers.v1.configs.init import InitConfig
 
 USAGE = (
-    "usage: uv run init <name> [--path ./environments] [-T/--add-tool] [-U/--add-user] "
+    "usage: uv run init <name> [--path ./environments] [-T/--add-tool] "
     "[-H/--add-harness] [--v0]\n"
     "       scaffold a new v1 environment package (use --v0 for a legacy v0 environment)"
 )
@@ -62,33 +62,20 @@ def _init_py(pkg: str, prefix: str, add_harness: bool) -> str:
     return "\n".join(lines) + f"\n\n__all__ = [{exports_repr}]\n"
 
 
-def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str:
+def _taskset_py(pkg: str, prefix: str, *, add_tool: bool) -> str:
     imports = "import verifiers.v1 as vf"
     local_imports: list[str] = []
     task_config_fields = ""
     task_decls = ""
-    task_methods: list[str] = []
     state = "vf.State"
     if add_tool:
         local_imports.append(f"from {pkg}.servers.tool import {prefix}Toolset")
         task_config_fields += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
         task_decls += f"\n    tools = ({prefix}Toolset,)"
-    if add_user:
-        local_imports.append(
-            f"from {pkg}.servers.user import {prefix}State, {prefix}User"
-        )
-        task_config_fields += "\n    user: vf.UserConfig = vf.UserConfig()"
-        task_decls += f"\n    user = {prefix}User"
-        state = f"{prefix}State"
-        task_methods.append(
-            "    @vf.stop\n"
-            "    async def user_done(self, trace: vf.Trace) -> bool:\n"
-            "        return trace.state.done"
-        )
     if local_imports:
         imports += "\n\n" + "\n".join(local_imports)
-    methods_block = "".join(f"\n{m}\n" for m in task_methods)
-    has_task_config = add_tool or add_user
+    methods_block = ""
+    has_task_config = add_tool
     task_config = (
         f"\n\nclass {prefix}TaskConfig(vf.TaskConfig):\n"
         '    """Knobs the task reads from ``self.config``; configure them under '
@@ -153,28 +140,6 @@ if __name__ == "__main__":
 '''
 
 
-def _user_py(prefix: str) -> str:
-    return f"""\
-import verifiers.v1 as vf
-
-
-class {prefix}State(vf.State):
-    done: bool = False
-
-
-class {prefix}User(vf.User[vf.UserConfig, {prefix}State]):
-    async def respond(self, message: str) -> vf.Messages:
-        if self.state.done:
-            return []
-        self.state.done = True
-        return [vf.UserMessage(content="Thanks - anything else?")]
-
-
-if __name__ == "__main__":
-    {prefix}User.run()
-"""
-
-
 def _harness_py(prefix: str) -> str:
     return f'''\
 import verifiers.v1 as vf
@@ -203,9 +168,7 @@ class {prefix}Harness(vf.Harness[{prefix}HarnessConfig]):
 '''
 
 
-def _readme(
-    dash: str, pkg: str, *, add_tool: bool, add_user: bool, add_harness: bool
-) -> str:
+def _readme(dash: str, pkg: str, *, add_tool: bool, add_harness: bool) -> str:
     layout = [
         f"- `{pkg}/taskset.py` — the task (`@reward` scoring + behavior) and the taskset: "
         "`load` (data + prompts)."
@@ -213,10 +176,6 @@ def _readme(
     if add_tool:
         layout.append(
             f"- `{pkg}/servers/tool.py` — a `vf.Toolset` tool server, declared on `Task.tools`."
-        )
-    if add_user:
-        layout.append(
-            f"- `{pkg}/servers/user.py` — a `vf.User` simulator, declared on `Task.user`."
         )
     if add_harness:
         layout.append(
@@ -259,13 +218,7 @@ def scaffold(config: InitConfig) -> Path:
     _write(env_dir / "pyproject.toml", _pyproject(dash, pkg), config.force)
     _write(
         env_dir / "README.md",
-        _readme(
-            dash,
-            pkg,
-            add_tool=config.add_tool,
-            add_user=config.add_user,
-            add_harness=config.add_harness,
-        ),
+        _readme(dash, pkg, add_tool=config.add_tool, add_harness=config.add_harness),
         config.force,
     )
     _write(
@@ -273,17 +226,14 @@ def scaffold(config: InitConfig) -> Path:
     )
     _write(
         pkg_dir / "taskset.py",
-        _taskset_py(pkg, prefix, add_tool=config.add_tool, add_user=config.add_user),
+        _taskset_py(pkg, prefix, add_tool=config.add_tool),
         config.force,
     )
     if config.add_harness:
         _write(pkg_dir / "harness.py", _harness_py(prefix), config.force)
-    if config.add_tool or config.add_user:
-        _write(pkg_dir / "servers" / "__init__.py", "", config.force)
     if config.add_tool:
+        _write(pkg_dir / "servers" / "__init__.py", "", config.force)
         _write(pkg_dir / "servers" / "tool.py", _tool_py(stem, prefix), config.force)
-    if config.add_user:
-        _write(pkg_dir / "servers" / "user.py", _user_py(prefix), config.force)
 
     print(f"\ndone. next:\n  uv pip install -e {env_dir}\n  uv run eval {dash} -n 3")
     return env_dir
@@ -305,7 +255,7 @@ def main(argv: list[str] | None = None) -> None:
     if not config.name:
         raise SystemExit(USAGE)
     if config.v0:
-        if config.add_tool or config.add_user or config.add_harness:
+        if config.add_tool or config.add_harness:
             raise SystemExit(
                 "--add-* flags are v1-only and can't be combined with --v0"
             )

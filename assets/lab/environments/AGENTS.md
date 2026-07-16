@@ -16,8 +16,6 @@ There are optional flags:
 - `-p`, `--path <dir>` — parent directory, default: `./environments`
 - `-T`, `--add-tool` — also scaffold a `vf.Toolset` tool server at `servers/tool.py`
   - Use this option to create custom tools which are installed into the harnesses via MCP. However, not all harnesses support external tools.
-- `-U`, `--add-user` — also scaffold a `vf.User` simulator at `servers/user.py`
-  - Use this when you need to simulate a user interacting with the main LLM. However, not all harnesses support user simulation.
 - `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--harness.id <name>`
   - In general, you should build your environments so that any of the built-in harnesses work. There are few reasons to build a custom harness.
 
@@ -300,3 +298,32 @@ class DebateEnv(vf.Environment[DebateParams]):
 For the single-agent case none of this is visible: the base `roles()` is one `"main"`
 seat driven by `--harness.*`, `rollout()` is `[await agents["main"].run(task)]`, and
 the record wraps exactly one unstamped trace.
+
+### User simulation: the user is just another agent
+
+There is exactly one user-sim mechanism: `user=` on `Agent.run` — any async
+`str -> Messages` callable whose replies the interception injects as user turns
+(returning no messages ends the exchange; a task with no `prompt` is opened by the
+user). Who computes those replies is the env's control flow, not framework machinery:
+
+```python
+class SortEnv(vf.Environment):
+    async def rollout(self, task, agents):
+        queue = task.data.info["user_turns"]     # a pre-scripted episode
+        i = 0
+
+        async def replay(message: str) -> vf.Messages:
+            nonlocal i
+            if i >= len(queue):
+                return []                        # out of turns — end the exchange
+            i += 1
+            return [{"role": "user", "content": queue[i - 1]}]
+
+        return [await agents["main"].run(task, user=replay)]
+```
+
+A *scripted* user is a plain closure like this (a game engine stepping in-process works
+the same way — see the bundled `textarena` taskset). A *modeled* user is another agent
+role: open it with `agents["user"].chat(user_task)` and relay its `turn()` replies into
+the assistant's run — see [chat() in the Agent docs](agent.md). The user runs in the
+eval process, so there is nothing to declare, place, or serve.

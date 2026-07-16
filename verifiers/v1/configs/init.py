@@ -11,8 +11,6 @@ class InitConfig(BaseConfig):
     """Parent directory the package is created in (default `./environments`)."""
     add_tool: bool = Field(False, validation_alias=AliasChoices("add_tool", "T"))
     """Also scaffold a `vf.Toolset` declared on the task (`-T`)."""
-    add_user: bool = Field(False, validation_alias=AliasChoices("add_user", "U"))
-    """Also scaffold a `vf.User` declared on the task (`-U`)."""
     add_harness: bool = Field(False, validation_alias=AliasChoices("add_harness", "H"))
     """Also scaffold a custom `vf.Harness` (`harness.py`), selectable via `--harness.id <name>` (`-H`)."""
     v0: bool = False

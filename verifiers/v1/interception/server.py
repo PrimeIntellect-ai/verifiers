@@ -11,12 +11,14 @@ own secret (the bearer token the harness already sends), and the server routes b
 secret to the right session. So N rollouts need one server (and, behind a remote runtime,
 one tunnel) per pool member rather than one each — see `interception.pool`.
 
-When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
-after each model turn it injects the simulator's reply as a user turn and re-prompts the
-model, so a multi-turn exchange plays out within one program request, transparently to the
-harness. When the row carries no prompt (`TaskData.prompt is None`), the simulator also
-opens the conversation: its first turn is seeded before the model is ever called. Tools are
-handled out-of-band (run by the harness).
+When a rollout carries a user (`Agent.run(user=...)` — a scripted closure, another agent's
+chat session, any async `str -> Messages`), the session also drives it: after each tool-less
+model turn it injects the user's reply as a user turn and re-prompts the model, so a
+multi-turn exchange plays out within one program request, transparently to the harness. When
+the row carries no prompt (`TaskData.prompt is None`), the user also opens the conversation:
+its first messages are seeded before the model is ever called. The user ends the exchange by
+returning no messages (the trace stops as `user_closed`). Tools are handled out-of-band (run
+by the harness).
 """
 
 import asyncio
@@ -32,7 +34,7 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
-from verifiers.v1.dialects import DIALECTS, Dialect
+from verifiers.v1.dialects import DIALECTS, Dialect, parse_message
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
@@ -70,6 +72,13 @@ def _completion_response(completion: dict | None) -> web.Response:
     except PydanticSerializationError:
         return web.json_response(completion)
     return web.Response(body=body, content_type="application/json", charset="utf-8")
+
+
+def _as_messages(raw: Messages) -> Messages:
+    """A user callable may return typed messages or wire dicts (a plain closure
+    naturally writes `{"role": "user", ...}`); the graph and `dialect.extend` speak
+    typed, so normalize here."""
+    return [parse_message(m) if isinstance(m, dict) else m for m in raw]
 
 
 async def _queue_chunks(
@@ -235,31 +244,47 @@ class InterceptionServer(Interception):
         )
         # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
         # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
-        # A user simulator extends both each turn (`dialect.extend` for wire, `prompt` for trace).
+        # A user extends both each turn (`dialect.extend` for wire, `prompt` for trace).
         prompt: Messages
         # `tools` is recorded onto the trace only when a turn commits (below / in `_stream`):
         # the request is ground truth for what the model saw, but a refused or failed request
         # was never seen at all.
         prompt, tools = dialect.parse_request(body)
-        # Cache the opening so retries do not advance the simulator twice.
+        # Cache the opening so retries do not advance a scripted user twice.
         if (
             session.user is not None
             and session.trace.task.data.prompt is None
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
-                session.opening = await session.user("")
+                try:
+                    session.opening = _as_messages(await session.user(""))
+                except RolloutError as e:
+                    return self._fail(session, dialect, e)
+                except Exception as e:
+                    return self._fail(
+                        session,
+                        dialect,
+                        UserError(f"user failed: {type(e).__name__}: {e}"),
+                    )
+            if not session.opening:
+                # The user closed at the open: there is no conversation to have.
+                # Refuse the first model call to halt the harness (same shape as a
+                # refused turn below).
+                if session.trace.stop_condition is None:
+                    session.trace.stop("user_closed")
+                return web.json_response(
+                    dialect.error_body("rollout stopped: user_closed"), status=400
+                )
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
-            # If the simulator ended at the open (its task's `@stop` now fires), the loop's
-            # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt, tools)
         headers = request.headers.copy()
-        # A user simulator turns one program request into a multi-turn exchange: after each
-        # model turn the simulator's reply is injected as a user turn and the model is
-        # re-prompted, so a whole game plays out here and only the final assistant message
-        # returns to the (simulator-unaware) program. Without a simulator the loop runs once.
+        # A user turns one program request into a multi-turn exchange: after each model
+        # turn the user's reply is injected as a user turn and the model is re-prompted,
+        # so a whole game plays out here and only the final assistant message returns to
+        # the (user-unaware) program. Without a user the loop runs once.
         completion: dict | None = (
             None  # the latest turn's response, returned to the program
         )
@@ -275,8 +300,8 @@ class InterceptionServer(Interception):
                     TaskError(f"@stop failed: {type(e).__name__}: {e}"),
                 )
             if refused is not None:
-                # Refuse the first model call to halt the harness; once a simulated
-                # conversation is under way, just end it and return the last turn cleanly.
+                # Refuse the first model call to halt the harness; once a user-driven
+                # exchange is under way, just end it and return the last turn cleanly.
                 if completion is None:
                     return web.json_response(
                         dialect.error_body(f"rollout stopped: {refused}"), status=400
@@ -344,28 +369,35 @@ class InterceptionServer(Interception):
                 # tool calls need).
                 session.trace.tools = tools
             # Hand back to the program when the model wants a tool (the program runs it) or
-            # when there's no user simulator to keep the conversation going.
+            # when there's no user to keep the conversation going.
             if response.message.tool_calls or session.user is None:
                 return _completion_response(completion)
             try:
-                user_messages = await session.user(response.message.content or "")
+                user_messages = _as_messages(
+                    await session.user(response.message.content or "")
+                )
             except RolloutError as e:
                 return self._fail(session, dialect, e)
             except Exception as e:
                 return self._fail(
                     session,
                     dialect,
-                    UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                    UserError(f"user failed: {type(e).__name__}: {e}"),
                 )
-            # Inject the model turn + the simulator's user turn(s): into the wire request for the
-            # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
-            # survives) and into the typed prompt for the trace. The simulator ends the trajectory
-            # through its task's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
-            # caught by `refused()` at the top of the next iteration — the interception server holds
-            # no opinion about the state's contents.
+            if not user_messages:
+                # The user ended the exchange: hand the harness the final turn. (A task
+                # `@stop` reading `self.state` still works — it names the stop at the
+                # top of the next iteration before the user is ever consulted — but
+                # returning no messages is the one contract every user shape shares.)
+                if session.trace.stop_condition is None:
+                    session.trace.stop("user_closed")
+                return _completion_response(completion)
+            # Inject the model turn + the user turn(s): into the wire request for the
+            # next model call (`dialect.extend`, which keeps the model turn verbatim so
+            # reasoning survives) and into the typed prompt for the trace.
             body = dialect.extend(body, completion, user_messages)
             prompt = [*prompt, response.message, *user_messages]
-            # The simulator changed the payload, so this is a new operation rather than a retry.
+            # The user changed the payload, so this is a new operation rather than a retry.
             headers.popall("idempotency-key", None)
             headers.popall("x-idempotency-key", None)
 
@@ -380,7 +412,7 @@ class InterceptionServer(Interception):
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace. Single-shot — a streamed
-        turn never drives a user simulator (the only client that streams is the eval relay)."""
+        turn never drives a user (the only client that streams is the eval relay)."""
         try:
             refused = await session.refused()
         except RolloutError as e:

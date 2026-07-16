@@ -21,7 +21,7 @@ from verifiers.v1.interception import (
     make_interception,
     requires_tunnel,
 )
-from verifiers.v1.session import RolloutLimits
+from verifiers.v1.session import Respond, RolloutLimits
 from verifiers.v1.retries import RetryConfig, run_record_with_retry
 from verifiers.v1.runtimes import (
     RuntimeConfig,
@@ -338,25 +338,21 @@ def validate_pairing(
     shared_tools: Collection = (),
 ) -> None:
     """Reject an impossible harness/task/runtime combination before any work happens.
-    Every check reads class-level facts (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`,
-    plus whatever shared MCP the caller brings), so a failure here holds for
+    Every check reads class-level facts (`Task.tools` / `NEEDS_CONTAINER`, plus
+    whatever shared MCP the caller brings), so a failure here holds for
     every row the task class can carry. Shared by `Environment` (once, at init, with the
     task type read off the `Taskset[TaskT, ...]` generic and the taskset's declared
     `tools` — on the env server it fails worker startup instead of every request) and
     `Agent.run` (per run, with the concrete task's type and the agent's borrowed
     `shared_tools` servers, against the resolved runtime). Only the collection's
-    emptiness matters — declarations and live servers alike mean MCP is in play."""
+    emptiness matters — declarations and live servers alike mean MCP is in play.
+    (Hosting a user is run-scoped, not task-scoped — `Agent.run` checks
+    `SUPPORTS_USER_SIM` when a `user=` is actually passed.)"""
     if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
             f"{task_cls.__name__} exposes tool servers (MCP). Run it with a harness that "
             f"supports MCP (e.g. --harness.id default), or use tasks without tools."
-        )
-    if not harness.SUPPORTS_USER_SIM and task_cls.user is not None:
-        raise ValueError(
-            f"Harness {harness.config.id!r} does not drive a user simulator, but "
-            f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
-            f"supports user simulation (e.g. --harness.id default), or use tasks without one."
         )
     if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
         raise ValueError(
@@ -755,16 +751,16 @@ class Environment(Generic[ParamsT]):
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: the role
-        runtimes (by config), the live `shared` servers, and the task class's tool/user
+        runtimes (by config), the live `shared` servers, and the task class's tool
         servers — read class-level (like `validate_pairing`) with their configs resolved
         the way `Task.server_config` resolves them. A task that *overrides* that pairing
         isn't statically knowable, so it conservatively counts as remote (the tunnel then
         reaches everything; a wrongly-assumed localhost would reach nothing remote)."""
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
-        server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
+        server_classes = [*task_cls.tools]
         if server_classes and task_cls.server_config is not Task.server_config:
             return True
-        sole = len({*task_cls.tools} | ({task_cls.user} - {None})) == 1
+        sole = len({*task_cls.tools}) == 1
         configs = [
             resolve_server_config(
                 task_cls.__name__, self.taskset.config.task, server_cls, sole=sole
@@ -812,6 +808,7 @@ class _RoleAgent:
         task: Task,
         *,
         runtime: "Runtime | None" = None,
+        user: "Respond | None" = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         def watch(trace: Trace) -> None:
@@ -822,6 +819,13 @@ class _RoleAgent:
             if on_trace is not None:
                 on_trace(trace)
 
-        trace = await self._agent.run(task, runtime=runtime, on_trace=watch)
+        trace = await self._agent.run(task, runtime=runtime, user=user, on_trace=watch)
         self._completed.append(trace)
         return trace
+
+    def chat(self, task: Task, *, runtime: "Runtime | None" = None):
+        """`Agent.chat`, but the run underneath is this wrapper's `run` — so a chat
+        driven from `Environment.rollout` still stamps roles and stays crash-safe."""
+        from verifiers.v1.agent import Agent
+
+        return Agent.chat(self, task, runtime=runtime)  # type: ignore[arg-type]

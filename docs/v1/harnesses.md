@@ -1,6 +1,6 @@
 # Harnesses
 
-verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled default harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
+verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled default harness, the minimal tool-less `null` harness, and the in-process `direct` harness (a chat loop inside the eval process itself — nothing to provision, ideal for judge agents and modeled users). However, you may want to build a custom one or extend the selection of third‑party harnesses.
 
 ## A minimal harness implementation
 
@@ -20,7 +20,9 @@ class MyHarness(Harness[MyHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     # When the taskset exports a toolset, they are added as MCP. To show that your harness is able to install MCPs, you have to set this flag to true.
     SUPPORTS_MCP = True
-    # Allow the task to simulate a user and thus drive the execution of the harness
+    # The harness's program can consume injected user turns: with a run-supplied user
+    # (`Agent.run(user=...)` / `agent.chat()`), the interception drives a multi-turn
+    # exchange inside one program request
     SUPPORTS_USER_SIM = True
 
     async def setup(self, runtime: Runtime) -> None:

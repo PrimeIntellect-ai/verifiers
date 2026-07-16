@@ -11,6 +11,11 @@ rollout and returns its `Trace`. Everything else is a parameter, not a concept:
   - judgement: the task carries it. A `Task` subclass's hooks (`setup`/`finalize`)
     and signals (`@reward`/`@metric`) run as in any eval; a plain base `Task` has
     no-op hooks and no signals, so the run is unscored — a pure `Task -> Trace` arrow.
+  - the user: `user=` supplies the other half of the conversation — any async
+    `str -> Messages` callable (see `session.Respond`), injected as user turns by the
+    interception. A scripted user is a plain closure; a *modeled* user is another
+    agent, driven live through `agent.chat(task)` — the caller side of the same
+    channel, one `turn()` per user message.
   - chaining: plain functions. Mint the next task's `TaskData` from earlier traces
     (stamp `sources`/`relation` for lineage) and hand it to the next agent.
 
@@ -26,9 +31,11 @@ typed error attribution, token-true trace capture). The Agent only decides what 
 the rollout.
 """
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import AsyncIterator
 
 from verifiers.v1.clients import (
@@ -51,9 +58,10 @@ from verifiers.v1.runtimes import (
     make_runtime,
     runtime_is_local,
 )
-from verifiers.v1.session import RolloutLimits
+from verifiers.v1.session import Respond, RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Messages, UserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +91,83 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
             runtime.name,
             box_image,
         )
+
+
+@dataclass(frozen=True)
+class Reply:
+    """One assistant turn, as `ChatSession.turn` returns it. `stopped` marks the
+    exchange over — the run ended (a limit, a `@stop`, or the harness finishing)
+    instead of producing another turn; a stopped `Reply` carries no text (the last
+    real turn was already delivered), and the session's `trace` holds the full
+    exchange."""
+
+    text: str
+    stopped: bool = False
+
+
+class ChatSession:
+    """An agent's run, held open turn-by-turn: the caller IS the run's user.
+
+    `agent.chat(task)` starts the run in the background wired to this session;
+    `await session.turn("...")` sends one user message and returns the assistant's
+    `Reply`. The first `turn()` opens the conversation (chat tasks carry no prompt).
+    One consumer at a time — `turn()` is a strict request/response alternation, not a
+    mailbox. `session.trace` is live from the moment the run mints it: watch tokens
+    and turns mid-exchange, read rewards after close. Leaving the `chat()` context
+    closes the session: the run is told the user is gone (the exchange stops as
+    `user_closed`), then awaited to completion — hooks and scoring included."""
+
+    def __init__(self) -> None:
+        self._to_caller: asyncio.Queue[Reply] = asyncio.Queue()
+        self._from_caller: asyncio.Queue[Messages] = asyncio.Queue()
+        self._opened = False
+        self._ended = False
+        self._closed = False
+        self._run: asyncio.Task[Trace] | None = None
+        self.trace: Trace | None = None
+
+    async def _respond(self, content: str) -> Messages:
+        """The run-side half (the `Respond` handed to `run(user=...)`): deliver the
+        assistant's turn to the caller, then wait for the caller's next message. The
+        first call is the opening ping (chat tasks have no prompt), which has no
+        assistant turn to deliver — it only waits for the first `turn()`."""
+        if self._opened:
+            self._to_caller.put_nowait(Reply(text=content))
+        self._opened = True
+        return await self._from_caller.get()
+
+    def _watch(self, trace: Trace) -> None:
+        self.trace = trace
+
+    def _on_run_done(self, _task: asyncio.Task) -> None:
+        # Whatever ended the run (limit, @stop, harness exit, error), a caller mid-
+        # `turn()` must wake up: hand it the stopped marker.
+        self._ended = True
+        self._to_caller.put_nowait(Reply(text="", stopped=True))
+
+    async def turn(self, message: str) -> Reply:
+        """Send one user message; return the assistant's `Reply`. A `stopped` reply
+        means the run ended instead of answering (the message went unconsumed)."""
+        if self._closed:
+            raise RuntimeError("this chat is closed")
+        if self._ended:
+            raise RuntimeError(
+                "the exchange is over (the run ended); read session.trace"
+            )
+        self._from_caller.put_nowait([UserMessage(content=message)])
+        return await self._to_caller.get()
+
+    async def close(self) -> Trace:
+        """End the exchange and run the rollout to completion (idempotent): the run's
+        pending user wait resolves empty (`user_closed`), then the finished — scored —
+        trace returns (also on `session.trace`)."""
+        if self._run is None:
+            raise RuntimeError("session was never started; use agent.chat(task)")
+        if not self._closed:
+            self._closed = True
+            # Resolve the run's pending (or next) user wait: no messages = user closed.
+            self._from_caller.put_nowait([])
+        return await self._run
 
 
 class Agent:
@@ -171,19 +256,26 @@ class Agent:
         if self._pool is None:
             return None
         if self._pool.requires_tunnel or (
-            run_is_local
-            and not self.shared_tools
-            and not type(task).tools
-            and type(task).user is None
+            run_is_local and not self.shared_tools and not type(task).tools
         ):
             return self._pool
         return None
+
+    def _check_user_support(self) -> None:
+        if not self.harness.SUPPORTS_USER_SIM:
+            raise ValueError(
+                f"Harness {self.harness.config.id!r} cannot host a user: its program "
+                "doesn't consume injected user turns (SUPPORTS_USER_SIM). Use a "
+                "harness that does (e.g. default, null, or the in-process direct "
+                "harness)."
+            )
 
     async def run(
         self,
         task: Task,
         *,
         runtime: Runtime | None = None,
+        user: Respond | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace.
@@ -191,9 +283,16 @@ class Agent:
         The task carries its own judgement (its hooks + `@reward`/`@metric` run as in
         any eval); a plain base `Task` makes the run unscored. `runtime` places the run
         into a live box (borrowed — not started or torn down here) instead of
-        provisioning a fresh one from the agent's runtime policy. `on_trace` observes
-        the run's trace the moment it's minted (before any I/O) — how a caller watches
-        the run live (the eval dashboard reads stage, tokens, and turns off it)."""
+        provisioning a fresh one from the agent's runtime policy. `user` supplies the
+        other half of the conversation (any async `str -> Messages`; see
+        `session.Respond`): the interception injects its replies as user turns after
+        each tool-less model turn, and it ends the exchange by returning no messages —
+        for a prompt-less task it also opens the conversation. To BE the user
+        yourself, live, use `chat()` instead. `on_trace` observes the run's trace the
+        moment it's minted (before any I/O) — how a caller watches the run live (the
+        eval dashboard reads stage, tokens, and turns off it)."""
+        if user is not None:
+            self._check_user_support()
         if runtime is not None:
             _check_borrowed_placement(task, runtime)
             runtime_config = runtime.config
@@ -244,6 +343,7 @@ class Agent:
             shared_tools=self.shared_tools,
             interception=self._interception_for(run_is_local, task),
             runtime=runtime,
+            user=user,
             on_trace=on_trace,
         )
         # Who produced this trace — so a program's traces stay attributable after the
@@ -258,6 +358,40 @@ class Agent:
             },
         }
         return trace
+
+    @asynccontextmanager
+    async def chat(
+        self, task: Task, *, runtime: Runtime | None = None
+    ) -> AsyncIterator[ChatSession]:
+        """Converse with this agent turn-by-turn: a full `run` of `task` where YOU are
+        the user. Yields a `ChatSession` — `await session.turn("...")` sends one user
+        message and returns the assistant's `Reply`; the first `turn()` opens the
+        conversation, so the task must carry no prompt (put fixed context in
+        `task.data.system_prompt`; a prompted task takes `run(user=...)` instead).
+        Everything is a real rollout — the trace (live on `session.trace`), limits,
+        `@stop`s, and scoring all apply; leaving the context ends the exchange
+        (`user_closed`) and finishes the run, hooks and scoring included. Wire two
+        sessions' `turn`s together and two agents converse; hand `session.turn`-shaped
+        callables around and 'the user is just another agent'."""
+        self._check_user_support()
+        if task.data.prompt is not None:
+            raise ValueError(
+                "chat() opens the conversation itself (the first turn() is the "
+                "opening user message), so the task must have no prompt; put fixed "
+                "context in task.system_prompt, or run a prompted task with "
+                "run(user=...)"
+            )
+        session = ChatSession()
+        session._run = asyncio.create_task(
+            self.run(
+                task, runtime=runtime, user=session._respond, on_trace=session._watch
+            )
+        )
+        session._run.add_done_callback(session._on_run_done)
+        try:
+            yield session
+        finally:
+            await session.close()
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
