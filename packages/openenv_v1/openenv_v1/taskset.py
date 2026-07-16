@@ -77,7 +77,11 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
         async with httpx.AsyncClient(timeout=10) as http:
             response = await http.get(f"{base_url}/schema")
         self.action_schema = response.json()["action"]
-        if self.action_schema.get("title") in {"Action", "CallToolAction"}:
+        if self.action_schema.get("title") in {
+            "Action",
+            "CallToolAction",
+            "ListToolsAction",
+        }:
             result = await self.client.step({"type": "list_tools"})
             # Generic MCP Action omits how to call the tools it advertises.
             self.action_schema = CallToolAction.model_json_schema() | {
