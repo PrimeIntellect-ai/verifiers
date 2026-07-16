@@ -294,6 +294,28 @@ async def test_env_id_judge(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
+async def test_env_id_judge_over_tool_taskset(run_v1, tmp_path):
+    """The headline pairing: a TOOL-USING solver judged on its whole process. The
+    judge seat plays env-minted plain tasks (`vf.Role(cfg, mcp=False)`), so the env
+    loads over a tool-declaring taskset — the pairing construction used to refuse —
+    and `full_trace` shows the judge the solver's tool calls."""
+    traces = await run_v1(
+        "echo-tool-v1",
+        harness="null",
+        env={"id": "judge", "spec": {"view": "full_trace"}},
+        output_dir=tmp_path,
+        max_turns=6,
+    )
+    (solver,) = [t for t in traces if t.role == "solver"]
+    (judge,) = [t for t in traces if t.role == "judge"]
+    assert solver.errors == [] and judge.errors == []
+    assert solver.num_turns >= 2  # the solver actually used its tool
+    assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
+    assert "SCORE:" in (judge.last_reply or "")
+    assert 0.0 <= solver.rewards["judge"] <= 1.0
+
+
+@pytest.mark.e2e
 async def test_env_id_judge_rubric_spec(run_v1, tmp_path):
     """One rubric file, agent-executed: the judge env's verdict spec is a judge
     plugin, so the same grading criteria a `taskset.task.judges` entry runs as a

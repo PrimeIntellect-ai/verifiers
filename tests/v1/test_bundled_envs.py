@@ -49,9 +49,46 @@ def test_load_environment_honors_env_id():
     assert set(env.roles()) == {"solver"}
 
 
+def test_minted_task_roles_pair_with_tool_tasksets():
+    """A role playing env-minted plain tasks (`vf.Role(cfg, mcp=False,
+    container=False)`) needs nothing from the taskset's world: judge and user-sim
+    load over a tool-declaring taskset — the pairing that used to refuse at
+    construction — while the SOLVER role still validates against the dataset."""
+    for env_id in ("judge", "user-sim"):
+        env = vf.load_environment(
+            EvalConfig(taskset={"id": "echo-tool-v1"}, env={"id": env_id})
+        )
+        aux = "judge" if env_id == "judge" else "user"
+        assert env._role_needs_mcp[aux] is False
+        assert env._role_needs_mcp["solver" if env_id == "judge" else "assistant"]
+    # The dataset-playing role keeps failing loudly: a tool taskset on a harness
+    # that can't mount MCP is still an impossible pairing.
+    with pytest.raises(ValueError, match="role 'solver' plays tasks with MCP"):
+        vf.load_environment(
+            EvalConfig(
+                taskset={"id": "echo-tool-v1"},
+                harness={"id": "direct"},
+                env={"id": "best-of-n"},
+            )
+        )
+
+
+def test_bare_agent_config_normalizes_to_a_role():
+    """A bare `AgentConfig` in roles() is shorthand for `Role(cfg)` — the role
+    plays the dataset and inherits the taskset's needs."""
+    env = vf.Environment(_bundled_config())
+    (role,) = env._roles.values()
+    assert isinstance(role, vf.Role)
+    assert role.mcp is None and role.container is None
+
+
+def _bundled_config() -> EvalConfig:
+    return EvalConfig(taskset={"id": "echo-v1"})
+
+
 def test_bundled_env_solver_runs_the_runs_harness():
     """The axes stay orthogonal when paired: `--env.id best-of-n --harness.id X`
-    seats the solver on X (an unpinned role late-binds to the run's harness), while
+    runs the solver on X (an unpinned role late-binds to the run's harness), while
     a pinned role (the judge env's judge) keeps its own."""
     config = EvalConfig(
         taskset={"id": "echo-v1"}, harness={"id": "null"}, env={"id": "best-of-n"}

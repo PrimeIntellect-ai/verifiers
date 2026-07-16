@@ -46,7 +46,13 @@ class UserSimParams(vf.EnvParams):
 
 class UserSimEnv(vf.Environment[UserSimParams]):
     def roles(self):
-        return {"assistant": self.params.assistant, "user": self.params.user}
+        # The topology: the assistant plays the dataset (the taskset's needs
+        # apply); the user plays an env-minted persona task — a bare model actor,
+        # so the substrate pairs with tool-using tasksets.
+        return {
+            "assistant": self.params.assistant,
+            "user": vf.Role(self.params.user, mcp=False, container=False),
+        }
 
     async def rollout(self, task, agents):
         scenario = task.data.prompt_text

@@ -40,7 +40,7 @@ Before starting with the implementation, think about the following things:
 - What is the dataset about, which fields does it have?
 - Does it come with custom tools that are strictly necessary and not added by common harnesses? For example, a lot of harnesses come with bash or web search tools, which makes custom tools obsolete. Always prefer harnesses over custom tools
 - Is the conversation driven by a user (scripted turns, a game engine, a modeled user)? That is env control flow (`user=` / `agent.chat()`), not a server.
-- Does one rollout involve more than one agent run (attempts, judge, seats)? Then the package also exports an `Environment` subclass — or an existing bundled env (`--env.id best-of-n|judge|user-sim`) already covers it.
+- Does one rollout involve more than one agent run (attempts, a judge, game players)? Then the package also exports an `Environment` subclass — or an existing bundled env (`--env.id best-of-n|judge|user-sim`) already covers it.
 - Which rewards are needed for scoring? What additional metrics might be nice to have, either for debugging, training or potentially in the future?
 - How should the tasks be scored, is a judge needed?
 
@@ -196,7 +196,7 @@ The harness running the *assistant* must support injected user turns (`SUPPORTS_
 
 ## Multi-agent environments
 
-When one rollout is more than one agent run, export an `Environment` subclass next to the taskset: declare roles as `vf.AgentConfig` fields on a `vf.EnvParams` subclass (bound via `Environment[YourParams]`, addressed as `--env.<role>.*`), override `roles()` to map seat names to those fields (`{"solver": self.params.solver, ...}` — without it the base's single `"main"` seat runs), `rollout(task, agents)` (imperative control flow), and optionally `score(task, traces)` (sibling-dependent judgement). Before writing one, check the bundled envs (`--env.id best-of-n | judge | user-sim`) and the reference implementations (`environments/code_golf_v1`, `environments/kuhn_poker_v1`). See docs/v1/tasksets.md.
+When one rollout is more than one agent run, export an `Environment` subclass next to the taskset: declare roles as `vf.AgentConfig` fields on a `vf.EnvParams` subclass (bound via `Environment[YourParams]`, addressed as `--env.<role>.*`), override `roles()` to map role names to those fields (`{"solver": self.params.solver, ...}` — without it the base's single `"main"` role runs; wrap a role whose tasks the env mints itself in `vf.Role(cfg, mcp=False, container=False)` so it pairs with any taskset), `rollout(task, agents)` (imperative control flow), and optionally `score(task, traces)` (sibling-dependent judgement). Before writing one, check the bundled envs (`--env.id best-of-n | judge | user-sim`) and the reference implementations (`environments/code_golf_v1`, `environments/kuhn_poker_v1`). See docs/v1/tasksets.md.
 
 ## Custom harnesses
 

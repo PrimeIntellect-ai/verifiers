@@ -84,7 +84,11 @@ class KuhnPokerParams(vf.EnvParams):
 
 class KuhnPokerEnv(vf.Environment[KuhnPokerParams]):
     def roles(self):
-        return {"player0": self.params.player0, "player1": self.params.player1}
+        # Both players play env-minted chat tasks (the seeded hand), not the dataset.
+        return {
+            "player0": vf.Role(self.params.player0, mcp=False, container=False),
+            "player1": vf.Role(self.params.player1, mcp=False, container=False),
+        }
 
     async def rollout(self, task, agents):
         rng = random.Random(task.data.info["seed"])

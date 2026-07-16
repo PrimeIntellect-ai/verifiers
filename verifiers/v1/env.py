@@ -61,16 +61,16 @@ class TimeoutConfig(BaseConfig):
 
 
 class AgentConfig(BaseConfig):
-    """One env role: the agent that fills a seat in `Environment.roles()`. Everything
+    """One env role: who plays it — the agent behind a `roles()` entry. Everything
     defaults to the run's own settings, so `AgentConfig()` is "the policy under
-    evaluation/training" — a role pins only what makes it a different seat (its own
+    evaluation/training" — a role pins only what makes it a different actor (its own
     harness, a frozen model, an off-train endpoint, tighter limits)."""
 
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The role's program + runtime policy (None = the run's `--harness.*` — late
     binding, like `model`/`client`/`sampling`, so pairing an env never silently
-    swaps the policy's harness). Pin it to seat the role on its own program (e.g.
-    `vf.HarnessConfig(id="direct")` for a bare in-process chat seat)."""
+    swaps the policy's harness). Pin it to give the role its own program (e.g.
+    `vf.HarnessConfig(id="direct")` for a bare in-process chat actor)."""
     model: str | None = None
     """Model id (None = the run's model — late binding: the role is played by the
     policy being evaluated or trained, which is what makes self-play trainable)."""
@@ -102,6 +102,26 @@ class AgentConfig(BaseConfig):
         if isinstance(data, dict) and data.get("harness") is not None:
             narrow_plugin_field(data, "harness", harness_config_type, "default")
         return data
+
+
+@dataclass(frozen=True)
+class Role:
+    """One `roles()` entry: who plays the role, plus what its runs need from the
+    taskset's world. `None` needs inherit the taskset's own (declared tools → MCP,
+    `NEEDS_CONTAINER` → a container); a bare `AgentConfig` in `roles()` is
+    shorthand for exactly that — the role plays the dataset. An env that mints a
+    role's tasks itself declares the role's real needs instead
+    (`vf.Role(cfg, mcp=False, container=False)` for a bare model actor like a judge
+    or a simulated user): pairing validates what the role actually runs, and only
+    MCP-needing roles are handed the taskset's shared tool servers. Keeping the
+    declaration honest with `rollout()` is the env author's job — `Agent.run` still
+    validates every concrete task it's given, as the backstop."""
+
+    agent: AgentConfig
+    mcp: bool | None = None
+    """Whether this role's tasks expose MCP tool servers (None = the taskset's)."""
+    container: bool | None = None
+    """Whether this role's tasks need a container runtime (None = the taskset's)."""
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -455,7 +475,8 @@ class Environment(Generic[ParamsT]):
     `Environment[YourParams]` (available as `self.params`, addressed as `--env.*`),
     and overrides up to three methods:
 
-      - `roles()` — which agent fills which seat, one `AgentConfig` per role.
+      - `roles()` — which agent plays which role: one `AgentConfig` each (wrapped
+        in `vf.Role` when the role's needs differ from the taskset's).
       - `rollout(task, agents)` — how the agents interact on one task: imperative
         Python over `Agent` values; the returned traces are the rollout's record.
       - `score(task, traces)` — sibling-dependent judgement over the finished set.
@@ -482,29 +503,58 @@ class Environment(Generic[ParamsT]):
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
-        self._roles: dict[str, AgentConfig] = dict(self.roles())
+        self._roles: dict[str, Role] = {
+            name: value if isinstance(value, Role) else Role(value)
+            for name, value in dict(self.roles()).items()
+        }
         if not self._roles:
             raise ValueError(
                 f"{type(self).__name__}.roles() returned no roles; an env needs at "
                 "least one agent (the base default is a single 'main' role)"
             )
         # Traces are role-stamped except in the base single-agent shape, where there's
-        # only one seat and `role=None` keeps the wire identical to a plain eval's.
+        # only one role and `role=None` keeps the wire identical to a plain eval's.
         self._stamp_roles = list(self._roles) != ["main"]
         self._harnesses: dict[str, Harness] = {
             name: self.harness
-            if spec.harness is None or spec.harness == config.harness
-            else load_harness(spec.harness)
-            for name, spec in self._roles.items()
+            if role.agent.harness is None or role.agent.harness == config.harness
+            else load_harness(role.agent.harness)
+            for name, role in self._roles.items()
+        }
+        # Each role's resolved needs: the taskset's unless it declares its own (a
+        # role playing env-minted plain tasks needs nothing from the taskset's
+        # world). MCP-needing roles are also the only ones handed the taskset's
+        # shared tool servers (`_agents_for`).
+        taskset_mcp = bool(task_cls.tools or type(self.taskset).tools)
+        self._role_needs_mcp: dict[str, bool] = {
+            name: role.mcp if role.mcp is not None else taskset_mcp
+            for name, role in self._roles.items()
         }
         warned: set[str] = set()
         for name, harness in self._harnesses.items():
-            validate_pairing(
-                harness,
-                task_cls,
-                harness.config.runtime,
-                shared_tools=type(self.taskset).tools,
+            role = self._roles[name]
+            if self._role_needs_mcp[name] and not harness.SUPPORTS_MCP:
+                raise ValueError(
+                    f"{type(self).__name__} role {name!r} plays tasks with MCP tool "
+                    f"servers, but its harness {harness.config.id!r} does not support "
+                    f"MCP. Point the role at an MCP-capable harness "
+                    f"(--env.{name}.harness.id default) — or, if the env mints this "
+                    "role's tasks itself, declare its needs on the roles() entry "
+                    "(vf.Role(cfg, mcp=False))."
+                )
+            needs_container = (
+                role.container
+                if role.container is not None
+                else task_cls.NEEDS_CONTAINER
             )
+            if needs_container and isinstance(harness.config.runtime, SubprocessConfig):
+                raise ValueError(
+                    f"{type(self).__name__} role {name!r} plays tasks that need a "
+                    "container runtime, but its harness resolves to subprocess; use "
+                    f"--env.{name}.harness.runtime.type docker or prime — or, if the "
+                    "env mints this role's tasks itself, declare its needs on the "
+                    "roles() entry (vf.Role(cfg, container=False))."
+                )
             # The warning is about the *agent* running arbitrary code on the host: every harness
             # hands it local execution (bash/edit, or a CLI agent) except the tool-less chat
             # loops — `null` (relays the model and remote MCP tools) and the in-process
@@ -543,11 +593,14 @@ class Environment(Generic[ParamsT]):
 
     # --- the multi-agent surface (override these) ------------------------------
 
-    def roles(self) -> Mapping[str, AgentConfig]:
-        """Which agent fills which seat. Called once, at construction (read
+    def roles(self) -> Mapping[str, "AgentConfig | Role"]:
+        """Which agent plays which role. Called once, at construction (read
         `self.params` — a typed `AgentConfig` field per role is the idiom, giving
-        `--env.<role>.model` CLI/TOML addressing for free). Default: the single-agent
-        case — one `"main"` role on the run's own harness (`--harness.*`)."""
+        `--env.<role>.model` CLI/TOML addressing for free). A bare `AgentConfig`
+        role plays the dataset (the taskset's needs apply); wrap it in `vf.Role`
+        when the env mints the role's tasks itself and its needs differ. Default:
+        the single-agent case — one `"main"` role on the run's own harness
+        (`--harness.*`)."""
         return {"main": AgentConfig()}
 
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> list[Trace]:
@@ -572,7 +625,7 @@ class Environment(Generic[ParamsT]):
         """Whether a finished env-rollout is a valid result — the verdict `--resume`
         reads to decide what to keep vs. redo. Default: `record.ok` (no rollout-level
         errors and no errored trace). An env whose `rollout()` deliberately tolerates
-        a failed participant (a forfeited seat, a crashed editor) overrides this —
+        a failed participant (a forfeited player, a crashed editor) overrides this —
         typically `not record.errors` — else resume re-runs rollouts it already
         accepted. Read-only: what a failed participant *means* stays in `rollout()`
         and `score()`. (The server eval path keeps the strict default — its env lives
@@ -606,13 +659,18 @@ class Environment(Generic[ParamsT]):
             self._agents = {
                 name: Agent(
                     self._harnesses[name],
-                    self._role_ctx(spec, ctx),
+                    self._role_ctx(role.agent, ctx),
                     interception=self._interception,
-                    shared_tools=self._shared_tools,
-                    limits=self._role_limits(spec),
+                    # Only a role whose tasks bring MCP gets the taskset's shared
+                    # servers — a bare model actor has nothing to mount them into,
+                    # and handing them over would fail its per-run pairing check.
+                    shared_tools=self._shared_tools
+                    if self._role_needs_mcp[name]
+                    else {},
+                    limits=self._role_limits(role.agent),
                     timeout=self.config.timeout,
                 )
-                for name, spec in self._roles.items()
+                for name, role in self._roles.items()
             }
             self._agents_ctx = ctx
         return self._agents
@@ -680,7 +738,7 @@ class Environment(Generic[ParamsT]):
             name: _RoleAgent(
                 agents[name],
                 role=name if self._stamp_roles else None,
-                trainable=self._roles[name].trainable,
+                trainable=self._roles[name].agent.trainable,
                 completed=completed,
                 on_trace=on_trace,
             )

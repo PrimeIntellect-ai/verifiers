@@ -259,7 +259,7 @@ class DebateParams(vf.EnvParams):
 
 class DebateEnv(vf.Environment[DebateParams]):
     def roles(self):
-        """Which agent fills which seat — one AgentConfig per role."""
+        """Which agent plays which role — one AgentConfig each."""
         return {"pro": self.params.pro, "con": self.params.con, "judge": self.params.judge}
 
     async def rollout(self, task, agents):
@@ -288,8 +288,16 @@ class DebateEnv(vf.Environment[DebateParams]):
   default (`--env.judge.sampling.temperature 0` doesn't reset the judge's pinned
   model). An `AgentConfig`'s every field defaults to the run's own settings —
   `AgentConfig()` is "the policy under evaluation/training" (which is what makes
-  self-play trainable); a role pins only what makes it a different seat (its own
+  self-play trainable); a role pins only what makes it a different actor (its own
   harness, a frozen model, an off-train endpoint, tighter limits, `trainable=False`).
+- **A role declares what it needs from the taskset's world.** A bare `AgentConfig`
+  in `roles()` plays the dataset: the taskset's needs apply (declared tools mean the
+  role's harness must support MCP; `NEEDS_CONTAINER` means no subprocess runtime),
+  and the role is handed the taskset's shared tool servers. A role whose tasks the
+  env mints itself says so — `vf.Role(cfg, mcp=False, container=False)` for a bare
+  model actor like a judge or a simulated user — and then pairs with *any* taskset.
+  Keeping the declaration honest with `rollout()` is the env author's job;
+  `Agent.run` still validates every concrete task it's given, as the backstop.
 - **The base builds the agents** — one per role, inside the eval's serving resources
   (shared interception pool, shared tool servers, per-endpoint clients) — and hands
   them into `rollout()`. The hook never constructs agents.
@@ -303,7 +311,7 @@ class DebateEnv(vf.Environment[DebateParams]):
   serving lifetime for env-owned shared resources.
 
 For the single-agent case none of this is visible: the base `roles()` is one `"main"`
-seat driven by `--harness.*`, `rollout()` is `[await agents["main"].run(task)]`, and
+role driven by `--harness.*`, `rollout()` is `[await agents["main"].run(task)]`, and
 the record wraps exactly one unstamped trace.
 
 The three axes of a run are orthogonal:

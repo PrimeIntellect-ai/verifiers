@@ -70,7 +70,13 @@ class JudgeEnv(vf.Environment[JudgeParams]):
         self._spec = load_judge(self.params.spec)
 
     def roles(self):
-        return {"solver": self.params.solver, "judge": self.params.judge}
+        # The topology: the solver plays the dataset (the taskset's needs apply);
+        # the judge plays env-minted plain tasks — a bare model actor, so it pairs
+        # with any taskset, tools and containers included.
+        return {
+            "solver": self.params.solver,
+            "judge": vf.Role(self.params.judge, mcp=False, container=False),
+        }
 
     async def rollout(self, task, agents):
         solution = await agents["solver"].run(task)

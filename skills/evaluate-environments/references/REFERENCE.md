@@ -12,7 +12,7 @@ EvalConfig                       (the run + the env)
 ├─ harness: HarnessConfig        (subclass resolved by --harness.id)
 │  └─ runtime: RuntimeConfig     (subprocess | docker | prime | modal)
 ├─ env: EnvParams                (subclass resolved by --env.id, else the taskset's)
-│  └─ <role>: AgentConfig        (per-seat model/client/sampling/harness/limits)
+│  └─ <role>: AgentConfig        (per-role model/client/sampling/harness/limits)
 ├─ timeout: TimeoutConfig
 ├─ retries: RetryConfig
 │  └─ rollout: RolloutRetryConfig
