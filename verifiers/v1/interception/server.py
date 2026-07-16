@@ -41,6 +41,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TaskError,
     UserError,
+    model_error,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
 from verifiers.v1.interception.tunnel import (
@@ -167,7 +168,16 @@ class InterceptionServer(Interception):
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
-            return await self.handle_request(request, dialect)
+            session = self.sessions.get(dialect.secret(request.headers))
+            if session is None:
+                return await self.handle_request(request, dialect)
+            task = asyncio.current_task()
+            assert task is not None
+            session.active_requests.add(task)
+            try:
+                return await self.handle_request(request, dialect)
+            finally:
+                session.active_requests.discard(task)
 
         return handler
 
@@ -236,6 +246,12 @@ class InterceptionServer(Interception):
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
+        if session.error_latched:
+            assert session.error is not None
+            return web.json_response(
+                dialect.error_body(str(session.error)),
+                status=getattr(session.error, "status_code", 502),
+            )
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -557,10 +573,24 @@ class InterceptionServer(Interception):
         try:
             if parser_error is not None:
                 raise parser_error
-            turn.commit(parser.finish(), tools)
+            response = parser.finish()
+        except Exception as e:
+            session.error = model_error(
+                f"malformed upstream response: {type(e).__name__}: {e}",
+                status_code=502,
+            )
+            session.error_latched = True
+            logger.warning(
+                "model call failed: id=%s %s: %s",
+                session.trace.id,
+                type(session.error).__name__,
+                session.error,
+            )
+        else:
+            turn.commit(response, tools)
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         finally:
-            # Release the withheld events only now — after the commit — then close.
+            # Release terminal events only after the turn is committed or its failure captured.
             with contextlib.suppress(ConnectionResetError):
                 for event in deferred:
                     await resp.write(event)

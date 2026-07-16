@@ -195,6 +195,10 @@ class Rollout:
                         )
                     except TimeoutError:
                         trace.stop("harness_timeout")
+                        requests = tuple(session.active_requests)
+                        for request in requests:
+                            request.cancel()
+                        await asyncio.gather(*requests, return_exceptions=True)
                     except RolloutError as e:
                         if session.error is not None:
                             raise session.error from e
