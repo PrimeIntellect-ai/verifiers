@@ -76,6 +76,7 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
         )
         async with httpx.AsyncClient(timeout=10) as http:
             response = await http.get(f"{base_url}/schema")
+            response.raise_for_status()
         self.action_schema = response.json()["action"]
         if self.action_schema.get("title") in {
             "Action",
