@@ -25,7 +25,7 @@ class BestOfNParams(vf.EnvParams):
 
 class BestOfNEnv(vf.Environment[BestOfNParams]):
     def roles(self):
-        return {"solver": self.params.solver}
+        return {"solver": vf.Role(self.params.solver)}
 
     async def rollout(self, task, agents):
         return list(

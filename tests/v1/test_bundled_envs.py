@@ -73,13 +73,19 @@ def test_minted_task_roles_pair_with_tool_tasksets():
         )
 
 
-def test_bare_agent_config_normalizes_to_a_role():
-    """A bare `AgentConfig` in roles() is shorthand for `Role(cfg)` — the role
-    plays the dataset and inherits the taskset's needs."""
+def test_roles_are_always_roles():
+    """The implied single-agent default is one dataset-playing `solver` role; a
+    roles() override handing back a bare AgentConfig gets a wrap-it error."""
     env = vf.Environment(_bundled_config())
-    (role,) = env._roles.values()
-    assert isinstance(role, vf.Role)
-    assert role.mcp is None and role.container is None
+    (name,), (role,) = env._roles.keys(), env._roles.values()
+    assert name == "solver" and role.mcp is None and role.container is None
+
+    class Bare(vf.Environment):
+        def roles(self):
+            return {"solo": vf.AgentConfig()}
+
+    with pytest.raises(TypeError, match="wrap it: vf.Role"):
+        Bare(_bundled_config())
 
 
 def _bundled_config() -> EvalConfig:

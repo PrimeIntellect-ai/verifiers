@@ -70,7 +70,7 @@ class CodeGolfParams(vf.EnvParams):
 
 class CodeGolfEnv(vf.Environment[CodeGolfParams]):
     def roles(self):
-        return {"golfer": self.params.golfer}
+        return {"golfer": vf.Role(self.params.golfer)}
 
     async def rollout(self, task, agents):
         return list(

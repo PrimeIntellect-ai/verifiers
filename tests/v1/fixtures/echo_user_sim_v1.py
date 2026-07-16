@@ -49,7 +49,7 @@ class EchoUserSimEnv(vf.Environment):
             sent += 1
             return [vf.UserMessage(content=phrases[sent - 1])]
 
-        return [await agents["main"].run(task, user=script)]
+        return [await agents["solver"].run(task, user=script)]
 
 
 class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):

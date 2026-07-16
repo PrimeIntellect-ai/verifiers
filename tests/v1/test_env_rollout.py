@@ -52,7 +52,7 @@ class DuetParams(vf.EnvParams):
 
 class DuetEnv(vf.Environment[DuetParams]):
     def roles(self):
-        return {"a": self.params.a, "b": self.params.b}
+        return {"a": vf.Role(self.params.a), "b": vf.Role(self.params.b)}
 
     async def rollout(self, task, agents):
         return list(await asyncio.gather(agents["a"].run(task), agents["b"].run(task)))
@@ -66,11 +66,11 @@ async def test_base_env_mints_single_agent_records():
     """The base defaults ARE the single-agent case: one 'main' role on the env's
     harness, one unstamped trace per record, score() a no-op."""
     env = vf.Environment(_env_config())
-    assert list(env._roles) == ["main"]
+    assert list(env._roles) == ["solver"]
     agents = _stub_agents(env)
     record = await env.run_record(_task(env), None)
     assert record.ok and record.env == "echo-v1"
-    assert agents["main"].runs == 1
+    assert agents["solver"].runs == 1
     assert len(record.traces) == 1
     trace = record.traces[0]
     assert trace.role is None and trace.trainable  # the wire matches a plain eval's
@@ -94,7 +94,7 @@ async def test_multi_role_records_stamp_roles():
 
 async def test_agent_failures_are_trace_data_not_record_errors():
     env = vf.Environment(_env_config())
-    env._agents_for = lambda ctx: {"main": StubAgent(error=RuntimeError("boom"))}  # type: ignore[method-assign]
+    env._agents_for = lambda ctx: {"solver": StubAgent(error=RuntimeError("boom"))}  # type: ignore[method-assign]
     record = await env.run_record(_task(env), None)
     assert not record.ok and not record.errors  # the failure lives on the trace
     assert record.traces[0].error is not None
@@ -106,7 +106,7 @@ async def test_hook_crash_keeps_completed_traces():
 
     class Crashy(vf.Environment):
         async def rollout(self, task, agents):
-            await agents["main"].run(task)
+            await agents["solver"].run(task)
             raise RuntimeError("hook bug")
 
     env = Crashy(_env_config())
@@ -210,7 +210,7 @@ def test_role_harness_late_binds_to_the_runs():
     silently swap the policy's harness (the axes stay orthogonal)."""
     assert vf.AgentConfig().harness is None
     env = vf.Environment(_env_config(harness={"id": "null"}))
-    assert env._harnesses["main"] is env.harness
+    assert env._harnesses["solver"] is env.harness
     assert env.harness.config.id == "null"
 
 

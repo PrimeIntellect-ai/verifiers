@@ -50,7 +50,7 @@ class UserSimEnv(vf.Environment[UserSimParams]):
         # apply); the user plays an env-minted persona task — a bare model actor,
         # so the substrate pairs with tool-using tasksets.
         return {
-            "assistant": self.params.assistant,
+            "assistant": vf.Role(self.params.assistant),
             "user": vf.Role(self.params.user, mcp=False, container=False),
         }
 

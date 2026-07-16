@@ -25,7 +25,7 @@ class DuetParams(vf.EnvParams):
 
 class DuetEnv(vf.Environment[DuetParams]):
     def roles(self):
-        return {"a": self.params.a, "b": self.params.b}
+        return {"a": vf.Role(self.params.a), "b": vf.Role(self.params.b)}
 
     async def rollout(self, task, agents):
         return list(await asyncio.gather(agents["a"].run(task), agents["b"].run(task)))

@@ -74,7 +74,7 @@ class JudgeEnv(vf.Environment[JudgeParams]):
         # the judge plays env-minted plain tasks — a bare model actor, so it pairs
         # with any taskset, tools and containers included.
         return {
-            "solver": self.params.solver,
+            "solver": vf.Role(self.params.solver),
             "judge": vf.Role(self.params.judge, mcp=False, container=False),
         }
 

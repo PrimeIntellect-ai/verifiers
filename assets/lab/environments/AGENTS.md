@@ -259,8 +259,13 @@ class DebateParams(vf.EnvParams):
 
 class DebateEnv(vf.Environment[DebateParams]):
     def roles(self):
-        """Which agent plays which role — one AgentConfig each."""
-        return {"pro": self.params.pro, "con": self.params.con, "judge": self.params.judge}
+        """The topology: who plays which role, and what each needs. The debaters
+        play the dataset; the judge grades an env-minted verdict task."""
+        return {
+            "pro": vf.Role(self.params.pro),
+            "con": vf.Role(self.params.con),
+            "judge": vf.Role(self.params.judge, mcp=False, container=False),
+        }
 
     async def rollout(self, task, agents):
         """How the agents interact on one task: imperative Python over Agent values.
@@ -290,11 +295,11 @@ class DebateEnv(vf.Environment[DebateParams]):
   `AgentConfig()` is "the policy under evaluation/training" (which is what makes
   self-play trainable); a role pins only what makes it a different actor (its own
   harness, a frozen model, an off-train endpoint, tighter limits, `trainable=False`).
-- **A role declares what it needs from the taskset's world.** A bare `AgentConfig`
-  in `roles()` plays the dataset: the taskset's needs apply (declared tools mean the
-  role's harness must support MCP; `NEEDS_CONTAINER` means no subprocess runtime),
-  and the role is handed the taskset's shared tool servers. A role whose tasks the
-  env mints itself says so — `vf.Role(cfg, mcp=False, container=False)` for a bare
+- **A role declares what it needs from the taskset's world.** `vf.Role(cfg)`
+  plays the dataset: the taskset's needs apply (declared tools mean the role's
+  harness must support MCP; `NEEDS_CONTAINER` means no subprocess runtime), and the
+  role is handed the taskset's shared tool servers. A role whose tasks the env
+  mints itself says so — `vf.Role(cfg, mcp=False, container=False)` for a bare
   model actor like a judge or a simulated user — and then pairs with *any* taskset.
   Keeping the declaration honest with `rollout()` is the env author's job;
   `Agent.run` still validates every concrete task it's given, as the backstop.
@@ -310,8 +315,8 @@ class DebateEnv(vf.Environment[DebateParams]):
 - `score()` is bounded by `--timeout.score`; `setup()`/`teardown()` hooks bracket the
   serving lifetime for env-owned shared resources.
 
-For the single-agent case none of this is visible: the base `roles()` is one `"main"`
-role driven by `--harness.*`, `rollout()` is `[await agents["main"].run(task)]`, and
+For the single-agent case none of this is visible: the base `roles()` is one `"solver"`
+role driven by `--harness.*`, `rollout()` is `[await agents["solver"].run(task)]`, and
 the record wraps exactly one unstamped trace.
 
 The three axes of a run are orthogonal:
@@ -367,7 +372,7 @@ class SortEnv(vf.Environment):
             i += 1
             return [vf.UserMessage(content=queue[i - 1])]
 
-        return [await agents["main"].run(task, user=replay)]
+        return [await agents["solver"].run(task, user=replay)]
 ```
 
 A *scripted* user is a plain closure like this (a game engine stepping in-process works

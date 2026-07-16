@@ -111,7 +111,7 @@ class AlphabetSortEnv(vf.Environment):
             i += 1
             return [vf.UserMessage(content=queue[i - 1])]
 
-        return [await agents["main"].run(task, user=replay)]
+        return [await agents["solver"].run(task, user=replay)]
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):

@@ -62,7 +62,7 @@ class TextArenaParams(vf.EnvParams):
 
 class TextArenaEnv(vf.Environment[TextArenaParams]):
     def roles(self):
-        return {"player": self.params.player}
+        return {"player": vf.Role(self.params.player)}
 
     async def rollout(self, task, agents):
         # TextArena uses Python's process-global RNG during reset; seed + make + reset

@@ -108,9 +108,8 @@ class AgentConfig(BaseConfig):
 class Role:
     """One `roles()` entry: who plays the role, plus what its runs need from the
     taskset's world. `None` needs inherit the taskset's own (declared tools → MCP,
-    `NEEDS_CONTAINER` → a container); a bare `AgentConfig` in `roles()` is
-    shorthand for exactly that — the role plays the dataset. An env that mints a
-    role's tasks itself declares the role's real needs instead
+    `NEEDS_CONTAINER` → a container) — `vf.Role(cfg)` plays the dataset. An env
+    that mints a role's tasks itself declares the role's real needs instead
     (`vf.Role(cfg, mcp=False, container=False)` for a bare model actor like a judge
     or a simulated user): pairing validates what the role actually runs, and only
     MCP-needing roles are handed the taskset's shared tool servers. Keeping the
@@ -475,8 +474,8 @@ class Environment(Generic[ParamsT]):
     `Environment[YourParams]` (available as `self.params`, addressed as `--env.*`),
     and overrides up to three methods:
 
-      - `roles()` — which agent plays which role: one `AgentConfig` each (wrapped
-        in `vf.Role` when the role's needs differ from the taskset's).
+      - `roles()` — which agent plays which role: one `vf.Role` each (a config,
+        plus the role's needs when the env mints its tasks itself).
       - `rollout(task, agents)` — how the agents interact on one task: imperative
         Python over `Agent` values; the returned traces are the rollout's record.
       - `score(task, traces)` — sibling-dependent judgement over the finished set.
@@ -503,18 +502,25 @@ class Environment(Generic[ParamsT]):
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
-        self._roles: dict[str, Role] = {
-            name: value if isinstance(value, Role) else Role(value)
-            for name, value in dict(self.roles()).items()
-        }
+        self._roles: dict[str, Role] = dict(self.roles())
+        for name, role in self._roles.items():
+            if not isinstance(role, Role):
+                raise TypeError(
+                    f"{type(self).__name__}.roles() maps {name!r} to "
+                    f"{type(role).__name__}; wrap it: vf.Role(config) plays the "
+                    "dataset, vf.Role(config, mcp=False, container=False) is a "
+                    "bare model actor whose tasks the env mints itself"
+                )
         if not self._roles:
             raise ValueError(
                 f"{type(self).__name__}.roles() returned no roles; an env needs at "
-                "least one agent (the base default is a single 'main' role)"
+                "least one agent (the base default is a single 'solver' role)"
             )
-        # Traces are role-stamped except in the base single-agent shape, where there's
-        # only one role and `role=None` keeps the wire identical to a plain eval's.
-        self._stamp_roles = list(self._roles) != ["main"]
+        # Traces are role-stamped except in the true single-agent shape — an env
+        # that never overrode `roles()` — where `role=None` keeps the wire identical
+        # to a plain eval's. Structural, not name-based: an env DECLARING a single
+        # 'solver' role (best-of-n) still stamps its traces.
+        self._stamp_roles = type(self).roles is not Environment.roles
         self._harnesses: dict[str, Harness] = {
             name: self.harness
             if role.agent.harness is None or role.agent.harness == config.harness
@@ -593,15 +599,15 @@ class Environment(Generic[ParamsT]):
 
     # --- the multi-agent surface (override these) ------------------------------
 
-    def roles(self) -> Mapping[str, "AgentConfig | Role"]:
-        """Which agent plays which role. Called once, at construction (read
-        `self.params` — a typed `AgentConfig` field per role is the idiom, giving
-        `--env.<role>.model` CLI/TOML addressing for free). A bare `AgentConfig`
-        role plays the dataset (the taskset's needs apply); wrap it in `vf.Role`
-        when the env mints the role's tasks itself and its needs differ. Default:
-        the single-agent case — one `"main"` role on the run's own harness
+    def roles(self) -> Mapping[str, Role]:
+        """Which agent plays which role — the env's topology. Called once, at
+        construction (read `self.params` — a typed `AgentConfig` field per role is
+        the idiom, giving `--env.<role>.model` CLI/TOML addressing for free).
+        `vf.Role(config)` plays the dataset (the taskset's needs apply); declare a
+        role's own needs when the env mints its tasks itself. Default: the implied
+        single-agent case — one `"solver"` role on the run's own harness
         (`--harness.*`)."""
-        return {"main": AgentConfig()}
+        return {"solver": Role(AgentConfig())}
 
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> list[Trace]:
         """One env-rollout: how the agents interact on `task`. Imperative Python over
@@ -610,8 +616,8 @@ class Environment(Generic[ParamsT]):
         `agents[...]` verb. The returned traces are the rollout's record, in this
         order. An agent-run failure is data on its trace (this hook decides what a
         failed participant means); an exception raised here is the env-rollout itself
-        failing. Default: the single-agent case — `"main"` runs the task once."""
-        return [await agents["main"].run(task)]
+        failing. Default: the single-agent case — `"solver"` runs the task once."""
+        return [await agents["solver"].run(task)]
 
     async def score(self, task: Task, traces: list[Trace]) -> None:
         """Sibling-dependent judgement over one env-rollout's finished traces — attach

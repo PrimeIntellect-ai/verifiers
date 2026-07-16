@@ -142,7 +142,7 @@ class ColorCodewordEnv(vf.Environment):
             ]
             return [vf.UserMessage(content=parts)]
 
-        return [await agents["main"].run(task, user=reveal)]
+        return [await agents["solver"].run(task, user=reveal)]
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
