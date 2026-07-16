@@ -54,10 +54,12 @@ def payoff(history: str, cards: list[str]) -> int:
 
 
 def parse_action(reply: str, legal: tuple[str, ...]) -> str | None:
-    """The last legal bracketed action in the reply (models often restate the options
-    before choosing), else None."""
-    found = [a for a in re.findall(r"\[(\w+)\]", reply.lower()) if a in legal]
-    return found[-1] if found else None
+    """The one legal bracketed action in the reply, else None. A reply bracketing
+    BOTH options ("I'll [bet]... though [check] would...") is ambiguous whichever
+    end you read from, so it consumes an invalid-move retry ("reply with exactly
+    one") instead of being silently played."""
+    found = {a for a in re.findall(r"\[(\w+)\]", reply.lower()) if a in legal}
+    return found.pop() if len(found) == 1 else None
 
 
 class KuhnPokerData(vf.TaskData):

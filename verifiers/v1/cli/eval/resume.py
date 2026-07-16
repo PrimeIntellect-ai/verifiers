@@ -99,10 +99,15 @@ def load(
                 if not line.strip():
                     continue
                 try:
-                    row = from_json(line)
-                except ValueError:
-                    row = json.loads(line)
-                idx = row["task"]["data"]["idx"]
+                    try:
+                        row = from_json(line)
+                    except ValueError:
+                        row = json.loads(line)
+                    idx = row["task"]["data"]["idx"]
+                except (ValueError, KeyError, TypeError):
+                    # A torn final line (the run died mid-write) or a foreign shape
+                    # is not a keepable rollout — it's owed again, never a crash.
+                    continue
                 if idx not in selected or len(good[idx]) >= num_rollouts:
                     continue
                 record: RolloutRecord | None = None

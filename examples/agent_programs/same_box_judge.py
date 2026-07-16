@@ -63,7 +63,7 @@ async def main() -> None:
 
     task = vf.Task(vf.TaskData(idx=0, prompt=SOLVER_PROMPT))
     async with solver.provision(task) as box:
-        print(f"box up: {box.descriptor}")
+        print(f"box up: {box.name}")
         solver_trace = await solver.run(task, runtime=box)
         print(
             "solver stop:", solver_trace.stop_condition, "| error:", solver_trace.error

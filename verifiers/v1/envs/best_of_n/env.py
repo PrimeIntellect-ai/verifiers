@@ -10,12 +10,14 @@ on every sibling of the rollout).
 
 import asyncio
 
+from pydantic import Field
+
 import verifiers.v1 as vf
 
 
 class BestOfNParams(vf.EnvParams):
     solver: vf.AgentConfig = vf.AgentConfig()
-    n: int = 4
+    n: int = Field(4, ge=1)
     """Independent attempts per env-rollout, scored against each other."""
     threshold: float = 1.0
     """A sibling counts as solved when its task reward reaches this (`pass_at_n`)."""

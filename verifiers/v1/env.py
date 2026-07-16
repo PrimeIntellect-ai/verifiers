@@ -691,9 +691,14 @@ class Environment(Generic[ParamsT]):
         try:
             traces = list(await self.rollout(task, handed))
             try:
-                async with asyncio.timeout(self.config.timeout.score):
+                async with asyncio.timeout(self.config.timeout.score) as deadline:
                     await self.score(task, traces)
             except TimeoutError:
+                # Only the deadline's own expiry is re-worded; a TimeoutError raised
+                # INSIDE score() (an env awaiting its own timeouts) stays the real
+                # error — with no deadline set it must not hit the `:g` format below.
+                if not deadline.expired():
+                    raise
                 raise TimeoutError(
                     f"{type(self).__name__}.score() exceeded its "
                     f"{self.config.timeout.score:g}s deadline (--timeout.score)"

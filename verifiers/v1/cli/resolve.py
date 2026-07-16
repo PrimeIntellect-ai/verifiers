@@ -67,7 +67,12 @@ def narrow_config(base: type, argv: list[str]) -> type:
             ftype = resolve(ident)
             annotations[field] = ftype
             fields[field] = ftype(id=ident)
-    if taskset_id or env_id:
+    # Same guard as the harness fallback: a taskset-derived env is only pre-narrowed
+    # when no config file is in play — a `@ file.toml` may pair `--env.id` over a
+    # recipe-env taskset, and the validator resolves that from the parsed data. An
+    # explicit CLI `--env.id` always narrows (the id is authoritative, as for
+    # taskset/harness).
+    if env_id or (taskset_id and not references_config_file(argv)):
         params_type = vf.env_params_type(taskset_id, env_id)
         if params_type is not vf.EnvParams or env_id:
             annotations["env"] = params_type

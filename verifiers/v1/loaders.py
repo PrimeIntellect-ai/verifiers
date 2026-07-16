@@ -66,7 +66,10 @@ def _plugin_class(module: ModuleType, base: type, kind: str) -> type:
             f"`__all__` (found {list(names)}); export exactly one."
         )
     if len(matches) > 1:
-        raise TypeError(
+        # ValueError, not TypeError: "no plugin here" (TypeError) is a state the
+        # taskset-fallback callers legitimately swallow — an ambiguous export is an
+        # authoring error that must stay loud everywhere.
+        raise ValueError(
             f"{kind} module {module.__name__!r} exports {len(matches)} {base.__name__} "
             f"subclasses via `__all__` ({[c.__name__ for c in matches]}); export exactly one."
         )

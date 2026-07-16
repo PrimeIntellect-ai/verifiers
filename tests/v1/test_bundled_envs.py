@@ -100,9 +100,11 @@ def test_score_judge_verdict():
     assert _judged("SCORE: 7") == 0.7
     assert _judged("The answer is right.\nSCORE: 10") == 1.0
     assert _judged("SCORE: 3\n...revised...\nSCORE: 8") == 0.8  # last wins
-    assert _judged("SCORE: 42") == 1.0  # clamped
+    assert _judged("SCORE: 7.5") == 0.75  # a decimal is a verdict, not a 0.7
     with pytest.raises(ValueError, match="no 'SCORE:"):
         _judged("I refuse to grade this.")  # a judge failure, never a 0
+    with pytest.raises(ValueError, match="off the 0-10 scale"):
+        _judged("SCORE: 95")  # a judge on its own scale must not clamp to full marks
 
 
 def test_judge_spec_resolves_like_a_judges_entry():
@@ -181,7 +183,10 @@ def test_kuhn_state_machine_is_closed():
 
 def test_kuhn_parse_action():
     assert parse_action("I will [bet]!", ("check", "bet")) == "bet"
-    assert parse_action("[check] no wait, [bet]", ("check", "bet")) == "bet"
     assert parse_action("[BET]", ("check", "bet")) == "bet"
+    assert parse_action("sure: [bet]... yes, [bet]", ("check", "bet")) == "bet"
+    # Both options bracketed is ambiguous whichever end you read from — it must
+    # consume an invalid-move retry, never be silently played.
+    assert parse_action("[check] no wait, [bet]", ("check", "bet")) is None
     assert parse_action("[raise]", ("check", "bet")) is None
     assert parse_action("bet", ("check", "bet")) is None  # brackets required

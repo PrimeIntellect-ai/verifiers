@@ -57,14 +57,18 @@ class ScoreJudge(Judge[float, ScoreJudgeConfig]):
         )
 
     def verdict(self, task: TaskData, trace: Trace, reply: str) -> float:
-        """The last `SCORE: <n>` in the reply, clamped to [0, 10] and normalized to
-        [0, 1] (models often restate the format before the real verdict). No verdict
-        raises — a judge that can't follow the output contract is a judge failure,
-        never a 0 scored against the model."""
-        matches = re.findall(r"SCORE:\s*(\d+)", reply or "")
+        """The last `SCORE: <n>` in the reply, normalized to [0, 1] (models often
+        restate the format before the real verdict). An off-contract verdict raises
+        — no verdict at all, and equally a number outside 0-10 (a judge grading on
+        its own scale, e.g. `SCORE: 95`, must not clamp to full marks): a judge that
+        can't follow the output contract is a judge failure, never a score."""
+        matches = re.findall(r"SCORE:\s*(\d+(?:\.\d+)?)", reply or "")
         if not matches:
             raise ValueError(f"judge returned no 'SCORE: <0-10>' verdict: {reply!r}")
-        return min(max(int(matches[-1]), 0), 10) / 10
+        value = float(matches[-1])
+        if not 0 <= value <= 10:
+            raise ValueError(f"judge scored off the 0-10 scale: {matches[-1]!r}")
+        return value / 10
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         response = await self.complete(self.render(task, trace), trace=trace)

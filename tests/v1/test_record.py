@@ -135,3 +135,17 @@ def test_prompt_less_record_round_trips(tmp_path):
     write_record(tmp_path, RolloutRecord.of(trace, env="demo-v1"))
     (loaded,) = read_records(tmp_path, WireTrace)
     assert loaded.traces[0].task.data.prompt is None
+
+
+def test_resume_treats_torn_lines_as_owed(tmp_path):
+    """A run killed mid-write leaves a torn final line; resume owes that rollout
+    again instead of crashing (the record is the resume unit)."""
+    write_record(tmp_path, RolloutRecord.of(_trace(0), env="demo-v1"))
+    path = tmp_path / TRACES_FILE
+    with path.open("ab") as f:
+        f.write(b'{"task": {"data": {"idx"')  # the torn write
+    records, owed = resume.load(tmp_path, [0], num_rollouts=2)
+    assert len(records) == 1 and owed == {0: 1}
+    # The rewrite dropped the torn line: a second resume parses cleanly.
+    records, owed = resume.load(tmp_path, [0], num_rollouts=2)
+    assert len(records) == 1 and owed == {0: 1}
