@@ -38,6 +38,7 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Architecture](architecture.md) — How verifiers works behind-the-scenes
 - [Tasksets](tasksets.md) — How to create tasksets
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
+  - [NeMo Gym Tasksets](nemo_gym.md) — Run Gym resources-server tasks with verifiers harnesses
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — How to run standalone agents
