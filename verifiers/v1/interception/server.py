@@ -574,7 +574,7 @@ class InterceptionServer(Interception):
             if parser_error is not None:
                 raise parser_error
             response = parser.finish()
-        except (ValueError, ValidationError) as e:
+        except Exception as e:
             session.error = model_error(
                 f"malformed upstream response: {type(e).__name__}: {e}",
                 status_code=502,
