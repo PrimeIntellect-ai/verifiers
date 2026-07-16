@@ -448,7 +448,9 @@ def _attribute_routed_experts(
     if payload is None:
         return
     raw = binascii.a2b_base64(payload["data"])
-    arr = np.frombuffer(raw, dtype=np.uint8).reshape(payload["shape"])
+    arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
+        payload["shape"]
+    )
     off = path_len - int(payload.get("start", 0) or 0)
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:

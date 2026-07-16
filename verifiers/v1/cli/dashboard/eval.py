@@ -41,6 +41,7 @@ _LABEL_WIDTH = len("timeouts")
 _STYLE = {
     "pending": "dim",
     "boot": "orange3",
+    "build": "dark_orange",
     "setup": "yellow",
     "running": "cyan",
     "finalize": "magenta",
@@ -51,6 +52,7 @@ _STYLE = {
 _MARK_LABEL = {
     "pending": "pending",
     "boot": "boot",
+    "build": "build",
     "setup": "setup",
     "running": "rollout",
     "finalize": "finalize",
@@ -408,8 +410,14 @@ def _stage(trace: Trace) -> str:
         ("boot", trace.timing.boot),
     ):
         if span.start and not span.end:
-            return stage
-    return "boot"  # trace minted, first span not yet opened (an instant)
+            break
+    else:
+        stage = "boot"  # trace minted, first span not yet opened (an instant)
+    # A boot stuck on a first-use platform image build reads differently from a
+    # normal boot — it can sit there for ~10 minutes (prime runtime only).
+    if stage == "boot" and getattr(trace.runtime, "image_cached", None) is False:
+        return "build"
+    return stage
 
 
 def _started(slot: RunSlot) -> float:
