@@ -27,7 +27,7 @@ class StubAgent:
         self.error = error
 
     async def run(
-        self, task: vf.Task, *, runtime=None, user=None, on_trace=None
+        self, task: vf.Task, *, runtime=None, user=None, user_opens=False, on_trace=None
     ) -> Trace:
         self.runs += 1
         trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
@@ -303,7 +303,9 @@ async def test_role_agent_chat_stamps_roles():
         def _check_user_support(self):
             pass
 
-        async def run(self, task, *, runtime=None, user=None, on_trace=None):
+        async def run(
+            self, task, *, runtime=None, user=None, user_opens=False, on_trace=None
+        ):
             self.runs += 1
             trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
             if on_trace is not None:

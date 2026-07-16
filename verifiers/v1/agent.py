@@ -288,6 +288,7 @@ class Agent:
         *,
         runtime: Runtime | None = None,
         user: Respond | None = None,
+        user_opens: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace.
@@ -299,10 +300,14 @@ class Agent:
         other half of the conversation (any async `str -> Messages`; see
         `session.Respond`): the interception injects its replies as user turns after
         each tool-less model turn, and it ends the exchange by returning no messages —
-        for a prompt-less task it also opens the conversation. To BE the user
-        yourself, live, use `chat()` instead. `on_trace` observes the run's trace the
-        moment it's minted (before any I/O) — how a caller watches the run live (the
-        eval dashboard reads stage, tokens, and turns off it)."""
+        for a prompt-less task it also opens the conversation. `user_opens` says the
+        task's prompt is the USER's side of the story (a scenario the user pursues,
+        not the assistant's seed): the run hides it from the harness and the user
+        opens, while rewards and judges still score the real row (the user-sim env's
+        contract). To BE the user yourself, live, use `chat()` instead. `on_trace`
+        observes the run's trace the moment it's minted (before any I/O) — how a
+        caller watches the run live (the eval dashboard reads stage, tokens, and
+        turns off it)."""
         if user is not None:
             self._check_user_support()
         if runtime is not None:
@@ -356,6 +361,7 @@ class Agent:
             interception=self._interception_for(run_is_local, task),
             runtime=runtime,
             user=user,
+            user_opens=user_opens,
             on_trace=on_trace,
         )
         # Who produced this trace — so a program's traces stay attributable after the

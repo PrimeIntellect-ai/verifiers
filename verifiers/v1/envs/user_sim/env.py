@@ -3,9 +3,10 @@
 The generic two-sided conversation (`--env.id user-sim` over any taskset) — the
 substrate a tau2-style benchmark builds on. The taskset's row is read as the USER's
 side of the world: its prompt text becomes the scenario in the user's system prompt
-(`--env.persona`), and the assistant gets the same task **without** the prompt — it
-learns the user's goal only through conversation (its own instructions stay in
-`system_prompt`). The user role rides the in-process `direct` harness by default
+(`--env.persona`), and the assistant plays the same task with `user_opens` — the
+prompt is hidden from its harness, so it learns the user's goal only through
+conversation (its own instructions stay in `system_prompt`), while the task's
+rewards and judges still score the real row. The user role rides the in-process `direct` harness by default
 (`trainable=False`), opens the conversation, and ends it with the done marker; the
 assistant's trace is then judged by the task's own rewards, exactly as in any eval.
 
@@ -58,11 +59,6 @@ class UserSimEnv(vf.Environment[UserSimParams]):
                 ).replace("{done}", self.params.done_marker),
             )
         )
-        # The assistant plays the SAME task minus the prompt (the scenario is the
-        # user's knowledge, not the assistant's) — its hooks and rewards still run.
-        assistant_task = type(task)(
-            task.data.model_copy(update={"prompt": None}), task.config
-        )
         turns = 0
         async with agents["user"].chat(user_task) as sim:
 
@@ -70,17 +66,21 @@ class UserSimEnv(vf.Environment[UserSimParams]):
                 nonlocal turns
                 if turns >= self.params.max_user_turns:
                     return []
-                # The assistant's opening ping is empty (its task has no prompt);
-                # seed the user-model with a neutral greeting instead — the tau
-                # convention: the assistant "answers the phone", the user states
-                # the goal. The greeting exists only on the user's side.
+                # The assistant's opening ping is empty (the user opens); seed the
+                # user-model with a neutral greeting instead — the tau convention:
+                # the assistant "answers the phone", the user states the goal. The
+                # greeting exists only on the user's side.
                 reply = await sim.turn(text or "Hello! How can I help you today?")
                 turns += 1
                 if reply.stopped or self.params.done_marker in reply.text:
                     return []
-                return [{"role": "user", "content": reply.text}]
+                return [vf.UserMessage(content=reply.text)]
 
-            trace = await agents["assistant"].run(assistant_task, user=relay)
+            # The assistant plays the SAME task with `user_opens`: the scenario is
+            # the user's knowledge, so the harness seeds nothing and the user opens —
+            # while the task's hooks, rewards, and plugged judges still score the
+            # real row (they read the task object, not the run's masked view).
+            trace = await agents["assistant"].run(task, user=relay, user_opens=True)
         return [trace, sim.trace]
 
     async def score(self, task, traces):

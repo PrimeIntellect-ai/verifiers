@@ -225,3 +225,11 @@ async def test_chat_closed_user_is_idempotent(monkeypatch):
     async with agent.chat(vf.Task(vf.TaskData(idx=0, prompt=None))):
         pass
     assert trace.stop_condition == "user_closed"
+
+
+async def test_user_opens_requires_a_user():
+    """`user_opens` hides the prompt so the user can open with it — without a user
+    there is nobody to open the conversation."""
+    task = vf.Task(vf.TaskData(idx=0, prompt="the user's scenario"))
+    with pytest.raises(ValueError, match="user_opens"):
+        await _agent().run(task, user_opens=True)

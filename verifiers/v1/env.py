@@ -851,6 +851,7 @@ class _RoleAgent:
         *,
         runtime: "Runtime | None" = None,
         user: "Respond | None" = None,
+        user_opens: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         def watch(trace: Trace) -> None:
@@ -861,7 +862,9 @@ class _RoleAgent:
             if on_trace is not None:
                 on_trace(trace)
 
-        trace = await self._agent.run(task, runtime=runtime, user=user, on_trace=watch)
+        trace = await self._agent.run(
+            task, runtime=runtime, user=user, user_opens=user_opens, on_trace=watch
+        )
         self._completed.append(trace)
         return trace
 

@@ -90,6 +90,7 @@ async def run_rollout(
     interception: Interception | None = None,
     runtime: Runtime | None = None,
     user: Respond | None = None,
+    user_opens: bool = False,
     on_trace: Callable[[Trace], None] | None = None,
 ) -> Trace:
     """Run one rollout and return its trace. Captures expected `RolloutError`s onto
@@ -101,15 +102,26 @@ async def run_rollout(
     owns teardown: a borrowed runtime is neither started nor stopped here. `user` is
     the run's user half (see `session.Respond`): the interception injects its replies
     as user turns after each tool-less model turn, and — for a task with no prompt —
-    asks it to open the conversation. `on_trace` observes the run's trace the moment
-    it's minted (before any I/O) — how a caller watches the run live (stage from the
-    trace's timing spans, tokens and turns as the session records them; see
-    `env.RunSlot`)."""
+    asks it to open the conversation. `user_opens` says the task's prompt belongs to
+    the USER side (a scenario, not the assistant's seed): the run's visible data
+    hides it — the harness seeds nothing, the user opens — while the task object
+    keeps the full row, so its hooks, rewards, and judges score the real question.
+    `on_trace` observes the run's trace the moment it's minted (before any I/O) —
+    how a caller watches the run live (stage from the trace's timing spans, tokens
+    and turns as the session records them; see `env.RunSlot`)."""
+    if user_opens and user is None:
+        raise ValueError(
+            "user_opens=True needs a user to open the conversation; pass user= "
+            "alongside it"
+        )
     limits = limits or RolloutLimits()
     shared_tools = shared_tools or {}
     # The trace carries the DATA (the wire half); behavior stays on the task.
+    run_data = (
+        task.data.model_copy(update={"prompt": None}) if user_opens else task.data
+    )
     trace: Trace = Trace(
-        task=TraceTask(type=type(task).__name__, data=task.data),
+        task=TraceTask(type=type(task).__name__, data=run_data),
         state=state_cls(type(task))(),
         # The resolved sampling this run's calls are made with (role overrides
         # included) — policy metadata a training consumer reads off the trace.

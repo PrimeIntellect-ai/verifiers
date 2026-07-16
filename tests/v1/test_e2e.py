@@ -353,6 +353,16 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     assert user.trainable is False
     assert user.num_turns >= 1  # the modeled user actually spoke
     assert assistant.metrics["user_turns"] >= 1
+    # `user_opens`: the scenario is hidden from the assistant's harness (the run's
+    # visible data) while the task's own rewards still scored the real row — and the
+    # record keeps the unmasked task for provenance.
+    assert assistant.task.data.prompt is None
+    assert "echoed" in assistant.rewards
+    from verifiers.v1.cli.output import read_records
+    from verifiers.v1.trace import WireTrace
+
+    (record,) = read_records(tmp_path, WireTrace)
+    assert record.task.data.prompt is not None
 
 
 @pytest.mark.e2e

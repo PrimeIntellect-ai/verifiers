@@ -47,6 +47,10 @@ Everything beyond the arrow is a parameter, not a concept:
   with no `prompt` is opened BY the user (it's asked first, before any model call). A
   scripted user is a plain closure; there is no user-server machinery to declare or place.
   Needs a harness with `SUPPORTS_USER_SIM` (default / null / direct).
+- **`user_opens=`** says the task's `prompt` is the USER's side of the story — a scenario
+  the user pursues, not the assistant's seed. The run hides the prompt from the harness
+  (the user opens instead), while the task's hooks, rewards, and judges still score the
+  real row. This is how the bundled `user-sim` env runs the assistant on the original task.
 
 ## chat(): be the user yourself
 
