@@ -27,7 +27,7 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
     runtime_is_local,
 )
-from verifiers.v1.task import Task, resolve_server_config
+from verifiers.v1.task import Task, TaskData, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.mcp import SharedToolServer, serve_shared
@@ -177,30 +177,33 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_runtime_config(
-    base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
+    base: RuntimeConfig,
+    task: Task | TaskData,
+    warned: set[tuple[str, str]] | None = None,
 ) -> RuntimeConfig:
     """Resolve a task's runtime config from a `base`: inject the task's `image` (a task with
     an image must run in a container — refuse subprocess), and apply its `workdir` and
     requested `resources` to the fields the runtime supports. Precedence is cli/toml > task >
     default; a resource the runtime doesn't support warns once (deduped via `warned`). Shared
     by `Environment.runtime_for` (rollouts) and the `validate` entrypoint."""
+    data = task.data if isinstance(task, Task) else task
     config = base
     updates: dict = {}
-    if task.data.image is not None:
+    if data.image is not None:
         if isinstance(config, SubprocessConfig):
             raise ValueError(
-                f"task {task.data.idx!r} requires image {task.data.image!r}, but the subprocess "
+                f"task {data.idx!r} requires image {data.image!r}, but the subprocess "
                 "runtime has no container; use the docker or prime runtime"
             )
-        updates["image"] = task.data.image
+        updates["image"] = data.image
     workdir_spec = type(config).model_fields.get("workdir")
     if (
-        task.data.workdir is not None
+        data.workdir is not None
         and workdir_spec is not None
         and getattr(config, "workdir") == workdir_spec.default
     ):
-        updates["workdir"] = task.data.workdir
-    for field, value in task.data.resources.model_dump(exclude_none=True).items():
+        updates["workdir"] = data.workdir
+    for field, value in data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(field)
         if spec is None:
             key = (config.type, field)
@@ -311,6 +314,9 @@ class Environment:
                 f"and need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
         runtime_config = self.runtime_for(task)
+        scoring_runtime_config = task.scoring_runtime_config(
+            self.harness.config.runtime
+        )
         setup_timeout = (
             self.setup_timeout
             if self.setup_timeout is not None
@@ -351,6 +357,7 @@ class Environment:
                 harness=self.harness,
                 ctx=ctx,
                 runtime_config=runtime_config,
+                scoring_runtime_config=scoring_runtime_config,
                 setup_timeout=setup_timeout,
                 harness_timeout=harness_timeout,
                 finalize_timeout=finalize_timeout,

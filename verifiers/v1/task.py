@@ -61,7 +61,7 @@ from verifiers.v1.utils.generic import generic_type
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset, User
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -266,10 +266,20 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def validate(self, runtime: Runtime) -> bool:
         return True
 
+    def scoring_runtime_config(self, base: RuntimeConfig) -> RuntimeConfig | None:
+        """Return a separate runtime config when this task must score in isolation.
+
+        ``None`` keeps scoring in the agent runtime. A separate scorer owns its
+        runtime transition in ``score``; the rollout first records harness metrics
+        while the agent runtime is still live, then passes this config to ``score``.
+        """
+        return None
+
     async def score(
         self,
         trace: Trace,
         runtime: Runtime | None = None,
+        scoring_runtime_config: RuntimeConfig | None = None,
     ) -> None:
         judges = self.plugged_judges()
         available = {"task": self.data, "trace": trace}

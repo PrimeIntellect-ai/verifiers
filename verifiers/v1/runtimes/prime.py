@@ -8,6 +8,7 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 
 import asyncio
 import contextlib
+import io
 import logging
 import math
 import shlex
@@ -202,7 +203,8 @@ class PrimeRuntime(Runtime):
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
-    async def read(self, path: str) -> bytes:
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        self._validate_read_limit(max_bytes)
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (
@@ -211,10 +213,40 @@ class PrimeRuntime(Runtime):
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
+            if max_bytes is not None:
+                # The SDK's download_file buffers response.content. Use its gateway
+                # connection directly so an untrusted file is capped while streaming.
+                auth = await self._client._auth_cache.get_or_refresh(self.info.id)
+                url = (
+                    f"{auth['gateway_url'].rstrip('/')}/"
+                    f"{auth['user_ns']}/{auth['job_id']}/download"
+                )
+                headers = {"Authorization": f"Bearer {auth['token']}"}
+                params = {"path": target, "sandbox_id": self.info.id}
+                buffer = io.BytesIO()
+                client = self._client._get_gateway_client()
+                async with client.stream(
+                    "GET",
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=300,
+                ) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes(1024 * 1024):
+                        if buffer.tell() + len(chunk) > max_bytes:
+                            raise SandboxError(
+                                f"read {path!r}: exceeds the {max_bytes} byte limit"
+                            )
+                        buffer.write(chunk)
+                return buffer.getvalue()
+
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
                 await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
+        except SandboxError:
+            raise
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
@@ -239,6 +271,46 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def teardown_confirmed(self) -> None:
+        client = self._client
+        if client is None:
+            if self.info.id is None:
+                return
+            raise SandboxError("prime cannot confirm teardown without its client")
+
+        confirmed = False
+        try:
+            await client.delete(self.info.id)
+        except Exception as e:
+            if "HTTP 404" not in str(e):
+                raise SandboxError(
+                    f"prime could not delete sandbox {self.info.id}: {e}"
+                ) from e
+            confirmed = True
+        for _ in range(60):
+            if confirmed:
+                break
+            try:
+                sandbox = await client.get(self.info.id)
+            except Exception as e:
+                if "HTTP 404" in str(e):
+                    confirmed = True
+                    break
+                raise SandboxError(
+                    f"prime could not confirm teardown of {self.info.id}: {e}"
+                ) from e
+            if sandbox.status in {"TERMINATED", "ERROR", "TIMEOUT"}:
+                confirmed = True
+                break
+            await asyncio.sleep(0.5)
+        if not confirmed:
+            raise SandboxError(
+                f"prime sandbox {self.info.id} remained active after deletion"
+            )
+        self._client = None
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

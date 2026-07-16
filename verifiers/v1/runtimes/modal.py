@@ -9,6 +9,7 @@ program in the sandbox reaching a host service) is the shared host-side `Tunnel`
 
 import asyncio
 import contextlib
+import io
 import logging
 import shlex
 from pathlib import PurePosixPath
@@ -165,9 +166,31 @@ class ModalRuntime(Runtime):
             return path
         return f"{self.config.workdir.rstrip('/')}/{path}"
 
-    async def read(self, path: str) -> bytes:
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        self._validate_read_limit(max_bytes)
         try:
-            return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
+            target = self._abs(path)
+            if max_bytes is None:
+                return await self._sandbox.filesystem.read_bytes.aio(target)
+            from modal.stream_type import StreamType
+
+            proc = await self._sandbox.exec.aio(
+                "cat", "--", target, text=False, stderr=StreamType.DEVNULL
+            )
+            buffer = io.BytesIO()
+            async for chunk in proc.stdout:
+                if buffer.tell() + len(chunk) > max_bytes:
+                    await proc.stdout.aclose()
+                    raise SandboxError(
+                        f"read {path!r}: exceeds the {max_bytes} byte limit"
+                    )
+                buffer.write(chunk)
+            await proc.wait.aio()
+            if proc.returncode:
+                raise SandboxError(f"read {path!r}: modal exec failed")
+            return buffer.getvalue()
+        except SandboxError:
+            raise
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
@@ -181,6 +204,18 @@ class ModalRuntime(Runtime):
             await self._sandbox.filesystem.write_bytes.aio(data, target)
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def teardown_confirmed(self) -> None:
+        sandbox = self._sandbox
+        if sandbox is None:
+            return
+        try:
+            await sandbox.terminate.aio(wait=True)
+        except Exception as e:
+            raise SandboxError(
+                f"modal could not confirm teardown of {self.info.id}: {e}"
+            ) from e
+        self._sandbox = None
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async API can't run once the loop is gone): terminate
