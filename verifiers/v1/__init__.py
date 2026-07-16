@@ -100,7 +100,7 @@ from verifiers.v1.mcp import (
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
-    TRACE_SCHEMA_VERSION,
+    TRACE_VERSION,
     AgentInfo,
     Branch,
     Error,
@@ -165,7 +165,7 @@ __all__ = [
     "Trace",
     "TraceTask",
     "WireTrace",
-    "TRACE_SCHEMA_VERSION",
+    "TRACE_VERSION",
     "AgentInfo",
     "VersionInfo",
     "State",

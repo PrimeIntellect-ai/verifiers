@@ -213,7 +213,7 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
-TRACE_SCHEMA_VERSION = 1
+TRACE_VERSION = 1
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
@@ -261,7 +261,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
     runtime: RuntimeInfo | None = None
     """The runtime's full config plus its provisioned resource ID."""
-    schema_version: int = TRACE_SCHEMA_VERSION
+    version: int = TRACE_VERSION
     """The trace record schema this trace serializes as."""
     verifiers: VersionInfo | None = None
     """The verifiers build that produced this trace, stamped at rollout start —
