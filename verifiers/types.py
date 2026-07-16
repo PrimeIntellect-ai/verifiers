@@ -203,8 +203,7 @@ class RoutedExpertsPayload(TypedDict):
     data: Any
     shape: list[int]
     start: int
-    dtype: NotRequired[str]
-    """Numpy dtype of the packed expert indices ("uint8" when absent; "uint16" for models with >256 experts)."""
+    dtype: str
 
 
 class ResponseTokens(CustomBaseModel):
