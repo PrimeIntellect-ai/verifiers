@@ -585,6 +585,11 @@ class InterceptionServer(Interception):
                 status_code=502,
             )
             session.error_latched = True
+            # A missing graph turn invalidates every other request already using this session.
+            current = asyncio.current_task()
+            for task in session.active_requests:
+                if task is not current:
+                    task.cancel()
             logger.warning(
                 "model call failed: id=%s %s: %s",
                 session.trace.id,
