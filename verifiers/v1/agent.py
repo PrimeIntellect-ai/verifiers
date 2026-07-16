@@ -131,6 +131,11 @@ class ChatSession:
         assistant's turn to the caller, then wait for the caller's next message. The
         first call is the opening ping (chat tasks have no prompt), which has no
         assistant turn to deliver — it only waits for the first `turn()`."""
+        if self._closed:
+            # The caller already left. `close()` plants one empty sentinel; a run
+            # that consults its user again after consuming it (a harness making one
+            # more model call past `user_closed`) must not hang on the drained queue.
+            return []
         if self._opened:
             self._to_caller.put_nowait(Reply(text=content))
         self._opened = True
@@ -151,9 +156,16 @@ class ChatSession:
         if self._closed:
             raise RuntimeError("this chat is closed")
         if self._ended:
-            raise RuntimeError(
-                "the exchange is over (the run ended); read session.trace"
-            )
+            # The run's end has one surface: the stopped marker `_on_run_done`
+            # queued. Whether the end lands mid-`turn()` (the pending get consumes
+            # it) or a moment before the next `turn()` (drained here), the caller
+            # sees `Reply(stopped=True)`; only a turn after that raises.
+            try:
+                return self._to_caller.get_nowait()
+            except asyncio.QueueEmpty:
+                raise RuntimeError(
+                    "the exchange is over (the run ended); read session.trace"
+                ) from None
         self._from_caller.put_nowait([UserMessage(content=message)])
         return await self._to_caller.get()
 

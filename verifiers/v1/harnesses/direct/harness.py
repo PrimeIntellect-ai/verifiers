@@ -75,6 +75,15 @@ class DirectHarness(Harness[DirectHarnessConfig]):
                 ):  # exactly one chance to answer directly — never an open loop
                     break
                 bounced = True
+                # A user-driven run's injected turns exist only in the server's
+                # per-request body — this local list never saw them. The loop is
+                # in-process and holds the live trace (every served turn already
+                # committed), so rebuild from it before re-requesting; the bounce
+                # must carry the whole exchange, not amputate it. (Provider-native
+                # extras like raw reasoning don't survive the rebuild — acceptable
+                # for the rare hallucinated-tool-call resend.)
+                if branches := trace.branches:
+                    messages = [message_to_wire(m) for m in branches[-1].messages]
                 # Tool-less by design: bounce the hallucinated call back with an error result.
                 messages.extend(
                     {

@@ -282,57 +282,11 @@ class InterceptionServer(Interception):
 
         if (inflight := session.inflight.get(req_hash)) is not None:
             return await coalesced(inflight)
-        logger.debug(
-            "intercept %s: id=%s stream=%s",
-            request.path,
-            session.trace.id,
-            dialect.streaming(body),
-        )
-        # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
-        # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
-        # A user extends both each turn (`dialect.extend` for wire, `prompt` for trace).
-        prompt: Messages
-        # `tools` is recorded onto the trace only when a turn commits (below / in `_stream`):
-        # the request is ground truth for what the model saw, but a refused or failed request
-        # was never seen at all.
-        prompt, tools = dialect.parse_request(body)
-        # Cache the opening so retries do not advance a scripted user twice.
-        if (
-            session.user is not None
-            and session.trace.task.data.prompt is None
-            and session.trace.num_turns == 0
-        ):
-            if session.opening is None:
-                try:
-                    session.opening = _as_messages(await session.user(""))
-                except RolloutError as e:
-                    return self._fail(session, dialect, e)
-                except Exception as e:
-                    return self._fail(
-                        session,
-                        dialect,
-                        UserError(f"user failed: {type(e).__name__}: {e}"),
-                    )
-            if not session.opening:
-                # The user closed at the open: there is no conversation to have.
-                # Refuse the first model call to halt the harness (same shape as a
-                # refused turn below).
-                if session.trace.stop_condition is None:
-                    session.trace.stop("user_closed")
-                return web.json_response(
-                    dialect.error_body("rollout stopped: user_closed"), status=400
-                )
-            body = dialect.extend(body, None, session.opening)
-            prompt = [*prompt, *session.opening]
-        if dialect.streaming(body):
-            return await self._stream(request, session, dialect, body, prompt, tools)
-        headers = request.headers.copy()
-        # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above) rather
-        # than starting a second inference. Re-check first: an identical request may have claimed
-        # it while we awaited the user's opening. The get / create / assign below run with no
-        # await between them, so two concurrent identical requests can never both become owner.
-        if (inflight := session.inflight.get(req_hash)) is not None:
-            return await coalesced(inflight)
+        # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above)
+        # rather than starting a second inference. Claimed before ANY await — the user's
+        # opening below included — so a retry racing the opening can never invoke the user
+        # a second time. The get / create / assign run with no await between them, so two
+        # concurrent identical requests can never both become owner.
         fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
         session.inflight[req_hash] = fut
 
@@ -347,6 +301,12 @@ class InterceptionServer(Interception):
                 fut.set_result(response.raw)
             return _completion_response(response.raw)
 
+        logger.debug(
+            "intercept %s: id=%s stream=%s",
+            request.path,
+            session.trace.id,
+            dialect.streaming(body),
+        )
         # A user turns one program request into a multi-turn exchange: after each model
         # turn the user's reply is injected as a user turn and the model is re-prompted,
         # so a whole game plays out here and only the final assistant message returns to
@@ -355,6 +315,47 @@ class InterceptionServer(Interception):
             None  # the latest committed turn (None until the first)
         )
         try:
+            # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
+            # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
+            # A user extends both each turn (`dialect.extend` for wire, `prompt` for trace).
+            prompt: Messages
+            # `tools` is recorded onto the trace only when a turn commits (below / in `_stream`):
+            # the request is ground truth for what the model saw, but a refused or failed request
+            # was never seen at all.
+            prompt, tools = dialect.parse_request(body)
+            # Cache the opening so retries do not advance a scripted user twice.
+            if (
+                session.user is not None
+                and session.trace.task.data.prompt is None
+                and session.trace.num_turns == 0
+            ):
+                if session.opening is None:
+                    try:
+                        session.opening = _as_messages(await session.user(""))
+                    except RolloutError as e:
+                        return self._fail(session, dialect, e)
+                    except Exception as e:
+                        return self._fail(
+                            session,
+                            dialect,
+                            UserError(f"user failed: {type(e).__name__}: {e}"),
+                        )
+                if not session.opening:
+                    # The user closed at the open: there is no conversation to have.
+                    # Refuse the first model call to halt the harness (same shape as a
+                    # refused turn below).
+                    if session.trace.stop_condition is None:
+                        session.trace.stop("user_closed")
+                    return web.json_response(
+                        dialect.error_body("rollout stopped: user_closed"), status=400
+                    )
+                body = dialect.extend(body, None, session.opening)
+                prompt = [*prompt, *session.opening]
+            if dialect.streaming(body):
+                return await self._stream(
+                    request, session, dialect, body, prompt, tools
+                )
+            headers = request.headers.copy()
             while True:
                 try:
                     refused = await session.refused()
@@ -372,6 +373,20 @@ class InterceptionServer(Interception):
                     if response is None:
                         return web.json_response(
                             dialect.error_body(f"rollout stopped: {refused}"),
+                            status=400,
+                        )
+                    return serve(response)
+                if (
+                    session.user is not None
+                    and session.trace.stop_condition == "user_closed"
+                ):
+                    # The user already ended the exchange — never consult it again. A
+                    # harness that makes one more model call past the final served
+                    # turn halts here, exactly like a refusal (`user_closed` never
+                    # re-fires through `refused()`, so it needs its own gate).
+                    if response is None:
+                        return web.json_response(
+                            dialect.error_body("rollout stopped: user_closed"),
                             status=400,
                         )
                     return serve(response)

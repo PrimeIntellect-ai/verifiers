@@ -181,3 +181,47 @@ async def test_chat_run_ending_first_stops_the_session(monkeypatch):
         with pytest.raises(RuntimeError, match="over"):
             await session.turn("still there?")
     assert trace.stop_condition == "max_turns"
+
+
+async def test_chat_run_end_before_turn_still_returns_stopped(monkeypatch):
+    """The run's end has one surface: landing between turns (not mid-turn), the next
+    turn() drains the queued stopped marker instead of racing to a RuntimeError — a
+    seat that fails fast forfeits deterministically (kuhn-poker's ask())."""
+    import asyncio
+
+    agent = _agent()
+    trace = _stub_trace()
+
+    async def fake_run(task, *, runtime=None, user=None, on_trace=None):
+        on_trace(trace)
+        trace.stop("harness_timeout")  # dies before ever consulting the user
+        return trace
+
+    monkeypatch.setattr(agent, "run", fake_run)
+    async with agent.chat(vf.Task(vf.TaskData(idx=0, prompt=None))) as session:
+        while not session._ended:  # let the run land its done-callback first
+            await asyncio.sleep(0)
+        reply = await session.turn("hello?")
+        assert reply.stopped
+        with pytest.raises(RuntimeError, match="over"):
+            await session.turn("anyone?")
+    assert trace.stop_condition == "harness_timeout"
+
+
+async def test_chat_closed_user_is_idempotent(monkeypatch):
+    """A run that consults its user again after consuming the close sentinel gets []
+    forever instead of hanging on the drained queue."""
+    agent = _agent()
+    trace = _stub_trace()
+
+    async def fake_run(task, *, runtime=None, user=None, on_trace=None):
+        on_trace(trace)
+        assert await user("") == []  # the close resolved the opening...
+        assert await user("one more?") == []  # ...and every consult after it
+        trace.stop("user_closed")
+        return trace
+
+    monkeypatch.setattr(agent, "run", fake_run)
+    async with agent.chat(vf.Task(vf.TaskData(idx=0, prompt=None))):
+        pass
+    assert trace.stop_condition == "user_closed"
