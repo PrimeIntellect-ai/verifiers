@@ -1,6 +1,6 @@
 ---
 name: create-environments
-description: Create or migrate native verifiers.v1 taskset and harness packages. Use to build an environment, port a benchmark, add task tools or user simulation, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
+description: Create or migrate native verifiers.v1 taskset, environment, and harness packages. Use to build an environment, port a benchmark, add task tools, script or model a user, build a multi-agent environment, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
 ---
 
 # Create Environments
@@ -19,7 +19,6 @@ Add only the components the contract needs:
 
 ```bash
 prime env init my-task-v1 -T      # task toolset
-prime env init my-task-v1 -U      # user simulator
 prime env init my-agent-v1 -H     # custom reusable harness
 ```
 
@@ -40,7 +39,8 @@ Use the naming convention `<env>.x86.<task>:latest` for the image name (e.g. `ab
 Before starting with the implementation, think about the following things:
 - What is the dataset about, which fields does it have?
 - Does it come with custom tools that are strictly necessary and not added by common harnesses? For example, a lot of harnesses come with bash or web search tools, which makes custom tools obsolete. Always prefer harnesses over custom tools
-- Does the taskset need a user simulator?
+- Is the conversation driven by a user (scripted turns, a game engine, a modeled user)? That is env control flow (`user=` / `agent.chat()`), not a server.
+- Does one rollout involve more than one agent run (attempts, judge, seats)? Then the package also exports an `Environment` subclass — or an existing bundled env (`--env.id best-of-n|judge|user-sim`) already covers it.
 - Which rewards are needed for scoring? What additional metrics might be nice to have, either for debugging, training or potentially in the future?
 - How should the tasks be scored, is a judge needed?
 
@@ -50,7 +50,7 @@ Ask the user about unresolved semantic choices instead of inventing them. Presen
 
 ## Native package contract
 
-A package exports one `vf.Taskset` subclass and optionally one `vf.Harness` subclass through `__all__`. This happens automatically when you bootstrap a new environment using `prime env init`.
+A package exports one `vf.Taskset` subclass — and optionally one `vf.Environment` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new environment using `prime env init`.
 
 Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader
 resolves classes and their config types from `__all__` and generic bases.
@@ -115,8 +115,8 @@ Only `TaskData` is stored on the trace. Do not put live clients, runtime handles
 `Task` owns the behavior applied to that row:
 
 - `setup`, `finalize`, and model-free `validate` hooks;
-- stop conditions, metrics, rewards, and group rewards;
-- task-scoped tool and user-simulator declarations;
+- stop conditions, metrics, and rewards;
+- task-scoped tool declarations;
 - task-facing configuration read from `self.config`.
 
 `Taskset` owns loading and selection-time concerns. Its `load()` constructs the tasks, its direct config fields hold dataset/split/seed/sample-count knobs, and `Taskset.tools` may declare task-agnostic servers shared by one environment worker's rollouts.
@@ -135,7 +135,7 @@ Runtime config chooses where code executes. Task hooks should use the `vf.Runtim
 - Prefer deterministic verification grounded in the task's actual artifact or answer.
 - Use an LLM judge only when semantic judgment is unavoidable.
 - Metrics are for observability and do not contribute to reward, but are useful. Use them deliberately and appropriately!
-- Group rewards receive all traces for one task but no live runtime.
+- Judgement that compares the sibling traces of one env-rollout (best-of-n selection, zero-sum payoffs) lives on `Environment.score(task, traces)` — attach via `trace.record_reward`/`record_metric`; no live runtime there.
 - Raise ordinary Python exceptions from rollout hooks and scoring. The rollout records them as `TaskError`.
 
 ## Validation and lifecycle
@@ -187,9 +187,16 @@ Choose placement from the tool's lifetime and filesystem needs:
 
 ## User simulation
 
-Use a `vf.User` when the environment, not the harness, is able to drive the conversation.
+There is one mechanism: `user=` on `Agent.run` — any async `str -> vf.Messages` callable whose replies are injected as user turns (returning no messages ends the exchange; a task with no `prompt` is opened by the user). There is no user server to declare or place; who computes the replies is env control flow:
 
-The selected harness must support user simulation, which a lot of the built-in, especially the CLI-based ones, don't. The built-in default harness does support user sim.
+- **Scripted user** (replay pre-generated turns, step a game engine): a plain closure inside an `Environment.rollout()` override — see `environments/alphabet_sort_v1` or the bundled `textarena` taskset.
+- **Modeled user** (an LLM playing the user): another agent role, driven live via `agents["user"].chat(...)` and relayed into the assistant's run — or just use the bundled `user-sim` env (`--env.id user-sim`), which does exactly this from the task's prompt-as-scenario.
+
+The harness running the *assistant* must support injected user turns (`SUPPORTS_USER_SIM`): `default`, `null`, and the in-process `direct` harness do; most CLI-agent harnesses don't.
+
+## Multi-agent environments
+
+When one rollout is more than one agent run, export an `Environment` subclass next to the taskset: declare roles as `vf.AgentConfig` fields on a `vf.EnvParams` subclass (bound via `Environment[YourParams]`, addressed as `--env.<role>.*`), override `rollout(task, agents)` (imperative control flow) and optionally `score(task, traces)` (sibling-dependent judgement). Before writing one, check the bundled envs (`--env.id best-of-n | judge | user-sim`) and the reference implementations (`environments/code_golf_v1`, `environments/kuhn_poker_v1`). See docs/v1/environments.md.
 
 ## Custom harnesses
 
@@ -224,7 +231,7 @@ Map concepts directly:
 | `Rubric` reward function | Task `@vf.reward` method |
 | Parser object | Ordinary parsing inside task scoring |
 | `ToolEnv` tools | `vf.Toolset` declared on `Task.tools` or `Taskset.tools` |
-| `MultiTurnEnv.env_response` | `vf.User` declared on the task |
+| `MultiTurnEnv.env_response` | a user closure the env's `rollout()` passes via `user=` |
 | Dict state | Typed `vf.State` |
 | Sandbox subclass | Runtime config + task hooks |
 

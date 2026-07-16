@@ -25,7 +25,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 
 ## EvalConfig — the run
 
-`verifiers/v1/configs/eval.py` — `EvalConfig(EnvServerConfig)`. The single config object the eval CLI parses. Inherits [`EnvConfig`](#envconfig--the-environment) + [`EnvServerConfig`](#envserverconfig--the-pool) (so `--taskset.*`, `--harness.*`, `--pool.*`, `--timeout.*`, etc. are all top-level flags with no `--env.` prefix) and adds the run knobs.
+`verifiers/v1/configs/eval.py` — `EvalConfig(EnvServerConfig)`. The single config object the eval CLI parses. Inherits [`EnvConfig`](#envconfig--the-environment) + [`EnvServerConfig`](#envserverconfig--the-pool) (so `--taskset.*`, `--harness.*`, `--pool.*`, `--timeout.*`, etc. are all top-level flags; `--env.*` is the environment's own params block, not a prefix for these) and adds the run knobs.
 
 | Field | Type | Default | Aliases | Notes |
 |---|---|---|---|---|
@@ -34,7 +34,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 | `client` | `ClientConfig` | `EvalClientConfig()` | — | The model client (discriminated union — see [Client config](#client-config)). |
 | `sampling` | `SamplingConfig` | `SamplingConfig()` | — | Per-request sampling knobs (see [Sampling config](#sampling-config)). |
 | `num_tasks` | `int \| None` | `None` | `batch_size`, `num_examples`, `num_tasks`, `n` | How many tasks to evaluate (None = all). |
-| `num_rollouts` | `int` | `1` | `group_size`, `rollouts_per_example`, `num_rollouts`, `r` | Rollouts per task. A task with `@group_reward`s requires ≥ 2. |
+| `num_rollouts` | `int` | `1` | `group_size`, `rollouts_per_example`, `num_rollouts`, `r` | Independent env-rollouts per task — the trainer's group size. Env-internal fan-out (e.g. best-of-n attempts) is the env's own knob, not `-r`. |
 | `shuffle` | `bool` | `False` | `shuffle`, `s` | Shuffle tasks before taking the first `num_tasks`. |
 | `max_concurrent` | `int \| None` | `128` | `max_concurrent`, `c` | Max rollouts in flight at once. |
 | `verbose` | `bool` | `False` | `verbose`, `v` | Log at debug level instead of info. |
@@ -43,11 +43,11 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 | `server` | `bool` | `False` | — | Drive rollouts through the env-server worker pool (sized by `pool`) instead of in-process — the path prime-rl trains through. Incompatible with `--rich`. |
 | `push` | `bool` | `True` | — | Upload the finished run to the private Evaluations tab. Disable with `--no-push`. |
 | `output_dir` | `Path \| None` | `None` | `output_dir`, `o` | Where to write the run (`config.toml` + `traces.jsonl`). None = a fresh per-run dir under `outputs/<env>--<model>--<harness>/<uuid>`. |
-| `resume` | `Path \| None` | `None` | — | Set by `--resume <dir>`: re-run missing/errored rollouts; an incomplete group-scored task is re-run as a whole group. Excluded from the saved config; takes no other args. |
+| `resume` | `Path \| None` | `None` | — | Set by `--resume <dir>`: re-run missing/errored rollouts, record-atomically (a multi-trace rollout is kept or redone as a unit; `Environment.complete` is the keep verdict). Excluded from the saved config; takes no other args. |
 
 Validator: `--rich` + `--server` together is rejected (the dashboard is in-process only).
 
-Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`timeout`](#timeout-config), [`retries`](#retry-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, [`multiplex`](#envconfig--the-environment), the legacy `id` / `args` / `extra_env_kwargs`.
+Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`env`](#env-params----env), [`timeout`](#timeout-config), [`retries`](#retry-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, `interception`, the legacy `id` / `args` / `extra_env_kwargs`.
 Inherited from `EnvServerConfig`: [`pool`](#pool-config).
 
 ---
@@ -93,15 +93,18 @@ A vLLM `/inference/v1/generate` endpoint with client-side tokenization (response
 
 ## EnvConfig — the environment
 
-`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`. The taskset and harness are the two reusable
-parts of the environment: the taskset loads typed tasks, while the harness provisions and drives
-the agent program for each rollout in `harness.runtime`. Each loaded `Task` supplies the row's
-behavior, tools, user simulator, and scoring; only its `TaskData` is stored on the trace.
+`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`. A run has three orthogonal axes: the taskset
+loads typed tasks (*what to solve*), the harness provisions and drives the agent program for each
+rollout in `harness.runtime` (*how the LLM interfaces with the world*), and the env is the control
+flow between agents (*who runs, judged how across the finished set* — single-agent by default).
+Each loaded `Task` supplies the row's behavior, tools, and scoring; only its `TaskData` is stored
+on the trace.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `taskset` | `TasksetConfig` | `TasksetConfig()` | Resolved to its concrete subclass by `--taskset.id` (see [Taskset config](#taskset-config)). `SerializeAsAny` so subclass fields survive `model_dump`. |
 | `harness` | `HarnessConfig` | `HarnessConfig(id="default")` | Resolved to its concrete subclass by `--harness.id` (or the taskset's bundled harness). See [Harness config](#harness-config). |
+| `env` | `EnvParams` | `EnvParams()` | The environment and its params (see [Env params](#env-params----env)): `--env.id` selects a reusable env; empty keeps the taskset's own (its exported `Environment` subclass, else the single-agent base). |
 | `timeout` | `TimeoutConfig` | `TimeoutConfig()` | See [Timeout config](#timeout-config). |
 | `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). |
 | `max_turns` | `int \| None` | `None` | Max model turns per rollout (None = no limit). Framework-enforced between turns. |
@@ -429,7 +432,7 @@ value in the run's `TimeoutConfig` wins; otherwise the corresponding row value i
 | `idx` | `int` | — | Stable integer index within the taskset. Used for selection, grouping, display, and reproducibility. |
 | `name` | `str \| None` | `None` | Optional human-readable label used in logs and dashboards. |
 | `description` | `str \| None` | `None` | Optional human-readable description. |
-| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` lets the user simulator open via `respond("")`. |
+| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` means the run's user opens the conversation (`Agent.run(user=...)` / `agent.chat()` — the env's control flow supplies it). |
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
@@ -488,14 +491,19 @@ There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tool
 
 ---
 
-## User config
+## Env params — `--env.*`
 
-`UserConfig` controls a simulator declared on `Task.user`; its matching config field belongs on `TaskConfig` under `--taskset.task.*`.
+`EnvParams` is the environment's own typed block on `EnvConfig.env`: which env runs the taskset
+plus its roles and knobs, narrowed to the selected env's declared params type (by `--env.id`,
+else the taskset id) so everything renders typed in `-h`.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `colocated` | `bool` | `False` | Run the user simulator inside the harness's runtime (its port is published back to the host so the framework can still drive it). |
-| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The user simulator's own runtime, used unless `colocated`. See [Runtime configs](#runtime-configs). |
+| `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs the taskset: a bundled env (`best-of-n`, `judge`, `user-sim`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story. |
+| *(env-declared)* | — | — | An env subclass declares roles as `vf.AgentConfig` fields (`--env.<role>.model`, `--env.<role>.harness.id`, `--env.<role>.trainable`, per-role `max_*` caps) plus plain knobs (`--env.n`, `--env.rubric`, ...). Partial role overrides deep-merge into the role's declared defaults. |
+
+User simulation has no server or placement config: the run's user is a callable the env's
+control flow supplies (`user=` / `agent.chat()`); see the `user-sim` bundled env.
 
 ---
 

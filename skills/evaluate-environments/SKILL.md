@@ -54,6 +54,15 @@ The leading ID is shorthand for `--taskset.id`. Select a harness independently:
 prime eval run owner/name --harness.id codex --harness.runtime.type prime
 ```
 
+The env — the control flow between agents — is the third independent axis. Empty keeps the
+taskset's own story (its exported `Environment` subclass, else single-agent); `--env.id` pairs
+a reusable env with any taskset, its knobs typed under `--env.*`:
+
+```bash
+prime eval run my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
+prime eval run my-task-v1 --env.id judge                    # a judge agent grades each attempt
+```
+
 When specifying environments, always include the owner to resolve it correctly.
 
 ## Disabling tools
