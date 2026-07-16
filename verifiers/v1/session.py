@@ -81,7 +81,10 @@ class RolloutSession:
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
-    Reset before each model turn, so a successful retry clears it."""
+    Reset before each model turn so a successful retry clears it, unless `error_latched`."""
+    error_latched: bool = False
+    """Whether `error` must halt later model calls instead of being cleared. Used when a streamed
+    response reached the harness but could not be parsed into a trace turn."""
     active_requests: set[asyncio.Task] = field(default_factory=set, repr=False)
     """Model request handlers still serving this rollout. The rollout timeout cancels them so
     an upstream provider stream cannot outlive its harness."""

@@ -246,6 +246,12 @@ class InterceptionServer(Interception):
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
+        if session.error_latched:
+            assert session.error is not None
+            return web.json_response(
+                dialect.error_body(str(session.error)),
+                status=getattr(session.error, "status_code", 502),
+            )
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -573,6 +579,7 @@ class InterceptionServer(Interception):
                 f"malformed upstream response: {type(e).__name__}: {e}",
                 status_code=502,
             )
+            session.error_latched = True
             logger.warning(
                 "model call failed: id=%s %s: %s",
                 session.trace.id,

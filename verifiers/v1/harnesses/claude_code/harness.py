@@ -12,6 +12,7 @@ from verifiers.v1.trace import Trace
 
 CLAUDE_HOME = "/tmp/vf-claude-code-{version}"
 CLAUDE_BIN = f"{CLAUDE_HOME}/.local/bin/claude"
+CLAUDE_CONFIG_DIR = ".vf-claude"
 INSTALL = """
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -41,7 +42,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             f'"$(command -v flock || command -v lockf)" {home}/install.lock '
             f"bash -o pipefail -c {install}"
         )
-        result = await runtime.run(["sh", "-c", guarded], {})
+        result = await runtime.run(["sh", "-c", guarded], self.config.resolved_env)
         if result.exit_code != 0:
             detail = (result.stderr or result.stdout).strip()[-500:]
             raise RuntimeError(f"Claude Code install failed: {detail}")
@@ -64,7 +65,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             # Claude appends /v1/messages; give it the interception root, not the model endpoint.
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
-            "CLAUDE_CONFIG_DIR": ".vf-claude",
+            "CLAUDE_CONFIG_DIR": CLAUDE_CONFIG_DIR,
             "DISABLE_AUTOUPDATER": "1",
             "IS_SANDBOX": "1",
         }
@@ -89,9 +90,11 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
                 name: {"type": "http", "url": url} for name, url in mcp_urls.items()
             }
         }
+        mcp_path = f"{CLAUDE_CONFIG_DIR}/mcp.json"
+        await runtime.write(mcp_path, json.dumps(mcp).encode())
         argv += [
             "--mcp-config",
-            json.dumps(mcp),
+            mcp_path,
             "--strict-mcp-config",
             "--",
             instruction or "",

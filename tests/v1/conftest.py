@@ -20,10 +20,11 @@ Every matrix value carries a pytest mark, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
-harnesses `null` / `default` / `rlm` / `kimi_code` / `codex`. A mark is applied per axis, so it
-selects every case touching that value on ANY axis; for one exact combination use `-k` on the test
-id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real remote
-sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs `-m "not prime and not modal"`.
+harnesses `null` / `default` / `rlm` / `kimi_code` / `codex` / `claude_code`. A mark is applied per
+axis, so it selects every case touching that value on ANY axis; for one exact combination use `-k`
+on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real
+remote sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs
+`-m "not prime and not modal"`.
 """
 
 import os
@@ -115,7 +116,7 @@ def tool_runtime(request) -> dict:
         pytest.param("rlm", marks=pytest.mark.rlm, id="rlm"),
         pytest.param("kimi-code", marks=pytest.mark.kimi_code, id="kimi-code"),
         pytest.param("codex", marks=pytest.mark.codex, id="codex"),
-        "claude-code",
+        pytest.param("claude-code", marks=pytest.mark.claude_code, id="claude-code"),
     ]
 )
 def harness(request) -> str:
