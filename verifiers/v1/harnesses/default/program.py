@@ -200,6 +200,10 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
         for tool in (await session.list_tools()).tools:
             # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
             full = f"{name}_{tool.name}" if name else tool.name
+            if full in dispatch:
+                raise ValueError(
+                    f"duplicate tool name {full!r} across servers; keep qualified names"
+                )
             tool_schemas.append(
                 {
                     "type": "function",
