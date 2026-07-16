@@ -32,7 +32,14 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
-from verifiers.v1.trace import Error, TimeSpan, Timing, Trace, TraceTask
+from verifiers.v1.trace import (
+    Error,
+    RolloutRecord,
+    TimeSpan,
+    Timing,
+    Trace,
+    TraceTask,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     Response,
@@ -401,8 +408,11 @@ class LegacyEnvServer(EnvServer):
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-        return RunRolloutResponse(
-            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
+        # Trust the bridge-minted record; serialize it once (mirrors `EnvServer`).
+        return RunRolloutResponse.model_construct(
+            record=RolloutRecord.of(
+                rollout_output_to_trace(out, req.task_idx), env=self.taskset_id
+            )
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:

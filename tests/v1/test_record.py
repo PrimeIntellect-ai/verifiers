@@ -100,3 +100,29 @@ def test_resume_env_complete_override(tmp_path):
         tolerant_dir, [0], num_rollouts=1, complete=lambda r: not r.errors
     )
     assert [r.id for r in records] == [record.id] and owed == {}
+
+
+def test_legacy_bridge_run_rollout_wraps_a_record():
+    """The v0 bridge speaks protocol 2: `run_rollout` answers with `record`. (The
+    response type renamed its field from `trace`, and pydantic drops an unknown
+    kwarg silently — a bridged rollout must survive the rename.)"""
+    from verifiers.v1 import legacy
+    from verifiers.v1.clients.config import EvalClientConfig
+    from verifiers.v1.serve.types import RunRolloutRequest
+    from verifiers.v1.trace import WireRecord
+    from verifiers.v1.types import SamplingConfig
+
+    server = legacy.LegacyEnvServer.__new__(legacy.LegacyEnvServer)
+    server.taskset_id = "echo-v0"
+
+    async def run_v0(task_idx, client, model, sampling):
+        return {"prompt": [{"role": "user", "content": "hi"}], "reward": 1.0}
+
+    server._run_v0 = run_v0
+    req = RunRolloutRequest(
+        task_idx=0, client=EvalClientConfig(), model="m", sampling=SamplingConfig()
+    )
+    resp = asyncio.run(server._run_rollout(req))
+    record = WireRecord.model_validate(resp.model_dump()["record"])
+    assert record.env == "echo-v0" and record.ok
+    assert record.traces[0].reward == 1.0
