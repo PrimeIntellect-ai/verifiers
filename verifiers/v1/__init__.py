@@ -101,14 +101,14 @@ from verifiers.v1.mcp import (
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     TRACE_SCHEMA_VERSION,
+    AgentInfo,
     Branch,
     Error,
-    HarnessInfo,
-    ModelInfo,
     TimeSpan,
     Timing,
     Trace,
     TraceTask,
+    VersionInfo,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -166,8 +166,8 @@ __all__ = [
     "TraceTask",
     "WireTrace",
     "TRACE_SCHEMA_VERSION",
-    "ModelInfo",
-    "HarnessInfo",
+    "AgentInfo",
+    "VersionInfo",
     "State",
     "StateT",
     "MessageNode",
