@@ -8,6 +8,7 @@ secret. The rollout constructs it (model ctx, trace, task `@stop`s, limits, the 
 between turns.
 """
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -88,6 +89,23 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+    last_request: bytes | None = None
+    """Digest of the most recently served request body; with `last_response`, the replay cache
+    that keeps the message graph atomic under harness-SDK retries. A retry re-sends the
+    byte-identical request; when it matches, the interception server replays the recorded
+    response instead of re-sampling and committing a second turn — which would fork the graph
+    into a dead-end branch. Only a fully served request is cached, so a genuinely failed attempt
+    still re-runs. Turns are issued sequentially (one outstanding request at a time), so a retry
+    is always of the most recent request — keeping only the last one is sufficient and bounded."""
+    last_response: dict | None = None
+    """The response returned for `last_request`, replayed verbatim on a retry."""
+    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
+    """Body digest -> the future of the attempt currently computing it. A retry that arrives
+    while the first attempt is still in flight (a slow turn) awaits this future instead of
+    starting a second inference — the other half of retry atomicity (with `last_response`, which
+    covers a retry after the attempt finished). Because a slow turn is coalesced rather than
+    re-sampled, retries stay safe without an inflated client timeout. The future resolves to the
+    served response, or to None if the attempt produced no servable response (error/refuse)."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each

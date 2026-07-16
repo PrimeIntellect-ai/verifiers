@@ -169,35 +169,36 @@ class Branch(StrictBaseModel):
         return KeptTokens(ids=ids, counts=np.concatenate(counts_parts))
 
     @property
-    def num_total_tokens(self) -> int:
-        return sum(len(n.token_ids) for n in self.nodes)
-
-    @property
     def usage(self) -> Usage | None:
         return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
 
     @property
-    def num_input_tokens(self) -> int:
-        """Final-turn prompt size, falling back to provider usage without token IDs."""
-        last_completion = next(
-            (sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0
-        )
-        token_len = self.num_total_tokens - last_completion
-        if token_len:
-            return token_len
-        last = next(
+    def last_usage(self) -> Usage | None:
+        """Provider usage from the final model call on this branch — the full context it saw."""
+        return next(
             (n.usage for n in reversed(self.nodes) if n.usage is not None), None
         )
-        return last.input_tokens if last else 0
+
+    @property
+    def num_total_tokens(self) -> int:
+        """Final sequence length: the last call's prompt + completion. Earlier turns' context
+        is already contained in that prompt, so re-sent tokens are counted once rather than
+        summed per turn."""
+        last = self.last_usage
+        return last.total_tokens if last is not None else 0
 
     @property
     def num_output_tokens(self) -> int:
-        """Sampled tokens, falling back to provider usage without token IDs."""
-        token_len = sum(sum(n.mask) for n in self.nodes)
-        if token_len:
-            return token_len
+        """Every model-generated token across all turns (completions, reasoning included)."""
         usage = self.usage
-        return usage.completion_tokens if usage else 0
+        return usage.completion_tokens if usage is not None else 0
+
+    @property
+    def num_input_tokens(self) -> int:
+        """Tokens fed to the model, counted once: the final sequence minus everything the model
+        generated (i.e. system + user + tool inputs). Not the last prompt — re-sent context is
+        not double-counted."""
+        return self.num_total_tokens - self.num_output_tokens
 
 
 _NODE_DUMP_EXCLUDE: dict = {
@@ -294,17 +295,17 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def num_input_tokens(self) -> int:
-        """Final-turn prompt sizes summed across training branches."""
+        """Fed-in tokens (system + user + tool), counted once, summed across branches."""
         return sum(branch.num_input_tokens for branch in self.branches)
 
     @property
     def num_output_tokens(self) -> int:
-        """Model-sampled tokens summed across training branches."""
+        """Model-generated tokens across all turns, summed across branches."""
         return sum(branch.num_output_tokens for branch in self.branches)
 
     @property
     def num_total_tokens(self) -> int:
-        """Sequence lengths summed across training branches for token batching."""
+        """Final sequence lengths (last prompt + completion) summed across branches."""
         return sum(branch.num_total_tokens for branch in self.branches)
 
     @property

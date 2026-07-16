@@ -79,7 +79,7 @@ class TextArenaEnv(vf.Environment[TextArenaParams]):
                 outcome["reason"] = str(game.state.game_info[0]["reason"])
                 return []  # game over — end the exchange
             _, observation = game.get_observation()
-            return [{"role": "user", "content": _latest_feedback(str(observation))}]
+            return [vf.UserMessage(content=_latest_feedback(str(observation)))]
 
         trace = await agents["player"].run(task, user=engine)
         trace.record_reward("game_reward", outcome.get("reward", 0.0), 1.0)

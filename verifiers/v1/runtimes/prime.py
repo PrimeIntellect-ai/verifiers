@@ -257,9 +257,7 @@ class PrimeRuntime(Runtime):
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return
-        if (
-            self.info.id is not None
-        ):  # kept (not nulled) so descriptor survives teardown
+        if self.info.id is not None:  # keep info.id available after teardown
             try:
                 await client.delete(self.info.id)
             except Exception as e:

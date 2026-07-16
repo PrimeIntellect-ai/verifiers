@@ -10,6 +10,7 @@ taskset and only supply column mappings.
 from __future__ import annotations
 
 import shlex
+from collections.abc import Iterator
 
 from pydantic_config import BaseConfig
 
@@ -142,7 +143,7 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
 
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
-    def load(self) -> list[LeanTask]:
+    def load(self) -> Iterator[LeanTask]:
         from datasets import load_dataset
 
         config = self.config
@@ -151,7 +152,6 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             ds.name,
             ds.subset,
             split=ds.split,
-            keep_in_memory=True,
             num_proc=8,
         )
 
@@ -169,7 +169,6 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                 )
 
         resources = TaskResources(cpu=4, memory=4, disk=10)
-        tasks: list[LeanTask] = []
         for index, row in enumerate(raw):
             # An empty statement would reduce the signature guard to `:= by`.
             formal_statement = row[ds.statement_column]
@@ -181,29 +180,24 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             imports = row.get(ds.imports_column) or "import Mathlib"
             gold = row.get(ds.proof_column) or ""
             name = row.get(ds.name_column)
-            tasks.append(
-                LeanTask(
-                    LeanData(
-                        idx=index,
-                        name=str(name) if name else f"task_{index:05d}",
-                        prompt=self._build_prompt(formal_statement, header),
-                        system_prompt=config.system_prompt,
-                        image=config.docker_image,
-                        workdir=config.task.lean_project_path,
-                        resources=resources,
-                        formal_statement=formal_statement,
-                        header=header,
-                        imports=imports,
-                        normalize_mathlib_imports=ds.normalize_mathlib_imports,
-                        protected_signature=expected_protected_signature(
-                            formal_statement
-                        ),
-                        formal_proof=gold,
-                    ),
-                    self.config.task,
-                )
+            yield LeanTask(
+                LeanData(
+                    idx=index,
+                    name=str(name) if name else f"task_{index:05d}",
+                    prompt=self._build_prompt(formal_statement, header),
+                    system_prompt=config.system_prompt,
+                    image=config.docker_image,
+                    workdir=config.task.lean_project_path,
+                    resources=resources,
+                    formal_statement=formal_statement,
+                    header=header,
+                    imports=imports,
+                    normalize_mathlib_imports=ds.normalize_mathlib_imports,
+                    protected_signature=expected_protected_signature(formal_statement),
+                    formal_proof=gold,
+                ),
+                self.config.task,
             )
-        return tasks
 
     def _build_prompt(self, formal_statement: str, header: str) -> str:
         cfg = self.config

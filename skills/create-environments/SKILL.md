@@ -1,13 +1,13 @@
 ---
 name: create-environments
-description: Create or migrate native verifiers.v1 taskset, environment, and harness packages. Use to build an environment, port a benchmark, add task tools, script or model a user, build a multi-agent environment, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
+description: Create or migrate native verifiers.v1 taskset, environment, and harness packages. Use to build a taskset, port a benchmark, add task tools, script or model a user, build a multi-agent environment, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
 ---
 
-# Create Environments
+# Create Tasksets
 
 ## Goal
 
-Create native V1 environments that are installable and runnable with verifiers.
+Create native v1 tasksets that are installable and runnable with verifiers.
 
 To start, ALWAYS use the CLI to create a package with the correct files:
 
@@ -50,7 +50,7 @@ Ask the user about unresolved semantic choices instead of inventing them. Presen
 
 ## Native package contract
 
-A package exports one `vf.Taskset` subclass — and optionally one `vf.Environment` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new environment using `prime env init`.
+A package exports one `vf.Taskset` subclass — and optionally one `vf.Environment` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new taskset using `prime env init`.
 
 Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader
 resolves classes and their config types from `__all__` and generic bases.
@@ -61,7 +61,7 @@ Use:
 import verifiers.v1 as vf
 ```
 
-Never mix v0 `Environment`, `Rubric`, `Parser`, `SingleTurnEnv`, `MultiTurnEnv`, or `ToolEnv` objects into a v1 environment. Exclusively use functions, classes and objects from `verifiers.v1`.
+Never mix v0 `Environment`, `Rubric`, `Parser`, `SingleTurnEnv`, `MultiTurnEnv`, or `ToolEnv` objects into a v1 taskset. Exclusively use functions, classes and objects from `verifiers.v1`.
 
 ## Minimal implementation
 
@@ -151,7 +151,7 @@ Persist inspectable artifacts in JSON-serializable `trace.info`. Put counters an
 
 ## Tools
 
-Some environments require custom tools. These should be the exception as they don’t work with every harness and are registered as MCP servers.
+Some tasksets require custom tools. These should be the exception as they don’t work with every harness and are registered as MCP servers.
 
 ```python
 class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
@@ -196,7 +196,7 @@ The harness running the *assistant* must support injected user turns (`SUPPORTS_
 
 ## Multi-agent environments
 
-When one rollout is more than one agent run, export an `Environment` subclass next to the taskset: declare roles as `vf.AgentConfig` fields on a `vf.EnvParams` subclass (bound via `Environment[YourParams]`, addressed as `--env.<role>.*`), override `rollout(task, agents)` (imperative control flow) and optionally `score(task, traces)` (sibling-dependent judgement). Before writing one, check the bundled envs (`--env.id best-of-n | judge | user-sim`) and the reference implementations (`environments/code_golf_v1`, `environments/kuhn_poker_v1`). See docs/v1/environments.md.
+When one rollout is more than one agent run, export an `Environment` subclass next to the taskset: declare roles as `vf.AgentConfig` fields on a `vf.EnvParams` subclass (bound via `Environment[YourParams]`, addressed as `--env.<role>.*`), override `rollout(task, agents)` (imperative control flow) and optionally `score(task, traces)` (sibling-dependent judgement). Before writing one, check the bundled envs (`--env.id best-of-n | judge | user-sim`) and the reference implementations (`environments/code_golf_v1`, `environments/kuhn_poker_v1`). See docs/v1/tasksets.md.
 
 ## Custom harnesses
 
@@ -215,8 +215,8 @@ Return the `vf.ProgramResult` from `runtime.run_program()` or `runtime.run_uv_sc
 
 ## Dependencies and credentials
 
-- Add package import-time dependencies to the environment's own `pyproject.toml`.
-- Never edit the repository root `pyproject.toml` or `uv.lock` for an environment dependency.
+- Add package import-time dependencies to the taskset's own `pyproject.toml`.
+- Never edit the repository root `pyproject.toml` or `uv.lock` for a taskset dependency.
 - Read required external credentials at the earliest owning boundary so missing values fail clearly.
 - Do not require a user-managed background server unless the contract explicitly uses a remote URL.
 

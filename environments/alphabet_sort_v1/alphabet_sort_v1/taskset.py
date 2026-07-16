@@ -109,7 +109,7 @@ class AlphabetSortEnv(vf.Environment):
             if i >= len(queue):
                 return []  # out of turns — end the exchange
             i += 1
-            return [{"role": "user", "content": queue[i - 1]}]
+            return [vf.UserMessage(content=queue[i - 1])]
 
         return [await agents["main"].run(task, user=replay)]
 

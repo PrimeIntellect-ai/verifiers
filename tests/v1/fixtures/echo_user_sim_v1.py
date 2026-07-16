@@ -47,7 +47,7 @@ class EchoUserSimEnv(vf.Environment):
             if sent == len(phrases):
                 return []  # out of phrases — end the exchange
             sent += 1
-            return [{"role": "user", "content": phrases[sent - 1]}]
+            return [vf.UserMessage(content=phrases[sent - 1])]
 
         return [await agents["main"].run(task, user=script)]
 

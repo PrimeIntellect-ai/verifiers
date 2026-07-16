@@ -9,12 +9,12 @@ lettered A.. dynamically (MMMU rows range from 2 to 9 choices); open-ended rows
 """
 
 import ast
-import base64
 import re
-from io import BytesIO
+from collections.abc import Iterator
 from typing import Literal
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.image import image_data_url
 
 ALL_SUBSETS = [
     "Accounting",
@@ -50,13 +50,6 @@ ALL_SUBSETS = [
 ]
 
 LETTERS = "ABCDEFGHI"
-
-
-def image_data_url(pil_image) -> str:
-    """The row's PIL image as a base64 PNG `data:` URL."""
-    buffer = BytesIO()
-    pil_image.save(buffer, format="PNG")
-    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
 
 
 def question_text(question: str, options: list[str]) -> str:
@@ -99,7 +92,7 @@ class MMMUConfig(vf.TasksetConfig):
 
 
 class MMMUTaskset(vf.Taskset[MMMUTask, MMMUConfig]):
-    def load(self) -> list[MMMUTask]:
+    def load(self) -> Iterator[MMMUTask]:
         from datasets import load_dataset
 
         c = self.config
@@ -107,7 +100,7 @@ class MMMUTaskset(vf.Taskset[MMMUTask, MMMUConfig]):
             raise ValueError(f"Invalid subset: {c.subset}")
         subsets = ALL_SUBSETS if c.subset is None else [c.subset]
 
-        tasks: list[MMMUTask] = []
+        idx = 0
         for subset in subsets:
             for row in load_dataset("MMMU/MMMU", subset, split=c.split):
                 options = ast.literal_eval(row["options"])
@@ -127,15 +120,13 @@ class MMMUTaskset(vf.Taskset[MMMUTask, MMMUConfig]):
                         )
                     elif segment:
                         parts.append(vf.TextContentPart(text=segment))
-                tasks.append(
-                    MMMUTask(
-                        MMMUData(
-                            idx=len(tasks),
-                            name=row["id"],
-                            prompt=[vf.UserMessage(content=parts)],
-                            answer=row["answer"],
-                        ),
-                        c.task,
-                    )
+                yield MMMUTask(
+                    MMMUData(
+                        idx=idx,
+                        name=row["id"],
+                        prompt=[vf.UserMessage(content=parts)],
+                        answer=row["answer"],
+                    ),
+                    c.task,
                 )
-        return tasks
+                idx += 1

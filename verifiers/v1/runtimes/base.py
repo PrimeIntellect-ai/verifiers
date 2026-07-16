@@ -120,10 +120,6 @@ class Runtime(ABC):
     def type(self) -> str:
         return self.config.type
 
-    @property
-    def descriptor(self) -> str | None:
-        return self.info.id
-
     @abstractmethod
     async def start(self) -> None:
         pass

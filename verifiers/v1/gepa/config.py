@@ -21,13 +21,14 @@ from verifiers.v1.types import SamplingConfig
 class GEPAConfig(EnvConfig):
     """The GEPA run plus its environment. `model` runs the rollouts under optimization;
     `reflection_model` (defaults to `model`) proposes new system prompts from the reflective
-    dataset. No default for `model` — a GEPA run can spend a large eval budget, so pick it
-    explicitly rather than silently optimizing (and spending) against a fallback."""
+    dataset. `model` defaults to the same id as `EvalConfig`."""
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
     Excluded from the saved config so re-running `@ config.toml` lands in a fresh dir."""
-    model: str = Field(..., validation_alias=AliasChoices("model", "m"))
+    model: str = Field(
+        "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
+    )
     """Model id for rollouts under optimization."""
     client: EvalClientConfig = EvalClientConfig()
     sampling: SamplingConfig = SamplingConfig()
@@ -48,14 +49,10 @@ class GEPAConfig(EnvConfig):
     """Seed for GEPA's optimizer (candidate selection / minibatch sampling). Task shuffling
     uses a fixed seed, matching eval — so this doesn't change the train/val split."""
 
-    max_metric_calls: int = Field(
-        500, validation_alias=AliasChoices("max_metric_calls", "B")
-    )
+    max_total_rollouts: int = Field(500)
     """Total rollouts GEPA may spend across the whole optimization run."""
     reflection_minibatch_size: int = 3
     """Train tasks sampled per reflection step."""
-    perfect_score: float | None = None
-    """Skip reflecting on a minibatch that already scores this well."""
     reflection_columns: list[str] = Field(default_factory=list)
     """Extra per-trace fields (from `trace.info`, else `task`) to surface to the teacher LM."""
     initial_prompt: str | None = None

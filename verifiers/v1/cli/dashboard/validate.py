@@ -2,6 +2,7 @@
 
 import contextlib
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 from rich.console import Group
@@ -29,6 +30,8 @@ _MARK_WIDTH = max(len(state) for state in _STYLE)
 # literal: Rich parses `[name]` in a cell as markup and would otherwise drop it.
 _MARK = {state: escape(f"[{state:<{_MARK_WIDTH}}]") for state in _STYLE}
 _DONE = ("valid", "invalid", "error", "timeout")
+# State -> (visible label, color); insertion order is the summary order.
+_OUTCOMES = {state: (state, _STYLE[state]) for state in _DONE}
 
 
 @dataclass
@@ -48,18 +51,22 @@ def Overview(config: ValidateConfig) -> Table:
     return grid
 
 
-def Progress(states: list[TaskProgress], start: float) -> Table:
-    done = [s for s in states if s.state in _DONE]
-    valid = sum(1 for s in done if s.state == "valid")
-    stats = (
-        f" {len(done)}/{len(states)} · {format_time(time.time() - start)} · "
-        f"valid {valid} · invalid {len(done) - valid}"
-    )
+def Progress(
+    states: list[TaskProgress],
+    start: float,
+    outcomes: dict[str, tuple[str, str]] = _OUTCOMES,
+) -> Table:
+    done = [s for s in states if s.state in outcomes]
+    counts = Counter(s.state for s in done)
+    stats = Text(f" {len(done)}/{len(states)} · {format_time(time.time() - start)}")
+    for state, (label, style) in outcomes.items():
+        stats.append(" · ")
+        stats.append(f"{label} {counts[state]}", style=style)
     row = Table.grid()
     row.add_column()
     row.add_column()
     row.add_row(
-        ProgressBar(total=len(states) or 1, completed=len(done), width=32), Text(stats)
+        ProgressBar(total=len(states) or 1, completed=len(done), width=32), stats
     )
     return row
 

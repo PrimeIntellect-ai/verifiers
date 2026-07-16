@@ -103,10 +103,11 @@ class DockerRuntime(Runtime):
             *limits,
             "--workdir",
             self.config.workdir,
+            "--entrypoint",
+            "sleep",
             "--name",
             self._container,
             self.config.image,
-            "sleep",
             "infinity",
         )
         if run.exit_code != 0:
