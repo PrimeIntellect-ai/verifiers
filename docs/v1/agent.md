@@ -41,55 +41,6 @@ Everything beyond the arrow is a parameter, not a concept:
   program a box to place runs into. A different model is a different agent — construct
   another `Agent` (sharing the client, and the interception pool via `interception=`)
   rather than swapping contexts per run.
-- **the exchange** is `chat()`, the one multi-turn surface: whoever calls `turn()` is the
-  run's user, and each turn runs one harness SEGMENT — the program runs until it yields
-  (exits), the caller answers its final message, and the next segment resumes the
-  exchange with the answer (`Harness.resume`: a relaunch on the accreted conversation by
-  default; codex continues its own recorded session natively). The harness's own tool
-  loop runs entirely inside a segment, so tools and a simulated user compose freely.
-  Needs a harness that can resume (a Messages prompt, or a native `resume()` — default /
-  null / direct / codex).
-- **`chat(mask_prompt=True)`** says the task's `prompt` is the USER's side of the story —
-  a scenario the caller pursues, not the assistant's seed. The wire hides the prompt (the
-  caller opens instead), while the task's hooks, rewards, and judges still score the real
-  row. This is how the bundled `user-sim` env runs the assistant on the original task.
-
-## chat(): be the user yourself
-
-`agent.chat(task)` is the caller side of the same channel — a full run of the task where
-YOU (or another agent's program) supply each user turn live:
-
-```python
-async with agent.chat(task) as session:          # task has no prompt: chat opens it
-    reply = await session.turn("hello there")    # one user message -> one vf.Reply
-    if not reply.stopped:
-        followup = await session.turn(f"you said: {reply.text}")
-    print(session.trace.num_turns)               # the trace is live mid-exchange
-# leaving the context ends the exchange (user_closed) and finishes the run:
-# hooks and scoring included — session.trace is the final, scored trace
-```
-
-`turn()` returns a `vf.Reply` (`text`, `stopped`); a `stopped` reply means the run ended
-(a limit, a `@stop`, the harness finishing) instead of answering. And because both sides
-speak the same channel, "the user is just another agent" — a modeled user is a chat
-session relayed into another agent's run:
-
-```python
-async with (
-    user_agent.chat(user_task) as sim,             # the modeled user (its own trace!)
-    assistant.chat(task, mask_prompt=True) as helper,
-):
-    ask = await sim.turn("Hello! How can I help you today?")
-    while not ask.stopped:
-        reply = await helper.turn(ask.text)
-        if reply.stopped:
-            break
-        ask = await sim.turn(reply.text)
-```
-
-Modeled-user runs stay cheap with the in-process `direct` harness
-(`--harness.id direct`): no subprocess, no runtime work — the rollout is essentially
-just the model calls.
 
 Interception follows the same borrowing story as runtimes: pass a live, already-entered
 `Interception` at construction (`vf.Agent(..., interception=pool)`) and several agents

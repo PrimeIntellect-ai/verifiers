@@ -1,10 +1,4 @@
-"""Multi-turn echo driven by a scripted user — the single user-sim mechanism.
-
-The env's `rollout()` scripts the user through a chat session. The task is
-prompt-less, so the first `turn(phrase)` opens the conversation; each later turn
-resumes the harness onto the accreted conversation, and leaving the `async with`
-closes the chat (the trace stops as `user_closed`).
-"""
+"""Multi-turn echo task driven by a `vf.User` simulator."""
 
 import verifiers.v1 as vf
 
@@ -16,15 +10,47 @@ def _key(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
 
 
+class EchoUserSimTaskConfig(vf.TaskConfig):
+    user: vf.UserConfig = vf.UserConfig()
+
+
 class EchoUserSimConfig(vf.TasksetConfig):
     phrases: list[str] = PHRASES
+    task: EchoUserSimTaskConfig = EchoUserSimTaskConfig()
+
+
+class EchoUserSimState(vf.State):
+    user_finished: bool = False
+
+
+class EchoUserSimUser(vf.User[vf.UserConfig, EchoUserSimState]):
+    """Injects the next phrase as a user turn until the episode's phrases run out."""
+
+    async def setup_task(self, task) -> None:
+        self.phrases = task.phrases  # per-task input, from the task
+        self.turns = 0  # per-rollout mutable state
+
+    async def respond(self, message: str) -> vf.Messages:
+        self.turns += 1
+        if self.turns >= len(self.phrases):
+            self.state.user_finished = True
+            return []
+        return [vf.UserMessage(content=self.phrases[self.turns])]
 
 
 class EchoUserSimData(vf.TaskData):
     phrases: list[str]
 
 
-class EchoUserSimTask(vf.Task[EchoUserSimData, vf.State, vf.TaskConfig]):
+class EchoUserSimTask(
+    vf.Task[EchoUserSimData, EchoUserSimState, EchoUserSimTaskConfig]
+):
+    user = EchoUserSimUser
+
+    @vf.stop
+    async def user_finished(self, trace: vf.Trace) -> bool:
+        return trace.state.user_finished
+
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
         replies = [m.content for m in trace.assistant_messages]
@@ -35,32 +61,23 @@ class EchoUserSimTask(vf.Task[EchoUserSimData, vf.State, vf.TaskConfig]):
         return matched / len(phrases)
 
 
-class EchoUserSimEnv(vf.Environment):
-    """Scripts the user side: opens with the first phrase, follows with the rest."""
-
-    async def rollout(self, task, agents):
-        # A chat session scripting the user: the task carries no prompt, so the
-        # first turn opens the conversation.
-        async with agents["solver"].chat(task) as session:
-            for phrase in task.data.phrases:
-                if (await session.turn(phrase)).stopped:
-                    break
-        return [session.trace]
-
-
 class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
     def load(self) -> list[EchoUserSimTask]:
         return [
             EchoUserSimTask(
                 EchoUserSimData(
                     idx=0,
-                    # No prompt: the scripted user opens the conversation.
-                    prompt=None,
+                    prompt=self.config.phrases[0],
                     system_prompt=SYSTEM,
                     phrases=self.config.phrases,
-                )
+                ),
+                self.config.task,
             )
         ]
 
 
-__all__ = ["EchoUserSimTaskset", "EchoUserSimEnv"]
+__all__ = ["EchoUserSimTaskset"]
+
+
+if __name__ == "__main__":
+    EchoUserSimUser.run()

@@ -99,8 +99,8 @@ A vLLM `/inference/v1/generate` endpoint with client-side tokenization (response
 loads typed tasks (*what to solve*), the harness provisions and drives the agent program for each
 rollout in `harness.runtime` (*how the LLM interfaces with the world*), and the env is the control
 flow between agents (*who runs, judged how across the finished set* — single-agent by default).
-Each loaded `Task` supplies the row's behavior, tools, and scoring; only its `TaskData` is stored
-on the trace.
+Each loaded `Task` supplies the row's behavior, tools, user simulator, and scoring; only its
+`TaskData` is stored on the trace.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -232,7 +232,7 @@ rollouts handled by one environment worker.
 ### Task config
 
 `TaskConfig` contains knobs read by task behavior. Subclass it for scoring parameters and
-task-scoped `ToolsetConfig` fields, then narrow the taskset config's `task` field to
+task-scoped `ToolsetConfig` or `UserConfig` fields, then narrow the taskset config's `task` field to
 that subclass. These are run-wide knobs, not per-row data; the row itself belongs on `TaskData`.
 
 | Field | Type | Default | Notes |
@@ -257,7 +257,7 @@ that subclass. These are run-wide knobs, not per-row data; the row itself belong
 `.name` → the package name; `.resolved_env` → `env` merged with forwarded `forward_env` vars.
 
 A harness class also declares capability flags (ClassVars, not user-settable):
-`APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_MESSAGE_PROMPT`.
+`APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_USER_SIM`, `SUPPORTS_MESSAGE_PROMPT`.
 
 ### Built-in harness configs
 
@@ -320,7 +320,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 ## Runtime configs
 
-`verifiers/v1/runtimes/`. Discriminated on `type`; selected with `--harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime`.
+`verifiers/v1/runtimes/`. Discriminated on `type`; selected with `--harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime` and `UserConfig.runtime`.
 
 ### `SubprocessConfig` — `type: "subprocess"` (default)
 Run on the host in a fresh `/tmp/<name>` workspace per rollout. **No extra fields.** Implicit
@@ -435,7 +435,7 @@ value in the run's `TimeoutConfig` wins; otherwise the corresponding row value i
 | `idx` | `int` | — | Stable integer index within the taskset. Used for selection, grouping, display, and reproducibility. |
 | `name` | `str \| None` | `None` | Optional human-readable label used in logs and dashboards. |
 | `description` | `str \| None` | `None` | Optional human-readable description. |
-| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` means the caller opens the conversation (`agent.chat()` — the env's control flow supplies each turn). |
+| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` lets the user simulator open via `respond("")`. |
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
@@ -502,11 +502,19 @@ else the taskset id) so everything renders typed in `-h`.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs the taskset: a bundled env (`best-of-n`, `judge`, `user-sim`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story. |
+| `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs the taskset: a bundled env (`best-of-n`, `judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story. |
 | *(env-declared)* | — | — | An env subclass declares roles as `vf.AgentConfig` fields (`--env.<role>.model`, `--env.<role>.harness.id`, `--env.<role>.trainable`, per-role `max_*` caps) plus plain knobs (`--env.n`, `--env.rubric`, ...). Partial role overrides deep-merge into the role's declared defaults. |
 
-User simulation has no server or placement config: the run's user is a callable the env's
-control flow supplies (`agent.chat()`); see the `user-sim` bundled env.
+---
+
+## User config
+
+`UserConfig` controls a simulator declared on `Task.user`; its matching config field belongs on `TaskConfig` under `--taskset.task.*`.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `colocated` | `bool` | `False` | Run the user simulator inside the harness's runtime (its port is published back to the host so the framework can still drive it). |
+| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The user simulator's own runtime, used unless `colocated`. See [Runtime configs](#runtime-configs). |
 
 ---
 

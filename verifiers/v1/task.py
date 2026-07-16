@@ -3,11 +3,11 @@
 `TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
 row IS — the base fields (prompt, image, timeouts, judges) plus your typed,
 task-specific fields (the reference answer, ground truths, ...). It is what rides on
-`trace.task.data`, what `traces.jsonl` stores, and what tool servers receive over the
+`trace.task.data`, what `traces.jsonl` stores, and what tool/user servers receive over the
 `/task` channel. Subclass it per dataset.
 
 `Task` is the behavior half: a plain class owning runtime prep (`setup`/`finalize`),
-server declarations (`tools`), well-formedness (`validate`), and judgement
+server declarations (`tools`/`user`), well-formedness (`validate`), and judgement
 (`@reward`/`@metric` methods, run by `score`). It wraps
 a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
 
@@ -57,7 +57,7 @@ from verifiers.v1.utils.generic import generic_type
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
-    from verifiers.v1.mcp import Toolset
+    from verifiers.v1.mcp import Toolset, User
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.trace import Trace
 
@@ -137,7 +137,7 @@ class TaskData(StrictBaseModel):
     """The task's wire half: one row's pure data, a frozen pydantic model. Subclass per
     dataset to add typed, task-specific fields (the reference answer, ground truths,
     per-row metadata) next to the base fields below. This is what `trace.task.data` holds,
-    what `traces.jsonl` stores, and what tool servers receive over the `/task`
+    what `traces.jsonl` stores, and what tool/user servers receive over the `/task`
     channel — behavior lives on `Task`, which wraps this (`self.data`)."""
 
     model_config = ConfigDict(frozen=True)
@@ -146,8 +146,7 @@ class TaskData(StrictBaseModel):
     name: str | None = None
     description: str | None = None
     prompt: str | Messages | None = None
-    """Initial user prompt; `None` means the user opens the conversation — run the
-    task through `agent.chat()`, whose first `turn(message)` speaks first. (A
+    """Initial user prompt; `None` lets the user simulator open the conversation. (A
     default, not just optional: the wire drops `None`s — `traces.jsonl` rows for
     prompt-less tasks must read back.)"""
     system_prompt: str | None = None
@@ -199,7 +198,7 @@ def resolve_server_config(
 ) -> BaseConfig:
     """The config a declared server class is built with, resolved off `config`'s fields:
     the field whose value is exactly the server's declared config type
-    (`Toolset[MyConfig]`), else the unique field whose value
+    (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
     isinstance-matches it, else a default-constructed one. Two matching fields raise —
     the `server_config` methods (`Task` / `Taskset`) are the override points for explicit
     pairing. `owner` names the declaring class in errors. The isinstance fallback runs
@@ -235,6 +234,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
 
+    user: ClassVar[type[User] | None] = None
+
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else task_config_cls(type(self))()
@@ -245,20 +246,22 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return [load_judge(config) for config in self.config.judges]
 
     def server_config(self, server_cls: type) -> BaseConfig:
-        """The config a declared server class (`tools`) is built with, resolved
+        """The config a declared server class (`tools` / `user`) is built with, resolved
         off `self.config` (see `resolve_server_config`: exact type match, else — for a
         sole declared server — unique isinstance match, else default-constructed).
         Override to pair explicitly (the escape hatch for exotic setups, e.g. two servers
         sharing one config type)."""
+        declared = set(type(self).tools) | ({type(self).user} - {None})
         return resolve_server_config(
-            type(self).__name__,
-            self.config,
-            server_cls,
-            sole=len(set(type(self).tools)) == 1,
+            type(self).__name__, self.config, server_cls, sole=len(declared) == 1
         )
 
     def tool_servers(self) -> list[Toolset]:
         return [cls(self.server_config(cls)) for cls in type(self).tools]
+
+    def user_server(self) -> User | None:
+        cls = type(self).user
+        return cls(self.server_config(cls)) if cls is not None else None
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None

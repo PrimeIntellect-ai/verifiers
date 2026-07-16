@@ -9,10 +9,18 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 
 import json
 from collections import deque
+from typing import Any, cast
 
 from openai.types.responses import (
+    EasyInputMessageParam,
+    ResponseFunctionToolCallParam,
+    ResponseInputImageParam,
+    ResponseInputMessageContentListParam,
+    ResponseInputParam,
+    ResponseInputTextParam,
     ResponseUsage,
 )
+from openai.types.responses.response_input_param import FunctionCallOutput
 from openai.types.responses.response_usage import (
     InputTokensDetails,
     OutputTokensDetails,
@@ -81,6 +89,57 @@ def parse_content(content) -> str | list[ContentPart]:
                 )
             )
     return parts
+
+
+def messages_to_wire(messages: Messages) -> ResponseInputParam:
+    items: ResponseInputParam = []
+    for message in messages:
+        if isinstance(message, AssistantMessage):
+            if message.provider_state:
+                items.extend(cast(ResponseInputParam, message.provider_state))
+                continue
+            if message.content:
+                items.append(
+                    EasyInputMessageParam(
+                        role="assistant",
+                        content=message.content,
+                    )
+                )
+            items.extend(
+                ResponseFunctionToolCallParam(
+                    type="function_call",
+                    call_id=call.id,
+                    name=call.name,
+                    arguments=call.arguments,
+                )
+                for call in message.tool_calls or []
+            )
+            continue
+        content: str | ResponseInputMessageContentListParam = (
+            message.content
+            if isinstance(message.content, str)
+            else [
+                ResponseInputTextParam(type="input_text", text=part.text)
+                if isinstance(part, TextContentPart)
+                else ResponseInputImageParam(
+                    type="input_image",
+                    image_url=part.image_url.url,
+                    detail="auto",
+                )
+                for part in message.content
+            ]
+        )
+        if isinstance(message, ToolMessage):
+            items.append(
+                FunctionCallOutput(
+                    type="function_call_output",
+                    call_id=message.tool_call_id,
+                    output=cast(Any, content),
+                )
+            )
+        else:
+            items.append(EasyInputMessageParam(role=message.role, content=content))
+    return items
 
 
 def fold_assistant(items: list[dict]) -> AssistantMessage:
@@ -310,3 +369,16 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             if k not in _SAMPLING_KEYS and k not in overrides
         }
         return {**steered, **overrides}
+
+    def extend(
+        self, body: dict, completion: dict | None, user_messages: Messages
+    ) -> dict:
+        raw = body.get("input")
+        items: ResponseInputParam = (
+            [EasyInputMessageParam(role="user", content=raw)]
+            if isinstance(raw, str)
+            else cast(ResponseInputParam, list(raw or []))
+        )
+        items.extend(cast(ResponseInputParam, (completion or {}).get("output") or []))
+        items.extend(messages_to_wire(user_messages))
+        return {**body, "input": items}

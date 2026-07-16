@@ -2348,17 +2348,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kuhn-poker-v1"
-version = "0.1.0"
-source = { editable = "environments/kuhn_poker_v1" }
-dependencies = [
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
-
-[[package]]
 name = "lark"
 version = "1.2.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3984,7 +3973,7 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.27"
+version = "0.2.31"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3994,9 +3983,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9a/1f/b257b21f54e9b961bcac05335f6637c494ed0986fb4b5d2054f97f96faa0/prime_sandboxes-0.2.27.tar.gz", hash = "sha256:db4071387f4b2dc8bcd0c8916af4031f864dfd5dfd9818f56119347af20b1469", size = 68661, upload-time = "2026-06-05T21:55:35.175Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/9f/23eecd614cac1920a8e729d9344762dea568e1f6e60308f84b256eca6a58/prime_sandboxes-0.2.31.tar.gz", hash = "sha256:7bc753474240b96b15e2503d503364376a8c596e30ea1830c24fb57d7e50d7ff", size = 74693, upload-time = "2026-07-16T15:52:28.701Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/94/bc/a9142d0ef67d92672469cff15cadc04eb46ca9957b00156445d14c14b04f/prime_sandboxes-0.2.27-py3-none-any.whl", hash = "sha256:3fb227cc909c15475fb2874974d166d857021ee6ed9a6e0d4482b1b5ebfc50e2", size = 34402, upload-time = "2026-06-05T21:55:33.451Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/83/1797ad3e5b236d4323e0add4ecb91e4155521f5dbbffe9043326b7fb1a3c/prime_sandboxes-0.2.31-py3-none-any.whl", hash = "sha256:86e5385f3c6d422cf57f8076c0915b00d3758d35ce8c1125f5254c7d37cbbcc2", size = 39516, upload-time = "2026-07-16T15:52:27.47Z" },
 ]
 
 [[package]]
@@ -6258,7 +6247,6 @@ examples = [
     { name = "deepwiki-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
-    { name = "kuhn-poker-v1" },
     { name = "mmmu-v1" },
     { name = "reverse-text-v1" },
     { name = "scratchpad-v1" },
@@ -6294,7 +6282,7 @@ requires-dist = [
     { name = "peft", marker = "extra == 'rl'" },
     { name = "pillow", marker = "extra == 'quest'" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.3.0.dev86" },
-    { name = "prime-sandboxes", specifier = ">=0.2.27" },
+    { name = "prime-sandboxes", specifier = ">=0.2.31" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymupdf", marker = "extra == 'quest'" },
@@ -6345,7 +6333,6 @@ examples = [
     { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
-    { name = "kuhn-poker-v1", editable = "environments/kuhn_poker_v1" },
     { name = "mmmu-v1", editable = "environments/mmmu_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
     { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },

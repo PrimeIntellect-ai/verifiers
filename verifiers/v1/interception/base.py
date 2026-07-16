@@ -27,8 +27,8 @@ class BaseInterceptionConfig(BaseConfig):
 
 
 # (base_url, secret): the interception server's reachable base URL for this rollout, and the
-# bearer the harness/tool servers authenticate with. The harness reaches the model at
-# `{base_url}/v1`; tool servers reach this rollout's shared state at `{base_url}/state`
+# bearer the harness/tool/user servers authenticate with. The harness reaches the model at
+# `{base_url}/v1`; tool/user servers reach this rollout's shared state at `{base_url}/state`
 # + `/task`. `base_url` is universally reachable — the interception is exposed (tunnel)
 # whenever any consumer is remote.
 Slot = tuple[str, str]

@@ -191,7 +191,7 @@ Classify before changing hyperparameters:
 1. **Valid low reward** — model/task difficulty or prompt/tool behavior.
 2. **ProviderError** — inference endpoint, model, capacity, or request dialect.
 3. **HarnessError** — program installation, launch, or nonzero exit.
-4. **ToolsetError** — tool-server startup, reachability, or call behavior.
+4. **ToolsetError/UserError** — server startup, reachability, or call behavior.
 5. **SandboxError/TunnelError** — runtime capacity, lifecycle, filesystem, network, or rate limits.
 6. **TaskError** — task setup, finalize, or scoring implementation during a rollout.
 7. **Trainer instability** — valid branches arrive, then loss/KL/gradient/weight behavior fails.

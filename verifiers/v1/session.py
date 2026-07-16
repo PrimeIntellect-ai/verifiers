@@ -3,8 +3,9 @@
 One `RolloutSession` per rollout, registered on an interception server under the rollout's
 secret. The rollout constructs it (model ctx, trace, task `@stop`s, limits) and the server
 drives it: routes each intercepted model call to it, runs `refused()` before each turn,
-and stashes the real failure on `error`. `RolloutLimits` is the framework's per-rollout
-budget (turns / tokens), checked between turns.
+injects the user simulator's replies, and stashes the real failure on `error`.
+`RolloutLimits` is the framework's per-rollout budget (turns / tokens), checked between
+turns.
 """
 
 import asyncio
@@ -15,9 +16,11 @@ from typing import TYPE_CHECKING
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
     from verifiers.v1.errors import RolloutError
+    from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,16 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    user: "Respond | None" = None
+    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
+    When set, each model turn with no tool call is followed by the simulator's reply,
+    injected as a user turn, and the model is re-prompted — all within one program request,
+    transparently to the harness."""
+    opening: Messages | None = None
+    """Cached opening `respond("")` messages for a no-prompt task. Computed once and re-injected on
+    every request until the first turn lands on the trace — so a retried opening request (e.g. the
+    harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
+    twice and advances the simulator's queue past the opening."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the

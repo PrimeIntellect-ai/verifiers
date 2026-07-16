@@ -7,7 +7,6 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
-from verifiers.v1.task import TaskData
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
@@ -40,6 +39,7 @@ class DefaultHarnessConfig(HarnessConfig):
 class DefaultHarness(Harness[DefaultHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -53,9 +53,8 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
-        data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(data)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         fragments = [BASH_SYSTEM_PROMPT]
         if self.config.edit:
             fragments.append(EDIT_SYSTEM_PROMPT)

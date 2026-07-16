@@ -52,6 +52,7 @@ class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
+    SUPPORTS_USER_SIM: ClassVar[bool] = False
     SUPPORTS_MESSAGE_PROMPT: ClassVar[bool] = False
 
     def __init__(self, config: ConfigT) -> None:
@@ -97,22 +98,9 @@ class Harness(ABC, Generic[ConfigT]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
-        data: TaskData,
-        messages: Messages | None = None,
     ) -> None:
-        """Run ONE segment of the exchange: the program from launch (or, with
-        `messages`, the user's next turn(s) via `resume`) until it yields — a segment
-        ends when the program exits. The rollout loop owns the exchange across
-        segments (and stamps its end); a harness only ever sees one segment."""
         async with boundary(HarnessError, f"harness {self.config.id!r}"):
-            if messages is None:
-                result = await self.launch(
-                    ctx, trace, runtime, endpoint, secret, mcp_urls, data
-                )
-            else:
-                result = await self.resume(
-                    ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages
-                )
+            result = await self.launch(ctx, trace, runtime, endpoint, secret, mcp_urls)
         if trace.stop_condition is not None:
             return  # a @stop refused a turn mid-rollout; the harness's exit is expected
         if result.exit_code != 0:
@@ -121,11 +109,12 @@ class Harness(ABC, Generic[ConfigT]):
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )
+        trace.stop("agent_completed")
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Run this harness's `@metric` methods over the finished trace, concurrently,
         recording each into `trace.metrics`. Mirrors `Task.score` (which the
-        rollout runs in parallel with this); metrics declare what they need (`task`,
+        Rollout runs in parallel with this); metrics declare what they need (`task`,
         `trace`, `runtime`) and can read what the harness left behind in the runtime.
         No-op for an harness with no `@metric`s."""
         available = {"task": trace.task.data, "trace": trace, "runtime": runtime}
@@ -138,45 +127,6 @@ class Harness(ABC, Generic[ConfigT]):
             else:
                 trace.record_metric(fn.__name__, result)
 
-    async def resume(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        messages: Messages,
-    ) -> ProgramResult:
-        """Run the next segment of an exchange this trace already carries: the user
-        spoke (`messages`), the program answers — with the whole conversation behind
-        it. The default relaunches the program on the accreted conversation (the
-        trace's current branch plus `messages`) as a Messages prompt: correct for any
-        stateless chat program, including the very first segment of an exchange the
-        user opens (an empty branch). A harness with its own session state overrides
-        this with a native continuation (codex: `codex exec resume`) instead of
-        replaying a conversation it already owns."""
-        if not self.SUPPORTS_MESSAGE_PROMPT:
-            raise HarnessError(
-                f"harness {self.config.id!r} cannot continue an exchange: it neither "
-                "overrides resume() nor supports a Messages prompt for the default "
-                "relaunch-on-the-conversation."
-            )
-        branch = trace.branches[-1].messages if trace.branches else []
-        # `resolve_prompt` re-emits `data.system_prompt`; the branch's own system
-        # message would double it.
-        conversation = [*(m for m in branch if m.role != "system"), *messages]
-        return await self.launch(
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            mcp_urls,
-            data.model_copy(update={"prompt": conversation}),
-        )
-
     @abstractmethod
     async def launch(
         self,
@@ -186,15 +136,11 @@ class Harness(ABC, Generic[ConfigT]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
-        data: TaskData,
     ) -> ProgramResult:
-        """Run the harness program in `runtime` to completion and return its result.
-        `data` is this segment's wire view of the task (`resolve_prompt(data)` — for a
-        resumed exchange its prompt is the accreted conversation, and it may differ
-        from `trace.task.data`, which stays the run's recorded view); model calls
-        should reach the interception server at `endpoint` (bearer token `secret`);
-        `mcp_urls` are the task's tool servers (name -> URL) to wire in. Each harness
-        owns the env its program needs — read `ctx.model` for the model id (the
-        default/compact harnesses set OPENAI_*; rlm sets RLM_* too). UV-script
-        harnesses prepare dependencies in `setup`, then launch the returned argv
-        through `runtime.run_program(...)` here."""
+        """Run the harness program in `runtime` to completion and return its result. The
+        task is `trace.task.data`; model calls should reach the interception server at
+        `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
+        (name -> URL) to wire in. Each harness owns the env its program needs — read
+        `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
+        RLM_* too). UV-script harnesses prepare dependencies in `setup`, then launch the
+        returned argv through `runtime.run_program(...)` here."""

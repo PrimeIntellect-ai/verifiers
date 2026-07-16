@@ -16,7 +16,8 @@ Load-time knobs (dataset, split, seed) live on the taskset config; the task-faci
 under its `task` subtree (`TasksetConfig.task`, a `TaskConfig`, everything under
 `--taskset.task.*`); a worker-scoped shared tool server is declared on `tools` with its knobs
 at the taskset level (`--taskset.tools.*`). All per-task behavior — runtime prep, tools,
-`@reward`/`@metric` scoring — lives on the `Task` (see `verifiers.v1.task`).
+user simulation, `@reward`/`@metric` scoring — lives on the `Task` (see
+`verifiers.v1.task`).
 
 The class stays generic over its task and config types (`Taskset[TaskT, TasksetConfigT]`)
 so the loaders can read them: `taskset_config_type` narrows `--taskset.*` CLI/toml flags

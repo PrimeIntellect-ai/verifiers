@@ -8,7 +8,6 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
-from verifiers.v1.task import TaskData
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +63,8 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
-        data: TaskData,
     ) -> ProgramResult:
-        _, prompt = self.resolve_prompt(data)
+        _, prompt = self.resolve_prompt(trace.task.data)
         env = {
             **self.config.resolved_env,
             "KIMI_CODE_HOME": KIMI_HOME,

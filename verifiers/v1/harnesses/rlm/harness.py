@@ -13,7 +13,6 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import metric
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
-from verifiers.v1.task import TaskData
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +110,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
-        data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(data)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         env = {
             **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,
@@ -121,7 +119,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
-            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(data.idx),
+            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.data.idx),
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt

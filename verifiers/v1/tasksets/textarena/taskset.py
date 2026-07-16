@@ -1,14 +1,13 @@
-"""Seeded TextArena games, the game engine playing the user.
+"""Seeded TextArena games driven by a colocated user simulator.
 
-The task prompt and the engine reset share a seed so an episode can be reproduced.
-The env's `rollout()` steps the real engine host-side, as the run's user: each
-assistant move advances the game, the next observation comes back as the user turn,
-and a finished game ends the exchange (no more messages) — its outcome scored
-directly off the engine, in scope, with nothing crossing a process boundary.
+The task prompt and simulator reset use the same seed so an episode can be
+reproduced. The simulator shares the harness runtime and writes the authoritative
+outcome there; scoring reads that file instead of trusting conversational text.
 """
 
 import copy
 import itertools
+import json
 import random
 from collections.abc import Iterator
 from typing import Literal
@@ -30,11 +29,59 @@ SYSTEM_PROMPT = (
     "bracketed token, so don't put other words in brackets."
 )
 
+OUTCOME_FILE = "textarena_outcome.json"
 
-def _latest_feedback(observation: str) -> str:
-    """Drop repeated game history before sending the next user turn."""
-    latest = observation.split("[GAME]")[-1].strip()
-    return latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
+
+class TextArenaState(vf.State):
+    game_over: bool = False
+
+
+class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
+    """Keep a seeded game alive across user turns in the harness process."""
+
+    EXTRAS = ("ta",)
+
+    async def setup(self) -> None:
+        if not self.config.colocated:
+            raise ValueError(
+                "textarena's user simulator must be colocated: it hands the game outcome to scoring "
+                "by writing OUTCOME_FILE into the harness's runtime workspace that `game_reward` reads "
+                "back, so a non-colocated user (its own workspace) would always score 0. Set "
+                "`--taskset.task.user.colocated true` (the default)."
+            )
+        nltk.download("words", quiet=True)
+        nltk.download("averaged_perceptron_tagger_eng", quiet=True)
+
+    async def setup_task(self, task) -> None:
+        # TextArena uses Python's process-global RNG during reset.
+        random.seed(task.info["seed"])
+        self.env = ta.make(env_id=task.info["game"])
+        self.env.reset(num_players=1)
+
+    @staticmethod
+    def _latest_feedback(observation: str) -> str:
+        """Drop repeated game history before sending the next user turn."""
+        latest = observation.split("[GAME]")[-1].strip()
+        return (
+            latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
+        )
+
+    async def respond(self, message: str) -> vf.Messages:
+        env = self.env
+        env.step(message)
+        if env.state.done:
+            reward = float((env.state.rewards or {}).get(0, 0.0))
+            reason = str(env.state.game_info[0]["reason"])
+            with open(OUTCOME_FILE, "w") as f:
+                json.dump({"reward": reward, "reason": reason}, f)
+            self.state.game_over = True
+            return [vf.UserMessage(content=reason)]
+        _, observation = env.get_observation()
+        return [vf.UserMessage(content=self._latest_feedback(str(observation)))]
+
+
+class TextArenaTaskConfig(vf.TaskConfig):
+    user: vf.UserConfig = vf.UserConfig(colocated=True)
 
 
 class TextArenaConfig(vf.TasksetConfig):
@@ -45,49 +92,29 @@ class TextArenaConfig(vf.TasksetConfig):
         "WordLadder-v0",
         "WordSearch-v0",
     ]
+    task: TextArenaTaskConfig = TextArenaTaskConfig()
 
 
 class TextArenaData(vf.TaskData):
     info: dict
-    """The game id and RNG seed the env reproduces the episode from."""
+    """The game id and RNG seed used by the simulator."""
 
 
-class TextArenaTask(vf.Task[TextArenaData, vf.State, vf.TaskConfig]):
-    pass
+class TextArenaTask(vf.Task[TextArenaData, TextArenaState, TextArenaTaskConfig]):
+    user = TextArenaUser
 
+    @vf.stop
+    async def game_over(self, trace: vf.Trace) -> bool:
+        return trace.state.game_over
 
-class TextArenaParams(vf.EnvParams):
-    player: vf.AgentConfig = vf.AgentConfig()
-
-
-class TextArenaEnv(vf.Environment[TextArenaParams]):
-    def roles(self):
-        return {"player": vf.Role(self.params.player)}
-
-    async def rollout(self, task, agents):
-        # TextArena uses Python's process-global RNG during reset; seed + make + reset
-        # run with no await between them, so concurrent rollouts can't interleave.
-        random.seed(task.data.info["seed"])
-        game = ta.make(env_id=task.data.info["game"])
-        game.reset(num_players=1)
-        outcome: dict = {}
-        # The seeded board is the task prompt, so the model moves first (a bare
-        # turn()); the engine steps host-side and answers with each observation.
-        async with agents["player"].chat(task) as session:
-            reply = await session.turn()
-            while not reply.stopped:
-                game.step(reply.text)
-                if game.state.done:
-                    outcome["reward"] = float((game.state.rewards or {}).get(0, 0.0))
-                    outcome["reason"] = str(game.state.game_info[0]["reason"])
-                    break  # game over — end the exchange
-                _, observation = game.get_observation()
-                reply = await session.turn(_latest_feedback(str(observation)))
-        trace = session.trace
-        trace.record_reward("game_reward", outcome.get("reward", 0.0), 1.0)
-        if "reason" in outcome:
-            trace.info["game_outcome"] = outcome["reason"]
-        return [trace]
+    @vf.reward(weight=1.0)
+    async def game_reward(self, runtime: vf.Runtime) -> float:
+        try:
+            data = await runtime.read(OUTCOME_FILE)
+        except (FileNotFoundError, OSError):
+            # No outcome means the game never reached a terminal state.
+            return 0.0
+        return float(json.loads(data)["reward"])
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
@@ -119,3 +146,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
                 ),
                 self.config.task,
             )
+
+
+if __name__ == "__main__":
+    TextArenaUser.run()

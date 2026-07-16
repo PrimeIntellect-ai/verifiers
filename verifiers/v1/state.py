@@ -1,6 +1,6 @@
 """Mutable state shared within one rollout.
 
-Tool servers synchronize it through the interception state channel. It is excluded
+Tool and user servers synchronize it through the interception state channel. It is excluded
 from serialized traces; persist artifacts in `Trace.info` instead.
 """
 

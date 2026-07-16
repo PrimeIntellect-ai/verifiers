@@ -458,8 +458,8 @@ WireTrace = Trace[WireTaskData]
 
 class Episode(StrictBaseModel, Generic[DataT, StateT]):
     """One rollout of the env — the GLOBAL view of what happened, where each of its
-    traces is one agent's LOCAL view (its own conversation, role-stamped; a kuhn
-    seat sees only its half of the hand). The atom of `traces.jsonl` (one episode
+    traces is one agent's LOCAL view (its own conversation, role-stamped; a judge's
+    verdict trace is separate from the solution it judges). The atom of `traces.jsonl` (one episode
     per line) and of the serve protocol: a single-agent rollout carries one trace, a
     multi-agent env's one per role — they succeed, resume, and score as a unit,
     which is exactly what the episode makes atomic. `errors` are rollout-level

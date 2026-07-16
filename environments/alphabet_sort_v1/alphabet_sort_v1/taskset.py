@@ -6,14 +6,14 @@ on each follow-up turn re-sorts the cumulative list — tagging the newly added 
 `<combined_alphabetical_sorted>` tags. The reward is the per-turn sequence similarity to the
 ground truth, power-scaled.
 
-The whole conversation is driven by a scripted user: the env's `rollout()` replays the
-episode's pre-generated `user_turns` through a chat session. The task carries no prompt
-(`prompt=None`), so the first `turn()` opens the conversation with the initial sort
-prompt, and each follow-up turn resumes the assistant onto the conversation (the
-assistant yields, the session answers, the exchange resumes); when the turns run out,
-leaving the session ends the exchange. The taskset is
-`INFINITE`: `load` generates episodes on demand, forever — each pass over the source name
-lists draws fresh turn splits, so the stream never repeats; runs bound it with `-n`.
+The whole conversation is driven by a `vf.User` simulator (`AlphabetSortUser` in
+`servers/user.py`): the task carries no prompt (`prompt=None`), so the simulator opens the
+conversation with the initial sort prompt — before the model is ever called — and then injects
+each follow-up after the assistant turn. The episode is one rollout the harness only ever sees
+as a single exchange. The simulator runs on the host (not colocated in the agent's runtime), so
+the host-driven loop reaches it on every runtime. The taskset is `INFINITE`: `load` generates
+episodes on demand, forever — each pass over the source name lists draws fresh turn splits, so
+the stream never repeats; runs bound it with `-n`. The simulator replays each generated episode.
 """
 
 import difflib
@@ -26,6 +26,8 @@ from datasets import load_dataset
 
 import verifiers.v1 as vf
 
+from alphabet_sort_v1.servers.user import AlphabetSortState, AlphabetSortUser
+
 DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
 
@@ -35,6 +37,7 @@ class AlphabetSortTaskConfig(vf.TaskConfig):
     """Exponent applied to each turn's sequence-similarity score (higher = sharper penalty)."""
     power_per_turn: bool = True
     """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
+    user: vf.UserConfig = vf.UserConfig()
 
 
 class AlphabetSortConfig(vf.TasksetConfig):
@@ -53,13 +56,20 @@ class AlphabetSortConfig(vf.TasksetConfig):
 
 class AlphabetSortTaskData(vf.TaskData):
     info: dict
-    """The pre-generated episode: the `user_turns` the env's scripted user reveals one by one
-    (the opening sort prompt, then the follow-ups), the per-turn `ground_truths` the reward
-    grades against, and `num_turns`. The row itself carries no prompt — the scripted user
-    opens the conversation."""
+    """The pre-generated episode: the `user_turns` the simulator reveals one by one (the opening
+    sort prompt, then the follow-ups), the per-turn `ground_truths` the reward grades against,
+    and `num_turns`. The row itself carries no prompt — the simulator opens the conversation."""
 
 
-class AlphabetSortTask(vf.Task[AlphabetSortTaskData, vf.State, AlphabetSortTaskConfig]):
+class AlphabetSortTask(
+    vf.Task[AlphabetSortTaskData, AlphabetSortState, AlphabetSortTaskConfig]
+):
+    user = AlphabetSortUser
+
+    @vf.stop
+    async def user_finished(self, trace: vf.Trace) -> bool:
+        return trace.state.user_finished
+
     @vf.reward(weight=1.0)
     async def alphabet_sort(self, trace: vf.Trace) -> float:
         ground_truths = self.data.info["ground_truths"]
@@ -95,19 +105,6 @@ class AlphabetSortTask(vf.Task[AlphabetSortTaskData, vf.State, AlphabetSortTaskC
                 scores.append(attempts[-1] if improved else 0.0)
         avg = sum(scores) / num_turns if num_turns else 0.0
         return avg if self.config.power_per_turn else avg**self.config.similarity_power
-
-
-class AlphabetSortEnv(vf.Environment):
-    """Replays each episode's pre-generated user turns as the run's user."""
-
-    async def rollout(self, task, agents):
-        # A chat session replaying the pre-generated episode: the task carries no
-        # prompt, so the first turn opens the conversation with the initial sort.
-        async with agents["solver"].chat(task) as session:
-            for prompt in task.data.info["user_turns"]:
-                if (await session.turn(prompt)).stopped:
-                    break
-        return [session.trace]
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
@@ -194,8 +191,8 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
                 yield AlphabetSortTask(
                     AlphabetSortTaskData(
                         idx=idx,
-                        # No prompt on the row: the scripted user opens with the sort prompt,
-                        # then the follow-ups — one user turn per `user_turns` entry.
+                        # No prompt on the row: the simulator opens with the sort prompt, then
+                        # the follow-ups — one user turn per `user_turns` entry.
                         prompt=None,
                         info={
                             "user_turns": [initial_prompt, *follow_ups],

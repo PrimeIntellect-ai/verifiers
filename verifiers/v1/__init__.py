@@ -4,7 +4,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent, ChatSession, Reply
+from verifiers.v1.agent import Agent
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -36,6 +36,7 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     TunnelError,
+    UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import (
@@ -102,6 +103,8 @@ from verifiers.v1.mcp import (
     Toolset,
     SharedToolsetConfig,
     ToolsetConfig,
+    User,
+    UserConfig,
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
@@ -190,6 +193,7 @@ __all__ = [
     "ProviderError",
     "HarnessError",
     "ToolsetError",
+    "UserError",
     "SandboxError",
     "TaskError",
     "InterceptionError",
@@ -269,9 +273,9 @@ __all__ = [
     "Toolset",
     "SharedToolsetConfig",
     "ToolsetConfig",
-    # the user channel
-    "ChatSession",
-    "Reply",
+    # user simulator
+    "User",
+    "UserConfig",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

@@ -390,21 +390,26 @@ def validate_pairing(
     shared_tools: Collection = (),
 ) -> None:
     """Reject an impossible harness/task/runtime combination before any work happens.
-    Every check reads class-level facts (`Task.tools` / `NEEDS_CONTAINER`, plus
-    whatever shared MCP the caller brings), so a failure here holds for
-    every row the task class can carry. Shared by `Environment` (once, at init, with the
-    task type read off the `Taskset[TaskT, ...]` generic and the taskset's declared
-    `tools` — on the env server it fails worker startup instead of every request) and
-    `Agent.run` (per run, with the concrete task's type and the agent's borrowed
-    `shared_tools` servers, against the resolved runtime). Only the collection's
-    emptiness matters — declarations and live servers alike mean MCP is in play.
-    (Hosting a user is chat-scoped, not task-scoped — `Agent.chat` checks the
-    harness can resume an exchange.)"""
+    Every check reads class-level facts (`Task.tools` / `Task.user` /
+    `NEEDS_CONTAINER`, plus whatever shared MCP the caller brings), so a failure here
+    holds for every row the task class can carry. Shared by `Environment` (once, at
+    init, with the task type read off the `Taskset[TaskT, ...]` generic and the
+    taskset's declared `tools` — on the env server it fails worker startup instead of
+    every request) and `Agent.run` (per run, with the concrete task's type and the
+    agent's borrowed `shared_tools` servers, against the resolved runtime). Only the
+    collection's emptiness matters — declarations and live servers alike mean MCP is
+    in play."""
     if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
             f"{task_cls.__name__} exposes tool servers (MCP). Run it with a harness that "
             f"supports MCP (e.g. --harness.id default), or use tasks without tools."
+        )
+    if not harness.SUPPORTS_USER_SIM and task_cls.user is not None:
+        raise ValueError(
+            f"Harness {harness.config.id!r} does not drive a user simulator, but "
+            f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
+            f"supports user simulation (e.g. --harness.id default), or use tasks without one."
         )
     if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
         raise ValueError(
@@ -559,6 +564,22 @@ class Environment(Generic[ParamsT]):
                     f"(--env.{name}.harness.id default) — or, if the env mints this "
                     "role's tasks itself, declare its needs on the roles() entry "
                     "(vf.Role(cfg, mcp=False))."
+                )
+            # A role that plays the dataset (no declared needs) inherits its user
+            # simulator too; a bare model actor (mcp=False, container=False) plays
+            # env-minted plain tasks, which carry none. `Agent.run` re-validates
+            # every concrete task, as the backstop.
+            plays_dataset = role.mcp is None and role.container is None
+            if (
+                plays_dataset
+                and task_cls.user is not None
+                and not harness.SUPPORTS_USER_SIM
+            ):
+                raise ValueError(
+                    f"{type(self).__name__} role {name!r} plays tasks with a user "
+                    f"simulator (Task.user), but its harness {harness.config.id!r} "
+                    "does not drive one; point the role at a user-capable harness "
+                    f"(--env.{name}.harness.id default)."
                 )
             needs_container = (
                 role.container
@@ -918,16 +939,16 @@ class Environment(Generic[ParamsT]):
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: the role
-        runtimes (by config), the live `shared` servers, and the task class's tool
+        runtimes (by config), the live `shared` servers, and the task class's tool/user
         servers — read class-level (like `validate_pairing`) with their configs resolved
         the way `Task.server_config` resolves them. A task that *overrides* that pairing
         isn't statically knowable, so it conservatively counts as remote (the tunnel then
         reaches everything; a wrongly-assumed localhost would reach nothing remote)."""
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
-        server_classes = [*task_cls.tools]
+        server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
         if server_classes and task_cls.server_config is not Task.server_config:
             return True
-        sole = len({*task_cls.tools}) == 1
+        sole = len({*task_cls.tools} | ({task_cls.user} - {None})) == 1
         configs = [
             resolve_server_config(
                 task_cls.__name__, self.taskset.config.task, server_cls, sole=sole
@@ -988,29 +1009,3 @@ class _RoleAgent:
         trace = await self._agent.run(task, runtime=runtime, on_trace=watch)
         self._completed.append(trace)
         return trace
-
-    @contextlib.asynccontextmanager
-    async def chat(
-        self,
-        task: Task,
-        *,
-        runtime: "Runtime | None" = None,
-        mask_prompt: bool = False,
-    ):
-        """The agent's `chat`, with every trace stamped (`role`/`trainable`) at mint
-        and captured in `completed` at close — so a chat driven from
-        `Environment.rollout` stays crash-safe."""
-
-        def watch(trace: Trace) -> None:
-            trace.role = self._role
-            trace.trainable = self._trainable
-            if self._on_trace is not None:
-                self._on_trace(trace)
-
-        async with self._agent.chat(
-            task, runtime=runtime, mask_prompt=mask_prompt, on_trace=watch
-        ) as session:
-            try:
-                yield session
-            finally:
-                self._completed.append(session.trace)

@@ -35,7 +35,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "prime-tunnel>=0.1.8",
-    "prime-sandboxes>=0.2.27",
+    "prime-sandboxes>=0.2.31",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -81,7 +81,6 @@ examples = [
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "reverse-text-v1", "color-codeword-v1",
     "wordle-v1", "alphabet-sort-v1", "scratchpad-v1", "mmmu-v1",
-    "kuhn-poker-v1",
 ]
 
 [project.optional-dependencies]
@@ -150,7 +149,6 @@ color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
 mmmu-v1 = { path = "environments/mmmu_v1", editable = true }
-kuhn-poker-v1 = { path = "environments/kuhn_poker_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)

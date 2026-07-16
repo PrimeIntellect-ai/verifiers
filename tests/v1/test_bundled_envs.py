@@ -12,8 +12,6 @@ from verifiers.v1.judges.rubric import RubricJudgeConfig
 from verifiers.v1.judges.score import ScoreJudge
 from verifiers.v1.trace import Trace, TraceTask
 
-from kuhn_poker_v1.taskset import LEGAL, TO_ACT, parse_action, payoff
-
 
 def test_env_id_resolves_bundled():
     assert vf.environment_class("", "best-of-n") is BestOfNEnv
@@ -51,16 +49,14 @@ def test_load_environment_honors_env_id():
 
 def test_minted_task_roles_pair_with_tool_tasksets():
     """A role playing env-minted plain tasks (`vf.Role(cfg, mcp=False,
-    container=False)`) needs nothing from the taskset's world: judge and user-sim
-    load over a tool-declaring taskset — the pairing that used to refuse at
+    container=False)`) needs nothing from the taskset's world: the judge env
+    loads over a tool-declaring taskset — the pairing that used to refuse at
     construction — while the SOLVER role still validates against the dataset."""
-    for env_id in ("judge", "user-sim"):
-        env = vf.load_environment(
-            EvalConfig(taskset={"id": "echo-tool-v1"}, env={"id": env_id})
-        )
-        aux = "judge" if env_id == "judge" else "user"
-        assert env._role_needs_mcp[aux] is False
-        assert env._role_needs_mcp["solver" if env_id == "judge" else "assistant"]
+    env = vf.load_environment(
+        EvalConfig(taskset={"id": "echo-tool-v1"}, env={"id": "judge"})
+    )
+    assert env._role_needs_mcp["judge"] is False
+    assert env._role_needs_mcp["solver"]
     # The dataset-playing role keeps failing loudly: a tool taskset on a harness
     # that can't mount MCP is still an impossible pairing.
     with pytest.raises(ValueError, match="role 'solver' plays tasks with MCP"):
@@ -201,35 +197,3 @@ def test_rubric_spec_agent_execution_round_trip(tmp_path):
     assert total == 0.75  # (3*1 + 1*0) / 4
     assert trace.metrics["rubric/correct"] == 1.0
     assert trace.metrics["rubric/concise"] == 0.0
-
-
-def test_kuhn_payoffs_are_zero_sum_and_correct():
-    assert payoff("check-check", ["K", "J"]) == 1
-    assert payoff("check-check", ["J", "K"]) == -1
-    assert payoff("bet-fold", ["J", "K"]) == 1  # folding surrenders the antes
-    assert payoff("check-bet-fold", ["K", "J"]) == -1
-    assert payoff("bet-call", ["K", "Q"]) == 2
-    assert payoff("bet-call", ["Q", "K"]) == -2
-    assert payoff("check-bet-call", ["J", "Q"]) == -2
-
-
-def test_kuhn_state_machine_is_closed():
-    """Every non-terminal history offers legal actions; every extension is either
-    another decision point or a payoff-defined terminal."""
-    for history, legal in LEGAL.items():
-        assert history in TO_ACT
-        for action in legal:
-            extended = f"{history}-{action}" if history else action
-            if extended not in TO_ACT:
-                payoff(extended, ["K", "J"])  # raises KeyError if unmapped
-
-
-def test_kuhn_parse_action():
-    assert parse_action("I will [bet]!", ("check", "bet")) == "bet"
-    assert parse_action("[BET]", ("check", "bet")) == "bet"
-    assert parse_action("sure: [bet]... yes, [bet]", ("check", "bet")) == "bet"
-    # Both options bracketed is ambiguous whichever end you read from — it must
-    # consume an invalid-move retry, never be silently played.
-    assert parse_action("[check] no wait, [bet]", ("check", "bet")) is None
-    assert parse_action("[raise]", ("check", "bet")) is None
-    assert parse_action("bet", ("check", "bet")) is None  # brackets required

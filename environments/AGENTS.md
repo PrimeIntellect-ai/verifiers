@@ -27,10 +27,12 @@ The command also supports:
 - `-p`, `--path <dir>` — parent directory, default: `./environments`
 - `-T`, `--add-tool` — also scaffold a `vf.Toolset` tool server at `servers/tool.py`
   - Use this to create custom tools which are installed into supported harnesses via MCP.
+- `-U`, `--add-user` — also scaffold a `vf.User` simulator at `servers/user.py`
+  - Use this to simulate a user interacting with the model. Not all harnesses support user simulation.
 - `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--harness.id <name>`
   - Prefer a built-in harness unless the model needs to run inside a custom program.
 
-Most tasksets do not need specific tools or custom harnesses. (To simulate a user interacting with the model, open a chat session from an env's `rollout()` and script the user's turns — see the [Agent docs](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/agent.md).)
+Most tasksets do not need specific tools, user simulations or custom harnesses.
 
 > For a production-scale catalog of tasksets, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
 
@@ -356,7 +358,7 @@ uv run eval --taskset.id my-task-v1 --env.id judge --env.judge.model openai/gpt-
 exporting an `Environment` subclass via `__all__`, or a Hub `org/name[@version]` —
 and its `EnvParams` surface typed on the CLI (`--env.<role>.*`, `-h` renders them).
 Empty (the default) keeps the taskset's own story: the env its package ships (a
-*recipe* env like `code_golf_v1` or `kuhn_poker_v1`, where the interaction is
+*recipe* env like `code_golf_v1`, where the interaction is
 intrinsic to the data), else the single-agent base. An explicit id wins over a
 bundled recipe env.
 
@@ -366,32 +368,3 @@ Bundled envs (`verifiers/v1/envs/`):
 | --- | --- | --- |
 | `best-of-n` | `solver` | `--env.n` independent attempts per rollout; `score()` marks the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
 | `judge` | `solver`, `judge` | the solver plays the task; a judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, same registry and format as `taskset.task.judges`) — write your grading criteria once, run them as a bare call or as an agent. Verdict + per-criterion metrics land on the solver's trace; point `--env.judge.harness.id` at a real harness and the judge investigates with tools, `--env.spec.view full_trace` shows it the whole transcript. |
-| `user-sim` | `assistant`, `user` | a modeled user (direct harness, untrainable) opens and drives the conversation from the task's prompt-as-scenario (`--env.persona`); the assistant plays the same task through a masked chat session (`mask_prompt`) — the prompt is hidden from its harness while the task's own rewards and judges still score the real row. The substrate for tau-bench-style evals. |
-
-### User simulation: the user is just another agent
-
-There is exactly one exchange mechanism: the chat session (`agents[...].chat(task)`)
-— whoever calls `turn()` is the run's user, and each turn runs one harness segment
-(the program runs until it yields, the caller answers its final message, the next
-segment resumes the exchange with the answer). A prompt-less task is opened by the
-first `turn(message)`; a prompted task speaks first (take its opening reply with a
-bare `turn()`). Who computes the turns is the env's control flow, not framework
-machinery:
-
-```python
-class SortEnv(vf.Environment):
-    async def rollout(self, task, agents):
-        # a pre-scripted episode: the task is prompt-less, so the first turn opens
-        async with agents["solver"].chat(task) as session:
-            for prompt in task.data.info["user_turns"]:
-                if (await session.turn(prompt)).stopped:
-                    break                        # a limit or @stop ended the run
-        return [session.trace]
-```
-
-A *scripted* user is a plain loop like this (a game engine stepping in-process works
-the same way — see the bundled `textarena` taskset). A *modeled* user is another agent
-role: open both sessions and relay their `turn()`s into each other — see the bundled
-`user-sim` env, `environments/kuhn_poker_v1` (the same relay as self-play: both seats
-chat sessions of the run's own model), and [chat() in the Agent docs](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/agent.md). The
-user runs in the eval process, so there is nothing to declare, place, or serve.
