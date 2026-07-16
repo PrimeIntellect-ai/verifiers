@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> None:
 
             traces = asyncio.run(run_eval_server(config))
         else:  # in-process (default), with or without the live dashboard
-            env = vf.Environment(config)
+            env = vf.load_environment(config)
             traces = asyncio.run(run_eval(env, config))
     except KeyboardInterrupt:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on

@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.env import Environment
+from verifiers.v1.loaders import load_environment
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace
 
@@ -214,7 +214,7 @@ def run_v1():
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        return await run_eval(Environment(config), config)
+        return await run_eval(load_environment(config), config)
 
     return _run
 

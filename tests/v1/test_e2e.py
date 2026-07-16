@@ -202,6 +202,50 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
+async def test_multi_agent_env(run_v1, tmp_path):
+    """An `Environment` subclass shipped with its taskset (duet-v1): two roles run the
+    task, `score()` records a sibling-dependent metric, and one eval rollout lands one
+    record carrying two role-stamped traces."""
+    import json
+
+    traces = await run_v1(
+        "duet-v1",
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert len(traces) == 2  # one env-rollout, one trace per role
+    assert sorted(t.role for t in traces) == ["a", "b"]
+    (b,) = [t for t in traces if t.role == "b"]
+    assert b.trainable is False
+    for trace in traces:
+        assert trace.errors == []
+        assert trace.reward == 1.0  # each seat's own task reward
+        assert trace.metrics["duet"] == 1.0  # the sibling-dependent signal
+    # On disk: one record line carrying both traces, role-stamped.
+    (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
+    row = json.loads(line)
+    assert row["env"] == "duet-v1"
+    assert [t["role"] for t in row["traces"]] == ["a", "b"]
+    assert [t.get("trainable") for t in row["traces"]] == [True, False]
+
+
+@pytest.mark.e2e
+async def test_multi_agent_env_server(run_v1_server, tmp_path):
+    """The same env through the env-server pool: the worker rebuilds the role-typed
+    config from wire data, and the multi-trace record rides the serve protocol."""
+    traces = await run_v1_server(
+        "duet-v1",
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert len(traces) == 2
+    assert sorted(t.role for t in traces) == ["a", "b"]
+    for trace in traces:
+        assert trace.errors == []
+        assert trace.metrics["duet"] == 1.0
+
+
+@pytest.mark.e2e
 async def test_replay_round_trip(run_v1, tmp_path):
     """eval -> replay -> replay-the-replay. Offline re-scoring must preserve the saved
     task's wire form: replay reads traces as `Trace[WireTaskData, ...]`, so its own output

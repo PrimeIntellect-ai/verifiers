@@ -54,11 +54,14 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
 
 def _good_row(row: dict) -> bool:
     """Whether a parsed traces.jsonl row is a keepable finished rollout. A record row
-    is good iff it has no rollout-level error and none of its traces errored; a
-    pre-record row (one bare trace) is good iff the trace didn't error."""
+    is good iff it has no rollout-level errors (`errors`; `error` in the earliest
+    record files) and none of its traces errored; a pre-record row (one bare trace) is
+    good iff the trace didn't error."""
     if sniff_record(row):
-        return not row.get("error") and not any(
-            t.get("errors") for t in row.get("traces") or []
+        return (
+            not row.get("error")
+            and not row.get("errors")
+            and not any(t.get("errors") for t in row.get("traces") or [])
         )
     return not row.get("errors")
 

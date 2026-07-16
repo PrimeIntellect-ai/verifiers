@@ -49,7 +49,9 @@ def narrow_config(base: type, argv: list[str]) -> type:
     them. A field whose id isn't on the CLI is left as the base type for `EnvConfig` to resolve
     from a `@ file.toml` (never pre-narrowed to a type the config could then contradict).
     Absent a config file, the harness falls back to the taskset's bundled harness (if it ships
-    one) else `default`, so bare `-h` renders the harness that will actually run."""
+    one) else `default`, so bare `-h` renders the harness that will actually run. A taskset
+    that ships an `Environment` subclass gets its `env` params field narrowed the same way,
+    so its role fields (`--env.<role>.model`, ...) parse typed and render in `-h`."""
     taskset_id = extract_id(argv, "taskset")
     harness_id = extract_id(argv, "harness")
     if not harness_id and not references_config_file(argv):
@@ -64,4 +66,9 @@ def narrow_config(base: type, argv: list[str]) -> type:
             ftype = resolve(ident)
             annotations[field] = ftype
             fields[field] = ftype(id=ident)
+    if taskset_id:
+        params_type = vf.env_params_type(taskset_id)
+        if params_type is not vf.EnvParams:
+            annotations["env"] = params_type
+            fields["env"] = params_type()
     return type(base.__name__, (base,), {"__annotations__": annotations, **fields})

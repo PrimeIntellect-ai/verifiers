@@ -19,7 +19,7 @@ from pydantic_core import to_jsonable_python
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import Environment
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import RolloutRecord, Trace
 
 Candidate = dict[str, str]
 
@@ -38,9 +38,9 @@ class GEPAAdapter:
     tasks: dict[int, Task]
     loop: asyncio.AbstractEventLoop
     semaphore: asyncio.Semaphore | None = None
-    on_complete: Callable[[Trace], Awaitable[None]] | None = None
-    """Called with each rollout's trace as it finalizes — the runner's persist hook that
-    streams traces to `traces.jsonl`, exactly as `run_eval` does."""
+    on_complete: Callable[[RolloutRecord], Awaitable[None]] | None = None
+    """Called with each rollout's record as it finalizes — the runner's persist hook that
+    streams records to `traces.jsonl`, exactly as `run_eval` does."""
     reflection_columns: list[str] = field(default_factory=list)
     propose_new_texts: Callable[..., Candidate] | None = None
     """Part of GEPA's adapter protocol — its proposer reads this attribute on every reflection
@@ -78,7 +78,12 @@ class GEPAAdapter:
         results = await asyncio.gather(
             *(episode.run(self.semaphore, self.on_complete) for episode in episodes)
         )
-        return [trace for episode_traces in results for trace in episode_traces]
+        return [
+            trace
+            for episode_records in results
+            for record in episode_records
+            for trace in record.traces
+        ]
 
     def make_reflective_dataset(
         self,

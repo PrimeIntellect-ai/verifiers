@@ -264,7 +264,8 @@ class EnvServerPool:
 def env_config_data(config) -> dict:
     """The picklable `EnvConfig` fields of a (possibly dynamically-narrowed, unpicklable)
     config object — ship this across a process boundary, then rebuild via
-    `EnvConfig.model_validate` (its validator re-resolves the concrete taskset/harness)."""
+    `EnvConfig.model_validate` (its validator re-resolves the concrete taskset/harness
+    and the env's params type)."""
     data = config.model_dump(mode="json")
     return {k: v for k, v in data.items() if k in EnvConfig.model_fields}
 

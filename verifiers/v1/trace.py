@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import numpy as np
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
@@ -454,23 +454,41 @@ class RolloutRecord(StrictBaseModel, Generic[DataT, StateT]):
     """One rollout of the env, as it rides the wire: the atom of `traces.jsonl` (one
     record per line) and of the serve protocol. A single-agent rollout carries one
     trace; a multi-agent env's rollout carries one per role — they succeed, resume,
-    and score as a unit, which is exactly what the record makes atomic. `error` is a
-    rollout-level failure not attributable to any one trace (e.g. the env's `rollout`
-    hook itself); per-trace failures stay on the traces."""
+    and score as a unit, which is exactly what the record makes atomic. `errors` are
+    rollout-level failures not attributable to any one trace (the env's `rollout`/
+    `score` hooks, plus prior attempts' errors when the record was retried — same
+    shape as `Trace.errors`); per-trace failures stay on the traces."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     env: str = ""
     """The env (taskset) id that produced this rollout — provenance for mixed files."""
     task: TraceTask[DataT]
     """The task rolled out, as recorded on its traces (class name + row)."""
-    error: Error | None = None
+    errors: list[Error] = Field(default_factory=list)
+    """Rollout-level errors, oldest first (more than one only when the rollout was
+    retried). `error` exposes the most recent."""
     traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_legacy_error(cls, data: Any) -> Any:
+        """Read records written when the field was a singular `error` (early part-C
+        files): lift it into `errors` so both generations parse everywhere."""
+        if isinstance(data, dict) and "error" in data:
+            error = data.pop("error")
+            if error is not None:
+                data = {**data, "errors": [error, *data.get("errors", [])]}
+        return data
+
+    @property
+    def error(self) -> Error | None:
+        return self.errors[-1] if self.errors else None
 
     @property
     def ok(self) -> bool:
         """Whether the whole rollout is good — no record-level error and no trace
         errors. The resume unit: anything less is redone."""
-        return self.error is None and not any(t.errors for t in self.traces)
+        return not self.errors and not any(t.errors for t in self.traces)
 
     @classmethod
     def of(cls, trace: Trace, env: str = "") -> "RolloutRecord":

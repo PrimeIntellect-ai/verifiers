@@ -242,12 +242,18 @@ def Progress(
 ) -> Group:
     # On resume, `slots` includes the previous session's kept rollouts (as finished slots), so
     # progress, reward, err, and the breakdown cover the whole run, not just this session's.
-    done = [s.trace for s in slots if s.done]  # fully scored
+    done = [s for s in slots if s.done]  # fully scored env-rollouts
+    done_traces = [t for s in done for t in s.traces]
     total = len(slots)
-    # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
-    # global avg (errored count as 0) in parens. `err` is the share that errored.
-    reward = format_mean(done, lambda t: t.reward)
-    err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
+    # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
+    # the global avg (errored count as 0) in parens. `err` is the share of env-rollouts that
+    # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
+    reward = format_mean(done_traces, lambda t: t.reward)
+    err = (
+        f"{sum(s.record is None or not s.record.ok for s in done) / len(done):.2f}"
+        if done
+        else "—"
+    )
     stats = (
         f"{len(done)}/{total} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
@@ -261,7 +267,7 @@ def Progress(
         ProgressBar(total=total or 1, completed=len(done)),
         Text(stats),
     )
-    breakdown = _breakdown(done)
+    breakdown = _breakdown(done_traces)
     return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
@@ -405,12 +411,12 @@ def _stage(trace: Trace) -> str:
 
 
 def _started(slot: RunSlot) -> float:
-    # Sort key: when a rollout began (its boot start; setup for pre-boot-span traces on
-    # resume). A still-pending rollout has no trace yet, so it sorts last (+inf) — behind
-    # everything already in flight, in task order.
-    if slot.trace is None:
+    # Sort key: when a rollout began (its first trace's boot start; setup for
+    # pre-boot-span traces on resume). A still-pending rollout has no trace yet, so it
+    # sorts last (+inf) — behind everything already in flight, in task order.
+    if not slot.traces:
         return float("inf")
-    return slot.trace.timing.boot.start or slot.trace.timing.setup.start
+    return min(t.timing.boot.start or t.timing.setup.start for t in slot.traces)
 
 
 def _groups(slots: list[RunSlot]) -> list[list[RunSlot]]:
@@ -435,77 +441,89 @@ def _brace(i: int, size: int) -> str:
 
 
 def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
-    # (brace, state, left sections, result, time)
+    # (brace, state, left sections, result, time); a slot contributes one row per live
+    # trace (a multi-agent env-rollout shows each role's trace), braced per task.
     rows: list[tuple[str, str, list[str], str, str]] = []
     for group in groups:
-        for i, slot in enumerate(group):
-            t = slot.trace
+        group_rows: list[tuple[str, list[str], str, str]] = []
+        for slot in group:
             task = slot.task.data
-            label = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
-            if (
-                t is None
-            ):  # queued behind the concurrency cap — only its task is known yet
-                rows.append(
-                    (
-                        _brace(i, len(group)),
-                        "pending",
-                        [f"task {label}", *[""] * 7],
-                        "",
-                        "",
+            base = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
+            if not slot.traces:
+                if slot.done:  # the env's rollout() itself failed before any trace
+                    error = slot.record.error if slot.record is not None else None
+                    group_rows.append(
+                        (
+                            "error",
+                            [f"task {base}", *[""] * 7],
+                            error.type if error is not None else "error",
+                            "",
+                        )
                     )
-                )
+                else:  # queued behind the concurrency cap — only its task is known yet
+                    group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
                 continue
-            if slot.done:  # fully scored — reward is final
-                state = "error" if t.has_error else "success"
-                result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
-                if t.has_error:
-                    stop = ""  # error shown instead
+            for t in slot.traces:
+                label = f"{base} role={t.role}" if t.role else base
+                if slot.done:  # fully scored — reward is final
+                    state = "error" if t.has_error else "success"
+                    result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
+                    if t.has_error:
+                        stop = ""  # error shown instead
+                    else:
+                        stop = t.stop_condition or ""
+                        if (
+                            t.is_truncated
+                        ):  # flag a clipped rollout next to its stop condition
+                            stop = f"{stop} (truncated)".strip()
                 else:
-                    stop = t.stop_condition or ""
-                    if (
-                        t.is_truncated
-                    ):  # flag a clipped rollout next to its stop condition
-                        stop = f"{stop} (truncated)".strip()
-            else:
-                state, result, stop = _stage(t), "", ""
-            descriptor = t.runtime.id if t.runtime is not None else None
-            runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
-            turns = t.num_turns
-            start = t.timing.boot.start or t.timing.setup.start
-            end = (
-                t.timing.scoring.end
-                or t.timing.finalize.end
-                or t.timing.generation.end
-                # a rollout that errored in boot/setup has only that span's end — freeze there
-                # once done, else (still running) the timer would grow off `now` forever
-                or ((t.timing.setup.end or t.timing.boot.end) if t.is_completed else 0)
-                or now
-            )
-            prompt, completion, cached, reasoning, nbranches = _tokens(t)
-            cost = t.usage.cost if t.usage else None
-            tokens = ""
-            if prompt or completion:
-                tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
-                details = []
-                if cached is not None:
-                    details.append(f"{format_count(cached)} cached")
-                if reasoning is not None:
-                    details.append(f"{format_count(reasoning)} reasoning")
-                if details:
-                    tokens += f" ({', '.join(details)})"
-            left = [
-                f"task {label}",
-                t.id[:8],
-                runtime,
-                f"{turns} turn{'s' * (turns != 1)}",
-                f"{nbranches} branch{'es' * (nbranches != 1)}",
-                tokens,
-                f"{format_cost_usd(cost)}" if cost is not None else "",
-                stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
-            ]
-            # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
-            elapsed = format_time(end - start) if start else ""
-            rows.append((_brace(i, len(group)), state, left, result, elapsed))
+                    state, result, stop = _stage(t), "", ""
+                descriptor = t.runtime.id if t.runtime is not None else None
+                runtime = (
+                    f"{runtime_type}({descriptor})" if descriptor else runtime_type
+                )
+                turns = t.num_turns
+                start = t.timing.boot.start or t.timing.setup.start
+                end = (
+                    t.timing.scoring.end
+                    or t.timing.finalize.end
+                    or t.timing.generation.end
+                    # a rollout that errored in boot/setup has only that span's end — freeze there
+                    # once done, else (still running) the timer would grow off `now` forever
+                    or (
+                        (t.timing.setup.end or t.timing.boot.end)
+                        if t.is_completed
+                        else 0
+                    )
+                    or now
+                )
+                prompt, completion, cached, reasoning, nbranches = _tokens(t)
+                cost = t.usage.cost if t.usage else None
+                tokens = ""
+                if prompt or completion:
+                    tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
+                    details = []
+                    if cached is not None:
+                        details.append(f"{format_count(cached)} cached")
+                    if reasoning is not None:
+                        details.append(f"{format_count(reasoning)} reasoning")
+                    if details:
+                        tokens += f" ({', '.join(details)})"
+                left = [
+                    f"task {label}",
+                    t.id[:8],
+                    runtime,
+                    f"{turns} turn{'s' * (turns != 1)}",
+                    f"{nbranches} branch{'es' * (nbranches != 1)}",
+                    tokens,
+                    f"{format_cost_usd(cost)}" if cost is not None else "",
+                    stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
+                ]
+                # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
+                elapsed = format_time(end - start) if start else ""
+                group_rows.append((state, left, result, elapsed))
+        for i, (state, left, result, elapsed) in enumerate(group_rows):
+            rows.append((_brace(i, len(group_rows)), state, left, result, elapsed))
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(ratio=1, no_wrap=True)  # brace + mark + dot-separated sections
     grid.add_column(justify="right", no_wrap=True)  # result (reward / error)
@@ -561,13 +579,19 @@ class Pager:
         return self.page
 
 
+def _rows_of(group: list[RunSlot]) -> int:
+    """How many display rows a task's slots take: one per trace, one for a slot with
+    none yet (pending) or none at all (the env's hook failed before any trace)."""
+    return sum(max(1, len(slot.traces)) for slot in group)
+
+
 def _paginate(
     groups: list[list[RunSlot]], rows_per_page: int, pager: Pager, now: float
 ) -> tuple[list[list[RunSlot]], int, int]:
     """Pack groups (a task's rollouts kept together) into pages of at most `rows_per_page` rows,
     selecting the one `pager` points at. Returns (this page's groups, 0-based index, page count) —
     a single page when everything already fits."""
-    if sum(len(g) for g in groups) <= rows_per_page:
+    if sum(_rows_of(g) for g in groups) <= rows_per_page:
         # Everything fits: arrows stay inert, and clear the anchor so paging re-opens on page 1 if
         # rollouts overflow again later (e.g. a terminal resize) rather than off the stale origin.
         pager.count = 1
@@ -577,11 +601,11 @@ def _paginate(
     current: list[list[RunSlot]] = []
     used = 0
     for group in groups:
-        if current and used + len(group) > rows_per_page:
+        if current and used + _rows_of(group) > rows_per_page:
             pages.append(current)
             current, used = [], 0
         current.append(group)
-        used += len(group)
+        used += _rows_of(group)
     if current:
         pages.append(current)
     pager.count = len(pages)

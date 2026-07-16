@@ -1,4 +1,4 @@
-"""Resolve taskset, harness, and judge plugins."""
+"""Resolve taskset, harness, judge, and environment plugins."""
 
 import importlib
 import importlib.util
@@ -7,6 +7,7 @@ from typing import Callable
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.env import EnvConfig, EnvParams, Environment
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls
 from verifiers.v1.utils.install import ensure_installed
@@ -107,6 +108,27 @@ def default_harness_id(taskset_id: str) -> str:
     return taskset_id
 
 
+def environment_class(taskset_id: str) -> type[Environment]:
+    """The taskset package's `Environment` subclass when it exports one via `__all__`
+    (a multi-agent env ships with its taskset, the same plugin idiom as a bundled
+    harness), else the base `Environment` — whose defaults ARE the single-agent case,
+    so every plain taskset resolves to today's behavior."""
+    if not taskset_id:
+        return Environment
+    try:
+        module = import_taskset(taskset_id)
+        return _plugin_class(module, Environment, "environment")
+    except (ModuleNotFoundError, TypeError, AttributeError):
+        return Environment
+
+
+def load_environment(config: EnvConfig) -> Environment:
+    """Construct the env for `config`: the taskset's exported `Environment` subclass
+    when there is one, else the base. Every env construction site (eval, serve, gepa)
+    goes through here so subclass envs load everywhere."""
+    return environment_class(config.taskset.id)(config)
+
+
 def load_taskset(config: TasksetConfig) -> Taskset:
     return taskset_class(config.id)(config)
 
@@ -138,6 +160,17 @@ def harness_config_type(harness_id: str) -> type[HarnessConfig]:
 def judge_config_type(judge_id: str) -> type[JudgeConfig]:
     """Resolve the judge's config specialization through its MRO."""
     return judge_config_cls(judge_class(judge_id))
+
+
+def env_params_type(taskset_id: str) -> type[EnvParams]:
+    """Resolve the env's params specialization (`Environment[YourParams]`) through its
+    MRO — the empty base `EnvParams` for a taskset without an `Environment` subclass.
+    `EnvConfig` narrows its `env` field to this, which is what gives
+    `--env.<role>.model` CLI/TOML addressing."""
+    return (
+        generic_type(environment_class(taskset_id), EnvParams, origin=Environment)
+        or EnvParams
+    )
 
 
 def task_type(taskset_id: str) -> type[Task]:

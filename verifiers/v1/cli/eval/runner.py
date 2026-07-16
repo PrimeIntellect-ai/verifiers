@@ -18,7 +18,7 @@ from verifiers.v1.cli.output import (
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
 from verifiers.v1.episode import RunSlot
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import RolloutRecord, Trace
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
@@ -35,21 +35,20 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     out = output_path(config)
-    # Write config.toml up front, then persist each trace as it completes (so the results are
+    # Write config.toml up front, then persist each record as it completes (so the results are
     # durable mid-run, not only at the end). One lock serializes worker-thread appends from
     # concurrent rollouts while keeping large trace serialization off the event loop.
     owed: dict[str, int] | None = None
-    # On resume, the kept (good) on-disk rollouts rejoin the run as finished traces: displayed,
+    # On resume, the kept (good) on-disk rollouts rejoin the run as finished records: displayed,
     # returned, pushed, and printed alongside this session's, with only the owed rollouts re-run
     # — so the resumed run is indistinguishable from one that was never interrupted.
-    finished: list[Trace] = []
+    finished: list[RolloutRecord] = []
     if config.resume is not None:
         # Resume incomplete group-reward tasks whole so every rollout is present.
         group = bool(tasks) and bool(discover_decorated(tasks[0], "group_reward"))
-        records, owed = resume.load(
+        finished, owed = resume.load(
             out, [t.data.idx for t in tasks], config.num_rollouts, group
         )
-        finished = [trace for record in records for trace in record.traces]
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
@@ -73,8 +72,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
 
     write_lock = asyncio.Lock()
 
-    async def on_complete(trace: Trace) -> None:
-        await append_trace(out, trace, write_lock, env=config.env_id)
+    async def on_complete(record: RolloutRecord) -> None:
+        await append_record(out, record, write_lock)
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
     # (non-shared ones start per rollout inside the episodes); the interception comes up
@@ -87,7 +86,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             )
             for task in tasks
         ]
-        slots = [RunSlot.finished(trace) for trace in finished] + [
+        slots = [RunSlot.finished(record) for record in finished] + [
             slot for episode in episodes for slot in episode.slots
         ]
         push_state = None
@@ -104,9 +103,10 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             results = await asyncio.gather(
                 *(episode.run(semaphore, on_complete) for episode in episodes)
             )
-            traces = finished + [
-                trace for episode_traces in results for trace in episode_traces
+            records = finished + [
+                record for episode_records in results for record in episode_records
             ]
+            traces = [trace for record in records for trace in record.traces]
             if (
                 push_state is not None
             ):  # upload off the event loop so the view keeps refreshing

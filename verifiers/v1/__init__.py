@@ -16,8 +16,10 @@ from verifiers.v1.clients import (
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
 from verifiers.v1.env import (
+    AgentConfig,
     ElasticPoolConfig,
     EnvConfig,
+    EnvParams,
     EnvServerConfig,
     Environment,
     StaticPoolConfig,
@@ -54,11 +56,14 @@ from verifiers.v1.judges import (
 )
 from verifiers.v1.loaders import (
     default_harness_id,
+    env_params_type,
+    environment_class,
     harness_config_type,
     import_harness,
     import_judge,
     import_taskset,
     judge_config_type,
+    load_environment,
     load_harness,
     load_judge,
     load_taskset,
@@ -218,6 +223,8 @@ __all__ = [
     "Environment",
     "EnvConfig",
     "EnvServerConfig",
+    "EnvParams",
+    "AgentConfig",
     "StaticPoolConfig",
     "ElasticPoolConfig",
     "pool_serve_kwargs",
@@ -231,13 +238,16 @@ __all__ = [
     "import_taskset",
     "import_harness",
     "import_judge",
+    "load_environment",
     "load_taskset",
     "load_harness",
     "load_judge",
+    "environment_class",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
     "judge_config_type",
+    "env_params_type",
     "default_harness_id",
     # judge
     "Judge",

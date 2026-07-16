@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> None:
     # signals during that cleanup are swallowed so an impatient second Ctrl-C can't orphan them.
     install_interrupt()
 
-    env = vf.Environment(config)
+    env = vf.load_environment(config)
     try:
         result = run_gepa(env, config)
     except KeyboardInterrupt:

@@ -11,7 +11,7 @@ import logging
 from gepa.api import optimize
 from gepa.core.result import GEPAResult
 
-from verifiers.v1.cli.output import append_trace, output_path, save_config
+from verifiers.v1.cli.output import append_record, output_path, save_config
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.env import Environment
 from verifiers.v1.gepa.adapter import GEPAAdapter
@@ -22,7 +22,7 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import RolloutRecord
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +65,13 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
-    # Stream every rollout's trace to traces.jsonl as it finalizes — the same persist hook
+    # Stream every rollout's record to traces.jsonl as it finalizes — the same persist hook
     # run_eval passes to Episode.run (each trace records its candidate prompt).
     write_lock = asyncio.Lock()
 
-    async def on_complete(trace: Trace) -> None:
+    async def on_complete(record: RolloutRecord) -> None:
         if run_dir is not None:
-            await append_trace(run_dir, trace, write_lock)
+            await append_record(run_dir, record, write_lock)
 
     # The client opens an httpx pool at construction, so build it inside the try that closes it —
     # a failure while building ctx/reflection_lm must not leak the pool.

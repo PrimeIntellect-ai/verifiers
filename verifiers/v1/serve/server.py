@@ -12,7 +12,8 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.env import EnvConfig
+from verifiers.v1.loaders import load_environment
 from verifiers.v1.serve.types import (
     PROTOCOL_VERSION,
     BaseResponse,
@@ -23,7 +24,6 @@ from verifiers.v1.serve.types import (
     RunRolloutRequest,
     RunRolloutResponse,
 )
-from verifiers.v1.trace import RolloutRecord
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ class EnvServer:
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
-        self.env = Environment(config)
+        self.env = load_environment(config)
         # A finite taskset is materialized up front (its count is served via `info`); an
         # infinite one is pulled off its generator on demand (see `_task`), so
         # `num_tasks=None` on the wire ⟺ the taskset is infinite.
@@ -131,18 +131,19 @@ class EnvServer:
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self._task(req.task_idx), ctx, n=1)
-        traces = await episode.run()
-        # Trust the concrete record; serialize it once before client-side re-typing.
-        return RunRolloutResponse.model_construct(
-            record=RolloutRecord.of(traces[0], env=self.taskset_id)
-        )
+        records = await episode.run()
+        # Trust the env-minted record; serialize it once before client-side re-typing.
+        return RunRolloutResponse.model_construct(record=records[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self._task(req.task_idx), ctx, n=req.n)
-        traces = await episode.run()
-        # Avoid a dump-and-validate copy for every trusted trace in the group.
-        return RunGroupResponse.model_construct(traces=traces)
+        records = await episode.run()
+        # run_group still speaks flat traces (it exists only for @group_reward and dies
+        # with it); avoid a dump-and-validate copy for every trusted trace in the group.
+        return RunGroupResponse.model_construct(
+            traces=[trace for record in records for trace in record.traces]
+        )
 
     async def _handle(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
