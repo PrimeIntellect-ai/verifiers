@@ -269,17 +269,7 @@ class HarborTask(Task[HarborData]):
             raise ValueError(
                 "separate Harbor verification needs a docker, prime, or modal runtime"
             )
-
-        network = type(config).model_fields.get("network_access")
-        if (
-            network is not None
-            and getattr(config, "network_access") == network.default
-            and verifier.network_access != network.default
-        ):
-            config = config.model_copy(
-                update={"network_access": verifier.network_access}
-            )
-        return config
+        return config.model_copy(update={"network_access": verifier.network_access})
 
     async def score(
         self,
@@ -567,10 +557,11 @@ class HarborTask(Task[HarborData]):
             [
                 "sh",
                 "-c",
-                "bash /tests/test.sh > /logs/verifier/test-stdout.txt 2>&1",
+                "cd /tests && bash test.sh > /logs/verifier/test-stdout.txt 2>&1",
             ],
             verifier_env(self.data),
         )
+        # Harbor gives structured rewards precedence when both files exist.
         try:
             raw = (await runtime.read("/logs/verifier/reward.json")).decode()
         except UnicodeDecodeError:
@@ -802,6 +793,12 @@ def parse_verifier(
             f"{task_dir.name}: [verifier.environment] needs a pullable docker_image; "
             "building tests/Dockerfile is not supported"
         )
+    if not explicit_environment and (task_dir / "tests" / "Dockerfile").exists():
+        raise ValueError(
+            f"{task_dir.name}: tests/Dockerfile needs a pullable "
+            "[verifier.environment].docker_image; building verifier Dockerfiles "
+            "is not supported"
+        )
     unsupported = [
         field
         for field in ("healthcheck", "mcp_servers", "skills_dir", "gpu_types", "tpu")
@@ -880,6 +877,7 @@ def parse_verifier(
                 f"{task_dir.name}: artifact source {source!r} overlaps verifier-owned files"
             )
         existing = [PurePosixPath(entry.source) for entry in artifacts]
+        # Harbor keeps the first declaration when artifact sources overlap.
         if any(
             path == other or path in other.parents or other in path.parents
             for other in existing
