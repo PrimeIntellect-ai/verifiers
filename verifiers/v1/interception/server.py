@@ -252,6 +252,11 @@ class InterceptionServer(Interception):
                 dialect.error_body(str(session.error)),
                 status=getattr(session.error, "status_code", 502),
             )
+        if session.trace.is_completed:
+            stop = session.trace.stop_condition or "completed"
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {stop}"), status=400
+            )
         raw = await request.read()
         try:
             body = from_json(raw)
