@@ -395,6 +395,10 @@ async def test_kuhn_poker_self_play(run_v1, tmp_path):
         "kuhn-poker-v1",
         output_dir=tmp_path,
         max_turns=8,
+        # The Q decision (the one mixed-strategy spot in Kuhn) can cost a reasoning
+        # model thousands of tokens; the default 2048 truncates to an empty reply AND
+        # exhausts the rollout budget, so the invalid-move retry is never served.
+        max_tokens=8192,
         rollout_timeout=300,
     )
     assert sorted(t.role for t in traces) == ["player0", "player1"]
@@ -403,8 +407,15 @@ async def test_kuhn_poker_self_play(run_v1, tmp_path):
     assert abs(payoffs["player0"]) in (1.0, 2.0)
     for trace in traces:
         assert trace.errors == []
-        assert trace.num_turns >= 1
         assert trace.info["kuhn"]["seat"] in (0, 1)
+    # A played-out hand has both seats speaking. A forfeit (the model never produced
+    # a legal move) still pays out zero-sum, but the hand dies mid-exchange, so only
+    # the seat that acted is guaranteed a turn — a hand where NOBODY spoke means the
+    # exchange machinery never ran at all.
+    if traces[0].info["kuhn"]["forfeited"] is None:
+        assert all(t.num_turns >= 1 for t in traces)
+    else:
+        assert any(t.num_turns >= 1 for t in traces)
 
 
 @pytest.mark.e2e
