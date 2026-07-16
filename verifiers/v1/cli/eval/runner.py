@@ -181,7 +181,12 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:
-            episodes, owed = resume.load(out, idxs, config.num_rollouts)
+            # (legacy only) a group is served and scored together, so a partially-kept
+            # task redoes as a WHOLE group (`run_group` below always serves the full n)
+            # — whole_task drops its kept rows instead of double-counting them.
+            episodes, owed = resume.load(
+                out, idxs, config.num_rollouts, whole_task=group_scored
+            )
             finished = [trace for episode in episodes for trace in episode.traces]
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))

@@ -56,6 +56,8 @@ def load(
     selected_idxs: list[int],
     num_rollouts: int,
     complete: Callable[[Episode], bool] | None = None,
+    *,
+    whole_task: bool = False,
 ) -> tuple[list[Episode], dict[int, int]]:
     """Load the good saved rollouts back into memory as finished episodes and diff them
     against the run's target (`num_rollouts` per selected task): returns (the kept
@@ -65,7 +67,10 @@ def load(
     — an env that deliberately tolerates errored participants keeps the rollouts it
     accepted; without it (the server path, whose env lives in the workers) the default
     verdict is `episode.ok`: no errors anywhere, so an errored rollout is dropped and
-    re-run. Rewrites `traces.jsonl` to just the kept rows — verbatim,
+    re-run. `whole_task` redoes a partially-kept task as a unit — the legacy v0
+    group-scored path, where a group is served and scored together, so a partial
+    group's kept rows are dropped and the full group owed again (`run_group` always
+    serves the full n). Rewrites `traces.jsonl` to just the kept rows — verbatim,
     via a temp file + atomic rename, so an interrupted resume can't corrupt the prior
     good results — and the resumed rollouts then append. Pre-episode files (one bare
     trace per line) load the same way, each trace as a single-trace episode.
@@ -111,6 +116,8 @@ def load(
     owed: dict[int, int] = {}
     for idx in selected_idxs:
         rows = good.get(idx, [])
+        if whole_task and len(rows) < num_rollouts:
+            rows = []  # a partial unit redoes whole — its kept rows are dropped
         keep.extend(line for line, _ in rows)
         episodes.extend(episode for _, episode in rows)
         if missing := num_rollouts - len(rows):

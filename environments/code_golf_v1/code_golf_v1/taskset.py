@@ -21,6 +21,8 @@ import asyncio
 import re
 import time
 
+from pydantic import Field
+
 import verifiers.v1 as vf
 
 SYSTEM = (
@@ -64,7 +66,7 @@ class CodeGolfTask(vf.Task[CodeGolfData]):
 
 class CodeGolfParams(vf.EnvParams):
     golfer: vf.AgentConfig = vf.AgentConfig()
-    attempts: int = 2
+    attempts: int = Field(2, ge=1)
     """Independent attempts per env-rollout, scored against each other."""
 
 

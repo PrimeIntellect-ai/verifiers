@@ -166,20 +166,26 @@ def push_traces(
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
     def compute_metrics() -> dict[str, Any]:
-        """Run-level aggregates as v0's `GenerateMetadata`: `avg_reward` (mean over all traces),
+        """Run-level aggregates as v0's `GenerateMetadata`: `avg_reward` (mean reward),
         `avg_metrics` (each sub-reward and env-metric averaged over the traces that recorded it),
-        and `avg_error` (errored fraction) — what the overview renders."""
+        and `avg_error` (errored fraction) — what the overview renders. Aggregated over
+        the trainable traces (the policy under evaluation): a multi-agent env's fixed
+        seats (a judge, a modeled user) are `trainable=False` and often carry no
+        rewards, so counting them dilutes every mean with structural zeros. An
+        all-untrainable run falls back to all traces (same rule as the dashboard);
+        every trace is still uploaded either way."""
+        scored = [t for t in traces if t.trainable] or traces
         sums: dict[str, float] = {}
         counts: dict[str, int] = {}
-        for trace in traces:
+        for trace in scored:
             for name, value in {**trace.rewards, **trace.metrics}.items():
                 sums[name] = sums.get(name, 0.0) + value
                 counts[name] = counts.get(name, 0) + 1
-        n = len(traces)
+        n = len(scored)
         return {
-            "avg_reward": sum(t.reward for t in traces) / n if n else 0.0,
+            "avg_reward": sum(t.reward for t in scored) / n if n else 0.0,
             "avg_metrics": {name: sums[name] / counts[name] for name in sums},
-            "avg_error": sum(t.has_error for t in traces) / n if n else 0.0,
+            "avg_error": sum(t.has_error for t in scored) / n if n else 0.0,
         }
 
     env_name = config.taskset.id or config.id

@@ -24,3 +24,15 @@ CONFIGS = sorted(
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     assert config.taskset.id or config.id  # resolved to a v1 taskset or a v0 env id
+
+
+def test_output_path_compounds_env_id():
+    """The default output dir carries the run's full identity: pairing `--env.id`
+    prefixes the taskset (same compounding as `EnvConfig.env_id`), so a best-of-n
+    run never shares a parent dir with the plain run of the same taskset."""
+    from verifiers.v1.cli.output import output_path
+
+    plain = EvalConfig(taskset={"id": "echo-v1"})
+    paired = EvalConfig(taskset={"id": "echo-v1"}, env={"id": "best-of-n"})
+    assert output_path(plain).parent.name.startswith("echo-v1--")
+    assert output_path(paired).parent.name.startswith("best-of-n+echo-v1--")

@@ -23,6 +23,7 @@ from pydantic import BaseModel, TypeAdapter
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.trace import Episode, Trace, WireEpisode
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.install import env_name
 
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
@@ -32,11 +33,17 @@ CONFIG_FILE = "config.toml"
 
 
 def output_path(config: EvalConfig) -> Path:
-    """Where this run writes: `outputs/<taskset>--<model>--<harness>/<uuid>` (or the explicit
+    """Where this run writes: `outputs/<env>--<model>--<harness>/<uuid>` (or the explicit
     `--output-dir`). The per-run `uuid` leaf means runs never overwrite each other."""
     if config.output_dir is not None:
         return config.output_dir
-    name = f"{config.taskset.name}--{config.model.replace('/', '--')}--{config.harness.name}"
+    env = config.taskset.name
+    if config.taskset.id and config.env.id:
+        # The env axis is part of the run's identity (the same compounding as
+        # `EnvConfig.env_id`): a `best-of-n+gsm8k-v1` run must not share a parent
+        # dir with a plain `gsm8k-v1` one.
+        env = f"{env_name(config.env.id)}+{env}"
+    name = f"{env}--{config.model.replace('/', '--')}--{config.harness.name}"
     return Path("outputs") / name / config.uuid
 
 

@@ -59,6 +59,21 @@ def test_resume_keeps_good_records_and_owes_the_rest(tmp_path):
     assert len(lines) == 1 and json.loads(lines[0])["id"] == good.id
 
 
+def test_resume_whole_task_redoes_partial_units(tmp_path):
+    """`whole_task` (the legacy group-scored path): a partially-kept task is redone
+    as a unit — its kept rows are dropped from memory AND the rewritten file, and the
+    full count is owed again; a fully-kept task stays kept."""
+    partial = Episode.of(_trace(0), env="demo-v1")
+    write_episode(tmp_path, partial)
+    for _ in range(2):
+        write_episode(tmp_path, Episode.of(_trace(1), env="demo-v1"))
+    episodes, owed = resume.load(tmp_path, [0, 1], num_rollouts=2, whole_task=True)
+    assert owed == {0: 2}  # the partial unit owes the WHOLE group
+    assert all(e.task.data.idx == 1 for e in episodes) and len(episodes) == 2
+    lines = (tmp_path / TRACES_FILE).read_text().strip().splitlines()
+    assert len(lines) == 2  # idx 0's kept row left the file too
+
+
 def test_resume_reads_pre_record_files(tmp_path):
     rows = [
         _trace(0).model_dump(mode="json", exclude_none=True),

@@ -486,6 +486,11 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                             t.is_truncated
                         ):  # flag a clipped rollout next to its stop condition
                             stop = f"{stop} (truncated)".strip()
+                elif t.is_completed and (err := t.error) is not None:
+                    # An errored trace whose env-rollout is still running its other
+                    # traces (or `score()`) is already a failure — show it, don't
+                    # let it sit as "scoring" until the whole episode lands.
+                    state, result, stop = "error", err.type, ""
                 else:
                     state, result, stop = _stage(t), "", ""
                 descriptor = t.runtime.id if t.runtime is not None else None
