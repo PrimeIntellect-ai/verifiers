@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal, TypeVar
 
 import numpy as np
 from pydantic import Field, PrivateAttr
@@ -218,14 +218,27 @@ TRACE_VERSION = 1
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
 
-class RunInfo(StrictBaseModel):
-    """The run this trace belongs to, stamped by the consumer (eval CLI / trainer)."""
+class EvalRunInfo(StrictBaseModel):
+    """An eval run, stamped by the consumer (the eval CLI / a trainer's inline eval)."""
 
+    type: Literal["eval"] = "eval"
     id: str | None = None
     """The producing run: the eval CLI stamps its run uuid (a resumed eval counts as
     a new run; kept traces keep their original id), trainers stamp their own."""
-    type: Literal["train", "eval"] | None = None
-    """What the rollout was for."""
+
+
+class TrainRunInfo(StrictBaseModel):
+    """A training run, stamped by the trainer."""
+
+    type: Literal["train"] = "train"
+    id: str | None = None
+    """The trainer's run identifier."""
+    step: int | None = None
+    """The training step this rollout belongs to."""
+
+
+RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
+"""The run a trace belongs to, discriminated on `type`."""
 
 
 class VersionInfo(StrictBaseModel):
@@ -277,9 +290,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The verifiers build that produced this trace, stamped at rollout start —
     replayed/re-read traces keep the build that originally produced them."""
     run: RunInfo | None = None
-    """The run this trace belongs to (id + train/eval type), consumer-stamped."""
-    step: int | None = None
-    """The training step this rollout belongs to, stamped by the trainer."""
+    """The run this trace belongs to (eval or train), consumer-stamped."""
     agent: AgentInfo | None = None
     """The agent (model, sampling, harness) that produced the sampled turns."""
     nodes: list[MessageNode] = Field(default_factory=list)
@@ -462,25 +473,11 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
             )
         self.rewards[name] = contribution
 
-    def stamp(
-        self,
-        *,
-        run_id: str | None = None,
-        run_type: Literal["train", "eval"] | None = None,
-        step: int | None = None,
-        **info: Any,
-    ) -> None:
+    def stamp(self, run: RunInfo | None = None, **info: Any) -> None:
         """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the
-        trace; anything beyond the first-class fields lands in `info`."""
-        if run_id is not None or run_type is not None:
-            run = self.run or RunInfo()
-            if run_id is not None:
-                run.id = run_id
-            if run_type is not None:
-                run.type = run_type
+        trace; anything beyond `run` lands in `info`."""
+        if run is not None:
             self.run = run
-        if step is not None:
-            self.step = step
         self.info.update(info)
 
     def stop(self, condition: str = "done") -> None:

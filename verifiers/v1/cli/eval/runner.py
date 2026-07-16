@@ -12,7 +12,7 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import EvalRunInfo, Trace
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     write_lock = asyncio.Lock()
 
     async def on_complete(trace: Trace) -> None:
-        trace.stamp(run_id=config.uuid, run_type="eval")
+        trace.stamp(EvalRunInfo(id=config.uuid))
         await append_trace(out, trace, write_lock)
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
@@ -222,7 +222,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     sampling=config.sampling,
                 )
             for trace in traces:
-                trace.stamp(run_id=config.uuid, run_type="eval")
+                trace.stamp(EvalRunInfo(id=config.uuid))
                 await append_trace(out, trace, write_lock)
             return traces
 
@@ -234,7 +234,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     model=config.model,
                     sampling=config.sampling,
                 )
-            trace.stamp(run_id=config.uuid, run_type="eval")
+            trace.stamp(EvalRunInfo(id=config.uuid))
             await append_trace(out, trace, write_lock)
             return [trace]
 
