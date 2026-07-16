@@ -52,7 +52,6 @@ class Rollout:
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
-        scoring_runtime_config: RuntimeConfig | None = None,
         setup_timeout: float | None = None,
         harness_timeout: float | None = None,
         finalize_timeout: float | None = None,
@@ -65,7 +64,9 @@ class Rollout:
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime_config
-        self.scoring_runtime_config = scoring_runtime_config
+        self.scoring_runtime_config = task.scoring_runtime_config(
+            harness.config.runtime
+        )
         self.setup_timeout = setup_timeout
         self.harness_timeout = harness_timeout
         self.finalize_timeout = finalize_timeout

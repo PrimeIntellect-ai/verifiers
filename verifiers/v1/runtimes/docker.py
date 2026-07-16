@@ -157,7 +157,26 @@ class DockerRuntime(Runtime):
         if run.exit_code != 0:
             raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
 
-    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+    async def read(self, path: str) -> bytes:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "--workdir",
+            self.config.workdir,
+            self._container,
+            "cat",
+            path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise SandboxError(
+                f"read {path!r}: {stderr.decode(errors='replace').strip()}"
+            )
+        return stdout
+
+    async def read_bounded(self, path: str, max_bytes: int) -> bytes:
         self._validate_read_limit(max_bytes)
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -168,32 +187,21 @@ class DockerRuntime(Runtime):
             "cat",
             path,
             stdout=asyncio.subprocess.PIPE,
-            stderr=(
-                asyncio.subprocess.PIPE
-                if max_bytes is None
-                else asyncio.subprocess.DEVNULL
-            ),
+            stderr=asyncio.subprocess.DEVNULL,
         )
         try:
-            if max_bytes is None:
-                stdout, stderr = await proc.communicate()
+            try:
+                stdout = await proc.stdout.readexactly(max_bytes + 1)
+            except asyncio.IncompleteReadError as exc:
+                stdout = exc.partial
             else:
-                try:
-                    stdout = await proc.stdout.readexactly(max_bytes + 1)
-                except asyncio.IncompleteReadError as exc:
-                    stdout = exc.partial
-                else:
-                    with contextlib.suppress(ProcessLookupError):
-                        proc.kill()
-                    await proc.wait()
-                    raise SandboxError(
-                        f"read {path!r}: exceeds the {max_bytes} byte limit"
-                    )
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
                 await proc.wait()
-                stderr = b""
+                raise SandboxError(f"read {path!r}: exceeds the {max_bytes} byte limit")
+            await proc.wait()
             if proc.returncode != 0:
-                detail = stderr.decode(errors="replace").strip()
-                raise SandboxError(f"read {path!r}: {detail or 'docker exec failed'}")
+                raise SandboxError(f"read {path!r}: docker exec failed")
             return stdout
         finally:
             if proc.returncode is None:
@@ -222,23 +230,6 @@ class DockerRuntime(Runtime):
             raise SandboxError(
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
-
-    async def teardown_confirmed(self) -> None:
-        if self._container is None:
-            return
-        removed = await docker("rm", "--force", self._container)
-        if removed.exit_code:
-            inspected = await docker("container", "inspect", self._container)
-            missing = any(
-                text in inspected.stderr.lower()
-                for text in ("no such container", "no such object")
-            )
-            if inspected.exit_code == 0 or not missing:
-                detail = (removed.stderr or inspected.stderr).strip()
-                raise SandboxError(
-                    f"docker could not confirm removal of {self._container!r}: {detail}"
-                )
-        self._stopped = True
 
     def cleanup(self) -> None:
         if self._container is None or self._stopped:

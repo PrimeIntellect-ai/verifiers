@@ -314,9 +314,6 @@ class Environment:
                 f"and need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
         runtime_config = self.runtime_for(task)
-        scoring_runtime_config = task.scoring_runtime_config(
-            self.harness.config.runtime
-        )
         setup_timeout = (
             self.setup_timeout
             if self.setup_timeout is not None
@@ -357,7 +354,6 @@ class Environment:
                 harness=self.harness,
                 ctx=ctx,
                 runtime_config=runtime_config,
-                scoring_runtime_config=scoring_runtime_config,
                 setup_timeout=setup_timeout,
                 harness_timeout=harness_timeout,
                 finalize_timeout=finalize_timeout,

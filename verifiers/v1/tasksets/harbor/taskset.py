@@ -10,13 +10,9 @@ deliberately uses the harness runtime image. Tasks without an environment also u
 image unless ``require_image`` is set.
 """
 
-import contextlib
-import gzip
+import asyncio
 import hashlib
 import io
-import json
-import math
-import shlex
 import shutil
 import subprocess
 import sys
@@ -27,16 +23,17 @@ import uuid
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
+    DockerConfig,
+    PrimeConfig,
     Runtime,
     RuntimeConfig,
-    SubprocessConfig,
     make_runtime,
 )
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
@@ -46,134 +43,15 @@ from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
-MAX_ARTIFACT_ARCHIVE_BYTES = 256 * 1024 * 1024
-MAX_ARTIFACT_CONTENT_BYTES = 1024 * 1024 * 1024
-MAX_ARTIFACT_MEMBERS = 100_000
-MAX_ARTIFACT_TAR_BYTES = MAX_ARTIFACT_CONTENT_BYTES + MAX_ARTIFACT_ARCHIVE_BYTES
-MAX_ARTIFACT_HEADERS = MAX_ARTIFACT_MEMBERS * 2 + 8
-MAX_ARTIFACT_METADATA_BYTES = 1024 * 1024
-MAX_PAX_RECORDS = 4096
+MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
+MAX_ARTIFACT_FILES = 10_000
+MAX_ARTIFACT_MANIFEST_BYTES = 4 * 1024 * 1024
 
-
-class _LimitedTarReader:
-    """Keep tarfile from turning one hostile metadata header into a huge allocation."""
-
-    def __init__(self, file: BinaryIO) -> None:
-        self.file = file
-
-    def read(self, size: int = -1) -> bytes:
-        if size < 0 or size > MAX_ARTIFACT_METADATA_BYTES + tarfile.BLOCKSIZE:
-            raise SandboxError("Harbor artifact archive has oversized metadata")
-        return self.file.read(size)
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        return self.file.seek(offset, whence)
-
-    def tell(self) -> int:
-        return self.file.tell()
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self.file, name)
-
-
-def _validate_pax_payload(payload: bytes) -> None:
-    """Reject structural overrides and bound tarfile's per-record allocations."""
-    position = 0
-    records = 0
-    while position < len(payload) and payload[position]:
-        separator = payload.find(b" ", position)
-        if separator < 0:
-            raise SandboxError("Harbor artifact archive has invalid PAX metadata")
-        try:
-            length = int(payload[position:separator])
-        except ValueError as exc:
-            raise SandboxError(
-                "Harbor artifact archive has invalid PAX metadata"
-            ) from exc
-        end = position + length
-        if length < 5 or end > len(payload) or payload[end - 1] != 0x0A:
-            raise SandboxError("Harbor artifact archive has invalid PAX metadata")
-        key, equals, value = payload[separator + 1 : end - 1].partition(b"=")
-        if not key or not equals:
-            raise SandboxError("Harbor artifact archive has invalid PAX metadata")
-        records += 1
-        if records > MAX_PAX_RECORDS:
-            raise SandboxError("Harbor artifact archive has too many PAX records")
-        if key == b"size":
-            raise SandboxError(
-                "Harbor artifact archive uses an unsupported PAX size override"
-            )
-        if (
-            key.startswith(b"GNU.sparse.")
-            or key == b"SCHILY.realsize"
-            or (key == b"SCHILY.filetype" and value == b"sparse")
-        ):
-            raise SandboxError("Harbor artifact archive uses unsupported sparse files")
-        position = end
-
-
-def _validate_tar_archive(file: BinaryIO) -> None:
-    """Bound raw extensions before tarfile recursively interprets them."""
-    file.seek(0, io.SEEK_END)
-    archive_size = file.tell()
-    file.seek(0)
-    headers = 0
-    consecutive_extensions = 0
-    extensions = {
-        tarfile.XHDTYPE,
-        tarfile.XGLTYPE,
-        tarfile.SOLARIS_XHDTYPE,
-        tarfile.GNUTYPE_LONGNAME,
-        tarfile.GNUTYPE_LONGLINK,
-    }
-    while file.tell() < archive_size:
-        header = file.read(tarfile.BLOCKSIZE)
-        if len(header) != tarfile.BLOCKSIZE:
-            raise SandboxError("Harbor artifact archive has a truncated header")
-        if not any(header):
-            break
-        try:
-            member = tarfile.TarInfo.frombuf(header, "utf-8", "surrogateescape")
-        except tarfile.TarError as exc:
-            raise SandboxError("Harbor artifact archive has an invalid header") from exc
-        if member.size < 0:
-            raise SandboxError("Harbor artifact archive has a negative entry size")
-        headers += 1
-        if headers > MAX_ARTIFACT_HEADERS:
-            raise SandboxError("Harbor artifact archive has too many headers")
-        if member.type == tarfile.GNUTYPE_SPARSE:
-            raise SandboxError("Harbor artifact archive uses unsupported sparse files")
-
-        stored_size = (
-            member.size
-            if member.type in extensions
-            or member.isreg()
-            or member.type not in tarfile.SUPPORTED_TYPES
-            else 0
-        )
-        data_end = file.tell() + stored_size
-        padded_end = data_end + (-stored_size % tarfile.BLOCKSIZE)
-        if padded_end > archive_size:
-            raise SandboxError("Harbor artifact archive has a truncated entry")
-        if member.type in extensions:
-            consecutive_extensions += 1
-            if consecutive_extensions > 8:
-                raise SandboxError(
-                    "Harbor artifact archive has too many metadata headers"
-                )
-            if member.size > MAX_ARTIFACT_METADATA_BYTES:
-                raise SandboxError("Harbor artifact archive has oversized metadata")
-            payload = file.read(member.size)
-            if member.type in {
-                tarfile.XHDTYPE,
-                tarfile.XGLTYPE,
-                tarfile.SOLARIS_XHDTYPE,
-            }:
-                _validate_pax_payload(payload)
-        else:
-            consecutive_extensions = 0
-        file.seek(padded_end)
-    file.seek(0)
+if TYPE_CHECKING:
+    from harbor.models.task.config import (
+        EnvironmentConfig,
+        TaskConfig as HarborTaskConfig,
+    )
 
 
 class HarborConfig(TasksetConfig):
@@ -220,9 +98,7 @@ class HarborVerifier(StrictBaseModel):
     workdir: str | None = None
     resources: TaskResources = TaskResources()
     network_access: bool = True
-    env: dict[str, str] = {}
     artifacts: list[HarborArtifact] = []
-    upload_tests: bool = False
 
 
 class HarborData(TaskData):
@@ -239,6 +115,8 @@ class HarborData(TaskData):
     tags: list[str] = []
     task_dir: str = Field("", exclude=True)
     """Host path to the task dir; used to stage tests/ to verify, not serialized."""
+    verifier_env: dict[str, str] = {}
+    """Raw [verifier.env] entries, resolved on the host at scoring time."""
     verifier: HarborVerifier = Field(default_factory=HarborVerifier, exclude=True)
     """Resolved verifier mode and runtime data, kept host-side for scoring."""
 
@@ -250,25 +128,21 @@ class HarborTask(Task[HarborData]):
         verifier = self.data.verifier
         if not verifier.separate:
             return None
+        if not isinstance(base, (DockerConfig, PrimeConfig)):
+            raise ValueError(
+                "separate Harbor verification needs a docker or prime runtime"
+            )
 
         from verifiers.v1.env import resolve_runtime_config
 
-        data = (
-            self.data
-            if verifier.upload_tests
-            else TaskData(
-                idx=self.data.idx,
-                prompt=None,
-                image=verifier.image,
-                workdir=verifier.workdir,
-                resources=verifier.resources,
-            )
+        data = TaskData(
+            idx=self.data.idx,
+            prompt=None,
+            image=verifier.image,
+            workdir=verifier.workdir,
+            resources=verifier.resources,
         )
         config = resolve_runtime_config(base, data)
-        if isinstance(config, SubprocessConfig):
-            raise ValueError(
-                "separate Harbor verification needs a docker, prime, or modal runtime"
-            )
         return config.model_copy(update={"network_access": verifier.network_access})
 
     async def score(
@@ -288,249 +162,163 @@ class HarborTask(Task[HarborData]):
                 "separate Harbor scoring requires a verifier runtime config"
             )
 
-        artifacts, paths = await self._collect_artifacts(runtime)
-        # The agent runtime must be gone before any verifier process starts.
-        await runtime.stop_confirmed()
-        target = make_runtime(scoring_runtime_config, name=f"{runtime.name}-verifier")
-        try:
-            await target.start()
-            await self._prepare_verifier(
-                target,
-                artifacts,
-                paths,
-                getattr(scoring_runtime_config, "workdir", "/"),
+        with tempfile.TemporaryDirectory() as temp:
+            files, directories = await self._collect_artifacts(runtime, Path(temp))
+            # No verifier process starts until the agent runtime is gone.
+            await runtime.stop()
+            target = make_runtime(
+                scoring_runtime_config, name=f"{runtime.name}-verifier"
             )
-            await super().score(trace, target)
-        finally:
-            await target.stop()
+            try:
+                await target.start()
+                await self._prepare_verifier(target, files, directories)
+                await super().score(trace, target)
+            finally:
+                await target.stop()
 
-    async def _collect_artifacts(self, runtime: Runtime) -> tuple[bytes, list[str]]:
-        buffer = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
-        seen: set[str] = set()
-        paths: list[str] = []
-        content_size = 0
-        member_count = 0
-        try:
-            await run_checked(
-                runtime,
+    async def _collect_artifacts(
+        self, runtime: Runtime, staging: Path
+    ) -> tuple[list[tuple[str, Path]], list[str]]:
+        await run_checked(
+            runtime,
+            ["sh", "-c", "rm -rf /logs/verifier && mkdir -p /logs/verifier"],
+            {},
+            "Harbor artifact staging setup",
+        )
+        files: list[tuple[str, Path]] = []
+        directories: list[str] = []
+        total_bytes = 0
+        for artifact in self.data.verifier.artifacts:
+            source = artifact.source
+            result = await runtime.run(
                 [
                     "sh",
                     "-c",
-                    "rm -rf /logs/verifier && mkdir -p /logs/verifier",
+                    'if [ -L "$1" ]; then printf unsupported; '
+                    'elif [ ! -e "$1" ]; then printf missing; '
+                    'elif [ -f "$1" ]; then printf file; '
+                    'elif [ -d "$1" ]; then printf directory; '
+                    "else printf unsupported; fi",
+                    "sh",
+                    source,
                 ],
                 {},
-                "Harbor artifact staging setup",
             )
-            with tarfile.open(fileobj=buffer, mode="w:gz") as safe:
-                for artifact in self.data.verifier.artifacts:
-                    exists = await runtime.run(["test", "-e", artifact.source], {})
-                    if exists.exit_code == 1:
-                        continue
-                    if exists.exit_code:
-                        detail = (exists.stderr or exists.stdout).strip()
-                        raise SandboxError(
-                            f"Harbor artifact probe failed for {artifact.source!r}: {detail}"
-                        )
-
-                    archive = (
-                        f"/logs/verifier/.vf-harbor-artifacts-{uuid.uuid4().hex}.tgz"
-                    )
-                    packed = await runtime.run(
-                        [
-                            "tar",
-                            "-chzf",
-                            archive,
-                            "--exclude",
-                            f"./{archive.lstrip('/')}",
-                            "-C",
-                            "/",
-                            f"./{artifact.source.lstrip('/')}",
-                        ],
-                        {},
-                    )
-                    if packed.exit_code:
-                        with contextlib.suppress(Exception):
-                            await runtime.run(["rm", "-f", archive], {})
-                        exists = await runtime.run(["test", "-e", artifact.source], {})
-                        if exists.exit_code == 1:
-                            continue
-                        detail = (packed.stderr or packed.stdout).strip()
-                        raise SandboxError(
-                            f"Harbor artifact collection failed for "
-                            f"{artifact.source!r}: {detail}"
-                        )
-                    try:
-                        unsafe = await runtime.read(
-                            archive, max_bytes=MAX_ARTIFACT_ARCHIVE_BYTES
-                        )
-                    finally:
-                        with contextlib.suppress(Exception):
-                            await runtime.run(["rm", "-f", archive], {})
-
-                    root = PurePosixPath(artifact.source.lstrip("/"))
-                    # The agent controls these bytes. Flatten links and retain only
-                    # regular files/directories rooted under the declared artifact.
-                    with tempfile.SpooledTemporaryFile(
-                        max_size=8 * 1024 * 1024
-                    ) as unpacked:
-                        with gzip.GzipFile(fileobj=io.BytesIO(unsafe)) as compressed:
-                            tar_size = 0
-                            while chunk := compressed.read(1024 * 1024):
-                                tar_size += len(chunk)
-                                if tar_size > MAX_ARTIFACT_TAR_BYTES:
-                                    raise SandboxError(
-                                        "Harbor artifact archive exceeds the "
-                                        "decompression limit"
-                                    )
-                                unpacked.write(chunk)
-                        unpacked.seek(0)
-                        _validate_tar_archive(unpacked)
-                        with tarfile.open(
-                            fileobj=_LimitedTarReader(unpacked), mode="r:"
-                        ) as source:
-                            for member in source:
-                                path = PurePosixPath(member.name)
-                                if (
-                                    member.size < 0
-                                    or path.is_absolute()
-                                    or ".." in path.parts
-                                    or not (path == root or root in path.parents)
-                                    or not (
-                                        member.isfile()
-                                        or member.islnk()
-                                        or member.isdir()
-                                    )
-                                ):
-                                    raise SandboxError(
-                                        "Harbor artifact collection produced unsafe "
-                                        f"entry {member.name!r}"
-                                    )
-                                member_count += 1
-                                content_size += member.size
-                                if member_count > MAX_ARTIFACT_MEMBERS:
-                                    raise SandboxError(
-                                        "Harbor artifacts exceed the "
-                                        f"{MAX_ARTIFACT_MEMBERS:,} entry limit"
-                                    )
-                                if content_size > MAX_ARTIFACT_CONTENT_BYTES:
-                                    raise SandboxError(
-                                        "Harbor artifacts exceed the "
-                                        f"{MAX_ARTIFACT_CONTENT_BYTES // 1024**3} GiB "
-                                        "uncompressed limit"
-                                    )
-                                if path.as_posix() in seen:
-                                    continue
-                                seen.add(path.as_posix())
-                                clean = tarfile.TarInfo(path.as_posix())
-                                clean.mode = member.mode & 0o777
-                                clean.mtime = member.mtime
-                                if member.isdir():
-                                    clean.type = tarfile.DIRTYPE
-                                    safe.addfile(clean)
-                                    continue
-                                file = source.extractfile(member)
-                                if file is None:
-                                    raise SandboxError(
-                                        "Harbor artifact collection could not read "
-                                        f"{member.name!r}"
-                                    )
-                                if member.islnk():
-                                    with tempfile.SpooledTemporaryFile(
-                                        max_size=8 * 1024 * 1024
-                                    ) as linked:
-                                        linked_size = 0
-                                        while chunk := file.read(1024 * 1024):
-                                            linked_size += len(chunk)
-                                            if (
-                                                content_size + linked_size
-                                                > MAX_ARTIFACT_CONTENT_BYTES
-                                            ):
-                                                raise SandboxError(
-                                                    "Harbor artifacts exceed the "
-                                                    f"{MAX_ARTIFACT_CONTENT_BYTES // 1024**3} "
-                                                    "GiB uncompressed limit"
-                                                )
-                                            linked.write(chunk)
-                                        content_size += linked_size
-                                        clean.size = linked_size
-                                        linked.seek(0)
-                                        safe.addfile(clean, linked)
-                                    continue
-                                clean.size = member.size
-                                safe.addfile(clean, file)
-                    paths.append(artifact.source)
-        except (OSError, tarfile.TarError) as exc:
-            buffer.close()
-            raise SandboxError(
-                "Harbor artifact collection produced an invalid archive"
-            ) from exc
-        except BaseException:
-            buffer.close()
-            raise
-        try:
-            buffer.seek(0, io.SEEK_END)
-            if buffer.tell() > MAX_ARTIFACT_ARCHIVE_BYTES:
+            if result.exit_code:
+                detail = (result.stderr or result.stdout).strip()
                 raise SandboxError(
-                    "Harbor artifacts exceed the "
-                    f"{MAX_ARTIFACT_ARCHIVE_BYTES // 1024**2} MiB archive limit"
+                    f"Harbor artifact probe failed for {source!r}: {detail}"
                 )
-            buffer.seek(0)
-            return buffer.read(), paths
-        finally:
-            buffer.close()
+            kind = result.stdout
+            if kind == "missing":
+                continue
+            if kind not in ("file", "directory"):
+                raise SandboxError(
+                    f"Harbor artifact {source!r} must be a regular file or directory"
+                )
+
+            paths = [source]
+            if kind == "directory":
+                directories.append(source)
+                manifest = f"/logs/verifier/.vf-harbor-{uuid.uuid4().hex}"
+                listed = await runtime.run(
+                    [
+                        "sh",
+                        "-c",
+                        'find "$1" -mindepth 1 ! -type d ! -type f '
+                        '-print -quit > "$3" && [ ! -s "$3" ] && '
+                        'find "$1" -type f -print0 > "$2"',
+                        "sh",
+                        source,
+                        manifest,
+                        f"{manifest}.bad",
+                    ],
+                    {},
+                )
+                try:
+                    if listed.exit_code:
+                        raise SandboxError(
+                            f"Harbor artifact directory {source!r} must contain only "
+                            "regular files and directories"
+                        )
+                    raw = await runtime.read_bounded(
+                        manifest, MAX_ARTIFACT_MANIFEST_BYTES
+                    )
+                finally:
+                    await runtime.run(["rm", "-f", manifest, f"{manifest}.bad"], {})
+                try:
+                    paths = [
+                        value.decode()
+                        for value in raw.rstrip(b"\0").split(b"\0")
+                        if value
+                    ]
+                except UnicodeDecodeError as exc:
+                    raise SandboxError(
+                        f"Harbor artifact directory {source!r} has a non-UTF-8 path"
+                    ) from exc
+
+            if len(files) + len(paths) > MAX_ARTIFACT_FILES:
+                raise SandboxError(
+                    f"Harbor artifacts exceed the {MAX_ARTIFACT_FILES:,} file limit"
+                )
+            root = PurePosixPath(source)
+            for path in paths:
+                artifact_path = PurePosixPath(path)
+                if (
+                    not artifact_path.is_absolute()
+                    or ".." in artifact_path.parts
+                    or not (artifact_path == root or root in artifact_path.parents)
+                ):
+                    raise SandboxError(
+                        f"Harbor artifact directory produced unsafe path {path!r}"
+                    )
+                data = await runtime.read_bounded(
+                    artifact_path.as_posix(), MAX_ARTIFACT_BYTES - total_bytes
+                )
+                total_bytes += len(data)
+                host_path = staging / str(len(files))
+                await asyncio.to_thread(host_path.write_bytes, data)
+                files.append((artifact_path.as_posix(), host_path))
+        return files, directories
 
     async def _prepare_verifier(
-        self, runtime: Runtime, artifacts: bytes, paths: list[str], workdir: str
+        self,
+        runtime: Runtime,
+        files: list[tuple[str, Path]],
+        directories: list[str],
     ) -> None:
         await run_checked(
             runtime,
-            [
-                "sh",
-                "-c",
-                "rm -rf /logs/verifier && mkdir -p /logs/verifier /logs/artifacts",
-            ],
+            ["rm", "-rf", "/logs/verifier"],
             {},
             "Harbor verifier setup",
         )
-        archive = f"/logs/verifier/.vf-harbor-artifacts-{uuid.uuid4().hex}.tgz"
-        if paths:
-            command = "rm -rf " + " ".join(shlex.quote(path) for path in paths)
-            command += f" && mkdir -p {shlex.quote(workdir)}"
+        await run_checked(
+            runtime,
+            ["mkdir", "-p", "/logs/verifier"],
+            {},
+            "Harbor verifier setup",
+        )
+        sources = [artifact.source for artifact in self.data.verifier.artifacts]
+        if sources:
             await run_checked(
                 runtime,
-                ["sh", "-c", command],
+                ["rm", "-rf", *sources],
                 {},
                 "Harbor artifact target cleanup",
             )
-        await runtime.write(archive, artifacts)
+        directories = list(dict.fromkeys(["/logs/artifacts", *directories]))
         await run_checked(
             runtime,
-            [
-                "sh",
-                "-c",
-                f"tar -xzf {shlex.quote(archive)} -C / && rm -f {shlex.quote(archive)}",
-            ],
+            ["mkdir", "-p", *directories],
             {},
-            "Harbor artifact restore",
+            "Harbor artifact directory restore",
         )
-        if self.data.verifier.upload_tests:
-            tests = f"/logs/verifier/.vf-harbor-tests-{uuid.uuid4().hex}.tgz"
-            await runtime.write(tests, make_tar(Path(self.data.task_dir) / "tests"))
-            await run_checked(
-                runtime,
-                [
-                    "sh",
-                    "-c",
-                    "rm -rf /tests && mkdir -p /tests && "
-                    f"tar -xzf {shlex.quote(tests)} -C /tests && "
-                    f"rm -f {shlex.quote(tests)}",
-                ],
-                {},
-                "Harbor test upload",
-            )
+        for path, host_path in files:
+            await runtime.write(path, await asyncio.to_thread(host_path.read_bytes))
 
     @reward(weight=1.0)
-    async def solved(self, runtime: Runtime) -> float | dict[str, float]:
+    async def solved(self, runtime: Runtime) -> float:
         if not self.data.verifier.separate:
             await runtime.write(
                 "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
@@ -554,43 +342,13 @@ class HarborTask(Task[HarborData]):
             "Harbor verifier test discovery",
         )
         await runtime.run(
-            [
-                "sh",
-                "-c",
-                "cd /tests && bash test.sh > /logs/verifier/test-stdout.txt 2>&1",
-            ],
+            ["sh", "-c", "cd /tests && bash test.sh"],
             verifier_env(self.data),
         )
-        # Harbor gives structured rewards precedence when both files exist.
         try:
-            raw = (await runtime.read("/logs/verifier/reward.json")).decode()
-        except UnicodeDecodeError:
-            return 0.0
-        except (SandboxError, OSError):
-            raw = None
-        if raw is not None:
-            try:
-                values = json.loads(raw)
-                if not isinstance(values, dict):
-                    return 0.0
-                rewards = {
-                    str(key): float(value)
-                    for key, value in values.items()
-                    if isinstance(value, (int, float)) and not isinstance(value, bool)
-                }
-                return (
-                    rewards
-                    if len(rewards) == len(values)
-                    and all(math.isfinite(value) for value in rewards.values())
-                    else 0.0
-                )
-            except (TypeError, ValueError, OverflowError):
-                return 0.0
-        try:
-            raw = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
-            value = float(raw)
-            return value if math.isfinite(value) else 0.0
-        except (SandboxError, OSError, ValueError, OverflowError):
+            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
+            return float(reward or 0)
+        except (SandboxError, OSError, ValueError):
             return 0.0
 
 
@@ -724,85 +482,56 @@ def resolve_image(
     return None
 
 
-def size_to_mb(size: str | int | float) -> float:
-    """A Harbor size in MB, from either schema: current integer-MB fields or the
-    legacy schema-1.0 size strings ("8G", "512M", "64K")."""
-    if not isinstance(size, str):
-        return float(size)
-    scale = {"G": 1024.0, "M": 1.0, "K": 1 / 1024}.get(size.strip().upper()[-1:])
-    if scale is None:
-        raise ValueError(
-            f"invalid Harbor size {size!r}: expected a number of MB or a "
-            "'<number>[G|M|K]' string"
-        )
-    return float(size.strip()[:-1]) * scale
-
-
-def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
-    # Harbor's current schema reports memory/storage as integer-MB fields; the
-    # legacy schema 1.0 used size strings under `memory`/`storage`, which Harbor
-    # still migrates (datasets like senior-swe-bench are authored against it).
-    # TaskResources stores GB. A zero GPU count means no GPU request rather than
-    # the string "0".
-    memory = env.get("memory_mb") or env.get("memory")
-    disk = env.get("storage_mb") or env.get("storage")
+def parse_resources(env: "EnvironmentConfig", multiplier: float = 1.0) -> TaskResources:
+    """Convert Harbor's validated MB resources to Verifiers' GB resources."""
     return TaskResources(
-        cpu=env["cpus"] * multiplier if env.get("cpus") else None,
-        memory=size_to_mb(memory) / 1024 * multiplier if memory else None,
-        gpu=str(env["gpus"]) if env.get("gpus") else None,
-        disk=size_to_mb(disk) / 1024 * multiplier if disk else None,
+        cpu=env.cpus * multiplier if env.cpus else None,
+        memory=env.memory_mb / 1024 * multiplier if env.memory_mb else None,
+        gpu=str(env.gpus) if env.gpus else None,
+        disk=env.storage_mb / 1024 * multiplier if env.storage_mb else None,
     )
 
 
 def parse_verifier(
-    task_dir: Path, config: dict, resource_multiplier: float
-) -> HarborVerifier:
-    environment = config.get("environment", {})
-    verifier = config.get("verifier", {})
-    mode = verifier.get("environment_mode")
-    verifier_environment = verifier.get("environment")
-    if mode not in (None, "shared", "separate"):
-        raise ValueError(f"{task_dir.name}: invalid verifier environment_mode {mode!r}")
-    if mode == "shared" and verifier_environment is not None:
-        raise ValueError(
-            f"{task_dir.name}: [verifier.environment] is incompatible with "
-            "environment_mode='shared'"
-        )
+    task_dir: Path, config: "HarborTaskConfig", resource_multiplier: float
+) -> tuple[HarborVerifier, dict[str, str]]:
+    # Harbor is optional, so importing this module still works without the extra.
+    from harbor.models.task.config import NetworkMode, TaskOS
+    from harbor.models.task.verifier_mode import (
+        VerifierEnvironmentMode,
+        resolve_effective_verifier_env_config,
+        resolve_task_verifier_mode,
+    )
 
-    separate = mode == "separate" or verifier_environment is not None
-    if not separate:
-        return HarborVerifier(env=verifier.get("env", {}))
-    if verifier.get("collect"):
+    mode = resolve_task_verifier_mode(config)
+    if mode == VerifierEnvironmentMode.SHARED:
+        return HarborVerifier(), dict(config.verifier.env)
+    if config.verifier.collect:
         raise ValueError(
             f"{task_dir.name}: [[verifier.collect]] needs compose services, which "
             "Verifiers runtimes do not support"
         )
-    if verifier.get("user") is not None:
+    if config.verifier.user is not None:
         raise ValueError(
             f"{task_dir.name}: [verifier].user is not supported for separate runtimes"
         )
 
-    explicit_environment = verifier_environment is not None
-    verifier_environment = verifier_environment if explicit_environment else environment
-    if verifier_environment.get("os", "linux").lower() != "linux":
+    environment = resolve_effective_verifier_env_config(config, None)
+    if environment is None:
+        raise ValueError(f"{task_dir.name}: separate verifier environment is missing")
+    if config.verifier.environment is None or not environment.docker_image:
+        raise ValueError(
+            f"{task_dir.name}: separate verification needs a pullable "
+            "[verifier.environment].docker_image"
+        )
+    if environment.os != TaskOS.LINUX:
         raise ValueError(
             f"{task_dir.name}: separate Harbor verification supports Linux images only"
-        )
-    if explicit_environment and not verifier_environment.get("docker_image"):
-        raise ValueError(
-            f"{task_dir.name}: [verifier.environment] needs a pullable docker_image; "
-            "building tests/Dockerfile is not supported"
-        )
-    if not explicit_environment and (task_dir / "tests" / "Dockerfile").exists():
-        raise ValueError(
-            f"{task_dir.name}: tests/Dockerfile needs a pullable "
-            "[verifier.environment].docker_image; building verifier Dockerfiles "
-            "is not supported"
         )
     unsupported = [
         field
         for field in ("healthcheck", "mcp_servers", "skills_dir", "gpu_types", "tpu")
-        if verifier_environment.get(field)
+        if getattr(environment, field)
     ]
     if unsupported:
         raise ValueError(
@@ -810,52 +539,29 @@ def parse_verifier(
             + ", ".join(unsupported)
         )
 
-    network_mode = verifier.get("network_mode")
-    if network_mode is None:
-        network_mode = verifier_environment.get("network_mode")
-    if network_mode is None:
-        network_mode = (
-            "public"
-            if verifier_environment.get("allow_internet", True)
-            else "no-network"
-        )
-    if network_mode == "allowlist":
-        raise ValueError(
-            f"{task_dir.name}: verifier network_mode='allowlist' is not supported"
-        )
-    if verifier.get("allowed_hosts") is not None or verifier_environment.get(
-        "allowed_hosts"
+    network_mode = config.verifier.network_mode or environment.network_mode
+    if (
+        network_mode == NetworkMode.ALLOWLIST
+        or config.verifier.allowed_hosts
+        or environment.allowed_hosts
     ):
         raise ValueError(
             f"{task_dir.name}: verifier network allowlists are not supported"
         )
-    if network_mode not in ("public", "no-network"):
-        raise ValueError(
-            f"{task_dir.name}: invalid verifier network_mode {network_mode!r}"
-        )
 
-    raw_artifacts = config.get("artifacts", [])
-    if not isinstance(raw_artifacts, list):
-        raise ValueError(f"{task_dir.name}: artifacts must be a list")
-    raw_artifacts = ["/logs/artifacts", *raw_artifacts]
     artifacts: list[HarborArtifact] = []
-    for raw in raw_artifacts:
-        artifact = {"source": raw} if isinstance(raw, str) else raw
-        if not isinstance(artifact, dict) or not isinstance(
-            artifact.get("source"), str
-        ):
-            raise ValueError(f"{task_dir.name}: invalid artifact entry {raw!r}")
-        if artifact.get("service") not in (None, "main"):
+    for artifact in ["/logs/artifacts", *config.artifacts]:
+        source = artifact if isinstance(artifact, str) else artifact.source
+        if not isinstance(artifact, str) and artifact.service not in (None, "main"):
             raise ValueError(f"{task_dir.name}: sidecar artifacts are not supported")
-        if artifact.get("destination"):
+        if not isinstance(artifact, str) and artifact.destination:
             raise ValueError(
                 f"{task_dir.name}: artifact destinations are not supported"
             )
-        if artifact.get("exclude"):
+        if not isinstance(artifact, str) and artifact.exclude:
             raise ValueError(
                 f"{task_dir.name}: artifact exclude patterns are not supported"
             )
-        source = artifact["source"]
         if not source.startswith("/") or ".." in PurePosixPath(source).parts:
             raise ValueError(
                 f"{task_dir.name}: artifact source must be an absolute non-root path, "
@@ -885,22 +591,25 @@ def parse_verifier(
             continue
         artifacts.append(HarborArtifact(source=source))
 
-    env = verifier_environment.get("env", {}) | verifier.get("env", {})
-    return HarborVerifier(
-        separate=True,
-        image=verifier_environment.get("docker_image"),
-        workdir=verifier_environment.get("workdir"),
-        resources=parse_resources(verifier_environment, resource_multiplier),
-        network_access=network_mode == "public",
-        env=env,
-        artifacts=artifacts,
-        upload_tests=not explicit_environment,
+    return (
+        HarborVerifier(
+            separate=True,
+            image=environment.docker_image,
+            workdir=environment.workdir,
+            resources=parse_resources(environment, resource_multiplier),
+            network_access=network_mode == NetworkMode.PUBLIC,
+            artifacts=artifacts,
+        ),
+        dict(environment.env) | dict(config.verifier.env),
     )
 
 
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
+    from harbor.models.task.config import TaskConfig as HarborTaskConfig
+
     config = tomllib.loads((task_dir / "task.toml").read_text())
-    if config.get("steps"):
+    parsed = HarborTaskConfig.model_validate(config)
+    if parsed.steps:
         raise ValueError(f"{task_dir.name}: Harbor multi-step tasks are not supported")
     task, meta = config.get("task", {}), config.get("metadata", {})
     authors = [Author(**a) for a in task.get("authors", [])]
@@ -909,6 +618,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
     harness_timeout = config.get("agent", {}).get("timeout_sec")
     scoring_timeout = config.get("verifier", {}).get("timeout_sec")
+    verifier, verifier_environment = parse_verifier(
+        task_dir, parsed, harbor_config.resource_multiplier
+    )
     return HarborData(
         idx=idx,
         name=task.get("name") or task_dir.name,
@@ -920,7 +632,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             harbor_config.require_image,
             harbor_config.ignore_dockerfile,
         ),
-        workdir=config.get("environment", {}).get("workdir"),
+        workdir=parsed.environment.workdir,
         timeout=TaskTimeout(
             harness=harness_timeout * harbor_config.timeout_multiplier
             if harness_timeout is not None
@@ -930,7 +642,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             else None,
         ),
         resources=parse_resources(
-            config.get("environment", {}), harbor_config.resource_multiplier
+            parsed.environment, harbor_config.resource_multiplier
         ),
         keywords=task.get("keywords", []),
         authors=authors,
@@ -938,20 +650,21 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
-        verifier=parse_verifier(task_dir, config, harbor_config.resource_multiplier),
+        verifier_env=verifier_environment,
+        verifier=verifier,
     )
 
 
 def verifier_env(task: HarborData) -> dict[str, str]:
     """Resolve templates at scoring time so host secrets are never serialized."""
-    if not task.verifier.env:
+    if not task.verifier_env:
         return {}
 
     # Harbor is an optional dependency, so importing this module must still work
     # for users who do not install the Harbor extra.
     from harbor.utils.env import resolve_env_vars
 
-    return resolve_env_vars(task.verifier.env)
+    return resolve_env_vars(task.verifier_env)
 
 
 # Downloaded test directories are immutable. Cache only the latest archive to

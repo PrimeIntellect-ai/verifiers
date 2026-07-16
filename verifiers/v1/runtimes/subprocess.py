@@ -10,7 +10,6 @@ from typing import Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import BaseRuntimeInfo, ProgramResult, Runtime
 
 # Implicit host inheritance removes every name containing "API_KEY" while keeping
@@ -95,20 +94,8 @@ class SubprocessRuntime(Runtime):
             proc
         )  # killed in stop() — a host process won't die on its own
 
-    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
-        self._validate_read_limit(max_bytes)
-        target = self.workdir / path
-        if max_bytes is None:
-            return await asyncio.to_thread(target.read_bytes)
-
-        def read_bounded() -> bytes:
-            with target.open("rb") as file:
-                data = file.read(max_bytes + 1)
-            if len(data) > max_bytes:
-                raise SandboxError(f"read {path!r}: exceeds the {max_bytes} byte limit")
-            return data
-
-        return await asyncio.to_thread(read_bounded)
+    async def read(self, path: str) -> bytes:
+        return await asyncio.to_thread((self.workdir / path).read_bytes)
 
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path

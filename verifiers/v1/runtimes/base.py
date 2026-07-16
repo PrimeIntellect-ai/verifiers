@@ -15,6 +15,7 @@ from typing import ClassVar
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -128,19 +129,6 @@ class Runtime(ABC):
         `teardown`, not this."""
         await run_shielded(self.teardown())
 
-    async def stop_confirmed(self) -> None:
-        """Stop the resource and fail unless its provider confirms it can no longer run.
-
-        Clean-slate runtime transitions use this stronger boundary. Normal rollout
-        cleanup remains best-effort through ``stop``.
-        """
-        await run_shielded(self.teardown_confirmed())
-
-    async def teardown_confirmed(self) -> None:
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support confirmed teardown"
-        )
-
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
         that must be async (e.g. a remote API call); `stop` shields it from cancellation.
@@ -236,15 +224,25 @@ class Runtime(ABC):
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
-    def _validate_read_limit(self, max_bytes: int | None) -> None:
-        if max_bytes is not None and max_bytes < 0:
+    def _validate_read_limit(self, max_bytes: int) -> None:
+        if max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
 
     @abstractmethod
-    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
-        """Read a file, raising ``SandboxError`` before returning more than a
-        non-negative ``max_bytes`` limit."""
+    async def read(self, path: str) -> bytes:
         pass
+
+    async def read_bounded(self, path: str, max_bytes: int) -> bytes:
+        """Read at most ``max_bytes`` from a file.
+
+        Runtimes with streaming file APIs should override this to enforce the limit
+        before buffering the full file.
+        """
+        self._validate_read_limit(max_bytes)
+        data = await self.read(path)
+        if len(data) > max_bytes:
+            raise SandboxError(f"read {path!r}: exceeds the {max_bytes} byte limit")
+        return data
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
