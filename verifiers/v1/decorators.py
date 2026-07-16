@@ -75,22 +75,11 @@ def intercept(func: F, priority: int = 0) -> F: ...
 @overload
 def intercept(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
-    """Mark a `Task` method as a message interceptor.
+    """Mark a `Task` message interceptor accepting any of `message`, `trace`, and `prompt`.
 
-    Interceptors may declare `message`, `trace`, and `prompt` (the current typed model request).
-    They see tool messages before the model does and assistant messages before the harness does;
-    the `message` annotation selects which (`vf.AssistantMessage`, `vf.ToolMessage`, or
-    unannotated for both). Return None to pass through the native message untouched, a string to
-    replace an assistant turn (its tool calls never run) or a tool result's content, or a typed
-    replacement message. The first replacement wins.
-
-        block_rm = vf.block_shell_commands("rm")
-
-    A replacement is what the harness sees and what the trace records. Its own provider state and
-    reasoning are discarded; dialects may retain original continuation state required by a
-    rewritten tool call. Tool-message interceptors re-run on the same message every turn — the
-    harness replays the original history — so they must be deterministic. Streamed responses are
-    withheld until the interceptors have ruled.
+    The `message` annotation selects assistant turns, tool results, or both. Return None to pass
+    through or a string to replace the whole message; replacing an assistant tool call prevents it
+    from running. The first replacement wins, and intercepted streams are buffered until then.
     """
     decorator = mark("intercept", intercept_priority=priority)
     return decorator if func is None else decorator(func)

@@ -175,15 +175,14 @@ Taskset tools are shared by a worker's rollouts. Tools can also be set per task.
 
 ## Intercepting messages
 
-`@vf.intercept` can inspect or replace assistant messages before the harness receives them and
-tool results before the next model request. The built-in helpers cover common policies without
-depending on a specific harness:
+Interceptors inspect assistant turns before the harness receives them and tool results before the
+next model request. Built-in policies work across harnesses:
 
 ```python
 import verifiers.v1 as vf
 
 
-class GuardedTask(vf.Task[vf.TaskData]):
+class GuardedTask(vf.Task):
     block_rm = vf.block_shell_commands("rm")
     block_search = vf.block_web_search(containing="example.com")
     block_code_search = vf.block_code_search()
@@ -195,13 +194,13 @@ class GuardedTask(vf.Task[vf.TaskData]):
     async def rewrite_refusal(self, message: vf.AssistantMessage) -> str | None:
         if "I can't do that" in (message.content or ""):
             return "I can help with a safer alternative."
-        return None
 ```
 
-An interceptor may request `message`, `trace`, and `prompt` (the current typed model request).
-Return `None` to pass the native message through, a string to replace its content, or a typed
-message of the same kind. The first replacement wins. Intercepted streams are buffered while the
-interceptors run.
+Pass `judge=vf.Judge(vf.JudgeConfig(...))` to configure the policy judge.
+
+An `@vf.intercept` method may request `message`, `trace`, and `prompt`. Its message annotation
+selects which turns it sees. Return a string to replace the whole message or `None` to allow it;
+the first replacement wins. Intercepted streams are buffered while policies run.
 
 Ordinary function and MCP calls are visible before the harness executes them. Provider-hosted
 tools such as native web search have already run upstream when their response reaches an

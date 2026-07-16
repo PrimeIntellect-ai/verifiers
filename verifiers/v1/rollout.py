@@ -128,11 +128,7 @@ class Rollout:
         )
         try:
             session = RolloutSession(
-                ctx=ctx,
-                trace=trace,
-                stops=stops,
-                limits=self.limits,
-                intercepts=intercepts,
+                ctx, trace, stops, self.limits, intercepts=intercepts
             )
             await runtime.start()
             now = time.time()

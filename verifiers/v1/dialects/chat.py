@@ -8,7 +8,6 @@ read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning
 
 import time
 from collections.abc import Mapping
-from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
@@ -24,7 +23,6 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Message,
-    MessageContent,
     Messages,
     Response,
     SamplingConfig,
@@ -292,44 +290,23 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     response_type = ModdedChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
-        messages: Messages = []
-        tool_names: dict[str, str] = {}
-        for raw in body.get("messages", []):
-            message = parse_message(raw)
-            if isinstance(message, ToolMessage) and message.name is None:
-                name = tool_names.get(message.tool_call_id)
-                if name is not None:
-                    message = message.model_copy(update={"name": name})
-            messages.append(message)
-            if isinstance(message, AssistantMessage):
-                for call in message.tool_calls or []:
-                    tool_names[call.id] = call.name
-        return messages, parse_tools(body.get("tools"))
+        return [parse_message(raw) for raw in body.get("messages", [])], parse_tools(
+            body.get("tools")
+        )
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
 
-    def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
-        rewritten = raw.copy()
-        choice = raw["choices"][0].copy()
-        rewritten["choices"] = [choice]
-        original = choice["message"]
-        replacement = message_to_wire(message)
-        if message.tool_calls and original.get("reasoning_details"):
-            replacement["reasoning_details"] = original["reasoning_details"]
-        choice["message"] = replacement
+    def rewrite_response(self, raw: dict, content: str) -> dict:
+        choice = raw["choices"][0]
+        choice["message"] = {"role": "assistant", "content": content}
         if choice.get("finish_reason") != "length":
-            choice["finish_reason"] = "tool_calls" if message.tool_calls else "stop"
+            choice["finish_reason"] = "stop"
         choice.pop("logprobs", None)
-        return rewritten
+        return raw
 
     def serialize_stream(self, raw: dict) -> list[bytes]:
         choice = raw["choices"][0]
-        delta = {k: v for k, v in choice["message"].items() if v is not None}
-        if delta.get("tool_calls"):
-            delta["tool_calls"] = [
-                {"index": i, **call} for i, call in enumerate(delta["tool_calls"])
-            ]
         chunk = {
             "id": raw.get("id", ""),
             "object": "chat.completion.chunk",
@@ -338,7 +315,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
             "choices": [
                 {
                     "index": 0,
-                    "delta": delta,
+                    "delta": choice["message"],
                     "finish_reason": choice.get("finish_reason"),
                 }
             ],
@@ -346,14 +323,11 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         }
         return [sse_event(chunk), b"data: [DONE]\n\n"]
 
-    def rewrite_tool_results(
-        self, body: dict, replacements: dict[str, MessageContent]
-    ) -> dict:
-        rewritten = deepcopy(body)
-        for raw in rewritten.get("messages", []):
+    def rewrite_tool_results(self, body: dict, replacements: dict[str, str]) -> dict:
+        for raw in body.get("messages", []):
             if raw.get("role") == "tool" and raw.get("tool_call_id") in replacements:
-                raw["content"] = _content_to_wire(replacements[raw["tool_call_id"]])
-        return rewritten
+                raw["content"] = replacements[raw["tool_call_id"]]
+        return body
 
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()

@@ -8,7 +8,6 @@ trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded
 
 import json
 from collections.abc import Callable, Mapping
-from copy import deepcopy
 from dataclasses import dataclass, field
 
 from anthropic.types import Message as AnthropicMessage
@@ -25,7 +24,6 @@ from verifiers.v1.types import (
     FinishReason,
     ImageUrlContentPart,
     ImageUrlSource,
-    MessageContent,
     Messages,
     Response,
     SamplingConfig,
@@ -70,7 +68,6 @@ def parse_messages(body: dict) -> Messages:
     their blocks into one message (thinking -> reasoning, tool_use -> tool calls); a user turn's
     tool_result blocks become individual tool messages, its rest one user message."""
     prompt: Messages = []
-    tool_names: dict[str, str] = {}
     if system := body.get("system"):
         prompt.append(SystemMessage(content=parse_content(system)))
     for message in body.get("messages", []):
@@ -110,7 +107,6 @@ def parse_messages(body: dict) -> Messages:
                     provider_state=state or None,
                 )
             )
-            tool_names.update({call.id: call.name for call in calls})
             continue
         rest = []
         for block in [] if isinstance(content, str) else content or []:
@@ -120,7 +116,6 @@ def parse_messages(body: dict) -> Messages:
                     ToolMessage(
                         tool_call_id=tool_id,
                         content=parse_content(block.get("content")),
-                        name=tool_names.get(tool_id),
                     )
                 )
             else:
@@ -283,80 +278,45 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
 
-    def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
-        rewritten = raw.copy()
-        # With extended thinking, the API only accepts a replayed tool-use turn that still
-        # opens with its signed thinking blocks — keep them for tool-call rewrites only.
-        blocks: list[dict] = [
-            block
-            for block in (rewritten.get("content") or [])
-            if message.tool_calls
-            and block.get("type") in ("thinking", "redacted_thinking")
-        ]
-        if message.content is not None:
-            blocks.append({"type": "text", "text": message.content})
-        blocks.extend(
-            {
-                "type": "tool_use",
-                "id": call.id,
-                "name": call.name,
-                "input": json.loads(call.arguments or "{}"),
-            }
-            for call in message.tool_calls or []
-        )
-        rewritten["content"] = blocks
-        if rewritten.get("stop_reason") != "max_tokens":
-            rewritten["stop_reason"] = "tool_use" if message.tool_calls else "end_turn"
-        rewritten["stop_sequence"] = None
-        return rewritten
+    def rewrite_response(self, raw: dict, content: str) -> dict:
+        raw["content"] = [{"type": "text", "text": content}]
+        if raw.get("stop_reason") != "max_tokens":
+            raw["stop_reason"] = "end_turn"
+        raw["stop_sequence"] = None
+        return raw
 
     def serialize_stream(self, raw: dict) -> list[bytes]:
         head = {**raw, "content": [], "stop_reason": None, "stop_sequence": None}
         if usage := head.get("usage"):
             head["usage"] = {**usage, "output_tokens": 0}
-        events: list[bytes] = []
+        item = raw["content"][0]
+        events = [
+            ("message_start", {"message": head}),
+            (
+                "content_block_start",
+                {"index": 0, "content_block": {**item, "text": ""}},
+            ),
+            (
+                "content_block_delta",
+                {"index": 0, "delta": {"type": "text_delta", "text": item["text"]}},
+            ),
+            ("content_block_stop", {"index": 0}),
+            (
+                "message_delta",
+                {
+                    "delta": {
+                        "stop_reason": raw.get("stop_reason"),
+                        "stop_sequence": raw.get("stop_sequence"),
+                    },
+                    "usage": raw.get("usage") or {},
+                },
+            ),
+            ("message_stop", {}),
+        ]
+        return [sse_event({"type": kind, **payload}, kind) for kind, payload in events]
 
-        def emit(kind: str, **payload) -> None:
-            events.append(sse_event({"type": kind, **payload}, kind))
-
-        emit("message_start", message=head)
-        for index, item in enumerate(raw.get("content") or []):
-            deltas = []
-            if item["type"] == "text":
-                block = {**item, "text": ""}
-                deltas = [{"type": "text_delta", "text": item.get("text", "")}]
-            elif item["type"] == "tool_use":
-                block = {**item, "input": {}}
-                deltas = [
-                    {
-                        "type": "input_json_delta",
-                        "partial_json": json.dumps(item.get("input") or {}),
-                    }
-                ]
-            else:
-                # Preserved thinking blocks ride whole in their start event; accumulators
-                # keep the complete block even without the canonical delta ceremony.
-                block = item
-            emit("content_block_start", index=index, content_block=block)
-            for delta in deltas:
-                emit("content_block_delta", index=index, delta=delta)
-            emit("content_block_stop", index=index)
-        emit(
-            "message_delta",
-            delta={
-                "stop_reason": raw.get("stop_reason"),
-                "stop_sequence": raw.get("stop_sequence"),
-            },
-            usage=raw.get("usage") or {},
-        )
-        emit("message_stop")
-        return events
-
-    def rewrite_tool_results(
-        self, body: dict, replacements: dict[str, MessageContent]
-    ) -> dict:
-        rewritten = deepcopy(body)
-        for raw_message in rewritten.get("messages", []):
+    def rewrite_tool_results(self, body: dict, replacements: dict[str, str]) -> dict:
+        for raw_message in body.get("messages", []):
             blocks = raw_message.get("content")
             if not isinstance(blocks, list):
                 continue
@@ -364,32 +324,8 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
                 tool_id = block.get("tool_use_id")
                 if block.get("type") != "tool_result" or tool_id not in replacements:
                     continue
-                content = replacements[tool_id]
-                if isinstance(content, str):
-                    block["content"] = content
-                    continue
-                wire = []
-                for part in content:
-                    if isinstance(part, TextContentPart):
-                        wire.append({"type": "text", "text": part.text})
-                        continue
-                    url = part.image_url.url
-                    if url.startswith("data:"):
-                        media_type, separator, data = url[5:].partition(";base64,")
-                        if not separator:
-                            raise ValueError(
-                                "Anthropic tool-result images require base64 data URLs"
-                            )
-                        source = {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": data,
-                        }
-                    else:
-                        source = {"type": "url", "url": url}
-                    wire.append({"type": "image", "source": source})
-                block["content"] = wire
-        return rewritten
+                block["content"] = replacements[tool_id]
+        return body
 
     def is_terminal_event(self, chunk: bytes) -> bool:
         return b'"type":"message_stop"' in chunk or b'"type": "message_stop"' in chunk

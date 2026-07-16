@@ -9,7 +9,6 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 
 import json
 from collections import deque
-from copy import deepcopy
 from typing import Any, cast
 
 from openai.types.responses import (
@@ -40,7 +39,6 @@ from verifiers.v1.types import (
     FinishReason,
     ImageUrlContentPart,
     ImageUrlSource,
-    MessageContent,
     Messages,
     Response,
     SamplingConfig,
@@ -276,7 +274,6 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             [{"role": "user", "content": raw}] if isinstance(raw, str) else raw or []
         )
         run: list[dict] = []  # the current run of assistant-side items
-        tool_names: dict[str, str] = {}
         for item in items:
             role = item.get("role")
             # Any client-produced output item (function/computer/shell/custom call outputs)
@@ -289,11 +286,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 and not (item.get("type") or "").endswith("_response")
             )
             if run and not assistant:
-                message = assistant_from_items(run)
-                prompt.append(message)
-                tool_names.update(
-                    {call.id: call.name for call in message.tool_calls or []}
-                )
+                prompt.append(assistant_from_items(run))
                 run = []
             if assistant:
                 run.append(item)
@@ -309,7 +302,6 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                     ToolMessage(
                         tool_call_id=call_id,
                         content=content,
-                        name=tool_names.get(call_id),
                     )
                 )
             elif item.get("role") in ("system", "developer"):
@@ -333,165 +325,72 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
 
-    def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
-        rewritten = raw.copy()
+    def rewrite_response(self, raw: dict, content: str) -> dict:
         incomplete = raw.get("status") == "incomplete"
-        # Stateless reasoning models need their encrypted reasoning item replayed with a
-        # rewritten tool call, just as Anthropic needs its signed thinking block.
-        output = [
-            item
-            for item in raw.get("output") or []
-            if message.tool_calls and item.get("type") == "reasoning"
-        ]
-        if message.content is not None:
-            output.append(
-                {
-                    "type": "message",
-                    "id": f"msg_{raw.get('id') or 'vf_intercept'}",
-                    "role": "assistant",
-                    "status": "incomplete" if incomplete else "completed",
-                    "content": [
-                        {
-                            "type": "output_text",
-                            "text": message.content,
-                            "annotations": [],
-                        }
-                    ],
-                }
-            )
-        output.extend(
+        raw["output"] = [
             {
-                "type": "function_call",
-                "id": f"fc_{call.id}",
-                "call_id": call.id,
-                "name": call.name,
-                "arguments": call.arguments,
+                "type": "message",
+                "id": f"msg_{raw.get('id') or 'vf_intercept'}",
+                "role": "assistant",
                 "status": "incomplete" if incomplete else "completed",
+                "content": [
+                    {"type": "output_text", "text": content, "annotations": []}
+                ],
             }
-            for call in message.tool_calls or []
-        )
-        rewritten["output"] = output
+        ]
         if not incomplete:
-            rewritten["status"] = "completed"
-            rewritten.pop("incomplete_details", None)
-        if "error" in rewritten:
-            rewritten["error"] = None
-        return rewritten
+            raw["status"] = "completed"
+            raw.pop("incomplete_details", None)
+        if "error" in raw:
+            raw["error"] = None
+        return raw
 
     def serialize_stream(self, raw: dict) -> list[bytes]:
-        opening = {**raw, "status": "in_progress", "output": []}
-        events: list[bytes] = []
-        sequence = 0
-
-        def emit(kind: str, **payload) -> None:
-            nonlocal sequence
-            events.append(
-                sse_event({"type": kind, "sequence_number": sequence, **payload}, kind)
-            )
-            sequence += 1
-
-        emit("response.created", response=opening)
-        for output_index, item in enumerate(raw.get("output") or []):
-            item_id = item.get("id", "")
-            kind = item.get("type")
-            if kind == "message":
-                added = {**item, "status": "in_progress", "content": []}
-            elif kind == "function_call":
-                added = {**item, "status": "in_progress", "arguments": ""}
-            else:
-                added = {
-                    **item,
-                    **({"status": "in_progress"} if "status" in item else {}),
-                }
-            emit(
-                "response.output_item.added",
-                output_index=output_index,
-                item=added,
-            )
-            if kind == "message":
-                for content_index, part in enumerate(item.get("content") or []):
-                    refusal = part.get("type") == "refusal"
-                    field = "refusal" if refusal else "text"
-                    value = part.get(field, "")
-                    emit(
-                        "response.content_part.added",
-                        item_id=item_id,
-                        output_index=output_index,
-                        content_index=content_index,
-                        part={**part, field: ""},
-                    )
-                    if refusal:
-                        emit(
-                            "response.refusal.delta",
-                            item_id=item_id,
-                            output_index=output_index,
-                            content_index=content_index,
-                            delta=value,
-                        )
-                        emit(
-                            "response.refusal.done",
-                            item_id=item_id,
-                            output_index=output_index,
-                            content_index=content_index,
-                            refusal=value,
-                        )
-                    else:
-                        emit(
-                            "response.output_text.delta",
-                            item_id=item_id,
-                            output_index=output_index,
-                            content_index=content_index,
-                            delta=value,
-                            logprobs=[],
-                        )
-                        emit(
-                            "response.output_text.done",
-                            item_id=item_id,
-                            output_index=output_index,
-                            content_index=content_index,
-                            text=value,
-                            logprobs=[],
-                        )
-                    emit(
-                        "response.content_part.done",
-                        item_id=item_id,
-                        output_index=output_index,
-                        content_index=content_index,
-                        part=part,
-                    )
-            elif kind == "function_call":
-                emit(
-                    "response.function_call_arguments.delta",
-                    item_id=item_id,
-                    output_index=output_index,
-                    delta=item["arguments"],
-                )
-                emit(
-                    "response.function_call_arguments.done",
-                    item_id=item_id,
-                    output_index=output_index,
-                    arguments=item["arguments"],
-                )
-            emit(
-                "response.output_item.done",
-                output_index=output_index,
-                item=item,
-            )
+        item = raw["output"][0]
+        part = item["content"][0]
+        location = {"item_id": item["id"], "output_index": 0, "content_index": 0}
         terminal = (
             "response.incomplete"
             if raw.get("status") == "incomplete"
             else "response.completed"
         )
-        emit(terminal, response=raw)
-        return events
+        events = [
+            (
+                "response.created",
+                {"response": {**raw, "status": "in_progress", "output": []}},
+            ),
+            (
+                "response.output_item.added",
+                {
+                    "output_index": 0,
+                    "item": {**item, "status": "in_progress", "content": []},
+                },
+            ),
+            (
+                "response.content_part.added",
+                {**location, "part": {**part, "text": ""}},
+            ),
+            (
+                "response.output_text.delta",
+                {**location, "delta": part["text"], "logprobs": []},
+            ),
+            (
+                "response.output_text.done",
+                {**location, "text": part["text"], "logprobs": []},
+            ),
+            ("response.content_part.done", {**location, "part": part}),
+            ("response.output_item.done", {"output_index": 0, "item": item}),
+            (terminal, {"response": raw}),
+        ]
+        return [
+            sse_event({"type": kind, "sequence_number": i, **payload}, kind)
+            for i, (kind, payload) in enumerate(events)
+        ]
 
-    def rewrite_tool_results(
-        self, body: dict, replacements: dict[str, MessageContent]
-    ) -> dict:
-        rewritten = deepcopy(body)
-        items = rewritten.get("input")
+    def rewrite_tool_results(self, body: dict, replacements: dict[str, str]) -> dict:
+        items = body.get("input")
         if not isinstance(items, list):
-            return rewritten
+            return body
         for item in items:
             call_id = item.get("call_id")
             if (
@@ -499,12 +398,8 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 or call_id not in replacements
             ):
                 continue
-            content = replacements[call_id]
-            wire = messages_to_wire(
-                [ToolMessage(tool_call_id=call_id, content=content)]
-            )[0]
-            item["output"] = wire["output"]
-        return rewritten
+            item["output"] = replacements[call_id]
+        return body
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()

@@ -8,16 +8,17 @@ injects the user simulator's replies, and stashes the real failure on `error`.
 turns.
 """
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, get_args, get_type_hints
+from typing import TYPE_CHECKING, Any, get_type_hints
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import invoke
 from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, Message, Messages, ToolMessage
+from verifiers.v1.types import Message, Messages
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
@@ -67,8 +68,11 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    intercepts: list[Callable[..., Awaitable[object]]] = field(default_factory=list)
+    intercepts: list[Callable[..., Awaitable[str | None]]] = field(default_factory=list)
     rewritten_response_ids: set[str] = field(default_factory=set)
+    tool_interceptions: dict[str, asyncio.Task[str | None]] = field(
+        default_factory=dict
+    )
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -84,28 +88,32 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+    last_request: bytes | None = None
+    """Digest of the most recently served request body; with `last_response`, the replay cache
+    that keeps the message graph atomic under harness-SDK retries. A retry re-sends the
+    byte-identical request; when it matches, the interception server replays the recorded
+    response instead of re-sampling and committing a second turn — which would fork the graph
+    into a dead-end branch. Only a fully served request is cached, so a genuinely failed attempt
+    still re-runs. Turns are issued sequentially (one outstanding request at a time), so a retry
+    is always of the most recent request — keeping only the last one is sufficient and bounded."""
+    last_response: dict | None = None
+    """The response returned for `last_request`, replayed verbatim on a retry."""
+    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
+    """Body digest -> the future of the attempt currently computing it. A retry that arrives
+    while the first attempt is still in flight (a slow turn) awaits this future instead of
+    starting a second inference — the other half of retry atomicity (with `last_response`, which
+    covers a retry after the attempt finished). Because a slow turn is coalesced rather than
+    re-sampled, retries stay safe without an inflated client timeout. The future resolves to the
+    served response, or to None if the attempt produced no servable response (error/refuse)."""
 
     async def intercept(
         self, message: Message, prompt: Messages | None = None
-    ) -> Message | None:
+    ) -> str | None:
         """Return the first interceptor replacement, or None for native pass-through."""
         try:
-            if isinstance(message, ToolMessage) and message.name is None:
-                name = next(
-                    (
-                        call.name
-                        for assistant in reversed(self.trace.assistant_messages)
-                        for call in assistant.tool_calls or []
-                        if call.id == message.tool_call_id
-                    ),
-                    None,
-                )
-                if name is not None:
-                    message = message.model_copy(update={"name": name})
             for interceptor in self.intercepts:
                 hint = get_type_hints(interceptor).get("message")
-                allowed = tuple(t for t in get_args(hint) if isinstance(t, type))
-                if hint not in (None, Any) and not isinstance(message, allowed or hint):
+                if hint not in (None, Any) and not isinstance(message, hint):
                     continue
                 replacement = await invoke(
                     interceptor,
@@ -117,20 +125,9 @@ class RolloutSession:
                 )
                 if replacement is None:
                     continue
-                if isinstance(replacement, str):
-                    replacement = (
-                        AssistantMessage(content=replacement)
-                        if isinstance(message, AssistantMessage)
-                        else message.model_copy(update={"content": replacement})
-                    )
-                if type(replacement) is not type(message):
+                if not isinstance(replacement, str):
                     raise TaskError(
-                        f"@intercept for {type(message).__name__} returned "
-                        f"{type(replacement).__name__}"
-                    )
-                if isinstance(replacement, AssistantMessage):
-                    replacement = replacement.model_copy(
-                        update={"provider_state": None, "reasoning_content": None}
+                        f"@intercept must return str or None, got {type(replacement).__name__}"
                     )
                 return replacement
         except RolloutError:

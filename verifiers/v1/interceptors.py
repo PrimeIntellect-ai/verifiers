@@ -1,6 +1,5 @@
 """Reusable message interceptors for common tool policies."""
 
-import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable, Iterable
@@ -30,13 +29,18 @@ _SHELL_TOOLS = (
     "*code_interpreter*",
 )
 _CODE_SEARCH_TOOLS = (
+    "rg",
     "grep",
+    "find",
+    "fd",
     "glob",
     "*code*search*",
     "*search*code*",
     "*file*search*",
+    "*search*file*",
 )
 _CODE_SEARCH_COMMANDS = ("rg", "grep", "find", "fd")
+_WEB_SEARCH_TOOLS = ("search", "*web*search*", "*search*web*")
 
 
 def _matches(name: str, patterns: tuple[str, ...]) -> bool:
@@ -45,13 +49,8 @@ def _matches(name: str, patterns: tuple[str, ...]) -> bool:
     )
 
 
-def find_tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
-    """Return ordinary and provider-native tool calls, optionally filtered by glob patterns.
-
-    Provider-hosted calls such as Responses web search and Anthropic server tools are returned
-    after they have run upstream; ordinary function/MCP calls are visible before the harness runs
-    them. Matching is case-insensitive.
-    """
+def _find_tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
+    """Return matching ordinary and provider-native tool calls."""
     if not isinstance(message, AssistantMessage):
         return []
     calls = list(message.tool_calls or [])
@@ -82,8 +81,7 @@ def find_tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
                 arguments=arguments,
             )
         )
-    normalized = tuple(pattern.casefold() for pattern in patterns)
-    return [call for call in calls if _matches(call.name, normalized)]
+    return [call for call in calls if _matches(call.name, patterns)]
 
 
 def block_tool_calls(
@@ -107,11 +105,13 @@ def block_tool_calls(
                 message.name is not None and _matches(message.name, names)
             )
         else:
-            matched = bool(find_tool_calls(message, *names))
-        if not matched:
-            return None
-        haystack = message.model_dump_json().casefold()
-        if needles and not any(needle in haystack for needle in needles):
+            matched = bool(_find_tool_calls(message, *names))
+        if not matched or (
+            needles
+            and not any(
+                needle in message.model_dump_json().casefold() for needle in needles
+            )
+        ):
             return None
         return reply
 
@@ -129,20 +129,16 @@ def block_shell_commands(
     It is a convenience policy, not a sandbox boundary: equivalent or obfuscated commands may
     still require a custom classifier or runtime isolation.
     """
-    command_patterns = tuple(
-        re.compile(rf"(?<![\w.-]){re.escape(command)}(?![\w.-])", re.IGNORECASE)
-        for command in commands
+    command_pattern = re.compile(
+        rf"(?<![\w.-])(?:{'|'.join(map(re.escape, commands))})(?![\w.-])",
+        re.IGNORECASE,
     )
 
     async def blocker(self, message: AssistantMessage) -> str | None:
-        calls = find_tool_calls(message, *_SHELL_TOOLS)
+        calls = _find_tool_calls(message, *_SHELL_TOOLS)
         if calls and (
-            not command_patterns
-            or any(
-                pattern.search(call.arguments)
-                for call in calls
-                for pattern in command_patterns
-            )
+            not commands
+            or any(command_pattern.search(call.arguments) for call in calls)
         ):
             return reply
         return None
@@ -158,8 +154,7 @@ def block_web_search(
 ) -> Interceptor:
     """Block client or provider-hosted web search, optionally by response content."""
     return block_tool_calls(
-        "*web*search*",
-        "*search*web*",
+        *_WEB_SEARCH_TOOLS,
         containing=containing,
         reply=reply,
         priority=priority,
@@ -184,7 +179,7 @@ def block_with_judge(
     *,
     judge: Judge | None = None,
     reply: str = "Blocked by policy.",
-    priority: int = 0,
+    priority: int = -1,
 ) -> Interceptor:
     """Build an interceptor that asks a judge whether each message violates a rubric.
 
@@ -194,29 +189,15 @@ def block_with_judge(
     the rollout instead of silently allowing the message.
     """
     policy_judge = judge or Judge()
-    policy = (
-        f"{type(policy_judge).__module__}.{type(policy_judge).__qualname__}\n"
-        f"{policy_judge.config.model_dump_json()}\n{rubric}"
-    )
 
     async def blocker(
-        self, message: Message, trace: Trace, prompt: Messages | None = None
+        self, message: Message, trace: Trace, prompt: Messages
     ) -> str | None:
         candidate = message.model_dump_json(exclude_none=True, indent=2)
-        context = (
-            json.dumps(
-                [item.model_dump(mode="json", exclude_none=True) for item in prompt],
-                indent=2,
-            )
-            if prompt is not None
-            else trace.transcript
+        context = json.dumps(
+            [item.model_dump(mode="json", exclude_none=True) for item in prompt],
+            indent=2,
         )
-        cache_key = hashlib.sha256(
-            f"{policy}\n{context}\n{candidate}".encode()
-        ).hexdigest()
-        if cache_key in trace.info.get("interception_judge", {}):
-            return reply
-
         response = await policy_judge.complete(
             [
                 SystemMessage(
@@ -229,31 +210,14 @@ def block_with_judge(
                 ),
                 UserMessage(
                     content=(
-                        f"Task:\n{self.data.prompt_text}\n\n"
                         f"Current model request:\n{context}\n\n"
                         f"Candidate message:\n{candidate}"
                     )
                 ),
             ],
             trace=trace,
-            parse=lambda result: judge_verdict(
-                result.text, ("BLOCK", "ALLOW"), strict=True
-            ),
         )
-        verdict = response.parsed
-        if verdict == "ALLOW":
-            return None
-        trace.info.setdefault("interception_judge", {})[cache_key] = verdict
-        return reply
+        verdict = judge_verdict(response.text, ("BLOCK", "ALLOW"))
+        return reply if verdict == "BLOCK" else None
 
     return intercept(blocker, priority=priority)
-
-
-__all__ = [
-    "block_code_search",
-    "block_shell_commands",
-    "block_tool_calls",
-    "block_web_search",
-    "block_with_judge",
-    "find_tool_calls",
-]

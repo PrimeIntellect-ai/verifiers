@@ -20,14 +20,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import BaseModel
 from pydantic_core import from_json, to_json
 
-from verifiers.v1.types import (
-    AssistantMessage,
-    MessageContent,
-    Messages,
-    Response,
-    SamplingConfig,
-    Tool,
-)
+from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
@@ -187,18 +180,22 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """Validate a native response, normalizing provider-compatible extensions if needed."""
         return self.response_type.model_validate(raw)
 
+    def parse_raw_response(self, raw: dict) -> Response:
+        """Validate and parse a native response while retaining its replayable wire body."""
+        response = self.parse_response(self.validate_response(raw))
+        response.raw = raw
+        return response
+
     @abstractmethod
-    def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
-        """Replace the assistant message in a native response body."""
+    def rewrite_response(self, raw: dict, content: str) -> dict:
+        """Replace a native response with assistant text."""
 
     @abstractmethod
     def serialize_stream(self, raw: dict) -> list[bytes]:
         """Serialize a rewritten native response as a complete SSE stream."""
 
     @abstractmethod
-    def rewrite_tool_results(
-        self, body: ReqT, replacements: dict[str, MessageContent]
-    ) -> ReqT:
+    def rewrite_tool_results(self, body: ReqT, replacements: dict[str, str]) -> ReqT:
         """Replace tool-result messages in a native request body by tool-call id."""
 
     @abstractmethod
