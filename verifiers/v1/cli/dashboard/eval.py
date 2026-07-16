@@ -244,11 +244,16 @@ def Progress(
     # progress, reward, err, and the breakdown cover the whole run, not just this session's.
     done = [s for s in slots if s.done]  # fully scored env-rollouts
     done_traces = [t for s in done for t in s.traces]
+    # Score aggregates read the policy's traces: auxiliary roles (a judge's verdict
+    # run, a modeled user) are `trainable=False` and carry no rewards, so counting
+    # them dilutes every mean with structural zeros. An all-untrainable run (every
+    # role frozen) falls back to all traces rather than showing nothing.
+    scored = [t for t in done_traces if t.trainable] or done_traces
     total = len(slots)
     # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
     # the global avg (errored count as 0) in parens. `err` is the share of env-rollouts that
     # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
-    reward = format_mean(done_traces, lambda t: t.reward)
+    reward = format_mean(scored, lambda t: t.reward)
     err = (
         f"{sum(s.record is None or not s.record.ok for s in done) / len(done):.2f}"
         if done
@@ -267,7 +272,7 @@ def Progress(
         ProgressBar(total=total or 1, completed=len(done)),
         Text(stats),
     )
-    breakdown = _breakdown(done_traces)
+    breakdown = _breakdown(scored)
     return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
