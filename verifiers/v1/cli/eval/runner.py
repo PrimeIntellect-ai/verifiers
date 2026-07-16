@@ -67,6 +67,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     write_lock = asyncio.Lock()
 
     async def on_complete(trace: Trace) -> None:
+        trace.stamp(run_id=config.uuid, tag="eval")
         await append_trace(out, trace, write_lock)
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
@@ -221,6 +222,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     sampling=config.sampling,
                 )
             for trace in traces:
+                trace.stamp(run_id=config.uuid, tag="eval")
                 await append_trace(out, trace, write_lock)
             return traces
 
@@ -232,6 +234,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     model=config.model,
                     sampling=config.sampling,
                 )
+            trace.stamp(run_id=config.uuid, tag="eval")
             await append_trace(out, trace, write_lock)
             return [trace]
 

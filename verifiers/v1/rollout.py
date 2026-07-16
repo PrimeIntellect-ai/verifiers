@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
+from verifiers import __version__
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -30,7 +31,8 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import TraceTask, Trace
+from verifiers.v1.trace import HarnessInfo, ModelInfo, Trace, TraceTask
+from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +61,13 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
+        taskset_id: str | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime_config
+        self.taskset_id = taskset_id
         self.setup_timeout = setup_timeout
         self.harness_timeout = harness_timeout
         self.finalize_timeout = finalize_timeout
@@ -109,6 +113,13 @@ class Rollout:
         trace: Trace = Trace(
             task=TraceTask(type=type(self.task).__name__, data=self.task.data),
             state=state_cls(type(self.task))(),
+            verifiers_version=__version__,
+            verifiers_commit=verifiers_commit(),
+            taskset_id=self.taskset_id,
+            model=ModelInfo(name=self.ctx.model, sampling=self.ctx.sampling),
+            harness=HarnessInfo(
+                id=self.harness.config.id, name=self.harness.config.name
+            ),
         )
         self.trace = trace  # expose for the --rich dashboard
         self.phase = Phase.BOOT  # leaving the queue: the runtime boots now

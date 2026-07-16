@@ -358,6 +358,7 @@ class Environment:
                 limits=self.limits,
                 shared_tools=self._shared_tools,
                 interception=self._interception,
+                taskset_id=self.taskset.config.id or None,
             )
             for _ in range(n)
         ]

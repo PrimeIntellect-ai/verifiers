@@ -5,10 +5,10 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
 import numpy as np
-from pydantic import Field, PrivateAttr
+from pydantic import ConfigDict, Field, PrivateAttr
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
@@ -24,6 +24,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     KeptTokens,
     Messages,
+    SamplingConfig,
     StrictBaseModel,
     Tool,
     ToolMessage,
@@ -212,6 +213,29 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
+TRACE_SCHEMA_VERSION = 1
+"""Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
+breaking shape changes; optional-with-default fields are additive and don't bump it."""
+
+
+class ModelInfo(StrictBaseModel):
+    """The model that produced this trace's sampled turns."""
+
+    name: str
+    """The model identifier requested from the client."""
+    sampling: SamplingConfig | None = None
+    """The resolved sampling settings the rollout ran with."""
+
+
+class HarnessInfo(StrictBaseModel):
+    """The harness that drove this trace's rollout."""
+
+    id: str
+    """Local package or Hub `org/name[@version]` (`HarnessConfig.id`)."""
+    name: str
+    """The harness's display name (`HarnessConfig.name`)."""
+
+
 class TraceTask(StrictBaseModel, Generic[DataT]):
     """The task as recorded on the trace: the row (`data`, the wire half — fully typed,
     flows into scoring) plus the Task class name that produced the rollout (`type`) —
@@ -228,12 +252,36 @@ class TraceTask(StrictBaseModel, Generic[DataT]):
 
 
 class Trace(StrictBaseModel, Generic[DataT, StateT]):
+    model_config = ConfigDict(json_schema_extra={"version": TRACE_SCHEMA_VERSION})
+
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique id for this rollout, auto-generated per trace."""
     task: TraceTask[DataT]
     """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
     runtime: RuntimeInfo | None = None
     """The runtime's full config plus its provisioned resource ID."""
+    schema_version: int = TRACE_SCHEMA_VERSION
+    """The trace record schema this trace serializes as."""
+    verifiers_version: str | None = None
+    """The verifiers version that produced this trace, stamped at rollout start —
+    replayed/re-read traces keep the version that originally produced them."""
+    verifiers_commit: str | None = None
+    """The producing verifiers git commit, when resolvable (a git-pinned install or a
+    source checkout); None otherwise (e.g. a PyPI wheel)."""
+    run_id: str | None = None
+    """The producing run, stamped by the consumer: the eval CLI stamps its run uuid
+    (a resumed eval counts as a new run; kept traces keep their original id),
+    trainers stamp their own run identifier."""
+    tag: Literal["train", "eval"] | None = None
+    """What the rollout was for, stamped by the consumer (eval CLI / trainer)."""
+    step: int | None = None
+    """The training step this rollout belongs to, stamped by the trainer."""
+    taskset_id: str | None = None
+    """The taskset that produced the task (`TasksetConfig.id`)."""
+    model: ModelInfo | None = None
+    """The model (and sampling settings) that produced the sampled turns."""
+    harness: HarnessInfo | None = None
+    """The harness that drove the rollout."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
     tools: list[Tool] | None = None
@@ -413,6 +461,27 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
             )
         self.rewards[name] = contribution
+
+    def stamp(
+        self,
+        *,
+        run_id: str | None = None,
+        tag: Literal["train", "eval"] | None = None,
+        step: int | None = None,
+        taskset_id: str | None = None,
+        **info: Any,
+    ) -> None:
+        """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the
+        trace; anything beyond the first-class fields lands in `info`."""
+        if run_id is not None:
+            self.run_id = run_id
+        if tag is not None:
+            self.tag = tag
+        if step is not None:
+            self.step = step
+        if taskset_id is not None:
+            self.taskset_id = taskset_id
+        self.info.update(info)
 
     def stop(self, condition: str = "done") -> None:
         self.is_completed = True
