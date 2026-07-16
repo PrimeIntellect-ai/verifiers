@@ -148,6 +148,7 @@ def _eval_config(
     rollout_timeout: float = 180,
     taskset_overrides: dict | None = None,
     harness_overrides: dict | None = None,
+    env: dict | None = None,
     pool: dict | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
@@ -162,6 +163,7 @@ def _eval_config(
     risks truncating the reasoning before the answer (which tanks the reward)."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
     harness_cfg = {"id": harness, **(harness_overrides or {})}
+    env_cfg = env or {}
     _configure_prime_runtimes(taskset_cfg)
     _configure_prime_runtimes(harness_cfg)
     return EvalConfig(
@@ -180,6 +182,7 @@ def _eval_config(
         retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
         rich=False,
         output_dir=output_dir,
+        **({"env": env_cfg} if env_cfg else {}),
         **({"pool": pool} if pool else {}),
         **({"model": model} if model else {}),
     )

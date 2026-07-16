@@ -18,6 +18,8 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns == 1
     assert trace.reward == 1.0
+    # The resolved sampling rides the trace (policy metadata for trainers).
+    assert trace.sampling is not None and trace.sampling.temperature == 0
 
 
 @pytest.mark.e2e
@@ -248,6 +250,92 @@ async def test_multi_agent_env(run_v1, tmp_path):
     assert row["env"] == "duet-v1"
     assert [t["role"] for t in row["traces"]] == ["a", "b"]
     assert [t.get("trainable") for t in row["traces"]] == [True, False]
+
+
+@pytest.mark.e2e
+async def test_env_id_best_of_n(run_v1, tmp_path):
+    """`--env.id` pairs a bundled env with an arbitrary taskset: best-of-n over the
+    plain echo taskset — n solver attempts in one record, sibling-scored."""
+    traces = await run_v1(
+        "echo-v1",
+        harness="null",
+        env={"id": "best-of-n", "n": 2},
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert len(traces) == 2  # one env-rollout, two attempts
+    assert all(t.role == "solver" and t.errors == [] for t in traces)
+    assert any(t.metrics["best"] == 1.0 for t in traces)
+    assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes
+
+
+@pytest.mark.e2e
+async def test_env_id_judge(run_v1, tmp_path):
+    """The judge env over the echo taskset: the solver's trace gains a `judge` reward
+    from a real (direct-harness, untrainable) judge agent's verdict."""
+    traces = await run_v1(
+        "echo-v1",
+        harness="null",
+        env={"id": "judge"},
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert sorted(t.role for t in traces) == ["judge", "solver"]
+    (solver,) = [t for t in traces if t.role == "solver"]
+    (judge,) = [t for t in traces if t.role == "judge"]
+    assert solver.errors == [] and judge.errors == []
+    assert judge.trainable is False
+    assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
+    # Wiring, not taste: the judge followed the output contract and its parsed
+    # verdict is exactly what landed on the solver (the grade itself is the
+    # model's call — a bare echo can be judged middling).
+    from verifiers.v1.envs.judge.env import parse_score
+
+    assert "SCORE:" in (judge.last_reply or "")
+    assert solver.rewards["judge"] == parse_score(judge.last_reply)
+    assert 0.0 <= solver.rewards["judge"] <= 1.0
+
+
+@pytest.mark.e2e
+async def test_env_id_user_sim(run_v1, tmp_path):
+    """The user-sim env over the echo taskset: a modeled user (direct harness) opens
+    the conversation from the task's prompt-as-scenario; the assistant's trace is
+    judged by the task's own reward; both sides land role-stamped on one record."""
+    traces = await run_v1(
+        "echo-v1",
+        harness="null",
+        env={"id": "user-sim"},
+        output_dir=tmp_path,
+        max_turns=6,
+        rollout_timeout=300,
+    )
+    assert sorted(t.role for t in traces) == ["assistant", "user"]
+    (assistant,) = [t for t in traces if t.role == "assistant"]
+    (user,) = [t for t in traces if t.role == "user"]
+    assert assistant.errors == [] and user.errors == []
+    assert user.trainable is False
+    assert user.num_turns >= 1  # the modeled user actually spoke
+    assert assistant.metrics["user_turns"] >= 1
+
+
+@pytest.mark.e2e
+async def test_kuhn_poker_self_play(run_v1, tmp_path):
+    """The turn-coupled proof env: one Kuhn poker hand, both seats live chat sessions
+    of the run's own model (self-play), refereed host-side, paid out zero-sum."""
+    traces = await run_v1(
+        "kuhn-poker-v1",
+        output_dir=tmp_path,
+        max_turns=8,
+        rollout_timeout=300,
+    )
+    assert sorted(t.role for t in traces) == ["player0", "player1"]
+    payoffs = {t.role: t.rewards["payoff"] for t in traces}
+    assert payoffs["player0"] + payoffs["player1"] == 0  # zero-sum
+    assert abs(payoffs["player0"]) in (1.0, 2.0)
+    for trace in traces:
+        assert trace.errors == []
+        assert trace.num_turns >= 1
+        assert trace.info["kuhn"]["seat"] in (0, 1)
 
 
 @pytest.mark.e2e

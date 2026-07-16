@@ -299,6 +299,39 @@ For the single-agent case none of this is visible: the base `roles()` is one `"m
 seat driven by `--harness.*`, `rollout()` is `[await agents["main"].run(task)]`, and
 the record wraps exactly one unstamped trace.
 
+The three axes of a run are orthogonal:
+
+- **taskset** — *what to solve*: the rows, their data, their per-trace judgement.
+- **harness** — *how the LLM interfaces with the world*: the program driving model
+  calls, tools, a runtime.
+- **env** — *the control flow between agents*: who runs, in what order, judged how
+  across the finished set.
+
+### Reusable envs: `--env.id`
+
+An interaction pattern that isn't specific to one dataset — n attempts, a judge, a
+modeled user — is its own plugin, paired with any taskset from the CLI:
+
+```bash
+uv run eval --taskset.id gsm8k-v1 --env.id best-of-n --env.n 8
+uv run eval --taskset.id my-task-v1 --env.id judge --env.judge.model openai/gpt-5-mini
+```
+
+`--env.id` resolves like every plugin id — a bundled env (below), a local package
+exporting an `Environment` subclass via `__all__`, or a Hub `org/name[@version]` —
+and its `EnvParams` surface typed on the CLI (`--env.<role>.*`, `-h` renders them).
+Empty (the default) keeps the taskset's own story: the env its package ships (a
+*recipe* env like `code_golf_v1`, where the interaction is intrinsic to the data),
+else the single-agent base. An explicit id wins over a bundled recipe env.
+
+Bundled envs (`verifiers/v1/envs/`):
+
+| id | roles | what it does |
+| --- | --- | --- |
+| `best-of-n` | `solver` | `--env.n` independent attempts per rollout; `score()` marks the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
+| `judge` | `solver`, `judge` | the solver plays the task; a judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt against `--env.rubric`, landing a `judge` reward on the solver's trace. Point `--env.judge.harness.id` at a real harness and the judge investigates with tools. |
+| `user-sim` | `assistant`, `user` | a modeled user (direct harness, untrainable) opens and drives the conversation from the task's prompt-as-scenario (`--env.persona`); the assistant plays the same task without the prompt and is judged by the task's own rewards. The substrate for tau-bench-style evals. |
+
 ### User simulation: the user is just another agent
 
 There is exactly one user-sim mechanism: `user=` on `Agent.run` — any async

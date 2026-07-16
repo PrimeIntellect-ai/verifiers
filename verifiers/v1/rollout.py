@@ -111,6 +111,9 @@ async def run_rollout(
     trace: Trace = Trace(
         task=TraceTask(type=type(task).__name__, data=task.data),
         state=state_cls(type(task))(),
+        # The resolved sampling this run's calls are made with (role overrides
+        # included) — policy metadata a training consumer reads off the trace.
+        sampling=ctx.sampling,
     )
     if on_trace is not None:
         on_trace(trace)

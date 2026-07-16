@@ -119,8 +119,16 @@ class EnvParams(BaseConfig):
     `--env.*` / `[env]` on every run config (`--env.user.model`, `--env.attempts 8`).
     Subclass it next to your `Environment` subclass and bind it via
     `Environment[YourParams]`; the framework narrows the `EnvConfig.env` field to it
-    by taskset id, exactly like `taskset`/`harness`. The base is empty — the
-    single-agent case has no params."""
+    by the env `id` (else the taskset id), exactly like `taskset`/`harness`. The base
+    is empty — the single-agent case has no params."""
+
+    id: ID = ""
+    """Which `Environment` runs the taskset — the control flow between agents. Empty
+    (the default) keeps the taskset's own story: the `Environment` subclass its package
+    exports, else the single-agent base. Set it to pair a reusable interaction with any
+    taskset (`--env.id best-of-n --taskset.id gsm8k-v1`): a bundled env
+    (`verifiers.v1.envs`), a local package, or a Hub `org/name[@version]`. An explicit
+    id wins over the taskset's bundled env."""
 
     @model_validator(mode="before")
     @classmethod
@@ -188,9 +196,11 @@ class EnvConfig(BaseConfig):
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
     env: SerializeAsAny[EnvParams] = EnvParams()
-    """The environment's own parameters (`EnvParams`) — roles and env-level knobs of a
-    taskset that ships an `Environment` subclass, narrowed to its declared params type
-    by taskset id (`--env.user.model`, `[env]` in TOML). Empty for plain tasksets."""
+    """The environment — the control flow between agents — and its parameters
+    (`EnvParams`): which env runs the taskset (`--env.id`, empty = the taskset's own
+    story) plus its roles and knobs, narrowed to the env's declared params type by the
+    env id, else the taskset id (`--env.user.model`, `[env]` in TOML). Empty for plain
+    tasksets."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     max_turns: int | None = None
@@ -230,7 +240,11 @@ class EnvConfig(BaseConfig):
 
     @property
     def env_id(self) -> str:
-        """The env identifier — the v1 taskset id, else the legacy v0 env id."""
+        """The run's identifier — the v1 taskset id (prefixed by the selected env when
+        `--env.id` pairs one in, so `best-of-n+gsm8k-v1` and a plain `gsm8k-v1` run
+        stay distinguishable on records and output dirs), else the legacy v0 env id."""
+        if self.taskset.id and self.env.id:
+            return f"{self.env.id}+{self.taskset.id}"
         return self.taskset.id or self.id or ""
 
     # --- end legacy -----------------------------------------------------------
@@ -263,8 +277,15 @@ class EnvConfig(BaseConfig):
         narrow_plugin_field(
             data, "harness", harness_config_type, default_harness_id(taskset_id or "")
         )
-        params_cls = env_params_type(taskset_id or "")
         raw = data.get("env")
+        env_id = (
+            getattr(raw, "id", "")
+            if isinstance(raw, BaseConfig)
+            else (raw or {}).get("id", "")
+            if isinstance(raw, dict)
+            else ""
+        )
+        params_cls = env_params_type(taskset_id or "", env_id or "")
         if isinstance(raw, EnvParams) and isinstance(raw, params_cls):
             pass  # already at least as specifically typed (e.g. programmatic) — keep
         else:
@@ -534,6 +555,17 @@ class Environment(Generic[ParamsT]):
         override this only for signals that need the finished sibling set (relative
         comparison, solve-rate over children, learnability). Bounded by
         `timeout.score`. Default: no-op."""
+
+    def complete(self, record: RolloutRecord) -> bool:
+        """Whether a finished env-rollout is a valid result — the verdict `--resume`
+        reads to decide what to keep vs. redo. Default: `record.ok` (no rollout-level
+        errors and no errored trace). An env whose `rollout()` deliberately tolerates
+        a failed participant (a forfeited seat, a crashed editor) overrides this —
+        typically `not record.errors` — else resume re-runs rollouts it already
+        accepted. Read-only: what a failed participant *means* stays in `rollout()`
+        and `score()`. (The server eval path keeps the strict default — its env lives
+        in the workers.)"""
+        return record.ok
 
     async def setup(self) -> None:
         """Bring up env-owned shared resources. Runs inside `serving()`, after the

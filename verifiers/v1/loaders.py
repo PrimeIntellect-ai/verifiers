@@ -108,11 +108,21 @@ def default_harness_id(taskset_id: str) -> str:
     return taskset_id
 
 
-def environment_class(taskset_id: str) -> type[Environment]:
-    """The taskset package's `Environment` subclass when it exports one via `__all__`
-    (a multi-agent env ships with its taskset, the same plugin idiom as a bundled
-    harness), else the base `Environment` — whose defaults ARE the single-agent case,
-    so every plain taskset resolves to today's behavior."""
+def import_environment(env_id: str) -> ModuleType:
+    return _import_plugin(env_id, "environment", "verifiers.v1.envs")
+
+
+def environment_class(taskset_id: str, env_id: str = "") -> type[Environment]:
+    """The `Environment` — the control flow between agents — for a run. An explicit
+    `env_id` (`--env.id`) names it directly: a bundled env (`verifiers.v1.envs`), a
+    local package, or a Hub id — and a failure to resolve it raises (an explicit
+    pairing must not silently fall back). Otherwise the taskset's own story: its
+    package's `Environment` subclass when it exports one via `__all__` (a recipe env
+    ships with its taskset, the same plugin idiom as a bundled harness), else the base
+    `Environment` — whose defaults ARE the single-agent case, so every plain taskset
+    resolves to today's behavior."""
+    if env_id:
+        return _plugin_class(import_environment(env_id), Environment, "environment")
     if not taskset_id:
         return Environment
     try:
@@ -123,10 +133,11 @@ def environment_class(taskset_id: str) -> type[Environment]:
 
 
 def load_environment(config: EnvConfig) -> Environment:
-    """Construct the env for `config`: the taskset's exported `Environment` subclass
-    when there is one, else the base. Every env construction site (eval, serve, gepa)
-    goes through here so subclass envs load everywhere."""
-    return environment_class(config.taskset.id)(config)
+    """Construct the env for `config`: the `--env.id`-selected `Environment` when set,
+    else the taskset's exported subclass when there is one, else the base. Every env
+    construction site (eval, serve, gepa) goes through here so subclass envs load
+    everywhere."""
+    return environment_class(config.taskset.id, config.env.id)(config)
 
 
 def load_taskset(config: TasksetConfig) -> Taskset:
@@ -162,13 +173,15 @@ def judge_config_type(judge_id: str) -> type[JudgeConfig]:
     return judge_config_cls(judge_class(judge_id))
 
 
-def env_params_type(taskset_id: str) -> type[EnvParams]:
+def env_params_type(taskset_id: str, env_id: str = "") -> type[EnvParams]:
     """Resolve the env's params specialization (`Environment[YourParams]`) through its
-    MRO — the empty base `EnvParams` for a taskset without an `Environment` subclass.
-    `EnvConfig` narrows its `env` field to this, which is what gives
-    `--env.<role>.model` CLI/TOML addressing."""
+    MRO — keyed by the selected env id when set, else the taskset's own env — the empty
+    base `EnvParams` for a plain taskset. `EnvConfig` narrows its `env` field to this,
+    which is what gives `--env.<role>.model` CLI/TOML addressing."""
     return (
-        generic_type(environment_class(taskset_id), EnvParams, origin=Environment)
+        generic_type(
+            environment_class(taskset_id, env_id), EnvParams, origin=Environment
+        )
         or EnvParams
     )
 

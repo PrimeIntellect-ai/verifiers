@@ -54,6 +54,7 @@ def narrow_config(base: type, argv: list[str]) -> type:
     so its role fields (`--env.<role>.model`, ...) parse typed and render in `-h`."""
     taskset_id = extract_id(argv, "taskset")
     harness_id = extract_id(argv, "harness")
+    env_id = extract_id(argv, "env")
     if not harness_id and not references_config_file(argv):
         harness_id = vf.default_harness_id(taskset_id)
     annotations: dict[str, type] = {}
@@ -66,9 +67,9 @@ def narrow_config(base: type, argv: list[str]) -> type:
             ftype = resolve(ident)
             annotations[field] = ftype
             fields[field] = ftype(id=ident)
-    if taskset_id:
-        params_type = vf.env_params_type(taskset_id)
-        if params_type is not vf.EnvParams:
+    if taskset_id or env_id:
+        params_type = vf.env_params_type(taskset_id, env_id)
+        if params_type is not vf.EnvParams or env_id:
             annotations["env"] = params_type
-            fields["env"] = params_type()
+            fields["env"] = params_type(id=env_id) if env_id else params_type()
     return type(base.__name__, (base,), {"__annotations__": annotations, **fields})

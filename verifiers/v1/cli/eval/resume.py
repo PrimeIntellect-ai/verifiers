@@ -12,6 +12,7 @@ where the interrupted one stopped.
 import json
 import tomllib
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 from pydantic_core import from_json
@@ -65,20 +66,33 @@ def _good_row(row: dict) -> bool:
 
 
 def load(
-    resume_dir: Path, selected_idxs: list[int], num_rollouts: int
+    resume_dir: Path,
+    selected_idxs: list[int],
+    num_rollouts: int,
+    complete: Callable[[RolloutRecord], bool] | None = None,
 ) -> tuple[list[RolloutRecord], dict[int, int]]:
     """Load the good saved rollouts back into memory as finished records and diff them
     against the run's target (`num_rollouts` per selected task): returns (the kept
     records, rollouts owed per task idx). A rollout is kept or redone as a unit — the
-    record — so a multi-trace rollout interrupted mid-write is simply owed again. An
-    errored rollout is dropped and re-run. Rewrites `traces.jsonl` to just the kept
-    rows — verbatim, via a temp file + atomic rename, so an interrupted resume can't
-    corrupt the prior good results — and the resumed rollouts then append. Pre-record
-    files (one bare trace per line) load the same way, each trace as a single-trace
-    record. `WireRecord`/`WireTrace` read any taskset's file without importing it."""
+    record — so a multi-trace rollout interrupted mid-write is simply owed again.
+    `complete` is the environment's verdict on a parsed record (`Environment.complete`)
+    — an env that deliberately tolerates errored participants keeps the rollouts it
+    accepted; without it (the server path, whose env lives in the workers) the default
+    file-shape verdict applies: no errors anywhere (`_good_row`), so an errored rollout
+    is dropped and re-run. Rewrites `traces.jsonl` to just the kept rows — verbatim,
+    via a temp file + atomic rename, so an interrupted resume can't corrupt the prior
+    good results — and the resumed rollouts then append. Pre-record files (one bare
+    trace per line) load the same way, each trace as a single-trace record.
+    `WireRecord`/`WireTrace` read any taskset's file without importing it."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
-    good: dict[int, list[bytes]] = defaultdict(list)
+
+    def parse(row: dict) -> RolloutRecord:
+        if sniff_record(row):
+            return WireRecord.model_validate(row)
+        return RolloutRecord.of(WireTrace.model_validate(row))
+
+    good: dict[int, list[tuple[bytes, RolloutRecord | None]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -89,26 +103,37 @@ def load(
                 except ValueError:
                     row = json.loads(line)
                 idx = row["task"]["data"]["idx"]
-                if idx in selected and _good_row(row) and len(good[idx]) < num_rollouts:
-                    good[idx].append(line if line.endswith(b"\n") else line + b"\n")
+                if idx not in selected or len(good[idx]) >= num_rollouts:
+                    continue
+                record: RolloutRecord | None = None
+                if complete is None:
+                    keepable = _good_row(row)
+                else:
+                    try:
+                        record = parse(row)
+                        keepable = complete(record)
+                    except Exception:  # malformed row: redo it
+                        keepable = False
+                if keepable:
+                    good[idx].append(
+                        (line if line.endswith(b"\n") else line + b"\n", record)
+                    )
     keep: list[bytes] = []
+    records: list[RolloutRecord] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
         rows = good.get(idx, [])
-        keep.extend(rows)
+        keep.extend(line for line, _ in rows)
+        records.extend(
+            record if record is not None else parse(from_json(line))
+            for line, record in rows
+        )
         if missing := num_rollouts - len(rows):
             owed[idx] = missing
     tmp = path.with_suffix(".jsonl.tmp")
     tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
-
-    def parse(line: bytes) -> RolloutRecord:
-        row = from_json(line)
-        if sniff_record(row):
-            return WireRecord.model_validate(row)
-        return RolloutRecord.of(WireTrace.model_validate(row))
-
-    return [parse(line) for line in keep], owed
+    return records, owed
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:

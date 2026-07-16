@@ -43,7 +43,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     finished: list[RolloutRecord] = []
     if config.resume is not None:
         finished, owed = resume.load(
-            out, [t.data.idx for t in tasks], config.num_rollouts
+            out, [t.data.idx for t in tasks], config.num_rollouts, env.complete
         )
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))

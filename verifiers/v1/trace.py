@@ -24,6 +24,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     KeptTokens,
     Messages,
+    Sampling,
     StrictBaseModel,
     Tool,
     ToolMessage,
@@ -254,6 +255,10 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     trainable: bool = True
     """Whether this trace's tokens are training data for the run's policy. An env
     marks fixed-model roles (a frozen judge, a pinned user sim) untrainable."""
+    sampling: Sampling | None = None
+    """The resolved sampling this run's model calls were made with — role overrides
+    included — so a training consumer recovers the actual policy settings
+    (temperature, ...) from the trace itself."""
     state: StateT = Field(default_factory=State, exclude=True)
     """Transient state shared with servers and scoring; excluded from every dump."""
 

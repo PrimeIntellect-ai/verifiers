@@ -84,3 +84,19 @@ def test_append_trace_wraps_a_record(tmp_path):
     asyncio.run(append_trace(tmp_path, _trace(2), asyncio.Lock(), env="demo-v1"))
     (loaded,) = read_records(tmp_path, WireTrace)
     assert loaded.env == "demo-v1" and len(loaded.traces) == 1
+
+
+def test_resume_env_complete_override(tmp_path):
+    """`Environment.complete` is the resume verdict: an env that tolerates errored
+    participants keeps the rollouts it accepted; the default stays strict."""
+    strict_dir, tolerant_dir = tmp_path / "strict", tmp_path / "tolerant"
+    strict_dir.mkdir(), tolerant_dir.mkdir()
+    record = RolloutRecord.of(_trace(0, error=True), env="demo-v1")
+    write_record(strict_dir, record)
+    write_record(tolerant_dir, record)
+    _, owed = resume.load(strict_dir, [0], num_rollouts=1)
+    assert owed == {0: 1}  # default: an errored trace means redo
+    records, owed = resume.load(
+        tolerant_dir, [0], num_rollouts=1, complete=lambda r: not r.errors
+    )
+    assert [r.id for r in records] == [record.id] and owed == {}
