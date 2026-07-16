@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -24,7 +25,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     KeptTokens,
     Messages,
-    Sampling,
+    SamplingConfig,
     StrictBaseModel,
     Tool,
     ToolMessage,
@@ -256,10 +257,11 @@ class AgentInfo(StrictBaseModel):
 
     model: str
     """The model identifier requested from the client."""
-    sampling: Sampling | None = None
+    sampling: SamplingConfig | None = None
     """The resolved sampling settings the rollout ran with."""
-    harness: str | None = None
-    """The driving harness id: local package or Hub `org/name[@version]` (`HarnessConfig.id`)."""
+    harness: HarnessConfig | None = None
+    """The driving harness's config. Typed as the base config, so a custom harness's
+    extra fields don't serialize — records round-trip without importing the harness."""
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):

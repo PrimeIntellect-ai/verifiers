@@ -115,7 +115,7 @@ class Rollout:
             agent=AgentInfo(
                 model=self.ctx.model,
                 sampling=self.ctx.sampling,
-                harness=self.harness.config.id,
+                harness=self.harness.config,
             ),
         )
         self.trace = trace  # expose for the --rich dashboard
