@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 
+import httpx
 from pydantic import model_validator
 from pydantic_config import BaseConfig
 
@@ -33,6 +34,14 @@ logger = logging.getLogger(__name__)
 
 MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_RETRY_STATUSES = {500, 502, 503, 504, 524}
+DOWNLOAD_RETRY_ERRORS = (
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+    httpx.PoolTimeout,
+    httpx.ReadError,
+)
 
 
 class PrimeConfig(BaseConfig):
@@ -216,30 +225,52 @@ class PrimeRuntime(Runtime):
             if max_bytes is not None:
                 # The SDK's download_file buffers response.content. Use its gateway
                 # connection directly so an untrusted file is capped while streaming.
-                auth = await self._client._auth_cache.get_or_refresh(self.info.id)
-                url = (
-                    f"{auth['gateway_url'].rstrip('/')}/"
-                    f"{auth['user_ns']}/{auth['job_id']}/download"
-                )
-                headers = {"Authorization": f"Bearer {auth['token']}"}
-                params = {"path": target, "sandbox_id": self.info.id}
-                buffer = io.BytesIO()
-                client = self._client._get_gateway_client()
-                async with client.stream(
-                    "GET",
-                    url,
-                    headers=headers,
-                    params=params,
-                    timeout=300,
-                ) as response:
-                    response.raise_for_status()
-                    async for chunk in response.aiter_bytes(1024 * 1024):
-                        if buffer.tell() + len(chunk) > max_bytes:
-                            raise SandboxError(
-                                f"read {path!r}: exceeds the {max_bytes} byte limit"
-                            )
-                        buffer.write(chunk)
-                return buffer.getvalue()
+                for attempt in range(DOWNLOAD_ATTEMPTS):
+                    auth = await self._client._auth_cache.get_or_refresh(self.info.id)
+                    url = (
+                        f"{auth['gateway_url'].rstrip('/')}/"
+                        f"{auth['user_ns']}/{auth['job_id']}/download"
+                    )
+                    headers = {"Authorization": f"Bearer {auth['token']}"}
+                    params = {"path": target, "sandbox_id": self.info.id}
+                    buffer = io.BytesIO()
+                    try:
+                        client = self._client._get_gateway_client()
+                        async with client.stream(
+                            "GET",
+                            url,
+                            headers=headers,
+                            params=params,
+                            timeout=300,
+                        ) as response:
+                            response.raise_for_status()
+                            async for chunk in response.aiter_bytes(1024 * 1024):
+                                if buffer.tell() + len(chunk) > max_bytes:
+                                    raise SandboxError(
+                                        f"read {path!r}: exceeds the "
+                                        f"{max_bytes} byte limit"
+                                    )
+                                buffer.write(chunk)
+                        return buffer.getvalue()
+                    except httpx.HTTPStatusError as error:
+                        status = error.response.status_code
+                        if status == 401 and attempt < DOWNLOAD_ATTEMPTS - 1:
+                            await self._client.clear_auth_cache()
+                            continue
+                        if status == 409:
+                            if await self._client._should_retry_409(
+                                self.info.id, error, attempt
+                            ):
+                                continue
+                        if (
+                            status not in DOWNLOAD_RETRY_STATUSES
+                            or attempt == DOWNLOAD_ATTEMPTS - 1
+                        ):
+                            raise
+                    except DOWNLOAD_RETRY_ERRORS:
+                        if attempt == DOWNLOAD_ATTEMPTS - 1:
+                            raise
+                    await asyncio.sleep(2**attempt)
 
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
