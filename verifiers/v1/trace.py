@@ -226,6 +226,9 @@ class EvalRunInfo(StrictBaseModel):
     id: str | None = None
     """The producing run: the eval CLI stamps its run uuid (a resumed eval counts as
     a new run; kept traces keep their original id), trainers stamp their own."""
+    step: int | None = None
+    """The training step an inline eval was triggered at, stamped by the trainer;
+    None for a standalone eval (the eval CLI doesn't set it)."""
 
 
 class TrainRunInfo(StrictBaseModel):
