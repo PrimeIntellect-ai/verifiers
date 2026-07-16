@@ -56,11 +56,14 @@ On the `prime` runtime any pullable image reference just works: the first sandbo
 
 ## Additional features
 
-Every Harbor taskset can also be modified with a `timeout_multiplier` and a `resource_multiplier`:
+By default, each task's declared agent and verifier timeouts are ignored (`ignore_timeouts = true`): Harbor task timeouts are authored against Harbor's own runtime, so enforcing them confounds model capability with the speed of your inference stack. Set `ignore_timeouts = false` (or pass `--no-taskset.ignore-timeouts`) to apply them, e.g. for a faithful comparison against the Harbor implementation.
+
+With `ignore_timeouts = false`, every Harbor taskset can also be modified with a `timeout_multiplier`, and any Harbor taskset with a `resource_multiplier`:
 
 ```toml
 [taskset]
 id = "MY_TASKSET"
+ignore_timeouts = false
 timeout_multiplier = 2.0
 resource_multiplier = 2.0
 ```
