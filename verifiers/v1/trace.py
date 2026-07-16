@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import numpy as np
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
@@ -474,17 +474,6 @@ class RolloutRecord(StrictBaseModel, Generic[DataT, StateT]):
     """Rollout-level errors, oldest first (more than one only when the rollout was
     retried). `error` exposes the most recent."""
     traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _lift_legacy_error(cls, data: Any) -> Any:
-        """Read records written when the field was a singular `error` (early part-C
-        files): lift it into `errors` so both generations parse everywhere."""
-        if isinstance(data, dict) and "error" in data:
-            error = data.pop("error")
-            if error is not None:
-                data = {**data, "errors": [error, *data.get("errors", [])]}
-        return data
 
     @property
     def error(self) -> Error | None:

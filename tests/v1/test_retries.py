@@ -1,40 +1,12 @@
-"""Whole-rollout retry behavior (trace- and record-level)."""
+"""Whole-rollout retry behavior (the record is the retry atom)."""
 
 import verifiers.v1 as vf
-from verifiers.v1.retries import (
-    RolloutRetryConfig,
-    run_record_with_retry,
-    run_with_retry,
-)
+from verifiers.v1.retries import RolloutRetryConfig, run_record_with_retry
 from verifiers.v1.trace import RolloutRecord, Trace, TraceTask
 
 
 class Boom(Exception):
     pass
-
-
-async def test_run_with_retry_awaits_thunks():
-    """The retry path must await a plain callable returning an awaitable — tenacity only
-    auto-awaits coroutine functions, and callers hand it `lambda: agent.run(task)`."""
-    calls = 0
-
-    def thunk():
-        async def attempt() -> Trace:
-            nonlocal calls
-            calls += 1
-            trace = Trace(
-                task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi"))
-            )
-            if calls == 1:
-                trace.capture_error(Boom("transient"))
-            return trace
-
-        return attempt()
-
-    retry = RolloutRetryConfig(max_retries=2, include=["Boom"])
-    trace = await run_with_retry(thunk, retry)
-    assert calls == 2  # first attempt errored retryably, second succeeded
-    assert trace.error is None
 
 
 def _record(*, trace_error: Exception | None = None) -> RolloutRecord:

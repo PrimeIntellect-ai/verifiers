@@ -229,7 +229,7 @@ rollouts handled by one environment worker.
 ### Task config
 
 `TaskConfig` contains knobs read by task behavior. Subclass it for scoring parameters and
-task-scoped `ToolsetConfig` or `UserConfig` fields, then narrow the taskset config's `task` field to
+task-scoped `ToolsetConfig` fields, then narrow the taskset config's `task` field to
 that subclass. These are run-wide knobs, not per-row data; the row itself belongs on `TaskData`.
 
 | Field | Type | Default | Notes |
@@ -317,7 +317,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 ## Runtime configs
 
-`verifiers/v1/runtimes/`. Discriminated on `type`; selected with `--harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime` and `UserConfig.runtime`.
+`verifiers/v1/runtimes/`. Discriminated on `type`; selected with `--harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime`.
 
 ### `SubprocessConfig` — `type: "subprocess"` (default)
 Run on the host in a fresh `/tmp/<name>` workspace per rollout. **No extra fields.** Implicit

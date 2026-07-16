@@ -32,16 +32,16 @@ DONE = "###DONE###"
 class UserSimParams(vf.EnvParams):
     assistant: vf.AgentConfig = vf.AgentConfig()
     user: vf.AgentConfig = vf.AgentConfig(
-        harness=vf.HarnessConfig(id="direct"), trainable=False
+        harness=vf.HarnessConfig(id="direct"), trainable=False, max_turns=8
     )
+    """The modeled user; its `max_turns` is the conversation cap — the user's own
+    turn limit ends a run-away exchange cleanly (`--env.user.max-turns`)."""
     persona: str = PERSONA
     """The user's system prompt; `{scenario}` is replaced with the task's prompt text
     and `{done}` with the done marker (plain replacement, braces in the text are
     safe)."""
     done_marker: str = DONE
     """The user ends the conversation by replying with this marker."""
-    max_user_turns: int = 8
-    """Hard cap on user replies per conversation (a run-away exchange ends cleanly)."""
 
 
 class UserSimEnv(vf.Environment[UserSimParams]):
@@ -59,19 +59,16 @@ class UserSimEnv(vf.Environment[UserSimParams]):
                 ).replace("{done}", self.params.done_marker),
             )
         )
-        turns = 0
         async with agents["user"].chat(user_task) as sim:
 
             async def relay(text: str) -> vf.Messages:
-                nonlocal turns
-                if turns >= self.params.max_user_turns:
-                    return []
                 # The assistant's opening ping is empty (the user opens); seed the
                 # user-model with a neutral greeting instead — the tau convention:
                 # the assistant "answers the phone", the user states the goal. The
-                # greeting exists only on the user's side.
+                # greeting exists only on the user's side. A run-away exchange ends
+                # through the user role's own `max_turns` (the reply comes back
+                # `stopped`), not a separate counter.
                 reply = await sim.turn(text or "Hello! How can I help you today?")
-                turns += 1
                 if reply.stopped or self.params.done_marker in reply.text:
                     return []
                 return [vf.UserMessage(content=reply.text)]

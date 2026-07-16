@@ -4,9 +4,10 @@ Transient model-call faults are retried by the harness's own SDK (the intercepti
 faithful proxy — it relays the provider's status), and transient runtime faults by each runtime
 SDK (prime/modal); the framework adds targeted retries only where there's no SDK underneath (e.g.
 `open_tunnel`, via the shared `retrying()` policy). `RetryConfig` (on `EnvConfig.retries`) keeps one
-knob: whole-rollout retries. `run_with_retry` reruns an entire trajectory when its trace ends with a
-retryable error (matched by exception type name against include/exclude), accumulating each failed
-attempt's error onto the returned trace's `errors`; off by default.
+knob: whole-rollout retries. `run_record_with_retry` reruns an entire env-rollout — the record is
+the retry atom, never one participant of a multi-agent interaction — when it ends with a retryable
+error (matched by exception type name against include/exclude), accumulating each failed attempt's
+errors onto the returned record when the final attempt fails too; off by default.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.trace import Error, RolloutRecord, Trace
+    from verifiers.v1.trace import Error, RolloutRecord
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +103,6 @@ def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
     return True
 
 
-def should_retry(trace: Trace, retry: RolloutRetryConfig) -> bool:
-    """Whether a finished rollout should be retried: it ended with a retryable error."""
-    return _retryable(trace.error, retry)
-
-
 def record_should_retry(record: RolloutRecord, retry: RolloutRetryConfig) -> bool:
     """Whether a finished env-rollout should be retried: its record-level error, or
     any of its traces' errors, is retryable. Retries are record-atomic — the whole
@@ -117,51 +113,6 @@ def record_should_retry(record: RolloutRecord, retry: RolloutRetryConfig) -> boo
     )
 
 
-async def run_with_retry(
-    run: Callable[[], Awaitable[Trace]],
-    retry: RolloutRetryConfig,
-) -> Trace:
-    """Run the whole rollout (`run` — e.g. `lambda: agent.run(task)`; each call must
-    mint a fresh trajectory), retrying it while its trace ends with a retryable error.
-    Each retry-causing attempt's error is collected onto the returned trace's `errors`,
-    so the final trace shows the full history; the last attempt's trace is returned
-    as-is once attempts run out (or the rollout succeeds / hits a non-retryable error)."""
-    if retry.max_retries < 1:
-        return await run()
-
-    history: list = []
-
-    def record(state: RetryCallState) -> None:
-        # before_sleep fires only between attempts (a retry is imminent), so this
-        # collects exactly the errors that caused a retry — never the final attempt's.
-        trace = state.outcome.result()
-        logger.warning(
-            "retrying rollout %s (retry %d/%d) after error: %s",
-            trace.id,
-            state.attempt_number,
-            retry.max_retries,
-            trace.error.type if trace.error else "?",
-        )
-        history.extend(trace.errors)
-
-    retrying = AsyncRetrying(
-        stop=stop_after_attempt(retry.max_retries + 1),
-        retry=retry_if_result(lambda trace: should_retry(trace, retry)),
-        before_sleep=record,
-        retry_error_callback=lambda state: state.outcome.result(),
-    )
-
-    async def attempt() -> Trace:
-        # tenacity only awaits a coroutine *function*; adapt so a plain callable
-        # returning an awaitable (e.g. `lambda: agent.run(task)`) works too.
-        return await run()
-
-    trace = await retrying(attempt)
-    if trace.errors:  # final attempt errored too → prepend the earlier attempts'
-        trace.errors = history + trace.errors
-    return trace
-
-
 async def run_record_with_retry(
     run: Callable[[], Awaitable[RolloutRecord]],
     retry: RolloutRetryConfig,
@@ -170,8 +121,7 @@ async def run_record_with_retry(
     while it ends with a retryable error, record-level or on any trace
     (`record_should_retry`). Each retry-causing attempt's errors are collected onto
     the returned record's `errors` when the final attempt fails too, so the record
-    shows the full history; a final good attempt returns clean — the record-level
-    twin of `run_with_retry`."""
+    shows the full history; a final good attempt returns clean."""
     if retry.max_retries < 1:
         return await run()
 
@@ -203,7 +153,8 @@ async def run_record_with_retry(
     )
 
     async def attempt() -> RolloutRecord:
-        # same adaptation as `run_with_retry`: tenacity only awaits coroutine functions
+        # tenacity only awaits a coroutine *function*; adapt so a plain callable
+        # returning an awaitable works too.
         return await run()
 
     final = await retrying(attempt)

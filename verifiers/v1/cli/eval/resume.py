@@ -51,20 +51,6 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     return config
 
 
-def _good_row(row: dict) -> bool:
-    """Whether a parsed traces.jsonl row is a keepable finished rollout. A record row
-    is good iff it has no rollout-level errors (`errors`; `error` in the earliest
-    record files) and none of its traces errored; a pre-record row (one bare trace) is
-    good iff the trace didn't error."""
-    if sniff_record(row):
-        return (
-            not row.get("error")
-            and not row.get("errors")
-            and not any(t.get("errors") for t in row.get("traces") or [])
-        )
-    return not row.get("errors")
-
-
 def load(
     resume_dir: Path,
     selected_idxs: list[int],
@@ -78,8 +64,8 @@ def load(
     `complete` is the environment's verdict on a parsed record (`Environment.complete`)
     — an env that deliberately tolerates errored participants keeps the rollouts it
     accepted; without it (the server path, whose env lives in the workers) the default
-    file-shape verdict applies: no errors anywhere (`_good_row`), so an errored rollout
-    is dropped and re-run. Rewrites `traces.jsonl` to just the kept rows — verbatim,
+    verdict is `record.ok`: no errors anywhere, so an errored rollout is dropped and
+    re-run. Rewrites `traces.jsonl` to just the kept rows — verbatim,
     via a temp file + atomic rename, so an interrupted resume can't corrupt the prior
     good results — and the resumed rollouts then append. Pre-record files (one bare
     trace per line) load the same way, each trace as a single-trace record.
@@ -92,7 +78,8 @@ def load(
             return WireRecord.model_validate(row)
         return RolloutRecord.of(WireTrace.model_validate(row))
 
-    good: dict[int, list[tuple[bytes, RolloutRecord | None]]] = defaultdict(list)
+    verdict = complete if complete is not None else (lambda record: record.ok)
+    good: dict[int, list[tuple[bytes, RolloutRecord]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -110,29 +97,22 @@ def load(
                     continue
                 if idx not in selected or len(good[idx]) >= num_rollouts:
                     continue
-                record: RolloutRecord | None = None
-                if complete is None:
-                    keepable = _good_row(row)
-                else:
-                    try:
-                        record = parse(row)
-                        keepable = complete(record)
-                    except Exception:  # malformed row: redo it
-                        keepable = False
-                if keepable:
-                    good[idx].append(
-                        (line if line.endswith(b"\n") else line + b"\n", record)
-                    )
+                try:
+                    record = parse(row)
+                    if not verdict(record):
+                        continue
+                except Exception:  # malformed row: redo it
+                    continue
+                good[idx].append(
+                    (line if line.endswith(b"\n") else line + b"\n", record)
+                )
     keep: list[bytes] = []
     records: list[RolloutRecord] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
         rows = good.get(idx, [])
         keep.extend(line for line, _ in rows)
-        records.extend(
-            record if record is not None else parse(from_json(line))
-            for line, record in rows
-        )
+        records.extend(record for _, record in rows)
         if missing := num_rollouts - len(rows):
             owed[idx] = missing
     tmp = path.with_suffix(".jsonl.tmp")
