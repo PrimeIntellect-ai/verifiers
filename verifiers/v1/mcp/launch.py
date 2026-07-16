@@ -118,8 +118,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     root = "/tmp/vf-src"
     vf, env = _verifiers_root(), Path(source_dir)
     await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS))
-    if env != vf:
-        await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
+    await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
     venv = "/tmp/vf-venv"
     # The upload carries no .git, so hatch-vcs falls back to version 0.0.0 — an env
     # package's `verifiers>=...` floor would then resolve PyPI verifiers OVER the local
@@ -127,22 +126,15 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
     extras = ",".join(type(server).EXTRAS)
-    env_package = f"{root}/{env.name}" + (f"[{extras}]" if extras else "")
-    packages = shlex.join(
-        [
-            env_package if env == vf else f"{root}/{vf.name}",
-            *server.PYTHON_DEPENDENCIES,
-        ]
-    )
     setup = (
         f"{_ENSURE_UV}; set -e; "
         f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
         f"uv venv {venv} && "
         f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
-        f"uv pip install --python {venv} {packages}"
+        f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
+        f"uv pip install --python {venv} "
+        f"{shlex.quote(f'{root}/{env.name}' + (f'[{extras}]' if extras else ''))}"
     )
-    if env != vf:
-        setup += f" && uv pip install --python {venv} {shlex.quote(env_package)}"
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
         raise ToolsetError(
@@ -190,6 +182,10 @@ async def serve_in_runtime(
     the current rollout task from the adjacent `/task` endpoint rather than a launch argument.
     """
     env = {"VF_CONFIG": server.config.model_dump_json()}
+    if runtime.type == "subprocess":
+        # Keep provider temp files in the runtime workdir so cleanup removes them.
+        assert runtime.info.id is not None
+        env["TMPDIR"] = runtime.info.id
     if state_url:
         env["VF_STATE_URL"] = state_url
         env["VF_STATE_SECRET"] = state_secret
@@ -207,8 +203,7 @@ async def serve_in_runtime(
         python = await _install_in_sandbox(server, runtime)
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
-        # `_ENSURE_UV` exports PATH only during installation; user servers may launch
-        # uv-backed providers later and still need the installed binary.
+        # Providers may invoke uv after the install shell exits, so preserve its PATH.
         command = [
             "sh",
             "-c",

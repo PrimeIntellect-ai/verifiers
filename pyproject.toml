@@ -91,6 +91,9 @@ ta = [
     "textarena==0.7.4",
     "nltk>=3.9.2",
 ]
+openenv = [
+    "openenv",
+]
 browser = [
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",

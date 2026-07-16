@@ -118,9 +118,6 @@ class ServerBase(Generic[ConfigT, StateT]):
     tools bare (no `<server>_` prefix); name collisions across servers are then the taskset
     author's concern."""
 
-    # Removed after the rebase in favor of the existing EXTRAS hook.
-    PYTHON_DEPENDENCIES: ClassVar[tuple[str, ...]] = ()
-
     EXTRAS: ClassVar[tuple[str, ...]] = ()
     """Package extras the server's module needs, applied at sandbox install."""
 
@@ -231,9 +228,6 @@ class ServerBase(Generic[ConfigT, StateT]):
     async def setup_task(self, task) -> None:
         """Initialize per-task state; taskset-scoped servers skip this hook."""
 
-    async def teardown(self) -> None:
-        """Release resources created by `setup` or `setup_task` on graceful shutdown."""
-
     def _register(self, mcp: FastMCP) -> None:
         raise NotImplementedError
 
@@ -271,26 +265,23 @@ class ServerBase(Generic[ConfigT, StateT]):
         mcp_lifespan = app.router.lifespan_context
 
         @contextlib.asynccontextmanager
-        async def lifespan(starlette_app):
+        async def serving_lifespan(starlette):
             import httpx
 
             try:
-                # Setup and serving share one event loop, so setup may retain async resources.
+                # Async clients created by setup must share the serving event loop.
                 await self.setup()
                 await self._setup_task_from_channel(*self._state_channel())
                 async with (
                     httpx.AsyncClient(timeout=STATE_TIMEOUT) as client,
-                    mcp_lifespan(starlette_app),
+                    mcp_lifespan(starlette),
                 ):
                     self._state_client = client
                     yield
             finally:
-                await self.teardown()
                 self._state_client = None
 
-        # ASGI shutdown runs before Uvicorn re-raises SIGTERM, so teardown cannot live
-        # outside `server.serve()`.
-        app.router.lifespan_context = lifespan
+        app.router.lifespan_context = serving_lifespan
         server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
         asyncio.run(server.serve(sockets=[sock]))
 

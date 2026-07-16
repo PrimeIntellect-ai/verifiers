@@ -1,10 +1,6 @@
-"""OpenEnv's official Wordle environment.
+"""OpenEnv's official Wordle environment."""
 
-The Space serves its ASGI app from ``textarena_env.server.app`` rather than
-OpenEnv's default ``server.app``, so this wrapper supplies that provider option.
-"""
-
-from typing import Literal
+from typing import Any, Literal
 
 import verifiers.v1 as vf
 from verifiers.v1.tasksets.openenv import (
@@ -12,16 +8,16 @@ from verifiers.v1.tasksets.openenv import (
     OpenEnvTask,
     OpenEnvTaskConfig,
     OpenEnvTaskset,
-    OpenEnvUserConfig,
 )
 
 
 class OpenEnvWordleConfig(OpenEnvConfig):
     env: Literal["openenv/wordle"] = "openenv/wordle"
-    # Taskset-level provider options extend this required OpenEnv default.
-    task: OpenEnvTaskConfig = OpenEnvTaskConfig(
-        user=OpenEnvUserConfig(provider_kwargs={"app": "textarena_env.server.app:app"})
-    )
+    task: OpenEnvTaskConfig = OpenEnvTaskConfig()
+
+    def model_post_init(self, __context: Any) -> None:
+        # Wordle uses a non-default ASGI app in its Space repository.
+        self.task.user.provider_kwargs.setdefault("app", "textarena_env.server.app:app")
 
 
 class OpenEnvWordleTaskset(
