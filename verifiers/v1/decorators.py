@@ -69,24 +69,41 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
-def metric(func: F, priority: int = 0) -> F: ...
+def metric(func: F, priority: int = 0, role: str | None = None) -> F: ...
 @overload
-def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
-def metric(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
-    """Mark a metric `(self, trace) -> float` (recorded, not summed)."""
-    decorator = mark("metric", metric_priority=priority)
+def metric(
+    func: None = None, priority: int = 0, role: str | None = None
+) -> Callable[[F], F]: ...
+def metric(
+    func: F | None = None, priority: int = 0, role: str | None = None
+) -> F | Callable[[F], F]:
+    """Mark a metric `(self, trace) -> float` (recorded, not summed). On an
+    `Environment` it's a cross-agent signal: run once per episode trace with the
+    finished sibling set in reach (`trace` = the target it records onto, `traces` =
+    all of them, `task` = the env-rollout's task); `role=` narrows the targets to
+    one role's traces (env-only — a task has no roles)."""
+    decorator = mark("metric", metric_priority=priority, _vf_role=role)
     return decorator if func is None else decorator(func)
 
 
 @overload
-def reward(func: F, weight: float = 1.0, priority: int = 0) -> F: ...
+def reward(
+    func: F, weight: float = 1.0, priority: int = 0, role: str | None = None
+) -> F: ...
 @overload
 def reward(
-    func: None = None, weight: float = 1.0, priority: int = 0
+    func: None = None, weight: float = 1.0, priority: int = 0, role: str | None = None
 ) -> Callable[[F], F]: ...
 def reward(
-    func: F | None = None, weight: float = 1.0, priority: int = 0
+    func: F | None = None,
+    weight: float = 1.0,
+    priority: int = 0,
+    role: str | None = None,
 ) -> F | Callable[[F], F]:
-    """Mark a weighted per-rollout reward returning a float or keyed scores."""
-    decorator = mark("reward", reward_priority=priority, _vf_weight=weight)
+    """Mark a weighted per-rollout reward returning a float or keyed scores. On an
+    `Environment` it's a cross-agent signal — see `metric` for the env semantics
+    (`role=` picks whose traces it records onto)."""
+    decorator = mark(
+        "reward", reward_priority=priority, _vf_weight=weight, _vf_role=role
+    )
     return decorator if func is None else decorator(func)

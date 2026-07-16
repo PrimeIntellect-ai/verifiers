@@ -2,10 +2,10 @@
 
 The sibling-selection wrapper (`--env.id best-of-n` over any taskset): one "solver"
 role attempts the task `--env.n` times; each attempt is judged by the task's own
-rewards as usual, then `score()` compares the finished siblings — `best` marks the
-argmax-reward attempt (rejection sampling / RFT selection reads it), `pass_at_n`
-records whether any sibling reached `--env.threshold` (the pass@k signal, identical
-on every sibling of the rollout).
+rewards as usual, then two decorated cross-agent metrics compare the finished
+siblings — `best` marks the argmax-reward attempt (rejection sampling / RFT
+selection reads it), `pass_at_n` records whether any sibling reached
+`--env.threshold` (the pass@k signal, identical on every sibling of the rollout).
 """
 
 import asyncio
@@ -34,13 +34,14 @@ class BestOfNEnv(vf.Environment[BestOfNParams]):
             )
         )
 
-    async def score(self, task, traces):
-        """The sibling comparison. Ties share `best` (degenerate all-equal rollouts
-        mark every sibling); `pass_at_n` is a rollout-level fact recorded on each
-        trace so it survives flat consumers."""
-        rewards = [trace.reward for trace in traces]
-        best = max(rewards)
-        solved = float(best >= self.params.threshold)
-        for trace, reward in zip(traces, rewards):
-            trace.record_metric("best", float(reward == best))
-            trace.record_metric("pass_at_n", solved)
+    @vf.metric
+    async def best(self, trace, traces):
+        """The sibling comparison: marks the argmax-reward attempt (ties share —
+        degenerate all-equal rollouts mark every sibling)."""
+        return float(trace.reward == max(t.reward for t in traces))
+
+    @vf.metric
+    async def pass_at_n(self, trace, traces):
+        """Whether any sibling reached the threshold — a rollout-level fact recorded
+        on each trace so it survives flat consumers."""
+        return float(max(t.reward for t in traces) >= self.params.threshold)

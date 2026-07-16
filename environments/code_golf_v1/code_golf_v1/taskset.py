@@ -79,13 +79,23 @@ class CodeGolfEnv(vf.Environment[CodeGolfParams]):
             )
         )
 
-    async def score(self, task, traces):
-        """The sibling comparison: shortest source and lowest latency win (ties share)."""
-        lengths = [len(extract_program(t)) or 10**9 for t in traces]
-        times = [t.metrics.get("latency", 1e6) for t in traces]
-        for trace, length, latency in zip(traces, lengths, times):
-            trace.record_reward("most_concise", float(length == min(lengths)), 0.5)
-            trace.record_reward("fastest", float(latency == min(times)), 0.5)
+    @vf.reward(weight=0.5)
+    async def most_concise(self, trace, traces):
+        """The sibling comparison: shortest source wins (ties share)."""
+
+        def length(t):
+            return len(extract_program(t)) or 10**9
+
+        return float(length(trace) == min(length(t) for t in traces))
+
+    @vf.reward(weight=0.5)
+    async def fastest(self, trace, traces):
+        """The sibling comparison: lowest run latency wins (ties share)."""
+
+        def latency(t):
+            return t.metrics.get("latency", 1e6)
+
+        return float(latency(trace) == min(latency(t) for t in traces))
 
 
 class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
