@@ -65,7 +65,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     task_cls = vf.task_type(config.taskset.id)
     data_cls = task_data_cls(task_cls)
     # `WireTaskData` reads any taskset's saved task without importing its Task type.
-    # Records flatten to their traces here: replay re-scores per trace (a re-scored
+    # Episodes flatten to their traces here: replay re-scores per trace (a re-scored
     # multi-trace episode re-writes as single-trace episodes).
     episodes = read_episodes(source, Trace[WireTaskData, state_cls(task_cls)])
     traces = [trace for episode in episodes for trace in episode.traces]

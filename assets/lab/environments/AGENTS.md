@@ -308,7 +308,7 @@ class DebateEnv(vf.Environment[DebateParams]):
   them into `rollout()`. The hook never constructs agents.
 - **One env-rollout is one `Episode`** on the wire (`traces.jsonl`, the serve
   protocol): the task, a rollout-level `errors` list, and one trace per agent run,
-  each stamped with its `role` and `trainable`. Records succeed, resume, and retry
+  each stamped with its `role` and `trainable`. Episodes succeed, resume, and retry
   as a unit. An agent failure is data on its trace (the hook decides what a failed
   participant means); an exception in `rollout()`/`score()` is the env-rollout
   failing, and every trace that completed before it is still captured on the episode.
@@ -341,8 +341,9 @@ uv run eval --taskset.id my-task-v1 --env.id judge --env.judge.model openai/gpt-
 exporting an `Environment` subclass via `__all__`, or a Hub `org/name[@version]` —
 and its `EnvParams` surface typed on the CLI (`--env.<role>.*`, `-h` renders them).
 Empty (the default) keeps the taskset's own story: the env its package ships (a
-*recipe* env like `code_golf_v1`, where the interaction is intrinsic to the data),
-else the single-agent base. An explicit id wins over a bundled recipe env.
+*recipe* env like `code_golf_v1` or `kuhn_poker_v1`, where the interaction is
+intrinsic to the data), else the single-agent base. An explicit id wins over a
+bundled recipe env.
 
 Bundled envs (`verifiers/v1/envs/`):
 
@@ -376,5 +377,6 @@ class SortEnv(vf.Environment):
 A *scripted* user is a plain loop like this (a game engine stepping in-process works
 the same way — see the bundled `textarena` taskset). A *modeled* user is another agent
 role: open both sessions and relay their `turn()`s into each other — see the bundled
-`user-sim` env, and [chat() in the Agent docs](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/agent.md). The user runs in the eval
-process, so there is nothing to declare, place, or serve.
+`user-sim` env, `environments/kuhn_poker_v1` (the same relay as self-play: both seats
+chat sessions of the run's own model), and [chat() in the Agent docs](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/agent.md). The
+user runs in the eval process, so there is nothing to declare, place, or serve.
