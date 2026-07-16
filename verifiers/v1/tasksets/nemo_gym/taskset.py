@@ -53,10 +53,6 @@ class NeMoGymData(TaskData):
     row: dict[str, Any]
     """The exact source row sent back to ``/seed_session`` and ``/verify``."""
 
-    @property
-    def responses_create_params(self) -> dict[str, Any]:
-        return self.row["responses_create_params"]
-
 
 class NeMoGymState(State):
     resources_url: str = ""
@@ -67,6 +63,18 @@ class NeMoGymState(State):
     mcp_headers: dict[str, str] = Field(default_factory=dict)
     direct_tools: list[dict[str, Any]] = Field(default_factory=list)
     tool_names: list[str] = Field(default_factory=list)
+
+
+async def _post(state: NeMoGymState, path: str, body: dict[str, Any]) -> httpx.Response:
+    """POST to Gym while carrying the rollout's cookie session forward."""
+    async with httpx.AsyncClient(
+        headers=state.headers,
+        cookies=state.cookies,
+        timeout=state.request_timeout,
+    ) as client:
+        response = await client.post(f"{state.resources_url}/{path}", json=body)
+    state.cookies.update(response.cookies)
+    return response
 
 
 class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
@@ -88,18 +96,19 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
-        if self.state.mcp_url is None:
+        url = self.state.mcp_url
+        if url is None:
             raise RuntimeError("NeMo Gym did not provide an MCP URL")
-        async with httpx.AsyncClient(
-            headers=self.state.mcp_headers,
-            timeout=httpx.Timeout(self.state.request_timeout),
-        ) as client:
-            async with streamable_http_client(
-                self.state.mcp_url, http_client=client
-            ) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    yield session
+        async with (
+            httpx.AsyncClient(
+                headers=self.state.mcp_headers,
+                timeout=self.state.request_timeout,
+            ) as client,
+            streamable_http_client(url, http_client=client) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            yield session
 
     async def list_tools(self) -> list[MCPTool]:
         from mcp.types import Tool
@@ -127,14 +136,7 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
             async with self._upstream() as session:
                 return await session.call_tool(name, arguments)
 
-        async with httpx.AsyncClient(timeout=self.state.request_timeout) as client:
-            response = await client.post(
-                f"{self.state.resources_url.rstrip('/')}/{name}",
-                headers=self.state.headers,
-                cookies=self.state.cookies,
-                json=arguments,
-            )
-        self.state.cookies.update(dict(response.cookies))
+        response = await _post(self.state, name, arguments)
         return CallToolResult(
             content=[TextContent(type="text", text=response.text)],
             isError=not response.is_success,
@@ -148,10 +150,9 @@ def _trace_to_nemo_response(
 ) -> dict[str, Any]:
     """Convert the one completed V1 branch into a Gym Responses object."""
 
-    branches = trace.branches
-    if len(branches) != 1:
+    if trace.num_branches != 1:
         raise ValueError(
-            f"NeMo Gym scoring requires exactly one trace branch, got {len(branches)}"
+            f"NeMo Gym scoring requires exactly one trace branch, got {trace.num_branches}"
         )
 
     known_names = set(tool_names) | {
@@ -163,7 +164,7 @@ def _trace_to_nemo_response(
     output: list[dict[str, Any]] = []
     started = False
 
-    for node in branches[0].nodes:
+    for node in trace.nodes:
         message = node.message
         if isinstance(message, AssistantMessage) and node.sampled:
             started = True
@@ -196,18 +197,15 @@ def _trace_to_nemo_response(
             )
 
     for item in output:
-        if item.get("type") != "function_call":
-            continue
         name = str(item.get("name", ""))
         bare_name = name.removeprefix("_")
-        if bare_name in known_names:
+        if item.get("type") == "function_call" and bare_name in known_names:
             item["name"] = bare_name
 
-    model = responses_create_params.get("model") or "verifiers"
     return {
         "id": f"resp_{trace.id}",
-        "created_at": branches[0].nodes[-1].timestamp,
-        "model": str(model),
+        "created_at": trace.nodes[-1].timestamp,
+        "model": str(responses_create_params.get("model") or "verifiers"),
         "object": "response",
         "output": output,
         "parallel_tool_calls": responses_create_params.get("parallel_tool_calls", True),
@@ -223,18 +221,12 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         state.resources_url = self.config.resources_url.rstrip("/")
         state.headers = dict(self.config.headers)
         state.request_timeout = self.config.request_timeout
-        state.direct_tools = list(self.data.responses_create_params.get("tools") or [])
+        state.direct_tools = self.data.row["responses_create_params"].get("tools") or []
+        state.cookies.clear()
 
-        async with httpx.AsyncClient(timeout=state.request_timeout) as client:
-            response = await client.post(
-                f"{state.resources_url}/seed_session",
-                headers=state.headers,
-                json=self.data.row,
-            )
+        response = await _post(state, "seed_session", self.data.row)
         response.raise_for_status()
-        state.cookies = dict(response.cookies)
-        seed = response.json()
-        metadata = seed.get("mcp")
+        metadata = response.json().get("mcp")
         if metadata is None:
             return
         if metadata.get("transport") != "http":
@@ -244,40 +236,35 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         state.mcp_url = urljoin(
             f"{state.resources_url}/", metadata.get("url_path", "/mcp")
         )
-        state.mcp_headers = {
-            **state.headers,
-            **dict(metadata.get("headers") or {}),
-        }
+        state.mcp_headers = state.headers | (metadata.get("headers") or {})
 
     @reward(weight=1.0)
     async def nemo_gym(self, trace: Trace) -> float:
         state = trace.state
         response_body = _trace_to_nemo_response(
             trace,
-            self.data.responses_create_params,
+            self.data.row["responses_create_params"],
             state.tool_names,
         )
-        async with httpx.AsyncClient(timeout=state.request_timeout) as client:
-            response = await client.post(
-                f"{state.resources_url}/verify",
-                headers=state.headers,
-                cookies=state.cookies,
-                json={**self.data.row, "response": response_body},
-            )
+        response = await _post(
+            state, "verify", {**self.data.row, "response": response_body}
+        )
         response.raise_for_status()
         result = response.json()
         if not isinstance(result, dict):
             raise TypeError("NeMo Gym /verify response must be an object")
 
-        omitted = {"responses_create_params", "response", "reward"}
-        trace.info["nemo_gym"] = {
-            key: value for key, value in result.items() if key not in omitted
+        details = {
+            key: value
+            for key, value in result.items()
+            if key not in {"responses_create_params", "response", "reward"}
         }
+        trace.info["nemo_gym"] = details
         trace.record_metrics(
             {
                 key: float(value)
-                for key, value in result.items()
-                if key not in omitted and isinstance(value, (bool, int, float))
+                for key, value in details.items()
+                if isinstance(value, (bool, int, float))
             }
         )
         return float(result["reward"])
@@ -292,24 +279,20 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
         count = 0
 
         with path.open(encoding="utf-8") as dataset:
-            for line in dataset:
-                if not line.strip():
-                    continue
+            for count, line in enumerate(filter(str.strip, dataset), start=1):
                 row = json.loads(line)
-                params = row["responses_create_params"]
-                prompt, _ = dialect.parse_request(params)
+                prompt, _ = dialect.parse_request(row["responses_create_params"])
                 yield NeMoGymTask(
                     NeMoGymData(
-                        idx=count,
-                        name=f"{path.stem}:{count}",
+                        idx=count - 1,
+                        name=f"{path.stem}:{count - 1}",
                         prompt=prompt,
                         row=row,
                     ),
                     self.config.task,
                 )
-                count += 1
 
-        if count == 0:
+        if not count:
             raise ValueError(f"NeMo Gym dataset is empty: {path}")
 
 
