@@ -41,6 +41,7 @@ _LABEL_WIDTH = len("timeouts")
 _STYLE = {
     "pending": "dim",
     "boot": "orange3",
+    "build": "dark_orange",
     "setup": "yellow",
     "running": "cyan",
     "finalize": "magenta",
@@ -51,6 +52,7 @@ _STYLE = {
 _MARK_LABEL = {
     "pending": "pending",
     "boot": "boot",
+    "build": "build",
     "setup": "setup",
     "running": "rollout",
     "finalize": "finalize",
@@ -445,6 +447,12 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                         stop = f"{stop} (truncated)".strip()
             else:
                 state, result, stop = rollout.phase, "", ""
+                # A boot stuck on a first-use platform image build reads differently from a
+                # normal boot — it can sit here for ~10 minutes (prime runtime only).
+                if state == Phase.BOOT and (
+                    getattr(t.runtime, "image_cached", None) is False
+                ):
+                    state = "build"
             runtime_id = t.runtime.id if t.runtime is not None else None
             runtime = f"{runtime_type}({runtime_id})" if runtime_id else runtime_type
             turns = t.num_turns
