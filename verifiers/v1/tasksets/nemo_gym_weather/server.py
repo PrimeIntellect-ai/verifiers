@@ -1,13 +1,13 @@
 # /// script
 # requires-python = ">=3.12,<3.14"
 # dependencies = [
-#   "nemo-gym @ git+https://github.com/NVIDIA-NeMo/Gym.git@05eb7df9f42f59286abac339593473ef7ca9448d",
+#   "nemo-gym==0.4.0",
 # ]
 # ///
 """Launch only NeMo Gym's upstream ``example_mcp_weather`` resources server.
 
 This module intentionally bypasses Gym's agent/model/head stack. Its inline dependency
-pins the upstream version this adapter is verified against.
+pins the published version this adapter is verified against.
 """
 
 import os
