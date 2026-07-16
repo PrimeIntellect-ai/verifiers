@@ -305,6 +305,22 @@ class DebateEnv(vf.Environment[DebateParams]):
   as a unit. An agent failure is data on its trace (the hook decides what a failed
   participant means); an exception in `rollout()`/`score()` is the env-rollout
   failing, and every trace that completed before it is still captured on the episode.
+- **Cross-agent signals can be declarative.** The default `score()` runs the env's
+  own decorated `@vf.reward`/`@vf.metric` methods: each is invoked once per target
+  trace and records there, with the finished sibling set in reach (`trace` — the
+  target, `traces` — all of them in `rollout()`'s order, `task`). `role=` narrows
+  the targets to one role's traces; unset means every trace (a shared team signal).
+  The bundled best-of-n's whole judgement is two such metrics:
+
+  ```python
+      @vf.metric
+      async def pass_at_n(self, trace, traces):
+          return float(max(t.reward for t in traces) >= self.params.threshold)
+  ```
+
+  Override `score()` for imperative control (dynamic names or weights,
+  parse-and-fail — the bundled judge env, or the debate verdict above);
+  `await super().score(task, traces)` keeps the decorated ones running.
 - `score()` is bounded by `--timeout.score`; `setup()`/`teardown()` hooks bracket the
   serving lifetime for env-owned shared resources.
 

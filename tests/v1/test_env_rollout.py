@@ -128,6 +128,87 @@ async def test_score_deadline_is_a_record_error():
     assert len(episode.traces) == 1  # the finished traces survive the score failure
 
 
+async def test_decorated_signals_cross_agent():
+    """`@vf.reward`/`@vf.metric` on an Environment run in the default score(): once
+    per target trace (`role=` narrows to one role's traces, unset is every trace),
+    with the finished sibling set in reach; metrics record before rewards run, and
+    reward weights apply."""
+
+    class Signals(vf.Environment[DuetParams]):
+        def roles(self):
+            return {"a": vf.Role(self.params.a), "b": vf.Role(self.params.b)}
+
+        async def rollout(self, task, agents):
+            return list(
+                await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
+            )
+
+        @vf.metric(role="a")
+        async def b_count(self, traces):
+            return float(sum(t.role == "b" for t in traces))
+
+        @vf.reward(weight=0.5)
+        async def team(self, trace, traces):
+            return 1.0
+
+        @vf.reward(role="a")
+        async def sees_metrics(self, trace):
+            return trace.metrics["b_count"]  # metrics recorded before rewards run
+
+    env = Signals(_env_config(env=DuetParams()))
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert episode.ok
+    a, b = episode.traces
+    assert a.metrics == {"b_count": 1.0}
+    assert a.rewards == {"team": 0.5, "sees_metrics": 1.0}
+    assert b.metrics == {} and b.rewards == {"team": 0.5}
+
+
+def test_decorated_signal_role_must_be_declared():
+    class Bad(vf.Environment):
+        @vf.metric(role="ghost")
+        async def lost(self, traces):
+            return 0.0
+
+    with pytest.raises(ValueError, match="ghost"):
+        Bad(_env_config())
+
+
+async def test_decorated_signals_on_unstamped_single_role():
+    """An env subclass keeping the default roles() leaves traces unstamped (the wire
+    matches a plain eval's); a role='solver' signal still records onto them — every
+    trace belongs to the sole implicit role."""
+
+    class Solo(vf.Environment):
+        @vf.metric(role="solver")
+        async def n(self, traces):
+            return float(len(traces))
+
+    env = Solo(_env_config())
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert episode.traces[0].role is None
+    assert episode.traces[0].metrics["n"] == 1.0
+
+
+async def test_decorated_signal_failure_is_an_episode_error():
+    """A decorated signal raising is score() failing — a rollout-level error on the
+    episode, with the finished traces kept (never blamed on a trace)."""
+
+    class Bad(vf.Environment):
+        @vf.metric
+        async def broken(self, trace):
+            raise RuntimeError("signal bug")
+
+    env = Bad(_env_config())
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert not episode.ok
+    assert episode.error is not None and episode.error.type == "RuntimeError"
+    assert len(episode.traces) == 1 and episode.traces[0].error is None
+
+
 def test_roles_must_be_nonempty():
     class Empty(vf.Environment):
         def roles(self):

@@ -87,7 +87,9 @@ class UserSimEnv(vf.Environment[UserSimParams]):
                 ask = await sim.turn(reply.text)
         return [assistant.trace, sim.trace]
 
-    async def score(self, task, traces):
-        assistant, user = traces
-        # One conversation-shape fact per side; judgement stays on the task's rewards.
-        assistant.record_metric("user_turns", float(user.num_turns))
+    @vf.metric(role="assistant")
+    async def user_turns(self, traces):
+        """One conversation-shape fact about the user's side, recorded on the
+        assistant's trace; judgement stays on the task's rewards."""
+        (user,) = (t for t in traces if t.role == "user")
+        return float(user.num_turns)

@@ -28,7 +28,8 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
     runtime_is_local,
 )
-from verifiers.v1.task import Task, resolve_server_config
+from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.task import Task, _record_result, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Error, Episode, Trace, TraceTask
 from verifiers.v1.utils.generic import generic_type
@@ -521,6 +522,17 @@ class Environment(Generic[ParamsT]):
         # to a plain eval's. Structural, not name-based: an env DECLARING a single
         # 'solver' role (best-of-n) still stamps its traces.
         self._stamp_roles = type(self).roles is not Environment.roles
+        for fn in (
+            *discover_decorated(self, "metric"),
+            *discover_decorated(self, "reward"),
+        ):
+            role = getattr(fn, "_vf_role", None)
+            if role is not None and role not in self._roles:
+                name = getattr(fn, "__name__", repr(fn))
+                raise ValueError(
+                    f"{type(self).__name__}.{name} is decorated with "
+                    f"role={role!r}, but roles() declares {sorted(self._roles)}"
+                )
         self._harnesses: dict[str, Harness] = {
             name: self.harness
             if role.agent.harness is None or role.agent.harness == config.harness
@@ -620,12 +632,42 @@ class Environment(Generic[ParamsT]):
         return [await agents["solver"].run(task)]
 
     async def score(self, task: Task, traces: list[Trace]) -> None:
-        """Sibling-dependent judgement over one env-rollout's finished traces — attach
-        via `trace.record_reward`/`record_metric`. Per-trace judgement already ran on
-        each trace's own task (hooks + `@reward`/`@metric`, box-live, as in any eval);
-        override this only for signals that need the finished sibling set (relative
-        comparison, solve-rate over children, learnability). Bounded by
-        `timeout.score`. Default: no-op."""
+        """Sibling-dependent judgement over one env-rollout's finished traces.
+        Per-trace judgement already ran on each trace's own task (hooks +
+        `@reward`/`@metric`, box-live, as in any eval); this stage is for signals
+        that need the finished sibling set — relative comparison, solve-rate over
+        attempts, a fact about one seat recorded on another. The default runs the
+        env's own decorated signals: `@vf.reward`/`@vf.metric` methods, each invoked
+        once per target trace and recorded there, with `trace` (the target),
+        `traces` (the finished set, in `rollout()`'s order), and `task` in reach —
+        `role=` narrows the targets to one role's traces, unset means every trace
+        (a shared team signal). Override it for imperative control (dynamic names
+        or weights, parse-and-fail — see the bundled judge env);
+        `await super().score(task, traces)` keeps the decorated ones. Bounded by
+        `timeout.score`."""
+        metrics = discover_decorated(self, "metric")
+        rewards = discover_decorated(self, "reward")
+
+        async def run(fns) -> list[tuple]:
+            pairs = [
+                (fn, target)
+                for fn in fns
+                for target in self._signal_targets(fn, traces)
+            ]
+            results = await asyncio.gather(
+                *(
+                    invoke(fn, {"task": task, "trace": target, "traces": traces})
+                    for fn, target in pairs
+                )
+            )
+            return list(zip(pairs, results))
+
+        # Metrics record before rewards run, so a reward may read `trace.metrics`
+        # (the same staging as task scoring).
+        for (fn, target), result in await run(metrics):
+            _record_result(target, fn.__name__, result)
+        for (fn, target), result in await run(rewards):
+            _record_result(target, fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
 
     def complete(self, episode: Episode) -> bool:
         """Whether a finished env-rollout is a valid result — the verdict `--resume`
@@ -648,6 +690,16 @@ class Environment(Generic[ParamsT]):
         `setup()` failed partway — so it must tolerate partial state. Default: no-op."""
 
     # --- machinery (the base owns everything below) -----------------------------
+
+    def _signal_targets(self, fn: Callable, traces: list[Trace]) -> list[Trace]:
+        """Which traces a decorated env signal records onto: every trace unless
+        `role=` narrows it. Membership is the role stamp — except in the unstamped
+        single-agent shape (default `roles()`), where every trace belongs to the
+        sole implicit role."""
+        role = getattr(fn, "_vf_role", None)
+        if role is None or not self._stamp_roles:
+            return list(traces)
+        return [t for t in traces if t.role == role]
 
     def _agents_for(self, ctx: ModelContext) -> dict[str, "Agent"]:
         """The agents that play this env's roles for `ctx`: per role, its harness and
