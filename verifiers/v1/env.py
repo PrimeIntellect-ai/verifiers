@@ -22,7 +22,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.session import RolloutLimits
-from verifiers.v1.retries import RetryConfig, run_record_with_retry
+from verifiers.v1.retries import RetryConfig, run_episode_with_retry
 from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
@@ -30,7 +30,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.trace import Error, RolloutRecord, Trace, TraceTask
+from verifiers.v1.trace import Error, Episode, Trace, TraceTask
 from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.mcp import SharedToolServer, serve_shared
@@ -272,7 +272,7 @@ class EnvConfig(BaseConfig):
     def env_id(self) -> str:
         """The run's identifier — the v1 taskset id (prefixed by the selected env when
         `--env.id` pairs one in, so `best-of-n+gsm8k-v1` and a plain `gsm8k-v1` run
-        stay distinguishable on records and output dirs), else the legacy v0 env id."""
+        stay distinguishable on episodes and output dirs), else the legacy v0 env id."""
         if self.taskset.id and self.env.id:
             return f"{self.env.id}+{self.taskset.id}"
         return self.taskset.id or self.id or ""
@@ -441,22 +441,22 @@ class RunSlot:
     """One planned env-rollout of a task, observable while it happens: `traces`
     collects the current attempt's live traces from the moment the engine mints them
     (a retry restarts the list with the fresh attempt's; a single-agent rollout has
-    exactly one), `record` is the finished rollout's record, and `done` flips once
-    that record is final. The `--rich` dashboard renders slots (deriving each trace's
+    exactly one), `episode` is the finished rollout's episode, and `done` flips once
+    that episode is final. The `--rich` dashboard renders slots (deriving each trace's
     live stage from its timing spans); `--resume` preloads the previous session's kept
-    records as `finished` slots."""
+    episodes as `finished` slots."""
 
     task: Task
     traces: list[Trace] = field(default_factory=list)
-    record: RolloutRecord | None = None
+    episode: Episode | None = None
     done: bool = False
 
     @classmethod
-    def finished(cls, record: RolloutRecord) -> "RunSlot":
+    def finished(cls, episode: Episode) -> "RunSlot":
         return cls(
-            task=Task(record.task.data),
-            traces=list(record.traces),
-            record=record,
+            task=Task(episode.task.data),
+            traces=list(episode.traces),
+            episode=episode,
             done=True,
         )
 
@@ -477,11 +477,11 @@ class Environment(Generic[ParamsT]):
       - `roles()` — which agent plays which role: one `vf.Role` each (a config,
         plus the role's needs when the env mints its tasks itself).
       - `rollout(task, agents)` — how the agents interact on one task: imperative
-        Python over `Agent` values; the returned traces are the rollout's record.
+        Python over `Agent` values; the returned traces are the rollout's episode.
       - `score(task, traces)` — sibling-dependent judgement over the finished set.
 
     plus `setup()`/`teardown()` for env-owned shared resources. The base owns the rest —
-    taskset + serving resources, per-role agent construction, records, retries,
+    taskset + serving resources, per-role agent construction, episodes, retries,
     persistence/resume, the serve protocol — so a subclass never touches machinery."""
 
     def __init__(self, config: EnvConfig) -> None:
@@ -613,7 +613,7 @@ class Environment(Generic[ParamsT]):
         """One env-rollout: how the agents interact on `task`. Imperative Python over
         the handed-in agents — a loop is rounds, `asyncio.gather` is fan-out, a
         function from traces to task data is chaining; every trace comes from an
-        `agents[...]` verb. The returned traces are the rollout's record, in this
+        `agents[...]` verb. The returned traces are the rollout's episode, in this
         order. An agent-run failure is data on its trace (this hook decides what a
         failed participant means); an exception raised here is the env-rollout itself
         failing. Default: the single-agent case — `"solver"` runs the task once."""
@@ -627,16 +627,16 @@ class Environment(Generic[ParamsT]):
         comparison, solve-rate over children, learnability). Bounded by
         `timeout.score`. Default: no-op."""
 
-    def complete(self, record: RolloutRecord) -> bool:
+    def complete(self, episode: Episode) -> bool:
         """Whether a finished env-rollout is a valid result — the verdict `--resume`
-        reads to decide what to keep vs. redo. Default: `record.ok` (no rollout-level
+        reads to decide what to keep vs. redo. Default: `episode.ok` (no rollout-level
         errors and no errored trace). An env whose `rollout()` deliberately tolerates
         a failed participant (a forfeited player, a crashed editor) overrides this —
-        typically `not record.errors` — else resume re-runs rollouts it already
+        typically `not episode.errors` — else resume re-runs rollouts it already
         accepted. Read-only: what a failed participant *means* stays in `rollout()`
         and `score()`. (The server eval path keeps the strict default — its env lives
         in the workers.)"""
-        return record.ok
+        return episode.ok
 
     async def setup(self) -> None:
         """Bring up env-owned shared resources. Runs inside `serving()`, after the
@@ -726,17 +726,17 @@ class Environment(Generic[ParamsT]):
         ctx: ModelContext,
         *,
         on_trace: Callable[[Trace], None] | None = None,
-    ) -> RolloutRecord:
+    ) -> Episode:
         """One env-rollout of `task`, minted as the wire atom: run `rollout()` over the
         role agents, then `score()` over its traces (bounded by `timeout.score`).
 
         The handed-in agents are wrapped so every trace is stamped (`role`/`trainable`)
         the moment it's minted (`on_trace` observes it then — how the dashboard watches
         live) and captured the moment its run completes — so a hook that raises after
-        some runs finished still yields a record containing them (the completed subset,
+        some runs finished still yields a episode containing them (the completed subset,
         in completion order; on success the hook's returned order is authoritative).
         A `rollout()`/`score()` exception is a rollout-level failure: it lands on the
-        record's `errors`, never on a trace — per-agent failures are data on their
+        episode's `errors`, never on a trace — per-agent failures are data on their
         traces, and what a failed participant means is the hook's call."""
         agents = self._agents_for(ctx)
         completed: list[Trace] = []
@@ -750,7 +750,7 @@ class Environment(Generic[ParamsT]):
             )
             for name in self._roles
         }
-        record: RolloutRecord = RolloutRecord(
+        episode: Episode = Episode(
             env=self.config.env_id,
             task=TraceTask(type=type(task).__name__, data=task.data),
         )
@@ -769,21 +769,21 @@ class Environment(Generic[ParamsT]):
                     f"{type(self).__name__}.score() exceeded its "
                     f"{self.config.timeout.score:g}s deadline (--timeout.score)"
                 ) from None
-            record.traces = traces
+            episode.traces = traces
         except Exception as e:
-            record.errors.append(
+            episode.errors.append(
                 Error(
                     type=type(e).__name__,
                     message=str(e),
                     traceback=traceback.format_exc(),
                 )
             )
-            record.traces = list(completed)
-        return record
+            episode.traces = list(completed)
+        return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
         """Plan `n` independent env-rollouts of `task` — one observable `RunSlot`
-        each, run to a record by `run_slot`. `-r n` means exactly this: n records per
+        each, run to a episode by `run_slot`. `-r n` means exactly this: n episodes per
         task, nothing coupling them (env-internal multiplicity is the env's own knob).
         Harness capability (tools / container) is class-level and already
         checked per role at construction (`validate_pairing`)."""
@@ -796,30 +796,30 @@ class Environment(Generic[ParamsT]):
         slot: RunSlot,
         ctx: ModelContext,
         semaphore: asyncio.Semaphore | None = None,
-        on_complete: Callable[[RolloutRecord], Awaitable[None]] | None = None,
-    ) -> RolloutRecord:
-        """Run one planned env-rollout to its finished record (whole-record retries
+        on_complete: Callable[[Episode], Awaitable[None]] | None = None,
+    ) -> Episode:
+        """Run one planned env-rollout to its finished episode (whole-episode retries
         per `retries.rollout`; the role agents resolve the task's runtime and timeouts
         per run — cli/toml > task > default, None = no limit). `slot` stays observable
-        while it happens; `on_complete` fires the moment the record is final — the
+        while it happens; `on_complete` fires the moment the episode is final — the
         runners' persistence hook."""
 
-        async def attempt() -> RolloutRecord:
+        async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
             return await self.run_record(slot.task, ctx, on_trace=slot.traces.append)
 
         async with semaphore or contextlib.nullcontext():
-            record = await run_record_with_retry(attempt, self.config.retries.rollout)
-        # The record is authoritative: the hook's returned order, or (on a hook
+            episode = await run_episode_with_retry(attempt, self.config.retries.rollout)
+        # The episode is authoritative: the hook's returned order, or (on a hook
         # failure) the completed subset.
-        slot.traces = list(record.traces)
-        slot.record = record
+        slot.traces = list(episode.traces)
+        slot.episode = episode
         slot.done = True
         if on_complete is not None:
-            await on_complete(record)
+            await on_complete(episode)
         # hand freed per-turn request bodies (base64 images) back to the OS
         await trim_memory_periodically()
-        return record
+        return episode
 
     @contextlib.asynccontextmanager
     async def serving(self):
@@ -895,7 +895,7 @@ class Environment(Generic[ParamsT]):
 class _RoleAgent:
     """A role's `Agent` as handed to `Environment.rollout`: every trace it produces is
     stamped (`role`/`trainable`) the moment it's minted and captured in `completed` the
-    moment its run finishes — the crash-safe record source when the hook then raises.
+    moment its run finishes — the crash-safe episode source when the hook then raises.
     Everything else delegates to the wrapped agent."""
 
     def __init__(

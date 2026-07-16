@@ -269,7 +269,7 @@ class DebateEnv(vf.Environment[DebateParams]):
     async def rollout(self, task, agents):
         """How the agents interact on one task: imperative Python over Agent values.
         A loop is rounds, asyncio.gather is fan-out, a function from traces to task
-        data is chaining. The returned traces are the rollout's record."""
+        data is chaining. The returned traces are the rollout's episode."""
         pro, con = await asyncio.gather(
             agents["pro"].run(task), agents["con"].run(task)
         )
@@ -305,18 +305,18 @@ class DebateEnv(vf.Environment[DebateParams]):
 - **The base builds the agents** — one per role, inside the eval's serving resources
   (shared interception pool, shared tool servers, per-endpoint clients) — and hands
   them into `rollout()`. The hook never constructs agents.
-- **One env-rollout is one `RolloutRecord`** on the wire (`traces.jsonl`, the serve
+- **One env-rollout is one `Episode`** on the wire (`traces.jsonl`, the serve
   protocol): the task, a rollout-level `errors` list, and one trace per agent run,
   each stamped with its `role` and `trainable`. Records succeed, resume, and retry
   as a unit. An agent failure is data on its trace (the hook decides what a failed
   participant means); an exception in `rollout()`/`score()` is the env-rollout
-  failing, and every trace that completed before it is still captured on the record.
+  failing, and every trace that completed before it is still captured on the episode.
 - `score()` is bounded by `--timeout.score`; `setup()`/`teardown()` hooks bracket the
   serving lifetime for env-owned shared resources.
 
 For the single-agent case none of this is visible: the base `roles()` is one `"solver"`
 role driven by `--harness.*`, `rollout()` is `[await agents["solver"].run(task)]`, and
-the record wraps exactly one unstamped trace.
+the episode wraps exactly one unstamped trace.
 
 The three axes of a run are orthogonal:
 

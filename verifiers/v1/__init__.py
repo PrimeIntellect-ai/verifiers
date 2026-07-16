@@ -107,12 +107,12 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
     Error,
-    RolloutRecord,
+    Episode,
     TimeSpan,
     Timing,
     Trace,
     TraceTask,
-    WireRecord,
+    WireEpisode,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -169,8 +169,8 @@ __all__ = [
     "Trace",
     "TraceTask",
     "WireTrace",
-    "RolloutRecord",
-    "WireRecord",
+    "Episode",
+    "WireEpisode",
     "State",
     "StateT",
     "MessageNode",

@@ -456,14 +456,16 @@ WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""
 
 
-class RolloutRecord(StrictBaseModel, Generic[DataT, StateT]):
-    """One rollout of the env, as it rides the wire: the atom of `traces.jsonl` (one
-    record per line) and of the serve protocol. A single-agent rollout carries one
-    trace; a multi-agent env's rollout carries one per role — they succeed, resume,
-    and score as a unit, which is exactly what the record makes atomic. `errors` are
-    rollout-level failures not attributable to any one trace (the env's `rollout`/
-    `score` hooks, plus prior attempts' errors when the record was retried — same
-    shape as `Trace.errors`); per-trace failures stay on the traces."""
+class Episode(StrictBaseModel, Generic[DataT, StateT]):
+    """One rollout of the env — the GLOBAL view of what happened, where each of its
+    traces is one agent's LOCAL view (its own conversation, role-stamped; a kuhn
+    seat sees only its half of the hand). The atom of `traces.jsonl` (one episode
+    per line) and of the serve protocol: a single-agent rollout carries one trace, a
+    multi-agent env's one per role — they succeed, resume, and score as a unit,
+    which is exactly what the episode makes atomic. `errors` are rollout-level
+    failures not attributable to any one trace (the env's `rollout`/`score` hooks,
+    plus prior attempts' errors when the episode was retried — same shape as
+    `Trace.errors`); per-trace failures stay on the traces."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     env: str = ""
@@ -481,15 +483,15 @@ class RolloutRecord(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def ok(self) -> bool:
-        """Whether the whole rollout is good — no record-level error and no trace
+        """Whether the whole rollout is good — no episode-level error and no trace
         errors. The resume unit: anything less is redone."""
         return not self.errors and not any(t.errors for t in self.traces)
 
     @classmethod
-    def of(cls, trace: Trace, env: str = "") -> "RolloutRecord":
-        """The single-agent record: one trace, task lifted off it."""
+    def of(cls, trace: Trace, env: str = "") -> "Episode":
+        """The single-agent episode: one trace, task lifted off it."""
         return cls(env=env, task=trace.task, traces=[trace])
 
 
-WireRecord = RolloutRecord[WireTaskData, State]
-"""Record loader that preserves unknown task fields in `task.model_extra`."""
+WireEpisode = Episode[WireTaskData, State]
+"""Episode loader that preserves unknown task fields in `task.model_extra`."""

@@ -228,8 +228,8 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
 @pytest.mark.e2e
 async def test_multi_agent_env(run_v1, tmp_path):
     """An `Environment` subclass shipped with its taskset (duet-v1): two roles run the
-    task, `score()` records a sibling-dependent metric, and one eval rollout lands one
-    record carrying two role-stamped traces."""
+    task, `score()` episodes a sibling-dependent metric, and one eval rollout lands one
+    episode carrying two role-stamped traces."""
     import json
 
     traces = await run_v1(
@@ -245,7 +245,7 @@ async def test_multi_agent_env(run_v1, tmp_path):
         assert trace.errors == []
         assert trace.reward == 1.0  # each seat's own task reward
         assert trace.metrics["duet"] == 1.0  # the sibling-dependent signal
-    # On disk: one record line carrying both traces, role-stamped.
+    # On disk: one episode line carrying both traces, role-stamped.
     (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
     row = json.loads(line)
     assert row["env"] == "duet-v1"
@@ -256,7 +256,7 @@ async def test_multi_agent_env(run_v1, tmp_path):
 @pytest.mark.e2e
 async def test_env_id_best_of_n(run_v1, tmp_path):
     """`--env.id` pairs a bundled env with an arbitrary taskset: best-of-n over the
-    plain echo taskset — n solver attempts in one record, sibling-scored."""
+    plain echo taskset — n solver attempts in one episode, sibling-scored."""
     traces = await run_v1(
         "echo-v1",
         harness="null",
@@ -321,7 +321,7 @@ async def test_env_id_judge_rubric_spec(run_v1, tmp_path):
     """One rubric file, agent-executed: the judge env's verdict spec is a judge
     plugin, so the same grading criteria a `taskset.task.judges` entry runs as a
     bare call here drive a real judge agent — per-criterion metrics and the weighted
-    total land on the solver exactly as the plugged tier records them."""
+    total land on the solver exactly as the plugged tier episodes them."""
     import json
 
     rubric = tmp_path / "grading.json"
@@ -360,7 +360,7 @@ async def test_env_id_judge_rubric_spec(run_v1, tmp_path):
 async def test_env_id_user_sim(run_v1, tmp_path):
     """The user-sim env over the echo taskset: a modeled user (direct harness) opens
     the conversation from the task's prompt-as-scenario; the assistant's trace is
-    judged by the task's own reward; both sides land role-stamped on one record."""
+    judged by the task's own reward; both sides land role-stamped on one episode."""
     traces = await run_v1(
         "echo-v1",
         harness="null",
@@ -378,14 +378,14 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     assert assistant.metrics["user_turns"] >= 1
     # `mask_prompt`: the scenario is hidden from the assistant's harness (the run's
     # visible data) while the task's own rewards still scored the real row — and the
-    # record keeps the unmasked task for provenance.
+    # episode keeps the unmasked task for provenance.
     assert assistant.task.data.prompt is None
     assert "echoed" in assistant.rewards
-    from verifiers.v1.cli.output import read_records
+    from verifiers.v1.cli.output import read_episodes
     from verifiers.v1.trace import WireTrace
 
-    (record,) = read_records(tmp_path, WireTrace)
-    assert record.task.data.prompt is not None
+    (episode,) = read_episodes(tmp_path, WireTrace)
+    assert episode.task.data.prompt is not None
 
 
 @pytest.mark.e2e
@@ -449,7 +449,7 @@ async def test_kuhn_poker_self_play(run_v1, tmp_path):
 @pytest.mark.e2e
 async def test_multi_agent_env_server(run_v1_server, tmp_path):
     """The same env through the env-server pool: the worker rebuilds the role-typed
-    config from wire data, and the multi-trace record rides the serve protocol."""
+    config from wire data, and the multi-trace episode rides the serve protocol."""
     traces = await run_v1_server(
         "duet-v1",
         output_dir=tmp_path,

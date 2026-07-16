@@ -255,7 +255,7 @@ def Progress(
     # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
     reward = format_mean(scored, lambda t: t.reward)
     err = (
-        f"{sum(s.record is None or not s.record.ok for s in done) / len(done):.2f}"
+        f"{sum(s.episode is None or not s.episode.ok for s in done) / len(done):.2f}"
         if done
         else "—"
     )
@@ -453,7 +453,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
             base = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
             if not slot.traces:
                 if slot.done:  # the env's rollout() itself failed before any trace
-                    error = slot.record.error if slot.record is not None else None
+                    error = slot.episode.error if slot.episode is not None else None
                     group_rows.append(
                         (
                             "error",

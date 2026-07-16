@@ -4,10 +4,10 @@ Transient model-call faults are retried by the harness's own SDK (the intercepti
 faithful proxy — it relays the provider's status), and transient runtime faults by each runtime
 SDK (prime/modal); the framework adds targeted retries only where there's no SDK underneath (e.g.
 `open_tunnel`, via the shared `retrying()` policy). `RetryConfig` (on `EnvConfig.retries`) keeps one
-knob: whole-rollout retries. `run_record_with_retry` reruns an entire env-rollout — the record is
+knob: whole-rollout retries. `run_episode_with_retry` reruns an entire env-rollout — the episode is
 the retry atom, never one participant of a multi-agent interaction — when it ends with a retryable
 error (matched by exception type name against include/exclude), accumulating each failed attempt's
-errors onto the returned record when the final attempt fails too; off by default.
+errors onto the returned episode when the final attempt fails too; off by default.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.trace import Error, RolloutRecord
+    from verifiers.v1.trace import Error, Episode
 
 logger = logging.getLogger(__name__)
 
@@ -103,31 +103,31 @@ def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
     return True
 
 
-def record_should_retry(record: RolloutRecord, retry: RolloutRetryConfig) -> bool:
-    """Whether a finished env-rollout should be retried: its record-level error, or
-    any of its traces' errors, is retryable. Retries are record-atomic — the whole
+def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
+    """Whether a finished env-rollout should be retried: its episode-level error, or
+    any of its traces' errors, is retryable. Retries are episode-atomic — the whole
     rollout reruns, never one participant of a multi-agent interaction (a half-played
     sibling context isn't reproducible)."""
-    return _retryable(record.error, retry) or any(
-        _retryable(t.error, retry) for t in record.traces
+    return _retryable(episode.error, retry) or any(
+        _retryable(t.error, retry) for t in episode.traces
     )
 
 
-async def run_record_with_retry(
-    run: Callable[[], Awaitable[RolloutRecord]],
+async def run_episode_with_retry(
+    run: Callable[[], Awaitable[Episode]],
     retry: RolloutRetryConfig,
-) -> RolloutRecord:
-    """Run one env-rollout (`run` — each call must mint a fresh record), retrying it
-    while it ends with a retryable error, record-level or on any trace
-    (`record_should_retry`). Each retry-causing attempt's errors are collected onto
-    the returned record's `errors` when the final attempt fails too, so the record
+) -> Episode:
+    """Run one env-rollout (`run` — each call must mint a fresh episode), retrying it
+    while it ends with a retryable error, episode-level or on any trace
+    (`episode_should_retry`). Each retry-causing attempt's errors are collected onto
+    the returned episode's `errors` when the final attempt fails too, so the episode
     shows the full history; a final good attempt returns clean."""
     if retry.max_retries < 1:
         return await run()
 
     history: list = []
 
-    def record(state: RetryCallState) -> None:
+    def note(state: RetryCallState) -> None:
         # before_sleep fires only between attempts (a retry is imminent), so this
         # collects exactly the errors that caused a retry — never the final attempt's.
         attempt_record = state.outcome.result()
@@ -147,12 +147,12 @@ async def run_record_with_retry(
 
     retrying = AsyncRetrying(
         stop=stop_after_attempt(retry.max_retries + 1),
-        retry=retry_if_result(lambda rec: record_should_retry(rec, retry)),
-        before_sleep=record,
+        retry=retry_if_result(lambda rec: episode_should_retry(rec, retry)),
+        before_sleep=note,
         retry_error_callback=lambda state: state.outcome.result(),
     )
 
-    async def attempt() -> RolloutRecord:
+    async def attempt() -> Episode:
         # tenacity only awaits a coroutine *function*; adapt so a plain callable
         # returning an awaitable works too.
         return await run()

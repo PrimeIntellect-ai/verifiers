@@ -1,4 +1,4 @@
-"""The env-rollout surface: roles()/rollout()/score() defaults, record minting, role
+"""The env-rollout surface: roles()/rollout()/score() defaults, episode minting, role
 stamping, crash-safe recording, and the score() deadline (no live agents — stubs stand
 in behind `_agents_for`)."""
 
@@ -62,45 +62,45 @@ class DuetEnv(vf.Environment[DuetParams]):
 
 async def test_base_env_mints_single_agent_records():
     """The base defaults ARE the single-agent case: one 'main' role on the env's
-    harness, one unstamped trace per record, score() a no-op."""
+    harness, one unstamped trace per episode, score() a no-op."""
     env = vf.Environment(_env_config())
     assert list(env._roles) == ["solver"]
     agents = _stub_agents(env)
-    record = await env.run_record(_task(env), None)
-    assert record.ok and record.env == "echo-v1"
+    episode = await env.run_record(_task(env), None)
+    assert episode.ok and episode.env == "echo-v1"
     assert agents["solver"].runs == 1
-    assert len(record.traces) == 1
-    trace = record.traces[0]
+    assert len(episode.traces) == 1
+    trace = episode.traces[0]
     assert trace.role is None and trace.trainable  # the wire matches a plain eval's
-    assert record.task.data.idx == trace.task.data.idx
+    assert episode.task.data.idx == trace.task.data.idx
 
 
 async def test_multi_role_records_stamp_roles():
     env = DuetEnv(_env_config(env=DuetParams()))
     _stub_agents(env)
     seen_live: list[str | None] = []
-    record = await env.run_record(
+    episode = await env.run_record(
         _task(env), None, on_trace=lambda t: seen_live.append(t.role)
     )
-    assert record.ok and len(record.traces) == 2
-    assert [t.role for t in record.traces] == ["a", "b"]
-    assert [t.trainable for t in record.traces] == [True, False]
+    assert episode.ok and len(episode.traces) == 2
+    assert [t.role for t in episode.traces] == ["a", "b"]
+    assert [t.trainable for t in episode.traces] == [True, False]
     # score() saw the finished sibling set; stamps were already live at mint
-    assert all(t.metrics["siblings"] == 2.0 for t in record.traces)
+    assert all(t.metrics["siblings"] == 2.0 for t in episode.traces)
     assert sorted(seen_live) == ["a", "b"]
 
 
 async def test_agent_failures_are_trace_data_not_record_errors():
     env = vf.Environment(_env_config())
     env._agents_for = lambda ctx: {"solver": StubAgent(error=RuntimeError("boom"))}  # type: ignore[method-assign]
-    record = await env.run_record(_task(env), None)
-    assert not record.ok and not record.errors  # the failure lives on the trace
-    assert record.traces[0].error is not None
+    episode = await env.run_record(_task(env), None)
+    assert not episode.ok and not episode.errors  # the failure lives on the trace
+    assert episode.traces[0].error is not None
 
 
 async def test_hook_crash_keeps_completed_traces():
-    """A rollout() that raises after some runs finished still yields a record carrying
-    them — the crash-safe subset — with the failure on the record, not a trace."""
+    """A rollout() that raises after some runs finished still yields a episode carrying
+    them — the crash-safe subset — with the failure on the episode, not a trace."""
 
     class Crashy(vf.Environment):
         async def rollout(self, task, agents):
@@ -109,10 +109,10 @@ async def test_hook_crash_keeps_completed_traces():
 
     env = Crashy(_env_config())
     _stub_agents(env)
-    record = await env.run_record(_task(env), None)
-    assert not record.ok
-    assert record.error is not None and record.error.type == "RuntimeError"
-    assert len(record.traces) == 1 and record.traces[0].error is None
+    episode = await env.run_record(_task(env), None)
+    assert not episode.ok
+    assert episode.error is not None and episode.error.type == "RuntimeError"
+    assert len(episode.traces) == 1 and episode.traces[0].error is None
 
 
 async def test_score_deadline_is_a_record_error():
@@ -122,10 +122,10 @@ async def test_score_deadline_is_a_record_error():
 
     env = Slow(_env_config(timeout={"score": 0.05}))
     _stub_agents(env)
-    record = await env.run_record(_task(env), None)
-    assert not record.ok
-    assert record.error is not None and record.error.type == "TimeoutError"
-    assert len(record.traces) == 1  # the finished traces survive the score failure
+    episode = await env.run_record(_task(env), None)
+    assert not episode.ok
+    assert episode.error is not None and episode.error.type == "TimeoutError"
+    assert len(episode.traces) == 1  # the finished traces survive the score failure
 
 
 def test_roles_must_be_nonempty():
@@ -144,35 +144,35 @@ def test_slots_need_a_rollout():
 
 
 async def test_run_slot_observes_and_completes():
-    """`slots` plans n independent env-rollouts; `run_slot` runs each to its record,
+    """`slots` plans n independent env-rollouts; `run_slot` runs each to its episode,
     keeping the slot live (traces appear at mint) and firing `on_complete` once final."""
-    from verifiers.v1.trace import RolloutRecord
+    from verifiers.v1.trace import Episode
 
     env = vf.Environment(_env_config())
     _stub_agents(env)
     slots = env.slots(_task(env), n=3)
     assert [s.traces for s in slots] == [[]] * 3
     assert not any(s.done for s in slots)
-    completed: list[RolloutRecord] = []
+    completed: list[Episode] = []
 
-    async def on_complete(record: RolloutRecord) -> None:
-        completed.append(record)
+    async def on_complete(episode: Episode) -> None:
+        completed.append(episode)
 
-    records = [await env.run_slot(slot, None, None, on_complete) for slot in slots]
-    assert [s.record for s in slots] == records
-    assert [s.traces for s in slots] == [list(r.traces) for r in records]
+    episodes = [await env.run_slot(slot, None, None, on_complete) for slot in slots]
+    assert [s.episode for s in slots] == episodes
+    assert [s.traces for s in slots] == [list(r.traces) for r in episodes]
     assert all(s.done for s in slots)
-    assert completed == records
+    assert completed == episodes
 
 
 def test_finished_slot_from_saved_record():
     from verifiers.v1.env import RunSlot
-    from verifiers.v1.trace import RolloutRecord
+    from verifiers.v1.trace import Episode
 
     trace = Trace(task=TraceTask(type="Task", data=vf.TaskData(idx=7, prompt="hi")))
-    record = RolloutRecord.of(trace, env="stub")
-    slot = RunSlot.finished(record)
-    assert slot.done and slot.record is record and slot.task.data.idx == 7
+    episode = Episode.of(trace, env="stub")
+    slot = RunSlot.finished(episode)
+    assert slot.done and slot.episode is episode and slot.task.data.idx == 7
     assert slot.traces == [trace]
 
 

@@ -2,7 +2,7 @@
 
 Replay clears each trace's scores and recomputes everything computable from the saved
 transcript — trace-only handlers plus the layered config's judges. Runtime-requiring
-signals (and env-level `score()`, which needs the whole record) don't run offline, so a
+signals (and env-level `score()`, which needs the whole episode) don't run offline, so a
 replay carries offline scores only; the source run keeps the runtime-recorded values. Its saved
 config is the base for replay-specific overrides.
 """
@@ -22,7 +22,7 @@ from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
 from verifiers.v1.cli.output import (
     CONFIG_FILE,
     append_trace,
-    read_records,
+    read_episodes,
     save_config,
     write_config,
 )
@@ -66,9 +66,9 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     data_cls = task_data_cls(task_cls)
     # `WireTaskData` reads any taskset's saved task without importing its Task type.
     # Records flatten to their traces here: replay re-scores per trace (a re-scored
-    # multi-trace record re-writes as single-trace records).
-    records = read_records(source, Trace[WireTaskData, state_cls(task_cls)])
-    traces = [trace for record in records for trace in record.traces]
+    # multi-trace episode re-writes as single-trace episodes).
+    episodes = read_episodes(source, Trace[WireTaskData, state_cls(task_cls)])
+    traces = [trace for episode in episodes for trace in episode.traces]
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
 

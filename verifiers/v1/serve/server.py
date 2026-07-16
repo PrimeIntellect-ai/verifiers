@@ -127,9 +127,9 @@ class EnvServer:
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         (slot,) = self.env.slots(self._task(req.task_idx))
-        record = await self.env.run_slot(slot, ctx)
-        # Trust the env-minted record; serialize it once before client-side re-typing.
-        return RunRolloutResponse.model_construct(record=record)
+        episode = await self.env.run_slot(slot, ctx)
+        # Trust the env-minted episode; serialize it once before client-side re-typing.
+        return RunRolloutResponse.model_construct(episode=episode)
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         # The route survives for the legacy (v0) bridge (`LegacyEnvServer` overrides

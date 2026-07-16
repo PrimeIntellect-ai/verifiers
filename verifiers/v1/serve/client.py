@@ -33,7 +33,7 @@ from verifiers.v1.serve.types import (
     RunRolloutResponse,
 )
 from verifiers.v1.task import WireTaskData
-from verifiers.v1.trace import Trace, WireRecord
+from verifiers.v1.trace import Trace, WireEpisode
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -141,8 +141,8 @@ class EnvClient:
 
     async def run_rollout(
         self, task_idx: int, client: ClientConfig, model: str, sampling: SamplingConfig
-    ) -> WireRecord:
-        """Run one rollout for `task_idx`; return its `RolloutRecord` (traces typed
+    ) -> WireEpisode:
+        """Run one rollout for `task_idx`; return its `Episode` (traces typed
         `Trace[WireTaskData]`)."""
         response = await self._request(
             RunRolloutRequest(
@@ -150,7 +150,7 @@ class EnvClient:
             ),
             RunRolloutResponse,
         )
-        return response.record
+        return response.episode
 
     async def run_group(
         self,

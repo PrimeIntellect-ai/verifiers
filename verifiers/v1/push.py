@@ -37,12 +37,12 @@ class PushState:
 
 
 def trace_to_sample(
-    trace: Trace, rollout_number: int = 1, record_id: str | None = None
+    trace: Trace, rollout_number: int = 1, episode_id: str | None = None
 ) -> dict[str, Any]:
     """One trace -> the platform's sample dict (the "old" v0 eval-sample format).
 
     The hub table stays flat — one row per trace: a multi-trace rollout uploads one
-    row per role, each stamped with the shared `record_id` (plus its `role` and
+    row per role, each stamped with the shared `episode_id` (plus its `role` and
     `trainable`), so the grouping is reconstructable without a nested schema.
 
     The conversation is the unit — no prompt/completion split (meaningless mid-branch):
@@ -59,7 +59,7 @@ def trace_to_sample(
         "sample_id": trace.id,
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
-        "record_id": record_id,
+        "episode_id": episode_id,
         "role": trace.role,
         "trainable": trace.trainable,
         "task": task,
@@ -121,10 +121,10 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     return api_key, base, frontend, team_id
 
 
-def _record_ids(config: EvalConfig) -> dict[str, str]:
-    """trace id -> rollout-record id, read off the run's own traces.jsonl (the durable
-    source of the grouping); pre-record lines (bare traces) simply aren't in the map."""
-    from verifiers.v1.cli.output import TRACES_FILE, output_path, sniff_record
+def _episode_ids(config: EvalConfig) -> dict[str, str]:
+    """trace id -> rollout-episode id, read off the run's own traces.jsonl (the durable
+    source of the grouping); pre-episode lines (bare traces) simply aren't in the map."""
+    from verifiers.v1.cli.output import TRACES_FILE, output_path, sniff_episode
 
     ids: dict[str, str] = {}
     path = output_path(config) / TRACES_FILE
@@ -135,7 +135,7 @@ def _record_ids(config: EvalConfig) -> dict[str, str]:
             if not line.strip():
                 continue
             row = json.loads(line)
-            if sniff_record(row):
+            if sniff_episode(row):
                 for trace_row in row.get("traces") or []:
                     ids[trace_row["id"]] = row["id"]
     return ids
@@ -184,14 +184,14 @@ def push_traces(
 
     env_name = config.taskset.id or config.id
     metrics = compute_metrics()
-    record_ids = _record_ids(config)
+    episode_ids = _episode_ids(config)
     counts: dict[int, int] = {}
     samples = []
     for trace in traces:
         counts[trace.task.data.idx] = counts.get(trace.task.data.idx, 0) + 1
         samples.append(
             trace_to_sample(
-                trace, counts[trace.task.data.idx], record_id=record_ids.get(trace.id)
+                trace, counts[trace.task.data.idx], episode_id=episode_ids.get(trace.id)
             )
         )
 

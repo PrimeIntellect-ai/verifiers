@@ -17,9 +17,9 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_record
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.trace import RolloutRecord, WireRecord, WireTrace
+from verifiers.v1.trace import Episode, WireEpisode, WireTrace
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -55,31 +55,31 @@ def load(
     resume_dir: Path,
     selected_idxs: list[int],
     num_rollouts: int,
-    complete: Callable[[RolloutRecord], bool] | None = None,
-) -> tuple[list[RolloutRecord], dict[int, int]]:
-    """Load the good saved rollouts back into memory as finished records and diff them
+    complete: Callable[[Episode], bool] | None = None,
+) -> tuple[list[Episode], dict[int, int]]:
+    """Load the good saved rollouts back into memory as finished episodes and diff them
     against the run's target (`num_rollouts` per selected task): returns (the kept
-    records, rollouts owed per task idx). A rollout is kept or redone as a unit — the
-    record — so a multi-trace rollout interrupted mid-write is simply owed again.
-    `complete` is the environment's verdict on a parsed record (`Environment.complete`)
+    episodes, rollouts owed per task idx). A rollout is kept or redone as a unit — the
+    episode — so a multi-trace rollout interrupted mid-write is simply owed again.
+    `complete` is the environment's verdict on a parsed episode (`Environment.complete`)
     — an env that deliberately tolerates errored participants keeps the rollouts it
     accepted; without it (the server path, whose env lives in the workers) the default
-    verdict is `record.ok`: no errors anywhere, so an errored rollout is dropped and
+    verdict is `episode.ok`: no errors anywhere, so an errored rollout is dropped and
     re-run. Rewrites `traces.jsonl` to just the kept rows — verbatim,
     via a temp file + atomic rename, so an interrupted resume can't corrupt the prior
-    good results — and the resumed rollouts then append. Pre-record files (one bare
-    trace per line) load the same way, each trace as a single-trace record.
-    `WireRecord`/`WireTrace` read any taskset's file without importing it."""
+    good results — and the resumed rollouts then append. Pre-episode files (one bare
+    trace per line) load the same way, each trace as a single-trace episode.
+    `WireEpisode`/`WireTrace` read any taskset's file without importing it."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
 
-    def parse(row: dict) -> RolloutRecord:
-        if sniff_record(row):
-            return WireRecord.model_validate(row)
-        return RolloutRecord.of(WireTrace.model_validate(row))
+    def parse(row: dict) -> Episode:
+        if sniff_episode(row):
+            return WireEpisode.model_validate(row)
+        return Episode.of(WireTrace.model_validate(row))
 
-    verdict = complete if complete is not None else (lambda record: record.ok)
-    good: dict[int, list[tuple[bytes, RolloutRecord]]] = defaultdict(list)
+    verdict = complete if complete is not None else (lambda episode: episode.ok)
+    good: dict[int, list[tuple[bytes, Episode]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -98,27 +98,27 @@ def load(
                 if idx not in selected or len(good[idx]) >= num_rollouts:
                     continue
                 try:
-                    record = parse(row)
-                    if not verdict(record):
+                    episode = parse(row)
+                    if not verdict(episode):
                         continue
                 except Exception:  # malformed row: redo it
                     continue
                 good[idx].append(
-                    (line if line.endswith(b"\n") else line + b"\n", record)
+                    (line if line.endswith(b"\n") else line + b"\n", episode)
                 )
     keep: list[bytes] = []
-    records: list[RolloutRecord] = []
+    episodes: list[Episode] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
         rows = good.get(idx, [])
         keep.extend(line for line, _ in rows)
-        records.extend(record for _, record in rows)
+        episodes.extend(episode for _, episode in rows)
         if missing := num_rollouts - len(rows):
             owed[idx] = missing
     tmp = path.with_suffix(".jsonl.tmp")
     tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
-    return records, owed
+    return episodes, owed
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
