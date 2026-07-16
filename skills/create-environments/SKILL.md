@@ -207,7 +207,6 @@ Its `launch()` **must** point every model request at the provided `endpoint` wit
 Advertise capabilities accurately:
 
 - `SUPPORTS_MCP`
-- `SUPPORTS_USER_SIM`
 - `SUPPORTS_MESSAGE_PROMPT`
 - `APPENDS_SYSTEM_PROMPT`
 

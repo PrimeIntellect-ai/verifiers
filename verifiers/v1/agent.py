@@ -253,7 +253,7 @@ class Agent:
         its reach over its consumers, like an eval injecting into every rollout. The
         owned pool only when provably reachable from all of this run's consumers: always
         when it tunnels (a tunnel URL works from anywhere), else for a local run whose
-        task brings no tool/user servers and this agent no shared ones (any such server
+        task brings no tool servers and this agent no shared ones (any such server
         may sit in its own remote runtime and must reach `/state`). Otherwise `None` —
         the rollout brings up a per-run server sized to the task."""
         if self.interception is not None:

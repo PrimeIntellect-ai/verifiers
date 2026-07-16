@@ -257,7 +257,7 @@ that subclass. These are run-wide knobs, not per-row data; the row itself belong
 `.name` → the package name; `.resolved_env` → `env` merged with forwarded `forward_env` vars.
 
 A harness class also declares capability flags (ClassVars, not user-settable):
-`APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_USER_SIM`, `SUPPORTS_MESSAGE_PROMPT`.
+`APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_MESSAGE_PROMPT`.
 
 ### Built-in harness configs
 

@@ -1,9 +1,9 @@
 """Multi-turn echo driven by a scripted user — the single user-sim mechanism.
 
-The env's `rollout()` supplies the user as a plain closure via `user=`. The task is
-prompt-less, so the closure also opens the conversation (the interception's opening
-ping), then sends each phrase as the next user turn, and ends the exchange by
-returning no messages (the trace stops as `user_closed`).
+The env's `rollout()` scripts the user through a chat session. The task is
+prompt-less, so the first `turn(phrase)` opens the conversation; each later turn
+resumes the harness onto the accreted conversation, and leaving the `async with`
+closes the chat (the trace stops as `user_closed`).
 """
 
 import verifiers.v1 as vf

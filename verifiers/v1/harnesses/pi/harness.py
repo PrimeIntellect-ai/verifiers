@@ -177,7 +177,7 @@ class PiHarness(Harness[PiHarnessConfig]):
             system_prompt = "\n\n".join(system_texts) or None
             prompt = "\n\n".join(texts)
         if prompt is None:
-            raise ValueError("Pi requires a task prompt (it has no user simulator)")
+            raise ValueError("Pi requires a task prompt")
 
         reasoning = ctx.sampling.reasoning_effort not in (
             None,

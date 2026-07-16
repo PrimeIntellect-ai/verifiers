@@ -39,7 +39,7 @@ async def test_user(run_v1, harness_runtime, tmp_path):
     )
     assert trace.errors == []
     assert trace.num_turns >= 2  # genuinely multi-turn
-    assert trace.stop_condition == "user_closed"  # the closure's empty return ended it
+    assert trace.stop_condition == "user_closed"  # leaving the session loop ended it
     assert trace.reward == 1.0
 
 

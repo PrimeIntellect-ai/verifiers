@@ -397,8 +397,8 @@ def validate_pairing(
     `Agent.run` (per run, with the concrete task's type and the agent's borrowed
     `shared_tools` servers, against the resolved runtime). Only the collection's
     emptiness matters — declarations and live servers alike mean MCP is in play.
-    (Hosting a user is run-scoped, not task-scoped — `Agent.run` checks the
-    harness can resume an exchange when a `user=` is actually passed.)"""
+    (Hosting a user is chat-scoped, not task-scoped — `Agent.chat` checks the
+    harness can resume an exchange.)"""
     if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
@@ -785,7 +785,7 @@ class Environment(Generic[ParamsT]):
         """Plan `n` independent env-rollouts of `task` — one observable `RunSlot`
         each, run to a record by `run_slot`. `-r n` means exactly this: n records per
         task, nothing coupling them (env-internal multiplicity is the env's own knob).
-        Harness capability (tools / user sim / container) is class-level and already
+        Harness capability (tools / container) is class-level and already
         checked per role at construction (`validate_pairing`)."""
         if n < 1:
             raise ValueError("a task needs at least one rollout (n >= 1)")

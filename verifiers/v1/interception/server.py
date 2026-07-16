@@ -181,11 +181,11 @@ class InterceptionServer(Interception):
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
-        # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool/user servers
+        # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool servers
         # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
-        # A launched tool/user server fetches its rollout's task here to run `setup_task` — the task
+        # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the same bearer secret.
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
@@ -215,7 +215,7 @@ class InterceptionServer(Interception):
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (a `@stop` or user simulator raising) so the rollout
+        """Stash a model-turn-adjacent failure (a `@stop` raising) so the rollout
         re-raises it as the real cause, and report it to the harness as an HTTP error."""
         session.error = error
         logger.warning(
@@ -394,8 +394,8 @@ class InterceptionServer(Interception):
         tools: list[Tool] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
-        incrementally assembling the response to record on the trace. Single-shot — a streamed
-        turn never drives a user (the only client that streams is the eval relay)."""
+        incrementally assembling the response to record on the trace (the only client that
+        streams is the eval relay)."""
         try:
             refused = await session.refused()
         except RolloutError as e:
@@ -552,8 +552,8 @@ class InterceptionServer(Interception):
         return self.sessions.get(secret)
 
     async def handle_state_get(self, request: web.Request) -> web.Response:
-        """Hand a rollout's tool/user server the current shared `trace.state` (it pulls before each
-        `@vf.tool`/`respond` call, so it sees writes from the other servers)."""
+        """Hand a rollout's tool server the current shared `trace.state` (it pulls before each
+        `@vf.tool` call, so it sees writes from the other servers)."""
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
@@ -567,7 +567,7 @@ class InterceptionServer(Interception):
         )
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
-        """Hand a launched tool/user server the rollout's task (class ref + JSON) so it can run
+        """Hand a launched tool server the rollout's task (class ref + JSON) so it can run
         `setup_task` for this rollout — keyed by the same bearer secret as the state channel."""
         session = self._session_for(request)
         if session is None:

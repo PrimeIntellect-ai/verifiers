@@ -3,8 +3,8 @@
 Each turn shows colored squares that map to letters (Red=A, Green=B, ...); the model accumulates
 the codeword across turns and, on the final turn, outputs the whole thing. Turn 0's squares are
 seeded in the task's `prompt` (a `Messages` prompt carrying images); the later turns come
-from a scripted user — a closure the env's `rollout()` passes via `user=` — answering each
-assistant turn between segments, ending the exchange once every turn is answered. Reward is an exact match of
+from a scripted user — the env's `rollout()` drives a chat session, sending each reveal as
+the next user turn and closing the exchange once every turn is answered. Reward is an exact match of
 the final codeword; a partial-match metric tracks per-position accuracy. Images carry through
 the v1 message graph as `mm_kwargs` for training.
 """

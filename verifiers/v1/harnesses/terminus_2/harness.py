@@ -48,9 +48,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             raise ValueError("Terminus 2 does not support disabling tools")
         system_prompt, prompt = self.resolve_prompt(data)
         if prompt is None:
-            raise ValueError(
-                "Terminus 2 requires a task prompt (it has no user simulator)"
-            )
+            raise ValueError("Terminus 2 requires a task prompt")
         tmux_dir = f"/tmp/vf-terminus-2-{trace.id}"
         env = {
             **self.config.resolved_env,

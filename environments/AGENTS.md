@@ -30,7 +30,7 @@ The command also supports:
 - `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--harness.id <name>`
   - Prefer a built-in harness unless the model needs to run inside a custom program.
 
-Most tasksets do not need specific tools or custom harnesses. (To simulate a user interacting with the model, supply a user closure from an env's `rollout()` — see the [Agent docs](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/agent.md).)
+Most tasksets do not need specific tools or custom harnesses. (To simulate a user interacting with the model, open a chat session from an env's `rollout()` and script the user's turns — see the [Agent docs](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/agent.md).)
 
 > For a production-scale catalog of tasksets, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
 

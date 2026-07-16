@@ -65,9 +65,8 @@ logger = logging.getLogger(__name__)
 
 
 def _as_messages(raw: Messages) -> Messages:
-    """A user callable may return typed messages or wire dicts (a plain closure
-    naturally writes `{"role": "user", ...}`); the trace speaks typed, so
-    normalize here."""
+    """A turn's messages may arrive typed or as wire dicts (env code naturally
+    writes `{"role": "user", ...}`); the trace speaks typed, so normalize here."""
     return [parse_message(m) if isinstance(m, dict) else m for m in raw]
 
 
@@ -234,8 +233,8 @@ class RolloutRun:
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "
-                    "task.prompt, or pass user= to Agent.run (or drive the run "
-                    "through agent.chat())"
+                    "task.prompt, or drive the run through agent.chat() and open "
+                    "it with the first turn(message)"
                 )
             if self._owns_runtime:
                 await runtime.start()

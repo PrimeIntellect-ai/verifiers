@@ -36,7 +36,6 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     TunnelError,
-    UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import (
@@ -191,7 +190,6 @@ __all__ = [
     "ProviderError",
     "HarnessError",
     "ToolsetError",
-    "UserError",
     "SandboxError",
     "TaskError",
     "InterceptionError",

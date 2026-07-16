@@ -146,9 +146,10 @@ class TaskData(StrictBaseModel):
     name: str | None = None
     description: str | None = None
     prompt: str | Messages | None = None
-    """Initial user prompt; `None` lets the run's user (`Agent.run(user=...)` /
-    `agent.chat()`) open the conversation. (A default, not just optional: the wire
-    drops `None`s — `traces.jsonl` rows for prompt-less tasks must read back.)"""
+    """Initial user prompt; `None` means the user opens the conversation — run the
+    task through `agent.chat()`, whose first `turn(message)` speaks first. (A
+    default, not just optional: the wire drops `None`s — `traces.jsonl` rows for
+    prompt-less tasks must read back.)"""
     system_prompt: str | None = None
     image: str | None = None
     workdir: str | None = None
