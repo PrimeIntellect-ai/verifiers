@@ -40,7 +40,9 @@ class InfoResponse(BaseResponse):
     num_tasks: int | None = None
     """Task count; `None` means the taskset is infinite (bound runs with `num_tasks`)."""
     requires_group_scoring: bool = False
-    """Whether tasks must be run and resumed as whole groups."""
+    """Whether tasks must be run as whole groups — legacy (v0) envs only; a v1
+    server always reports False (sibling-dependent signals run inside the env's
+    own rollout)."""
     protocol: int = 1
     """The server's wire protocol version (`PROTOCOL_VERSION`); a pre-record server
     doesn't send the field, so it reads as 1."""
@@ -65,6 +67,8 @@ class RunRolloutResponse(BaseResponse):
 
 
 class RunGroupRequest(BaseRequest):
+    """Legacy (v0) route: group-scored v0 envs run a task's n rollouts together."""
+
     method: ClassVar[str] = "run_group"
     task_idx: int = Field(ge=0)
     n: int

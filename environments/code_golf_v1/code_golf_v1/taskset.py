@@ -1,21 +1,23 @@
-"""code_golf: write a short, fast Python program — showcases GROUP rewards.
+"""code_golf: write a short, fast Python program — the sibling-comparison recipe env.
 
-Each task asks for a tiny program with a known output. We sample a *group* of rollouts
-per task (run with `-r 2` for the intended pairwise effect) and score them. Anything
-that needs the runtime is measured per rollout, as a `@metric`, into the trace; the
-group rewards then just compare that trace metadata across the task's rollouts:
+Each task asks for a tiny program with a known output. The env fans one env-rollout
+into `--env.attempts` independent attempts by the same "golfer" role and scores them
+against each other. Anything that needs the runtime is measured per attempt, box-live,
+into that attempt's trace; the env's `score()` then just compares the recorded
+metadata across the finished siblings:
 
-  - `evaluate`      per-rollout `@metric`: runs the program once in that rollout's
+  - `evaluate`      per-attempt `@metric`: runs the program once in that attempt's
                     runtime and records `passed` + `latency`. (task, trace, runtime)
-  - `correct`       per-rollout `@reward`: reads `passed` off the trace.      (trace)
-  - `most_concise`  `@group_reward`: of the group, the shortest source wins.  (traces)
-  - `fastest`       `@group_reward`: of the group, the lowest `latency`
-                    wins — a comparison of recorded trace metadata.           (traces)
+  - `correct`       per-attempt `@reward`: reads `passed` off the trace.      (trace)
+  - `most_concise`  env `score()`: of the attempts, the shortest source wins.
+  - `fastest`       env `score()`: of the attempts, the lowest recorded
+                    `latency` wins — a comparison of trace metadata.
 
-So a group of 2 produces, per rollout: did it work, was it the shorter one, was it the
-quicker one — the relative signals you can only get by comparing siblings.
+So one env-rollout produces, per attempt: did it work, was it the shorter one, was it
+the quicker one — the relative signals you can only get by comparing siblings.
 """
 
+import asyncio
 import re
 import time
 
@@ -42,7 +44,7 @@ class CodeGolfData(vf.TaskData):
 class CodeGolfTask(vf.Task[CodeGolfData]):
     @vf.metric
     async def evaluate(self, trace: vf.Trace, runtime: vf.Runtime) -> dict[str, float]:
-        """Run the program once in the rollout's runtime; record correctness + latency."""
+        """Run the program once in the attempt's runtime; record correctness + latency."""
         program = extract_program(trace)
         if not program:
             return {"passed": 0.0, "latency": 1e6}
@@ -59,19 +61,31 @@ class CodeGolfTask(vf.Task[CodeGolfData]):
     async def correct(self, trace: vf.Trace) -> float:
         return trace.metrics.get("passed", 0.0)
 
-    @vf.group_reward(weight=0.5)
-    async def most_concise(self, traces: list[vf.Trace]) -> list[float]:
-        """The shortest program in the group wins; ties share."""
-        lengths = [len(extract_program(t)) or 10**9 for t in traces]
-        best = min(lengths)
-        return [1.0 if length == best else 0.0 for length in lengths]
 
-    @vf.group_reward(weight=0.5)
-    async def fastest(self, traces: list[vf.Trace]) -> list[float]:
-        """The lowest recorded `latency` in the group wins; ties share."""
+class CodeGolfParams(vf.EnvParams):
+    golfer: vf.AgentConfig = vf.AgentConfig()
+    attempts: int = 2
+    """Independent attempts per env-rollout, scored against each other."""
+
+
+class CodeGolfEnv(vf.Environment[CodeGolfParams]):
+    def roles(self):
+        return {"golfer": self.params.golfer}
+
+    async def rollout(self, task, agents):
+        return list(
+            await asyncio.gather(
+                *(agents["golfer"].run(task) for _ in range(self.params.attempts))
+            )
+        )
+
+    async def score(self, task, traces):
+        """The sibling comparison: shortest source and lowest latency win (ties share)."""
+        lengths = [len(extract_program(t)) or 10**9 for t in traces]
         times = [t.metrics.get("latency", 1e6) for t in traces]
-        best = min(times)
-        return [1.0 if t == best else 0.0 for t in times]
+        for trace, length, latency in zip(traces, lengths, times):
+            trace.record_reward("most_concise", float(length == min(lengths)), 0.5)
+            trace.record_reward("fastest", float(latency == min(times)), 0.5)
 
 
 class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):

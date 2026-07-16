@@ -1,4 +1,4 @@
-"""The eval runner: fan rollouts out (one episode per task) with bounded concurrency."""
+"""The eval runner: fan env-rollouts out with bounded concurrency."""
 
 import asyncio
 import contextlib
@@ -15,9 +15,7 @@ from verifiers.v1.cli.output import (
     output_path,
     save_config,
 )
-from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.env import Environment
-from verifiers.v1.episode import RunSlot
+from verifiers.v1.env import Environment, RunSlot
 from verifiers.v1.trace import RolloutRecord, Trace
 from verifiers.v1.utils.sampling import sample
 
@@ -29,8 +27,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     client = resolve_client(config.client)
     tasks = env.taskset.select(config.num_tasks, config.shuffle)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
-    # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
-    # concurrent rollouts (across episodes), so group rewards still see their whole episode.
+    # `num_rollouts` independent env-rollouts per task; the shared semaphore bounds how
+    # many are in flight at once.
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
@@ -44,10 +42,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # — so the resumed run is indistinguishable from one that was never interrupted.
     finished: list[RolloutRecord] = []
     if config.resume is not None:
-        # Resume incomplete group-reward tasks whole so every rollout is present.
-        group = bool(tasks) and bool(discover_decorated(tasks[0], "group_reward"))
         finished, owed = resume.load(
-            out, [t.data.idx for t in tasks], config.num_rollouts, group
+            out, [t.data.idx for t in tasks], config.num_rollouts
         )
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
@@ -76,19 +72,18 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         await append_record(out, record, write_lock)
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
-    # (non-shared ones start per rollout inside the episodes); the interception comes up
-    # here too, so concurrent rollouts share its servers + tunnels rather than one each. Build
-    # episodes inside `serving` so their agent borrows those resources at construction.
+    # (non-shared ones start per rollout); the interception comes up here too, so
+    # concurrent rollouts share its servers + tunnels rather than one each. Plan slots
+    # inside `serving` so the env's agents borrow those resources when the runs build them.
     async with env.serving():
-        episodes = [
-            env.episode(
-                task, ctx, n=owed[task.data.idx] if owed else config.num_rollouts
-            )
+        planned = [
+            slot
             for task in tasks
+            for slot in env.slots(
+                task, n=owed[task.data.idx] if owed else config.num_rollouts
+            )
         ]
-        slots = [RunSlot.finished(record) for record in finished] + [
-            slot for episode in episodes for slot in episode.slots
-        ]
+        slots = [RunSlot.finished(record) for record in finished] + planned
         push_state = None
         if config.push and config.rich:
             from verifiers.v1.push import PushState
@@ -101,11 +96,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         )
         async with display:
             results = await asyncio.gather(
-                *(episode.run(semaphore, on_complete) for episode in episodes)
+                *(env.run_slot(slot, ctx, semaphore, on_complete) for slot in planned)
             )
-            records = finished + [
-                record for episode_records in results for record in episode_records
-            ]
+            records = finished + list(results)
             traces = [trace for record in records for trace in record.traces]
             if (
                 push_state is not None
@@ -168,6 +161,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
+        # Only a legacy (v0) env can require group scoring — v1 envs score
+        # sibling-dependent signals inside their own rollout (`Environment.score`).
         group_scored = info.requires_group_scoring
         if info.num_tasks is None:  # infinite taskset - the run must be bounded
             if config.num_tasks is None:
@@ -186,7 +181,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:
-            records, owed = resume.load(out, idxs, config.num_rollouts, group_scored)
+            records, owed = resume.load(out, idxs, config.num_rollouts)
             finished = [trace for record in records for trace in record.traces]
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
@@ -211,8 +206,9 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         logger.info("results: %s", out)
         request_concurrency = config.max_concurrent
         if request_concurrency and group_scored:
-            # max_concurrent is a rollout resource bound, not a request-throughput target.
-            # A group is indivisible, so one oversized group must still be allowed to run.
+            # (legacy only) max_concurrent is a rollout resource bound, not a request-
+            # throughput target. A group is indivisible, so one oversized group must
+            # still be allowed to run.
             request_concurrency = max(1, request_concurrency // config.num_rollouts)
         semaphore = (
             asyncio.Semaphore(request_concurrency) if request_concurrency else None
@@ -243,10 +239,10 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             await append_record(out, record, write_lock)
             return list(record.traces)
 
-        # A group-scored task must run its rollouts together (cross-rollout scoring) →
-        # one `run_group` request per task (one worker); otherwise rollouts are
-        # independent → one `run_rollout` request each, which the broker round-robins
-        # (least-busy) across workers — mirrors the prime-rl dispatcher.
+        # A group-scored legacy task must run its rollouts together (cross-rollout
+        # scoring) → one `run_group` request per task (one worker); otherwise rollouts
+        # are independent → one `run_rollout` request each, which the broker
+        # round-robins (least-busy) across workers — mirrors the prime-rl dispatcher.
         units = (
             [run_group_unit(i) for i in idxs]
             if group_scored

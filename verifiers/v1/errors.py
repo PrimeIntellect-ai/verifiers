@@ -64,7 +64,7 @@ class SandboxError(RolloutError):
 
 
 class TaskError(RolloutError):
-    """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
+    """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
 
 class InterceptionError(RolloutError):

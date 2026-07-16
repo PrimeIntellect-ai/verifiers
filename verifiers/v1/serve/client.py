@@ -136,7 +136,7 @@ class EnvClient:
         )
 
     async def info(self) -> InfoResponse:
-        """Return the taskset `num_tasks` + whether its tasks group-score."""
+        """Return the taskset `num_tasks` + whether its tasks group-score (legacy v0 only)."""
         return await self._request(InfoRequest(), InfoResponse)
 
     async def run_rollout(
@@ -160,7 +160,8 @@ class EnvClient:
         model: str,
         sampling: SamplingConfig,
     ) -> list[Trace[WireTaskData]]:
-        """Run `n` rollouts for `task_idx` as a scored group; return typed `Trace[WireTaskData]`s."""
+        """Run `n` rollouts for `task_idx` as a scored group — the legacy (v0) route;
+        a v1 server refuses it. Returns typed `Trace[WireTaskData]`s."""
         response = await self._request(
             RunGroupRequest(
                 task_idx=task_idx, n=n, client=client, model=model, sampling=sampling

@@ -62,7 +62,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
 __all__ = ["AdditionTaskset"]
 ```
 
-You can also use `@vf.metric` to record non-scored values and `@vf.group_reward` for group rewards, which might be useful for training.
+You can also use `@vf.metric` to record non-scored values, which might be useful for training.
 
 ## Making values configurable
 
@@ -112,6 +112,41 @@ the declared type's defaults, so a standalone task works out of the box. Overrid
 finished rollout's bare `Trace` — how a multi-agent step spawns a follow-up task. Only the data rides the wire:
 `trace.task.data` is the `TaskData` (with `trace.task.type` recording the producing Task
 class's name), and behavior re-attaches by constructing the task class around it.
+
+## Lazy and infinite tasksets
+
+`load()` may be a generator instead of returning a list: yield each task as it's built.
+Consumers materialize tasks through `Taskset.select`, which pulls only what a run needs —
+`eval -n 5` builds 5 tasks, not the whole set — so a generator pays off whenever building
+a task is expensive.
+
+A procedural taskset can keep yielding forever. Declare `INFINITE = True` so consumers know
+the stream never ends — infinity is inherent to the taskset, not a config knob; how many
+tasks a run takes is the run's choice (`-n`), not the taskset's:
+
+```python
+import itertools
+from collections.abc import Iterator
+
+
+class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
+    INFINITE = True
+
+    def load(self) -> Iterator[AdditionTask]:
+        for i in itertools.count():
+            yield AdditionTask(
+                AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
+                self.config.task,
+            )
+```
+
+Two rules follow from infinity: a run over an infinite taskset must be bounded with
+`num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is a no-op (warned):
+there is no whole set to sample from, and the first `n` generated tasks are already an
+arbitrary sample. Generation must be deterministic — env-server pool workers each run
+their own `load()` and rely on every worker producing the same sequence, so seed any
+randomness with a constant (see `alphabet_sort_v1`, `color_codeword_v1`, or the built-in
+`textarena` taskset).
 
 ## Adding Tools
 
@@ -202,3 +237,66 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
 ```
 
 To override the judge model, set `taskset.task.judge.model` in your config (it is a string).
+
+## Multi-agent environments
+
+One eval rollout doesn't have to be one agent run. `Environment` is a concrete class
+whose defaults are the single-agent case; a package can export a subclass (via
+`__all__`, alongside its `Taskset` — the same plugin idiom as a bundled harness) that
+declares its parameters as an `EnvParams` subclass and overrides up to three methods:
+
+```python
+class DebateParams(vf.EnvParams):
+    pro: vf.AgentConfig = vf.AgentConfig()
+    con: vf.AgentConfig = vf.AgentConfig()
+    judge: vf.AgentConfig = vf.AgentConfig(model="openai/gpt-5-mini", trainable=False)
+
+
+class DebateEnv(vf.Environment[DebateParams]):
+    def roles(self):
+        """Which agent fills which seat — one AgentConfig per role."""
+        return {"pro": self.params.pro, "con": self.params.con, "judge": self.params.judge}
+
+    async def rollout(self, task, agents):
+        """How the agents interact on one task: imperative Python over Agent values.
+        A loop is rounds, asyncio.gather is fan-out, a function from traces to task
+        data is chaining. The returned traces are the rollout's record."""
+        pro, con = await asyncio.gather(
+            agents["pro"].run(task), agents["con"].run(task)
+        )
+        verdict = await agents["judge"].run(judge_task(task, pro, con))
+        return [pro, con, verdict]
+
+    async def score(self, task, traces):
+        """Sibling-dependent judgement over the finished set (per-trace judgement
+        already ran on each trace's own task). Attach via record_reward/record_metric."""
+        pro, con, verdict = traces
+        pro.record_reward("won", float("pro" in verdict.last_reply))
+        con.record_reward("won", float("con" in verdict.last_reply))
+```
+
+- **Roles are typed fields on the env's params block** (`Environment[DebateParams]`
+  binds it; `self.params` reads it), so the CLI addresses them for free:
+  `--env.pro.model ...`, `--env.judge.client.base_url ...`, `--env.con.max_turns 4` —
+  the framework narrows the `env` field by taskset id exactly as it narrows
+  `taskset`/`harness`, and a partial override deep-merges with the declared role
+  default (`--env.judge.sampling.temperature 0` doesn't reset the judge's pinned
+  model). An `AgentConfig`'s every field defaults to the run's own settings —
+  `AgentConfig()` is "the policy under evaluation/training" (which is what makes
+  self-play trainable); a role pins only what makes it a different seat (its own
+  harness, a frozen model, an off-train endpoint, tighter limits, `trainable=False`).
+- **The base builds the agents** — one per role, inside the eval's serving resources
+  (shared interception pool, shared tool servers, per-endpoint clients) — and hands
+  them into `rollout()`. The hook never constructs agents.
+- **One env-rollout is one `RolloutRecord`** on the wire (`traces.jsonl`, the serve
+  protocol): the task, a rollout-level `errors` list, and one trace per agent run,
+  each stamped with its `role` and `trainable`. Records succeed, resume, and retry
+  as a unit. An agent failure is data on its trace (the hook decides what a failed
+  participant means); an exception in `rollout()`/`score()` is the env-rollout
+  failing, and every trace that completed before it is still captured on the record.
+- `score()` is bounded by `--timeout.score`; `setup()`/`teardown()` hooks bracket the
+  serving lifetime for env-owned shared resources.
+
+For the single-agent case none of this is visible: the base `roles()` is one `"main"`
+seat driven by `--harness.*`, `rollout()` is `[await agents["main"].run(task)]`, and
+the record wraps exactly one unstamped trace.

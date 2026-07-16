@@ -55,7 +55,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
 __all__ = ["AdditionTaskset"]
 ```
 
-You can also use `@vf.metric` to record non-scored values and `@vf.group_reward` for group rewards, which might be useful for training.
+You can also use `@vf.metric` to record non-scored values, which might be useful for training.
 
 ## Making values configurable
 

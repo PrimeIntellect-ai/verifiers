@@ -8,7 +8,7 @@ task-specific fields (the reference answer, ground truths, ...). It is what ride
 
 `Task` is the behavior half: a plain class owning runtime prep (`setup`/`finalize`),
 server declarations (`tools`/`user`), well-formedness (`validate`), and judgement
-(`@reward`/`@metric`/`@group_reward` methods, run by `score`/`score_group`). It wraps
+(`@reward`/`@metric` methods, run by `score`). It wraps
 a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
 
     task = MyTask(data)                        # config defaults to the declared type's
@@ -21,17 +21,14 @@ default) — hooks and signals read the row off `self.data` and the knobs off
 on a type field; a taskset yields one task type (its `load` constructs it), and
 instances differ per row through their data.
 
-The task is the single judgement authority, scored at two granularities (execution
-lives in the rollout engine — per-rollout — and the Episode — group — which call these):
-  - `score` runs `@metric`/`@reward` — plus the plugged judges resolved from
-    `config.judges` (see `verifiers.v1.judge`) — over one trace (in its live runtime).
-  - `score_group` runs `@group_reward` over all the rollouts of this task at once —
-    pairwise/preference rewards that compare samples.
+The task is the per-trace judgement authority: `score` (called by the rollout engine,
+in the trace's live runtime) runs `@metric`/`@reward` — plus the plugged judges
+resolved from `config.judges` (see `verifiers.v1.judge`) — over one trace. Judgement
+that compares sibling traces of one env-rollout lives on `Environment.score`.
 
-A Task instance is shared across its rollouts (a group's `n` samples hold the same
-instance), so hooks and scoring methods must not stash per-rollout state on `self` —
-that lives on the trace (`trace.state`, typed via the `Task[..., MyState, ...]`
-param).
+A Task instance is shared across its rollouts (`-r n` runs hold the same instance),
+so hooks and scoring methods must not stash per-rollout state on `self` — that lives
+on the trace (`trace.state`, typed via the `Task[..., MyState, ...]` param).
 
 On the wire only the data (plus the producing class's name, `trace.task.type`)
 travels: a saved `trace.task.data` reads back as `WireTaskData`
@@ -318,23 +315,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
             )
             for judge, result in zip(judges, judge_results):
                 _record_result(trace, judge.reward_name, result, judge.config.weight)
-
-    async def score_group(self, traces: list[Trace]) -> None:
-        rewards = discover_decorated(self, "group_reward")
-        if not rewards:
-            return
-        available = {"task": self.data, "traces": traces}
-        async with boundary(TaskError, f"task {type(self).__name__} group scoring"):
-            reward_results = await invoke_all(rewards, available)
-            for fn, scores in zip(rewards, reward_results):
-                if len(scores) != len(traces):
-                    raise ValueError(
-                        f"@group_reward {fn.__name__} returned {len(scores)} score(s) "
-                        f"for {len(traces)} rollout(s); it must return one per trace"
-                    )
-                weight = getattr(fn, "_vf_weight", 1.0)
-                for trace, score in zip(traces, scores):
-                    trace.record_reward(fn.__name__, score, weight)
 
 
 TaskT = TypeVar("TaskT", bound=Task)

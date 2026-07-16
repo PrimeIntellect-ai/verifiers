@@ -90,17 +90,3 @@ def reward(
     """Mark a weighted per-rollout reward returning a float or keyed scores."""
     decorator = mark("reward", reward_priority=priority, _vf_weight=weight)
     return decorator if func is None else decorator(func)
-
-
-@overload
-def group_reward(func: F, weight: float = 1.0, priority: int = 0) -> F: ...
-@overload
-def group_reward(
-    func: None = None, weight: float = 1.0, priority: int = 0
-) -> Callable[[F], F]: ...
-def group_reward(
-    func: F | None = None, weight: float = 1.0, priority: int = 0
-) -> F | Callable[[F], F]:
-    """Mark a weighted group reward returning one score per trace."""
-    decorator = mark("group_reward", group_reward_priority=priority, _vf_weight=weight)
-    return decorator if func is None else decorator(func)

@@ -51,7 +51,7 @@ def test_resume_keeps_good_records_and_owes_the_rest(tmp_path):
     bad = RolloutRecord.of(_trace(1, error=True), env="demo-v1")
     write_record(tmp_path, good)
     write_record(tmp_path, bad)
-    records, owed = resume.load(tmp_path, [0, 1], num_rollouts=1, group=False)
+    records, owed = resume.load(tmp_path, [0, 1], num_rollouts=1)
     assert [r.id for r in records] == [good.id]
     assert owed == {1: 1}  # the errored rollout is redone as a unit
     # The file was rewritten to just the kept rows, verbatim.
@@ -65,7 +65,7 @@ def test_resume_reads_pre_record_files(tmp_path):
         _trace(0, error=True).model_dump(mode="json", exclude_none=True),
     ]
     (tmp_path / TRACES_FILE).write_text("".join(json.dumps(r) + "\n" for r in rows))
-    records, owed = resume.load(tmp_path, [0], num_rollouts=2, group=False)
+    records, owed = resume.load(tmp_path, [0], num_rollouts=2)
     assert len(records) == 1 and records[0].traces[0].id == rows[0]["id"]
     assert owed == {0: 1}
 

@@ -14,7 +14,7 @@ from verifiers.v1.clients import (
     TrainClientConfig,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.decorators import metric, reward, stop, tool
 from verifiers.v1.env import (
     AgentConfig,
     ElasticPoolConfig,
@@ -26,7 +26,6 @@ from verifiers.v1.env import (
     TimeoutConfig,
     pool_serve_kwargs,
 )
-from verifiers.v1.episode import Episode
 from verifiers.v1.errors import (
     HarnessError,
     InterceptionError,
@@ -187,7 +186,6 @@ __all__ = [
     "tool",
     "metric",
     "reward",
-    "group_reward",
     # errors
     "RolloutError",
     "ProviderError",
@@ -231,7 +229,6 @@ __all__ = [
     "RetryConfig",
     "RolloutRetryConfig",
     "TimeoutConfig",
-    "Episode",
     # agent
     "Agent",
     # loaders

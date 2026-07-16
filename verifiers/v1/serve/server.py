@@ -11,7 +11,6 @@ from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
-from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.loaders import load_environment
 from verifiers.v1.serve.types import (
@@ -48,12 +47,9 @@ class EnvServer:
         if not type(self.env.taskset).INFINITE:
             self._tasks = list(self._task_iter)
             self.num_tasks = len(self._tasks)
-        # One task type per taskset (the authoring contract; its `load()` constructs it),
-        # so group scoring is a run-wide property.
-        first = self._task(0) if self.num_tasks != 0 else None
-        self.requires_group_scoring = first is not None and bool(
-            discover_decorated(first, "group_reward")
-        )
+        # v1 envs never group-score: sibling-dependent signals run inside the env's own
+        # rollout (`Environment.score`). Only the legacy (v0) bridge sets this.
+        self.requires_group_scoring = False
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -124,25 +120,24 @@ class EnvServer:
     def serving(self):
         """Context for the server's eval-level serving resources (shared tool servers +
         interception), entered for the server's lifetime so they're reused across
-        requests; episodes built inside it inherit them (see `Environment.serving`). The
+        requests; rollouts run inside it inherit them (see `Environment.serving`). The
         legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
         return self.env.serving()
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._task(req.task_idx), ctx, n=1)
-        records = await episode.run()
+        (slot,) = self.env.slots(self._task(req.task_idx))
+        record = await self.env.run_slot(slot, ctx)
         # Trust the env-minted record; serialize it once before client-side re-typing.
-        return RunRolloutResponse.model_construct(record=records[0])
+        return RunRolloutResponse.model_construct(record=record)
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
-        ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._task(req.task_idx), ctx, n=req.n)
-        records = await episode.run()
-        # run_group still speaks flat traces (it exists only for @group_reward and dies
-        # with it); avoid a dump-and-validate copy for every trusted trace in the group.
-        return RunGroupResponse.model_construct(
-            traces=[trace for record in records for trace in record.traces]
+        # The route survives for the legacy (v0) bridge (`LegacyEnvServer` overrides
+        # this); a v1 env has no group scoring — its `info` says so, and a dispatcher
+        # that calls anyway gets a loud error instead of a silent single-rollout group.
+        raise RuntimeError(
+            "run_group is a legacy (v0) route; v1 envs score sibling-dependent "
+            "signals inside their own rollout — request run_rollout instead"
         )
 
     async def _handle(

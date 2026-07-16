@@ -206,7 +206,7 @@ class Agent:
         validate_pairing(
             self.harness, type(task), runtime_config, shared_tools=self.shared_tools
         )
-        # Timeout precedence as in `Environment.episode`, with the agent standing in
+        # Timeout precedence as in an eval's env-rollouts, with the agent standing in
         # for cli/toml: agent-level wins, else the task's, else no limit.
         setup_timeout = (
             self.timeout.setup

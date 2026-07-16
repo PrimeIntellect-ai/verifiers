@@ -16,7 +16,7 @@ from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
 from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.episode import RunSlot
+from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import (
@@ -394,8 +394,8 @@ def _stage(trace: Trace) -> str:
     """The stage a live (not-yet-done) rollout is in, derived from its trace's timing
     spans — the engine opens and closes each span exactly at the stage transitions, so
     the current stage is the latest span started but not yet ended. A completed trace
-    that isn't done is waiting on its group's other rollouts before `@group_reward`s —
-    that's scoring."""
+    whose slot isn't done is waiting on its env-rollout's other traces (and the env's
+    `score()`) — that's scoring."""
     if trace.is_completed:
         return "scoring"
     for stage, span in (

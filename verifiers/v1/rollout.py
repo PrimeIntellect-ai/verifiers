@@ -7,10 +7,10 @@ one is given, else a per-rollout server exposed via its own runtime), then drive
 staged lifecycle while the runtime is live — task + harness setup, the harness run,
 task `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
 timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
-then tears the runtime down in a `finally`. Cross-rollout `@group_reward`s run
-afterwards (in the Episode) over the traces alone — they never need a live runtime — so
-a runtime is never kept up past its own rollout. `Agent.run` is the only caller: an
-agent decides what goes into a rollout, this module runs it.
+then tears the runtime down in a `finally`. Cross-trace judgement runs afterwards
+(`Environment.score`, over the finished sibling traces alone — it never needs a live
+runtime), so a runtime is never kept up past its own rollout. `Agent.run` is the only
+caller: an agent decides what goes into a rollout, this module runs it.
 """
 
 import asyncio
@@ -100,7 +100,7 @@ async def run_rollout(
     owns teardown: a borrowed runtime is neither started nor stopped here. `on_trace`
     observes the run's trace the moment it's minted (before any I/O) — how a caller
     watches the run live (stage from the trace's timing spans, tokens and turns as the
-    session records them; see `episode.RunSlot`)."""
+    session records them; see `env.RunSlot`)."""
     limits = limits or RolloutLimits()
     shared_tools = shared_tools or {}
     # The trace carries the DATA (the wire half); behavior stays on the task.

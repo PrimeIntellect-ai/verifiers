@@ -302,7 +302,7 @@ class LegacyEnvServer(EnvServer):
     """Serve a classic v0 ``verifiers`` environment over the v1 ZMQ protocol.
 
     Mirrors ``EnvServer`` (same ``_handle`` / ``run`` / ``run_server``), but loads a v0 env
-    via ``verifiers.load_environment`` and runs ``env.run_rollout`` instead of a v1 episode.
+    via ``verifiers.load_environment`` and runs ``env.run_rollout`` instead of a v1 rollout.
     """
 
     def __init__(

@@ -1,10 +1,11 @@
-"""Compose a taskset and harness into runnable episodes."""
+"""Compose a taskset, its agents, and how one task becomes one env-rollout."""
 
 import asyncio
 import contextlib
 import logging
 import traceback
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Generic, Literal, TypeVar
 
 from pydantic import Field, SerializeAsAny, model_validator
@@ -12,7 +13,6 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
-from verifiers.v1.episode import Episode
 from verifiers.v1.types import ID, SamplingConfig
 from verifiers.v1.interception import (
     ElasticInterceptionPoolConfig,
@@ -22,7 +22,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.session import RolloutLimits
-from verifiers.v1.retries import RetryConfig
+from verifiers.v1.retries import RetryConfig, run_record_with_retry
 from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
@@ -32,6 +32,7 @@ from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Error, RolloutRecord, Trace, TraceTask
 from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 if TYPE_CHECKING:
@@ -310,21 +311,21 @@ def resolve_runtime_config(
         and getattr(config, "workdir") == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
-    for field, value in task.data.resources.model_dump(exclude_none=True).items():
-        spec = type(config).model_fields.get(field)
+    for resource, value in task.data.resources.model_dump(exclude_none=True).items():
+        spec = type(config).model_fields.get(resource)
         if spec is None:
-            key = (config.type, field)
+            key = (config.type, resource)
             if warned is not None and key not in warned:
                 warned.add(key)
                 logger.warning(
                     "runtime %r doesn't support resource %r; ignoring it",
                     config.type,
-                    field,
+                    resource,
                 )
         elif (
-            getattr(config, field) == spec.default
+            getattr(config, resource) == spec.default
         ):  # still the default → task may set it
-            updates[field] = value
+            updates[resource] = value
         # else: cli/toml changed it from the default → it wins over the task
     return config.model_copy(update=updates) if updates else config
 
@@ -370,7 +371,7 @@ def cap_remote_harness_timeout(
 ) -> float | None:
     """Remote sandboxes have a maximum lifetime of 24 hours: cap the harness timeout
     there (with a warning) so a long run times out cleanly in the framework instead of
-    the provider killing the box mid-run. Shared by `Environment.episode` and
+    the provider killing the box mid-run. Shared by the env's rollouts and
     `Agent.run`."""
     if (
         harness_timeout is not None
@@ -386,6 +387,31 @@ def cap_remote_harness_timeout(
         )
         return 24 * 60 * 60
     return harness_timeout
+
+
+@dataclass
+class RunSlot:
+    """One planned env-rollout of a task, observable while it happens: `traces`
+    collects the current attempt's live traces from the moment the engine mints them
+    (a retry restarts the list with the fresh attempt's; a single-agent rollout has
+    exactly one), `record` is the finished rollout's record, and `done` flips once
+    that record is final. The `--rich` dashboard renders slots (deriving each trace's
+    live stage from its timing spans); `--resume` preloads the previous session's kept
+    records as `finished` slots."""
+
+    task: Task
+    traces: list[Trace] = field(default_factory=list)
+    record: RolloutRecord | None = None
+    done: bool = False
+
+    @classmethod
+    def finished(cls, record: RolloutRecord) -> "RunSlot":
+        return cls(
+            task=Task(record.task.data),
+            traces=list(record.traces),
+            record=record,
+            done=True,
+        )
 
 
 ParamsT = TypeVar("ParamsT", bound=EnvParams)
@@ -478,8 +504,8 @@ class Environment(Generic[ParamsT]):
         self._interception: Interception | None = None
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
         ({name: SharedToolServer}) and the interception. The env's agents borrow them, so
-        every `episode()` built inside the context rides them — neither runner has to
-        thread them through `Episode.run`."""
+        every run planned inside the context rides them — neither runner has to
+        thread them through `run_slot`."""
         self._agents: dict[str, "Agent"] | None = None
         self._agents_ctx: ModelContext | None = None
         self._role_clients: dict[str, Client] = {}
@@ -646,22 +672,53 @@ class Environment(Generic[ParamsT]):
             record.traces = list(completed)
         return record
 
-    def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
-        """Resolve `task` into a runnable episode: its `n` env-rollouts, each minted as
-        one record by `run_record` (the role agents resolve the task's runtime and
-        timeouts per run — cli/toml > task > default, None = no limit), scored together
-        (the task's `@group_reward`s). Harness capability (tools / user sim /
-        container) is class-level and already checked per role at construction
-        (`validate_pairing`)."""
-        return Episode(self, task, ctx, n, retry=self.config.retries.rollout)
+    def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
+        """Plan `n` independent env-rollouts of `task` — one observable `RunSlot`
+        each, run to a record by `run_slot`. `-r n` means exactly this: n records per
+        task, nothing coupling them (env-internal multiplicity is the env's own knob).
+        Harness capability (tools / user sim / container) is class-level and already
+        checked per role at construction (`validate_pairing`)."""
+        if n < 1:
+            raise ValueError("a task needs at least one rollout (n >= 1)")
+        return [RunSlot(task) for _ in range(n)]
+
+    async def run_slot(
+        self,
+        slot: RunSlot,
+        ctx: ModelContext,
+        semaphore: asyncio.Semaphore | None = None,
+        on_complete: Callable[[RolloutRecord], Awaitable[None]] | None = None,
+    ) -> RolloutRecord:
+        """Run one planned env-rollout to its finished record (whole-record retries
+        per `retries.rollout`; the role agents resolve the task's runtime and timeouts
+        per run — cli/toml > task > default, None = no limit). `slot` stays observable
+        while it happens; `on_complete` fires the moment the record is final — the
+        runners' persistence hook."""
+
+        async def attempt() -> RolloutRecord:
+            slot.traces = []  # a retry shows the fresh attempt's traces
+            return await self.run_record(slot.task, ctx, on_trace=slot.traces.append)
+
+        async with semaphore or contextlib.nullcontext():
+            record = await run_record_with_retry(attempt, self.config.retries.rollout)
+        # The record is authoritative: the hook's returned order, or (on a hook
+        # failure) the completed subset.
+        slot.traces = list(record.traces)
+        slot.record = record
+        slot.done = True
+        if on_complete is not None:
+            await on_complete(record)
+        # hand freed per-turn request bodies (base64 images) back to the OS
+        await trim_memory_periodically()
+        return record
 
     @contextlib.asynccontextmanager
     async def serving(self):
         """Hold the env-level serving resources for the duration of an eval: the shared tool
         servers (built once, see `shared_tools`), the interception, and whatever the env's
-        own `setup()` brings up. Stash them so every `episode()` built inside this context
+        own `setup()` brings up. Stash them so every rollout run inside this context
         rides them (through the env's agents) — that's what keeps both eval runners
-        (in-process and env-server) on one serving path. Build episodes inside this
+        (in-process and env-server) on one serving path. Plan and run slots inside this
         context; the resources are torn down on exit (`teardown()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(

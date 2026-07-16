@@ -74,16 +74,14 @@ class GEPAAdapter:
             )
             for t in (self.tasks[idx] for idx in batch)
         ]
-        episodes = [self.env.episode(task, self.ctx, n=1) for task in tasks]
+        slots = [slot for task in tasks for slot in self.env.slots(task)]
         results = await asyncio.gather(
-            *(episode.run(self.semaphore, self.on_complete) for episode in episodes)
+            *(
+                self.env.run_slot(slot, self.ctx, self.semaphore, self.on_complete)
+                for slot in slots
+            )
         )
-        return [
-            trace
-            for episode_records in results
-            for record in episode_records
-            for trace in record.traces
-        ]
+        return [trace for record in results for trace in record.traces]
 
     def make_reflective_dataset(
         self,

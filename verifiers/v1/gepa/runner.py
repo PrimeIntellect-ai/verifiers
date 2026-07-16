@@ -17,7 +17,6 @@ from verifiers.v1.env import Environment
 from verifiers.v1.gepa.adapter import GEPAAdapter
 from verifiers.v1.gepa.config import GEPAConfig
 from verifiers.v1.gepa.dataset import (
-    reject_group_reward_tasksets,
     resolve_gepa_seed_prompt,
     split_tasks,
 )
@@ -41,9 +40,6 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     all_tasks = env.taskset.select(config.num_train + config.num_val, config.shuffle)
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
     selected_tasks = [*train_tasks, *val_tasks]
-    reject_group_reward_tasksets(
-        selected_tasks
-    )  # GEPA scores n=1 per task; groups need >=2
     # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
     # a taskset with per-task system prompts could otherwise seed from a task in neither split.
     seed_prompt = resolve_gepa_seed_prompt(selected_tasks, config.initial_prompt)
@@ -66,7 +62,7 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     # Stream every rollout's record to traces.jsonl as it finalizes — the same persist hook
-    # run_eval passes to Episode.run (each trace records its candidate prompt).
+    # run_eval passes to `env.run_slot` (each trace records its candidate prompt).
     write_lock = asyncio.Lock()
 
     async def on_complete(record: RolloutRecord) -> None:

@@ -137,6 +137,45 @@ def test_roles_must_be_nonempty():
         Empty(_env_config())
 
 
+def test_slots_need_a_rollout():
+    env = vf.Environment(_env_config())
+    with pytest.raises(ValueError, match="n >= 1"):
+        env.slots(_task(env), n=0)
+
+
+async def test_run_slot_observes_and_completes():
+    """`slots` plans n independent env-rollouts; `run_slot` runs each to its record,
+    keeping the slot live (traces appear at mint) and firing `on_complete` once final."""
+    from verifiers.v1.trace import RolloutRecord
+
+    env = vf.Environment(_env_config())
+    _stub_agents(env)
+    slots = env.slots(_task(env), n=3)
+    assert [s.traces for s in slots] == [[]] * 3
+    assert not any(s.done for s in slots)
+    completed: list[RolloutRecord] = []
+
+    async def on_complete(record: RolloutRecord) -> None:
+        completed.append(record)
+
+    records = [await env.run_slot(slot, None, None, on_complete) for slot in slots]
+    assert [s.record for s in slots] == records
+    assert [s.traces for s in slots] == [list(r.traces) for r in records]
+    assert all(s.done for s in slots)
+    assert completed == records
+
+
+def test_finished_slot_from_saved_record():
+    from verifiers.v1.env import RunSlot
+    from verifiers.v1.trace import RolloutRecord
+
+    trace = Trace(task=TraceTask(type="Task", data=vf.TaskData(idx=7, prompt="hi")))
+    record = RolloutRecord.of(trace, env="stub")
+    slot = RunSlot.finished(record)
+    assert slot.done and slot.record is record and slot.task.data.idx == 7
+    assert slot.traces == [trace]
+
+
 def test_role_ctx_pins_fall_back_per_field():
     env = vf.Environment(_env_config())
     ctx = vf.ModelContext(model="run-model", client=object())  # duck client
