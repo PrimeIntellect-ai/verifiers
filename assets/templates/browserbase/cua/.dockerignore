@@ -1,7 +1,9 @@
 # Ignore node_modules to ensure fresh install with correct architecture
 node_modules
 
-# Note: dist is NOT ignored because Dockerfile.runtime needs to copy the binary from it
+# Ignore local build outputs; Dockerfile.runtime builds the SEA binary in-image
+dist
+outputs
 
 # Ignore git
 .git

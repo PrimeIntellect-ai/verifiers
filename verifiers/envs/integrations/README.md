@@ -75,7 +75,7 @@ Controls how Stagehand's internal LLM calls (for `observe`, `act`, `extract`) ar
 
 ### CUA Mode Options
 
-CUA mode automatically deploys the CUA server to Browserbase sandboxes using a pre-built Docker image. **No manual setup is required** - just set your environment variables and run.
+CUA mode automatically deploys the CUA server to Browserbase sandboxes using a pre-built Prime image. **No manual setup is required** - just set your environment variables and run.
 
 #### Execution Modes
 
@@ -87,7 +87,7 @@ CUA mode automatically deploys the CUA server to Browserbase sandboxes using a p
 
 #### Default Behavior
 
-By default, CUA mode uses the pre-built Docker image (`deepdream19/cua-server:latest`) which is automatically deployed to Browserbase sandboxes:
+By default, CUA mode uses the repo default `browserbase/cua-server:latest`, which is automatically deployed to Browserbase sandboxes unless you override `prebuilt_image` with your own fully qualified Prime image ref:
 
 ```python
 env = BrowserEnv(
@@ -110,7 +110,7 @@ env = BrowserEnv(
     dataset=dataset,
     rubric=rubric,
     use_sandbox=False,  # Disable automatic sandbox deployment
-    cua_server_url="http://localhost:3001",  # Point to local server
+    server_url="http://localhost:3001",  # Point to local server
 )
 ```
 
@@ -119,19 +119,19 @@ To start the server locally:
 ```bash
 cd assets/templates/browserbase/cua
 pnpm install
-./start.sh
+pnpm dev
 ```
 
 ### Environment Variables
 
 ```bash
 BROWSERBASE_API_KEY         # Browserbase cloud API key
-BROWSERBASE_PROJECT_ID      # Browserbase cloud project
+BROWSERBASE_PROJECT_ID      # Optional Browserbase cloud project
 MODEL_API_KEY               # For DOM mode LLM calls (Stagehand's model)
-OPENAI_API_KEY              # For LLM judge evaluation
+OPENAI_API_KEY              # Required for CUA server session creation and for LLM judge evaluation
 ```
 
-Locally, export these in your shell. On the [Environments Hub](https://app.primeintellect.ai/dashboard/environments), store credentials as **Secrets** on the environment ([Secrets](https://docs.primeintellect.ai/tutorials-environments/secrets)); use **Variables** only for non-sensitive config. Details: [browser_env README](browser_env/README.md).
+Locally, export these in your shell. On the [Environments Hub](https://app.primeintellect.ai/dashboard/environments), store credentials as **Secrets** on the environment ([Secrets](https://docs.primeintellect.ai/tutorials-environments/secrets)); use **Variables** only for non-sensitive config. For CUA mode, `OPENAI_API_KEY` must be visible to the CUA server process itself; the normal `BrowserEnv` sandbox flow forwards it automatically, but manual `prime sandbox create` or local `pnpm dev` flows must inject it explicitly. Details: [browser_env README](browser_env/README.md).
 
 ## OpenEnvEnv
 

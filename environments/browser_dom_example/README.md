@@ -31,7 +31,7 @@ uv pip install -e ./environments/browser_dom_example
 ```bash
 # Browserbase credentials
 export BROWSERBASE_API_KEY="your-api-key"
-export BROWSERBASE_PROJECT_ID="your-project-id"
+# Optional: export BROWSERBASE_PROJECT_ID="your-project-id"
 
 # API keys for models
 export OPENAI_API_KEY="your-openai-key"    # For agent model

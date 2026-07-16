@@ -2,15 +2,16 @@
 
 A Fastify server that exposes Stagehand's Computer Use Agent (CUA) browser primitives as REST endpoints, enabling external agents to control browser sessions remotely.
 
-> **Note**: This server is automatically deployed to sandbox containers when using `BrowserEnv` with `mode="cua"` and `use_sandbox=True` (the default). You typically don't need to run this server manually unless you're doing local development.
+> **Note**: When `BrowserEnv` runs with `mode="cua"` and `use_sandbox=True` (the default), it starts whichever image is configured in `prebuilt_image`. The repo default is `browserbase/cua-server:latest`. If you publish your own image with `prime images push`, Prime stores it under your active personal or team context, for example `team-<team-id>/cua-server:<tag>`, and you pass that fully qualified ref via `prebuilt_image`.
 
 ## Automatic Sandbox Deployment
 
 When using `BrowserEnv(mode="cua")`, the server is automatically:
-1. Uploaded to a sandbox container
-2. Started via `setup.sh`
-3. Accessed via curl commands inside the sandbox
-4. Cleaned up when the rollout completes
+1. Started from `prebuilt_image` (default: `browserbase/cua-server:latest`)
+2. Accessed via curl commands inside the sandbox
+3. Cleaned up when the rollout completes
+
+If you disable `use_prebuilt_image`, BrowserEnv falls back to uploading the SEA binary into a sandbox at rollout time.
 
 ```python
 # This automatically deploys the CUA server to a sandbox
@@ -48,6 +49,39 @@ env = BrowserEnv(
 )
 ```
 
+## Building and Publishing Images
+
+Build a local runtime image from this template:
+
+```bash
+docker build --platform linux/amd64 -f Dockerfile.runtime -t cua-server:local .
+```
+
+Publish a versioned tag to Prime Images:
+
+```bash
+./build-and-push.sh bb-project-id-optional-20260326
+```
+
+The script waits for the remote build to finish and prints the fully qualified Prime image ref to use in `prebuilt_image`, for example `your-user/cua-server:bb-project-id-optional-20260326` or `team-<team-id>/cua-server:bb-project-id-optional-20260326`, depending on your active Prime context.
+
+If you want to move `latest`, rerun the same source revision with the `latest` tag:
+
+```bash
+./build-and-push.sh latest
+```
+
+To run the image directly in a Prime sandbox, include the server-side OpenAI key:
+
+```bash
+prime sandbox create team-<team-id>/cua-server:bb-project-id-optional-20260326 \
+  --start-command "./cua-server-linux-x64" \
+  --env CUA_SERVER_PORT=3000 \
+  --secret OPENAI_API_KEY="$OPENAI_API_KEY"
+```
+
+`OPENAI_API_KEY` is required by the server process when creating Stagehand-backed sessions. `BROWSERBASE_API_KEY` and the optional Browserbase project id are provided per request to `POST /sessions`, not as sandbox environment variables.
+
 ## Architecture
 
 ```
@@ -62,10 +96,13 @@ npm install @browserbasehq/stagehand fastify
 
 ## Environment Variables
 
+Server process variables:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CUA_SERVER_PORT` | `3000` | Server port |
 | `CUA_SERVER_HOST` | `0.0.0.0` | Server host |
+| `OPENAI_API_KEY` | None | Required when creating sessions; Stagehand uses it internally inside the CUA server |
 
 ## API Endpoints
 
@@ -92,7 +129,9 @@ POST /sessions
 Content-Type: application/json
 
 {
-  "env": "LOCAL",           // or "BROWSERBASE"
+  "env": "BROWSERBASE",           // or "LOCAL"
+  "browserbaseApiKey": "...", // required for BROWSERBASE sessions
+  "browserbaseProjectId": "...", // optional; Browserbase default project is used when omitted
   "viewport": {
     "width": 1024,
     "height": 768
@@ -191,8 +230,14 @@ Returns:
 ## Example Usage
 
 ```bash
-# Create a session
-SESSION=$(curl -s -X POST http://localhost:3000/sessions | jq -r '.sessionId')
+# Create a Browserbase-backed session
+SESSION=$(curl -s -X POST http://localhost:3000/sessions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "env": "BROWSERBASE",
+    "browserbaseApiKey": "'"$BROWSERBASE_API_KEY"'",
+    "browserbaseProjectId": "'"$BROWSERBASE_PROJECT_ID"'"
+  }' | jq -r '.sessionId')
 
 # Navigate to a website
 curl -X POST http://localhost:3000/sessions/$SESSION/action \
@@ -271,4 +316,3 @@ cua-server/
 ├── tsconfig.json      # TypeScript configuration
 └── README.md          # This file
 ```
-
