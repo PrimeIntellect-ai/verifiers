@@ -68,7 +68,7 @@ class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
             judge_verdict(response.text, self.config.choices) == self.config.choices[0]
         )
 
-    async def score(self, task: TaskData, trace: Trace) -> float:
+    def _fields(self, task: TaskData, trace: Trace) -> dict[str, str]:
         answer = getattr(task, self.config.answer_field, None)
         if answer is None:
             raise ValueError(
@@ -77,18 +77,28 @@ class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
             )
         if isinstance(answer, (list, tuple)):
             answer = "\n".join(str(item) for item in answer)
-        response = judge_response(trace, self.config.view)
-        if not response.strip():
-            return 0.0  # nothing to grade — skip the (foregone) judge call
         positive, negative = self.config.choices
-        result = await self.evaluate(
-            trace=trace,
+        return dict(
             question=judge_question(task, self.config.question_field),
             answer=answer,
-            response=response,
+            response=judge_response(trace, self.config.view),
             positive=positive,
             negative=negative,
         )
+
+    def render(self, task: TaskData, trace: Trace) -> str:
+        return cast(str, self.build_messages(**self._fields(task, trace)))
+
+    def verdict(self, task: TaskData, trace: Trace, reply: str) -> float:
+        return float(
+            judge_verdict(reply, self.config.choices) == self.config.choices[0]
+        )
+
+    async def score(self, task: TaskData, trace: Trace) -> float:
+        fields = self._fields(task, trace)
+        if not fields["response"].strip():
+            return 0.0  # nothing to grade — skip the (foregone) judge call
+        result = await self.evaluate(trace=trace, **fields)
         return cast(float, result.parsed)
 
 

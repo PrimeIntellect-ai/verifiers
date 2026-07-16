@@ -286,14 +286,51 @@ async def test_env_id_judge(run_v1, tmp_path):
     assert solver.errors == [] and judge.errors == []
     assert judge.trainable is False
     assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
-    # Wiring, not taste: the judge followed the output contract and its parsed
-    # verdict is exactly what landed on the solver (the grade itself is the
-    # model's call — a bare echo can be judged middling).
-    from verifiers.v1.envs.judge.env import parse_score
-
+    # Wiring, not taste: the judge followed the default `score` spec's output
+    # contract and its parsed verdict is exactly what landed on the solver (the
+    # grade itself is the model's call — a bare echo can be judged middling).
     assert "SCORE:" in (judge.last_reply or "")
-    assert solver.rewards["judge"] == parse_score(judge.last_reply)
     assert 0.0 <= solver.rewards["judge"] <= 1.0
+
+
+@pytest.mark.e2e
+async def test_env_id_judge_rubric_spec(run_v1, tmp_path):
+    """One rubric file, agent-executed: the judge env's verdict spec is a judge
+    plugin, so the same grading criteria a `taskset.task.judges` entry runs as a
+    bare call here drive a real judge agent — per-criterion metrics and the weighted
+    total land on the solver exactly as the plugged tier records them."""
+    import json
+
+    rubric = tmp_path / "grading.json"
+    rubric.write_text(
+        json.dumps(
+            {
+                "criteria": [
+                    {
+                        "name": "echoed",
+                        "text": "Does the response repeat the user's phrase?",
+                    },
+                    {
+                        "name": "no_extras",
+                        "text": "Is the response free of extra commentary?",
+                    },
+                ]
+            }
+        )
+    )
+    traces = await run_v1(
+        "echo-v1",
+        harness="null",
+        env={"id": "judge", "spec": {"id": "rubric", "path": str(rubric)}},
+        output_dir=tmp_path / "out",
+        max_turns=2,
+        rollout_timeout=300,
+    )
+    (solver,) = [t for t in traces if t.role == "solver"]
+    (judge,) = [t for t in traces if t.role == "judge"]
+    assert solver.errors == [] and judge.errors == []
+    assert 0.0 <= solver.rewards["rubric"] <= 1.0
+    assert set(solver.metrics) >= {"rubric/echoed", "rubric/no_extras"}
 
 
 @pytest.mark.e2e

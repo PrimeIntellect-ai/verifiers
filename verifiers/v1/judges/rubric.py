@@ -164,9 +164,9 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             raise ValueError(f"rubric '{path}' has no positive criterion weight")
         return criteria
 
-    async def grade_batch(
+    def _fields(
         self, task: TaskData, trace: Trace, batch: list[Criterion]
-    ) -> dict[str, float]:
+    ) -> dict[str, str]:
         def render(c: Criterion) -> str:
             return f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
 
@@ -192,24 +192,16 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 f"{fence}\n{answer}\n{fence}\n"
             )
 
-        fields = dict(
+        return dict(
             question=judge_question(task, self.config.question_field),
             response=judge_response(trace, self.config.view),
             criteria="\n".join(render(c) for c in batch),
             reference=reference,
         )
-        if self.config.structured_output:
-            result = await self.evaluate(trace=trace, **fields)
-            verdicts = cast(RubricVerdicts, result.parsed).verdicts
-        else:
-            messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
-            result = await self.complete(messages, trace=trace)
-            obj = first_verdicts_object(result.text)
-            if obj is None:
-                raise ValueError(
-                    f"judge returned no verdicts JSON object: {result.text!r}"
-                )
-            verdicts = RubricVerdicts.model_validate(obj).verdicts
+
+    def _scores(
+        self, verdicts: list[CriterionVerdict], batch: list[Criterion]
+    ) -> dict[str, float]:
         # Exactly one verdict per criterion in the batch, matched by name — anything else is a
         # judge failure and must error the rollout, not score the model (see `judge_verdict`).
         by_criterion = {c.name: c for c in batch}
@@ -228,6 +220,46 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 )
             scores[v.name] = normalize_choice(v.verdict, choices)
         return scores
+
+    def _parse_text(self, text: str) -> list[CriterionVerdict]:
+        obj = first_verdicts_object(text)
+        if obj is None:
+            raise ValueError(f"judge returned no verdicts JSON object: {text!r}")
+        return RubricVerdicts.model_validate(obj).verdicts
+
+    async def grade_batch(
+        self, task: TaskData, trace: Trace, batch: list[Criterion]
+    ) -> dict[str, float]:
+        fields = self._fields(task, trace, batch)
+        if self.config.structured_output:
+            result = await self.evaluate(trace=trace, **fields)
+            verdicts = cast(RubricVerdicts, result.parsed).verdicts
+        else:
+            messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
+            result = await self.complete(messages, trace=trace)
+            verdicts = self._parse_text(result.text)
+        return self._scores(verdicts, batch)
+
+    def _record_and_total(self, trace: Trace, by_name: dict[str, float]) -> float:
+        for criterion in self.criteria:
+            trace.record_metric(
+                f"{self.reward_name}/{criterion.name}", by_name[criterion.name]
+            )
+        total = sum(criterion.weight for criterion in self.criteria)
+        return sum(c.weight * by_name[c.name] for c in self.criteria) / total
+
+    def render(self, task: TaskData, trace: Trace) -> str:
+        """The whole rubric as one judging prompt (agent execution is one
+        conversation, so `max_criteria` batching does not apply), with the plain-text
+        JSON verdict contract appended — an agent run has no structured output."""
+        return (
+            cast(str, self.build_messages(**self._fields(task, trace, self.criteria)))
+            + JSON_SUFFIX
+        )
+
+    def verdict(self, task: TaskData, trace: Trace, reply: str) -> float:
+        by_name = self._scores(self._parse_text(reply), self.criteria)
+        return self._record_and_total(trace, by_name)
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria
@@ -255,12 +287,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         by_name: dict[str, float] = {}
         for batch_verdicts in results:
             by_name.update(batch_verdicts)
-        for criterion in criteria:
-            trace.record_metric(
-                f"{self.reward_name}/{criterion.name}", by_name[criterion.name]
-            )
-        total = sum(criterion.weight for criterion in criteria)
-        return sum(c.weight * by_name[c.name] for c in criteria) / total
+        return self._record_and_total(trace, by_name)
 
 
 __all__ = [

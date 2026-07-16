@@ -1,44 +1,36 @@
 """judge: a solver plays the task, a judge agent grades the finished attempt.
 
-The agent-as-judge wrapper (`--env.id judge` over any taskset). Unlike the plugged
-judge tiers (`config.judges` — a plain model call inside the rollout; `vf.Judge` — a
-call in your own reward code), the verdict here is a real agent run with its own
-trace: inspectable, budgeted, role-stamped, and — because the judge is just a role —
-routable to any harness. The default judge rides the in-process `direct` chat loop
-(a verdict ≈ one API call, `trainable=False`); point `--env.judge.harness.id` at a
-real harness and the judge can investigate with tools instead of reading a transcript.
+The agent-as-judge wrapper (`--env.id judge` over any taskset). The verdict spec is a
+JUDGE PLUGIN (`--env.spec.id score|rubric|reference|org/name` — the same registry as a
+`taskset.task.judges` entry): the prompt+parse a plugged judge runs as one bare call
+is here executed as a real agent run. `spec.render()` becomes the judge role's task,
+the agent speaks (one `direct`-harness call by default; point `--env.judge.harness.id`
+at a real harness and the judge investigates with tools), and `spec.verdict()` parses
+its final reply — recorded on the SOLVER's trace exactly as the plugged tier records
+it (reward key + weight from the spec's config; a rubric spec also lands its
+per-criterion metrics). Write your grading criteria once, choose the execution mode
+per run.
 
-The verdict lands as a `judge` reward on the *solver's* trace (weight `--env.weight`),
-composing with the task's own rewards. The judge's trace carries no reward.
+Default spec: the built-in `score` judge (one 0-10 verdict) under the reward key
+`judge`, reading the solver's final reply; a rubric spec defaults to the whole
+transcript (`--env.spec.view full_trace`), which is how an agentic solver's *process*
+gets judged. The judge's own trace is role-stamped and untrainable by default, and the
+solver's runtime is gone by judge time — a judge that must inspect the solver's live
+box is a custom env (`provision()` + borrowed `runtime=`), not this wrapper.
+
+Unlike the plugged tiers (`config.judges` — a bare call inside the rollout;
+`vf.Judge` — a call in your own reward code), the verdict here is a real, inspectable,
+budgeted agent trace. The spec's `model`/`client`/`sampling` are ignored — the judge
+AGENT makes the calls; route it with `--env.judge.*`.
 """
 
-import re
+from pydantic import SerializeAsAny, model_validator
 
 import verifiers.v1 as vf
-
-RUBRIC = """You are grading another model's answer to a task.
-
-## Task
-{prompt}
-
-## Answer
-{answer}
-
-Judge whether the answer actually solves the task: correctness first, then
-completeness. Think briefly, then give your verdict as the LAST line of your reply,
-in exactly this form:
-
-SCORE: <integer from 0 to 10>"""
-
-
-def parse_score(reply: str | None) -> float:
-    """The last `SCORE: <n>` in the judge's reply, clamped to [0, 10] and normalized
-    to [0, 1]; an unparseable verdict scores 0 (a judge that can't follow the output
-    contract is not a judgement)."""
-    matches = re.findall(r"SCORE:\s*(\d+)", reply or "")
-    if not matches:
-        return 0.0
-    return min(max(int(matches[-1]), 0), 10) / 10
+from verifiers.v1.env import _deep_merge
+from verifiers.v1.judge import JudgeConfig
+from verifiers.v1.judges.score import ScoreJudgeConfig
+from verifiers.v1.task import _record_result
 
 
 class JudgeParams(vf.EnvParams):
@@ -46,29 +38,46 @@ class JudgeParams(vf.EnvParams):
     judge: vf.AgentConfig = vf.AgentConfig(
         harness=vf.HarnessConfig(id="direct"), trainable=False
     )
-    rubric: str = RUBRIC
-    """The judge's prompt; `{prompt}` and `{answer}` are replaced with the task's
-    prompt text and the solver's final reply (plain replacement, so rubric text may
-    contain braces)."""
-    weight: float = 1.0
-    """Weight of the `judge` reward recorded on the solver's trace."""
+    spec: SerializeAsAny[JudgeConfig] = ScoreJudgeConfig(name="judge")
+    """The verdict spec — a judge plugin's config, resolved by `--env.spec.id` exactly
+    like a `taskset.task.judges` entry. Its `name`/`weight` set the reward key and
+    weight on the solver's trace; a partial override (`--env.spec.view full_trace`)
+    tunes the default spec, an explicit `--env.spec.id` swaps it."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_spec(cls, data):
+        if not isinstance(data, dict) or not isinstance(data.get("spec"), dict):
+            return data
+        from verifiers.v1.loaders import judge_config_type
+
+        raw = data["spec"]
+        if raw.get("id"):  # an explicit id swaps the spec (narrowing to its config)
+            data["spec"] = judge_config_type(raw["id"]).model_validate(raw)
+        else:  # a partial override tunes the default spec, never resets it
+            default = cls.model_fields["spec"].default
+            data["spec"] = type(default).model_validate(
+                _deep_merge(default.model_dump(exclude_none=True), raw)
+            )
+        return data
 
 
 class JudgeEnv(vf.Environment[JudgeParams]):
+    def __init__(self, config: vf.EnvConfig) -> None:
+        super().__init__(config)
+        from verifiers.v1.loaders import load_judge
+
+        self._spec = load_judge(self.params.spec)
+
     def roles(self):
         return {"solver": self.params.solver, "judge": self.params.judge}
 
     async def rollout(self, task, agents):
         solution = await agents["solver"].run(task)
-        # Plain replacement, not str.format: the rubric (or the task text riding in
-        # it) may legitimately contain braces.
-        prompt = self.params.rubric.replace("{prompt}", task.data.prompt_text).replace(
-            "{answer}", solution.last_reply or "<no answer>"
-        )
         judge_task = vf.Task(
             vf.TaskData(
                 idx=task.data.idx,
-                prompt=prompt,
+                prompt=self._spec.render(task.data, solution),
                 sources=(solution.id,),
                 relation="judges",
             )
@@ -77,7 +86,11 @@ class JudgeEnv(vf.Environment[JudgeParams]):
         return [solution, verdict]
 
     async def score(self, task, traces):
+        """Parse the judge agent's reply through the spec and record it like the
+        plugged tier would — a malformed verdict raises, failing the env-rollout
+        (retryable) rather than scoring the solver 0."""
         solution, verdict = traces
-        solution.record_reward(
-            "judge", parse_score(verdict.last_reply), self.params.weight
+        result = self._spec.verdict(task.data, solution, verdict.last_reply or "")
+        _record_result(
+            solution, self._spec.reward_name, result, self._spec.config.weight
         )

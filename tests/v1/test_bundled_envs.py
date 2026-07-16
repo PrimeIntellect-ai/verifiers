@@ -7,7 +7,9 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNParams
-from verifiers.v1.envs.judge.env import parse_score
+from verifiers.v1.envs.judge.env import JudgeParams
+from verifiers.v1.judges.rubric import RubricJudgeConfig
+from verifiers.v1.judges.score import ScoreJudge
 from verifiers.v1.trace import Trace, TraceTask
 
 from kuhn_poker_v1.taskset import LEGAL, TO_ACT, parse_action, payoff
@@ -69,13 +71,72 @@ def test_best_of_n_sibling_scoring():
     assert all(t.metrics["pass_at_n"] == 0.0 for t in misses)
 
 
-def test_judge_parse_score():
-    assert parse_score("SCORE: 7") == 0.7
-    assert parse_score("The answer is right.\nSCORE: 10") == 1.0
-    assert parse_score("SCORE: 3\n...revised...\nSCORE: 8") == 0.8  # last wins
-    assert parse_score("SCORE: 42") == 1.0  # clamped
-    assert parse_score("I refuse to grade this.") == 0.0
-    assert parse_score(None) == 0.0
+def _judged(reply: str) -> float:
+    judge = ScoreJudge()
+    task = vf.TaskData(idx=0, prompt="q")
+    return judge.verdict(task, _scored_trace(0.0), reply)
+
+
+def test_score_judge_verdict():
+    assert _judged("SCORE: 7") == 0.7
+    assert _judged("The answer is right.\nSCORE: 10") == 1.0
+    assert _judged("SCORE: 3\n...revised...\nSCORE: 8") == 0.8  # last wins
+    assert _judged("SCORE: 42") == 1.0  # clamped
+    with pytest.raises(ValueError, match="no 'SCORE:"):
+        _judged("I refuse to grade this.")  # a judge failure, never a 0
+
+
+def test_judge_spec_resolves_like_a_judges_entry():
+    """The env's verdict spec rides the judge-plugin registry: an explicit id swaps
+    (and narrows) it; a partial override tunes the default without resetting it."""
+    swapped = JudgeParams.model_validate(
+        {"spec": {"id": "rubric", "path": "grading.toml"}}
+    )
+    assert isinstance(swapped.spec, RubricJudgeConfig)
+    assert swapped.spec.view == "full_trace"  # the rubric's own default
+    tuned = JudgeParams.model_validate({"spec": {"view": "full_trace"}})
+    assert type(tuned.spec).__name__ == "ScoreJudgeConfig"
+    assert tuned.spec.view == "full_trace"
+    assert tuned.spec.name == "judge"  # the pinned reward key survives
+
+
+def test_rubric_spec_agent_execution_round_trip(tmp_path):
+    """The unification: the same rubric file drives an agent-executed judge —
+    `render` carries the criteria + JSON contract, `verdict` parses the agent's
+    reply into the identical per-criterion metrics and weighted total the plugged
+    tier records."""
+    import json
+
+    from verifiers.v1.judges.rubric import RubricJudge
+
+    rubric = tmp_path / "grading.json"
+    rubric.write_text(
+        json.dumps(
+            {
+                "criteria": [
+                    {"name": "correct", "text": "Is it right?", "weight": 3.0},
+                    {"name": "concise", "text": "Is it short?"},
+                ]
+            }
+        )
+    )
+    judge = RubricJudge(RubricJudgeConfig(path=rubric))
+    task = vf.TaskData(idx=0, prompt="What is 2+2?")
+    trace = _scored_trace(0.0)
+    prompt = judge.render(task, trace)
+    assert "correct" in prompt and "concise" in prompt and "verdicts" in prompt
+    reply = json.dumps(
+        {
+            "verdicts": [
+                {"name": "correct", "reason": "it is", "verdict": "yes"},
+                {"name": "concise", "reason": "it is not", "verdict": "no"},
+            ]
+        }
+    )
+    total = judge.verdict(task, trace, f"Here is my grading:\n{reply}")
+    assert total == 0.75  # (3*1 + 1*0) / 4
+    assert trace.metrics["rubric/correct"] == 1.0
+    assert trace.metrics["rubric/concise"] == 0.0
 
 
 def test_kuhn_payoffs_are_zero_sum_and_correct():

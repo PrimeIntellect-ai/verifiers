@@ -328,7 +328,7 @@ Bundled envs (`verifiers/v1/envs/`):
 | id | roles | what it does |
 | --- | --- | --- |
 | `best-of-n` | `solver` | `--env.n` independent attempts per rollout; `score()` marks the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
-| `judge` | `solver`, `judge` | the solver plays the task; a judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt against `--env.rubric`, landing a `judge` reward on the solver's trace. Point `--env.judge.harness.id` at a real harness and the judge investigates with tools. |
+| `judge` | `solver`, `judge` | the solver plays the task; a judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, same registry and format as `taskset.task.judges`) — write your grading criteria once, run them as a bare call or as an agent. Verdict + per-criterion metrics land on the solver's trace; point `--env.judge.harness.id` at a real harness and the judge investigates with tools, `--env.spec.view full_trace` shows it the whole transcript. |
 | `user-sim` | `assistant`, `user` | a modeled user (direct harness, untrainable) opens and drives the conversation from the task's prompt-as-scenario (`--env.persona`); the assistant plays the same task without the prompt and is judged by the task's own rewards. The substrate for tau-bench-style evals. |
 
 ### User simulation: the user is just another agent

@@ -207,6 +207,31 @@ class Judge(Generic[ParsedT, ConfigT]):
             "call it from a task `@reward` instead."
         )
 
+    def render(self, task: "TaskData", trace: "Trace") -> str | Messages:
+        """The complete judging prompt for one finished trace — with `verdict`, the
+        agent-executed dual of `score`. Where `score` makes the model call itself (the
+        plugged tier: one bare call inside `Task.score`), an agent executor (the
+        bundled `judge` env) runs `render`'s prompt as its judge role's task and hands
+        the agent's final reply to `verdict` — the same spec (prompt + parsing), two
+        execution modes. Implement both to make a judge agent-executable."""
+        raise NotImplementedError(
+            f"{type(self).__name__} implements no `render`, so it can't drive a judge "
+            "agent (the `judge` env); implement `render` + `verdict`, or plug it via "
+            "`taskset.task.judges` instead."
+        )
+
+    def verdict(
+        self, task: "TaskData", trace: "Trace", reply: str
+    ) -> float | Mapping[str, float]:
+        """Parse the judge agent's final `reply` into the verdict `score` would have
+        produced for `trace`: return the reward value (a Mapping records per key),
+        record any per-criterion metrics onto `trace`, and raise on a malformed
+        verdict — a judge failure must error the rollout, not score the model."""
+        raise NotImplementedError(
+            f"{type(self).__name__} implements no `verdict`; implement `render` + "
+            "`verdict` to make it agent-executable (the `judge` env)."
+        )
+
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
         if self.schema is not None:
             return cast(ParsedT, response.parsed)
