@@ -66,8 +66,11 @@ class AgentConfig(BaseConfig):
     evaluation/training" — a role pins only what makes it a different seat (its own
     harness, a frozen model, an off-train endpoint, tighter limits)."""
 
-    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
-    """The role's program + runtime policy (same shape as the env-level `--harness.*`)."""
+    harness: SerializeAsAny[HarnessConfig] | None = None
+    """The role's program + runtime policy (None = the run's `--harness.*` — late
+    binding, like `model`/`client`/`sampling`, so pairing an env never silently
+    swaps the policy's harness). Pin it to seat the role on its own program (e.g.
+    `vf.HarnessConfig(id="direct")` for a bare in-process chat seat)."""
     model: str | None = None
     """Model id (None = the run's model — late binding: the role is played by the
     policy being evaluated or trained, which is what makes self-play trainable)."""
@@ -91,11 +94,12 @@ class AgentConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):
-        """Narrow the generic `harness` to its specific config type by `id` (the same
-        resolution as `EnvConfig`), so role-harness fields validate typed."""
+        """Narrow a *pinned* `harness` to its specific config type by `id` (the same
+        resolution as `EnvConfig`), so role-harness fields validate typed. An absent
+        harness stays None — the run's harness, resolved at env construction."""
         from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
 
-        if isinstance(data, dict):
+        if isinstance(data, dict) and data.get("harness") is not None:
             narrow_plugin_field(data, "harness", harness_config_type, "default")
         return data
 
@@ -103,11 +107,17 @@ class AgentConfig(BaseConfig):
 def _deep_merge(base: dict, override: dict) -> dict:
     """`override` onto `base`, recursing into dicts — so a partial nested override
     (e.g. a role's `{"sampling": {"temperature": 0.2}}`) keeps the untouched keys of
-    the declared default."""
+    the declared default. An override that switches a subtree's discriminator (`id`/
+    `type`: a different harness, runtime, or judge spec) replaces the subtree
+    wholesale — the old plugin's fields must not leak into the new type's validation."""
     merged = dict(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
+            switched = any(
+                k in value and k in merged[key] and value[k] != merged[key][k]
+                for k in ("id", "type")
+            )
+            merged[key] = value if switched else _deep_merge(merged[key], value)
         else:
             merged[key] = value
     return merged
@@ -482,7 +492,7 @@ class Environment(Generic[ParamsT]):
         self._stamp_roles = list(self._roles) != ["main"]
         self._harnesses: dict[str, Harness] = {
             name: self.harness
-            if spec.harness == config.harness
+            if spec.harness is None or spec.harness == config.harness
             else load_harness(spec.harness)
             for name, spec in self._roles.items()
         }
@@ -535,8 +545,8 @@ class Environment(Generic[ParamsT]):
         """Which agent fills which seat. Called once, at construction (read
         `self.params` — a typed `AgentConfig` field per role is the idiom, giving
         `--env.<role>.model` CLI/TOML addressing for free). Default: the single-agent
-        case — one `"main"` role running the env's configured harness (`--harness.*`)."""
-        return {"main": AgentConfig(harness=self.config.harness)}
+        case — one `"main"` role on the run's own harness (`--harness.*`)."""
+        return {"main": AgentConfig()}
 
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> list[Trace]:
         """One env-rollout: how the agents interact on `task`. Imperative Python over

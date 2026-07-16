@@ -205,6 +205,31 @@ def test_role_harness_config_narrows_by_id():
     assert spec.harness.id == "default"
 
 
+def test_role_harness_late_binds_to_the_runs():
+    """An unpinned role plays on the run's `--harness.*` — pairing an env must not
+    silently swap the policy's harness (the axes stay orthogonal)."""
+    assert vf.AgentConfig().harness is None
+    env = vf.Environment(_env_config(harness={"id": "null"}))
+    assert env._harnesses["main"] is env.harness
+    assert env.harness.config.id == "null"
+
+
+def test_role_harness_override_switches_the_type():
+    """`--env.<role>.harness.id X` swaps the harness even over a pinned default: a
+    discriminator switch replaces the subtree, so the old type's fields don't leak
+    into the new type's (extra-forbidden) validation."""
+
+    class Pinned(vf.EnvParams):
+        solver: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="default"))
+
+    params = Pinned.model_validate({"solver": {"harness": {"id": "null"}}})
+    assert params.solver.harness is not None and params.solver.harness.id == "null"
+    # A non-switching partial override still tunes the pinned harness in place.
+    tuned = Pinned.model_validate({"solver": {"harness": {"edit": False}}})
+    assert tuned.solver.harness is not None and tuned.solver.harness.id == "default"
+    assert tuned.solver.harness.edit is False
+
+
 def test_role_pins_survive_partial_overrides():
     """A partial role override (`--env.user.sampling.temperature 0.7`) must not
     silently reset the role's declared pins — the field-default instance deep-merges

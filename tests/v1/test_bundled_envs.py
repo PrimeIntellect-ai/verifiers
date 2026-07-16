@@ -49,6 +49,25 @@ def test_load_environment_honors_env_id():
     assert set(env.roles()) == {"solver"}
 
 
+def test_bundled_env_solver_runs_the_runs_harness():
+    """The axes stay orthogonal when paired: `--env.id best-of-n --harness.id X`
+    seats the solver on X (an unpinned role late-binds to the run's harness), while
+    a pinned role (the judge env's judge) keeps its own."""
+    config = EvalConfig(
+        taskset={"id": "echo-v1"}, harness={"id": "null"}, env={"id": "best-of-n"}
+    )
+    env = vf.load_environment(config)
+    assert env._harnesses["solver"] is env.harness
+    assert env.harness.config.id == "null"
+    judged = vf.load_environment(
+        EvalConfig(
+            taskset={"id": "echo-v1"}, harness={"id": "null"}, env={"id": "judge"}
+        )
+    )
+    assert judged._harnesses["solver"] is judged.harness
+    assert judged._harnesses["judge"].config.id == "direct"  # the pin survives
+
+
 def _scored_trace(reward: float) -> Trace:
     trace = Trace(task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi")))
     trace.record_reward("task", reward)
