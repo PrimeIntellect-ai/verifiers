@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterator
 from typing import Any, Self
 
-import requests
+import httpx
 from pydantic import model_validator
 
 import verifiers.v1 as vf
@@ -56,37 +56,33 @@ class OpenEnvConfig(vf.TasksetConfig):
 
 
 class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
-    EXTRAS = ("openenv",)
-
     async def setup_task(self, task: OpenEnvData) -> None:
         from openenv import GenericEnvClient
+        from openenv.core import CallToolAction
 
         if task.base_url:
-            self.client = GenericEnvClient(base_url=task.base_url)
-            await self.client.connect()
+            client = GenericEnvClient(base_url=task.base_url)
         else:
             assert task.env is not None
-            self.client = await GenericEnvClient.from_env(
+            client = await GenericEnvClient.from_env(
                 task.env,
                 use_docker=task.use_docker,
                 **self.config.provider_kwargs,
             )
+        self.client = await self._exit_stack.enter_async_context(client)
         # OpenEnv exposes schemas over HTTP but not through GenericEnvClient.
         base_url = self.client._base_url.replace("ws://", "http://", 1).replace(
             "wss://", "https://", 1
         )
-        self.action_schema = requests.get(f"{base_url}/schema", timeout=10).json()[
-            "action"
-        ]
-        action_type = self.action_schema.get("properties", {}).get("type", {})
-        # OpenEnv's generic MCP Action omits the type discriminator.
-        if (
-            self.action_schema.get("title") == "Action"
-            or action_type.get("const") == "call_tool"
-            or "call_tool" in action_type.get("enum", [])
-        ):
+        async with httpx.AsyncClient(timeout=10) as http:
+            response = await http.get(f"{base_url}/schema")
+        self.action_schema = response.json()["action"]
+        if self.action_schema.get("title") in {"Action", "CallToolAction"}:
             result = await self.client.step({"type": "list_tools"})
-            self.action_schema["available_tools"] = result.observation["tools"]
+            # Generic MCP Action omits how to call the tools it advertises.
+            self.action_schema = CallToolAction.model_json_schema() | {
+                "available_tools": result.observation["tools"]
+            }
         self.result = await self.client.reset(**task.reset)
 
     def parse_action(self, message: str) -> dict[str, Any]:

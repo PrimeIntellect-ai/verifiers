@@ -3836,15 +3836,36 @@ wheels = [
 ]
 
 [[package]]
+name = "openenv-v1"
+version = "0.1.0"
+source = { editable = "packages/openenv_v1" }
+dependencies = [
+    { name = "httpx" },
+    { name = "openenv" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx" },
+    { name = "openenv" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "openenv-wordle-v1"
 version = "0.1.0"
 source = { editable = "environments/openenv_wordle_v1" }
 dependencies = [
-    { name = "verifiers", extra = ["openenv"] },
+    { name = "openenv-v1" },
+    { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["openenv"] }]
+requires-dist = [
+    { name = "openenv-v1" },
+    { name = "verifiers" },
+]
 
 [[package]]
 name = "opentelemetry-api"
@@ -6773,9 +6794,6 @@ modal = [
 notebook = [
     { name = "nest-asyncio" },
 ]
-openenv = [
-    { name = "openenv" },
-]
 quest = [
     { name = "certifi" },
     { name = "pillow" },
@@ -6828,6 +6846,7 @@ examples = [
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
     { name = "mmmu-v1" },
+    { name = "openenv-v1" },
     { name = "openenv-wordle-v1" },
     { name = "reverse-text-v1" },
     { name = "scratchpad-v1" },
@@ -6860,7 +6879,6 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-agents", specifier = ">=0.0.7" },
-    { name = "openenv", marker = "extra == 'openenv'" },
     { name = "peft", marker = "extra == 'rl'" },
     { name = "pillow", marker = "extra == 'quest'" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.3.0.dev86" },
@@ -6887,7 +6905,7 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "harbor", "modal", "notebook", "openenv", "quest", "rg", "rl", "ta"]
+provides-extras = ["browser", "harbor", "modal", "notebook", "quest", "rg", "rl", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -6916,6 +6934,7 @@ examples = [
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
     { name = "mmmu-v1", editable = "environments/mmmu_v1" },
+    { name = "openenv-v1", editable = "packages/openenv_v1" },
     { name = "openenv-wordle-v1", editable = "environments/openenv_wordle_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
     { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },

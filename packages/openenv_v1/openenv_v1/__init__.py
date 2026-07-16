@@ -1,4 +1,4 @@
-from verifiers.v1.tasksets.openenv.taskset import (
+from .taskset import (
     OpenEnvConfig,
     OpenEnvData,
     OpenEnvState,

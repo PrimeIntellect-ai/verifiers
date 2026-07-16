@@ -3,17 +3,15 @@
 from typing import Any, Literal
 
 import verifiers.v1 as vf
-from verifiers.v1.tasksets.openenv import (
+from openenv_v1 import (
     OpenEnvConfig,
     OpenEnvTask,
-    OpenEnvTaskConfig,
     OpenEnvTaskset,
 )
 
 
 class OpenEnvWordleConfig(OpenEnvConfig):
     env: Literal["openenv/wordle"] = "openenv/wordle"
-    task: OpenEnvTaskConfig = OpenEnvTaskConfig()
 
     def model_post_init(self, __context: Any) -> None:
         # Wordle uses a non-default ASGI app in its Space repository.
