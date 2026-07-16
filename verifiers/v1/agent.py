@@ -1,9 +1,10 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable arrow.
 
-An `Agent` bundles WHO does the work — the harness (the program), the model context
-(model + client + sampling, the same `ModelContext` every rollout consumes), and
-a runtime policy (where a run's box comes from by default). `agent.run(task)` executes one
-rollout and returns its `Trace`. Everything else is a parameter, not a concept:
+An `Agent` bundles WHO does the work — the harness (the program), the model leg
+(model + client + sampling, grouped internally as the `ModelContext` every rollout
+consumes), and a runtime policy (where a run's box comes from by default).
+`agent.run(task)` executes one rollout and returns its `Trace`. Everything else is a
+parameter, not a concept:
 
   - placement: `runtime=` borrows a live box (creator owns teardown) instead of
     provisioning a fresh one — put a judge into a solver's sandbox, or two agents into
@@ -37,9 +38,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
 
-from verifiers.v1.clients import (
-    ModelContext,
-)
+from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.env import (
     TimeoutConfig,
     cap_remote_harness_timeout,
@@ -60,7 +59,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages, UserMessage
+from verifiers.v1.types import Messages, Sampling, UserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -176,17 +175,18 @@ class ChatSession:
 
 
 class Agent:
-    """A harness + model context + runtime policy, runnable on any task.
+    """A harness + model + runtime policy, runnable on any task.
 
     `harness` is a concrete `Harness` object (v1 construction is explicit), e.g.
     `DefaultHarness(DefaultHarnessConfig())`; harnesses are stateless, so one instance
     can back any number of agents. `load_harness(config)` resolves hub/local ids.
 
-    `ctx` is the `ModelContext` (model + client + sampling) — an agent IS a model in
-    a harness, bound at construction. The client is
-    yours to build (`resolve_client(EvalClientConfig())`) and to share: agents on the
-    same endpoint should share one `Client` (one connection pool); prime-rl hands every
-    agent its renderer client the same way.
+    `model`, `client`, and `sampling` are the model leg — an agent IS a model in a
+    harness, bound at construction (they group into the `ModelContext` every rollout
+    consumes, on `self.ctx`; `sampling` omitted means the provider's defaults). The
+    client is yours to build (`resolve_client(EvalClientConfig())`) and to share:
+    agents on the same endpoint should share one `Client` (one connection pool);
+    prime-rl hands every agent its renderer client the same way.
 
     `runtime` here is a *policy* (a `RuntimeConfig`): each `run` provisions a fresh box
     from it, resolved per task (image / workdir / resources); it defaults to the harness
@@ -208,16 +208,22 @@ class Agent:
     def __init__(
         self,
         harness: Harness,
-        ctx: ModelContext,
+        model: str,
+        client: Client,
         runtime: RuntimeConfig | None = None,
         *,
+        sampling: Sampling | None = None,
         interception: Interception | None = None,
         shared_tools: Mapping[str, SharedToolServer] | None = None,
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
     ) -> None:
         self.harness = harness
-        self.ctx = ctx
+        self.ctx = ModelContext(
+            model=model,
+            client=client,
+            sampling=sampling if sampling is not None else Sampling(),
+        )
         self.runtime_config: RuntimeConfig = (
             runtime if runtime is not None else harness.config.runtime
         )

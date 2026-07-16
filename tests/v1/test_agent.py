@@ -12,10 +12,13 @@ from verifiers.v1.runtimes import DockerConfig, SubprocessConfig, make_runtime
 
 
 def _agent() -> vf.Agent:
-    # The guard under test raises before the model context is touched, so the
+    # The guard under test raises before the model leg is touched, so the
     # client can be a stub.
-    ctx = vf.ModelContext(model="test-model", client=None)  # type: ignore[arg-type]
-    return vf.Agent(DefaultHarness(DefaultHarnessConfig()), ctx)
+    return vf.Agent(
+        DefaultHarness(DefaultHarnessConfig()),
+        "test-model",
+        None,  # type: ignore[arg-type]
+    )
 
 
 async def test_borrowed_subprocess_box_refuses_task_image():
@@ -58,10 +61,10 @@ async def test_shared_tools_hit_the_mcp_pairing_guard():
     class NoMcpHarness(DefaultHarness):
         SUPPORTS_MCP = False
 
-    ctx = vf.ModelContext(model="test-model", client=None)  # type: ignore[arg-type]
     agent = vf.Agent(
         NoMcpHarness(DefaultHarnessConfig()),
-        ctx,
+        "test-model",
+        None,  # type: ignore[arg-type]
         shared_tools={"search": object()},  # type: ignore[dict-item]
     )
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
@@ -80,8 +83,11 @@ class NoUserSimHarness(DefaultHarness):
 
 
 def _no_user_agent() -> vf.Agent:
-    ctx = vf.ModelContext(model="test-model", client=None)  # type: ignore[arg-type]
-    return vf.Agent(NoUserSimHarness(DefaultHarnessConfig()), ctx)
+    return vf.Agent(
+        NoUserSimHarness(DefaultHarnessConfig()),
+        "test-model",
+        None,  # type: ignore[arg-type]
+    )
 
 
 async def test_chat_requires_supporting_harness():

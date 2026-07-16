@@ -54,12 +54,8 @@ async def main() -> None:
     sandbox = vf.PrimeConfig(labels=["agent-programs-demo"])
     harness = DefaultHarness(DefaultHarnessConfig())
     client = vf.resolve_client(vf.EvalClientConfig())  # one endpoint, one shared client
-    solver = vf.Agent(
-        harness, vf.ModelContext(model="z-ai/glm-5.2", client=client), sandbox
-    )
-    judge = vf.Agent(
-        harness, vf.ModelContext(model="openai/gpt-5.4-mini", client=client), sandbox
-    )
+    solver = vf.Agent(harness, "z-ai/glm-5.2", client, sandbox)
+    judge = vf.Agent(harness, "openai/gpt-5.4-mini", client, sandbox)
 
     task = vf.Task(vf.TaskData(idx=0, prompt=SOLVER_PROMPT))
     async with solver.provision(task) as box:

@@ -714,10 +714,14 @@ class Environment(Generic[ParamsT]):
         )  # env ↔ agent cycle, like `loaders` in init
 
         if self._agents is None or self._agents_ctx != ctx:
-            self._agents = {
-                name: Agent(
+            self._agents = {}
+            for name, role in self._roles.items():
+                role_ctx = self._role_ctx(role.agent, ctx)
+                self._agents[name] = Agent(
                     self._harnesses[name],
-                    self._role_ctx(role.agent, ctx),
+                    role_ctx.model,
+                    role_ctx.client,
+                    sampling=role_ctx.sampling,
                     interception=self._interception,
                     # Only a role whose tasks bring MCP gets the taskset's shared
                     # servers — a bare model actor has nothing to mount them into,
@@ -728,8 +732,6 @@ class Environment(Generic[ParamsT]):
                     limits=self._role_limits(role.agent),
                     timeout=self.config.timeout,
                 )
-                for name, role in self._roles.items()
-            }
             self._agents_ctx = ctx
         return self._agents
 

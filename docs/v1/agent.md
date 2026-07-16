@@ -6,24 +6,25 @@ description: "Program over agents: one executable arrow, placement as a paramete
 ## The Agent
 
 An `Agent` is a reusable value: a **harness** (a concrete `Harness` object — the program
-that drives the model), a **model context** (`ModelContext`: model + client + sampling),
-and a **runtime policy** (where a run's box comes from by default). It has one executable arrow:
+that drives the model), a **model leg** (model + client + optional sampling), and a
+**runtime policy** (where a run's box comes from by default). It has one executable arrow:
 
 ```python
 import verifiers.v1 as vf
 from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
-ctx = vf.ModelContext(
-    model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
+solver = vf.Agent(
+    DefaultHarness(DefaultHarnessConfig()),
+    "z-ai/glm-5.2",
+    vf.resolve_client(vf.EvalClientConfig()),
 )
-solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), ctx)
 trace = await solver.run(vf.Task(vf.TaskData(idx=0, prompt="What is 2+2?")))
 ```
 
 Construction is fully explicit — the harness is an object you build, and the client is
 yours to build and **share**: agents on the same endpoint should share one `Client` (one
-connection pool). prime-rl hands agents its renderer client through the same
-`ModelContext`.
+connection pool). prime-rl hands agents its renderer client the same way. (Internally
+the model leg groups into the `ModelContext` every rollout consumes, on `agent.ctx`.)
 
 Every run is a standard rollout — staged lifecycle, typed error attribution,
 token-true trace capture — so anything a program produces is evaluable and trainable.
@@ -116,8 +117,8 @@ its transcript:
 sandbox = vf.PrimeConfig()
 harness = DefaultHarness(DefaultHarnessConfig())
 client = vf.resolve_client(vf.EvalClientConfig())
-solver = vf.Agent(harness, vf.ModelContext(model="z-ai/glm-5.2", client=client), sandbox)
-judge = vf.Agent(harness, vf.ModelContext(model="openai/gpt-5.4-mini", client=client), sandbox)
+solver = vf.Agent(harness, "z-ai/glm-5.2", client, sandbox)
+judge = vf.Agent(harness, "openai/gpt-5.4-mini", client, sandbox)
 
 def judge_task(solver_trace: vf.Trace) -> vf.Task:
     return vf.Task(vf.TaskData(
