@@ -236,14 +236,33 @@ def resolve_image(
     return None
 
 
+def size_to_mb(size: str | int | float) -> float:
+    """A Harbor size in MB, from either schema: current integer-MB fields or the
+    legacy schema-1.0 size strings ("8G", "512M", "64K")."""
+    if not isinstance(size, str):
+        return float(size)
+    scale = {"G": 1024.0, "M": 1.0, "K": 1 / 1024}.get(size.strip().upper()[-1:])
+    if scale is None:
+        raise ValueError(
+            f"invalid Harbor size {size!r}: expected a number of MB or a "
+            "'<number>[G|M|K]' string"
+        )
+    return float(size.strip()[:-1]) * scale
+
+
 def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
-    # Harbor reports memory and storage in MB; TaskResources stores GB. A zero
-    # GPU count means no GPU request rather than the string "0".
+    # Harbor's current schema reports memory/storage as integer-MB fields; the
+    # legacy schema 1.0 used size strings under `memory`/`storage`, which Harbor
+    # still migrates (datasets like senior-swe-bench are authored against it).
+    # TaskResources stores GB. A zero GPU count means no GPU request rather than
+    # the string "0".
+    memory = env.get("memory_mb") or env.get("memory")
+    disk = env.get("storage_mb") or env.get("storage")
     return TaskResources(
         cpu=env["cpus"] * multiplier if env.get("cpus") else None,
-        memory=env["memory_mb"] / 1024 * multiplier if env.get("memory_mb") else None,
+        memory=size_to_mb(memory) / 1024 * multiplier if memory else None,
         gpu=str(env["gpus"]) if env.get("gpus") else None,
-        disk=env["storage_mb"] / 1024 * multiplier if env.get("storage_mb") else None,
+        disk=size_to_mb(disk) / 1024 * multiplier if disk else None,
     )
 
 
