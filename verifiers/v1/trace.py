@@ -244,7 +244,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     a trace-level snapshot: mid-rollout changes collapse to the last set the model saw."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
-    """Weighted contributions from task rewards, group rewards, and judges."""
+    """Weighted contributions from task rewards, judges, and the env's `score()`."""
     metrics: dict[str, float] = Field(default_factory=dict)
     """Unweighted metrics from tasks, harnesses, and judges."""
     info: dict[str, Any] = Field(default_factory=dict)

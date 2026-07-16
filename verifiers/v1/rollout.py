@@ -266,8 +266,8 @@ async def run_rollout(
         ):
             if span.start and not span.end:
                 span.end = now
-        # Tear down here — group rewards (later) need only the trace, not a live
-        # runtime. `runtime` is always set: make_runtime() ran before the `try`.
+        # Tear down here — the env's `score()` (later) needs only the traces, not a
+        # live runtime. `runtime` is always set: make_runtime() ran before the `try`.
         # A borrowed runtime is its creator's to tear down, not this rollout's.
         if owns_runtime:
             try:

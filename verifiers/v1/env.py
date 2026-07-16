@@ -197,7 +197,8 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
 
 
 class EnvConfig(BaseConfig):
-    """The taskset that loads tasks and the harness that runs them."""
+    """A run's three axes: the taskset (what to solve), the harness (how the LLM
+    interfaces with the world), and the env (the control flow between agents)."""
 
     # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig,
     # a multi-agent env's params); without it model_dump() narrows to the base type and drops
@@ -505,11 +506,12 @@ class Environment(Generic[ParamsT]):
                 shared_tools=type(self.taskset).tools,
             )
             # The warning is about the *agent* running arbitrary code on the host: every harness
-            # hands it local execution (bash/edit, or a CLI agent) except the tool-less `null`
-            # chat loop, whose program only relays the model and remote MCP tools — so exempt
-            # `null`, warn for the rest (once per distinct harness across roles).
+            # hands it local execution (bash/edit, or a CLI agent) except the tool-less chat
+            # loops — `null` (relays the model and remote MCP tools) and the in-process
+            # `direct` (runs nothing in the runtime at all) — so exempt those, warn for the
+            # rest (once per distinct harness across roles).
             if (
-                harness.config.id != "null"
+                harness.config.id not in ("null", "direct")
                 and isinstance(harness.config.runtime, SubprocessConfig)
                 and harness.config.id not in warned
             ):

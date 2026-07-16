@@ -109,7 +109,7 @@ def resolve_judges(entries: Sequence[Any]) -> list[JudgeConfig]:
         raw = entry.model_dump() if isinstance(entry, BaseModel) else dict(entry)
         if not raw.get("id"):
             raise ValueError(
-                "each `judges` entry needs an `id` (a judge plugin: `reference`, "
+                "each `judges` entry needs an `id` (a judge plugin: `score`, `reference`, "
                 "`rubric`, a local package, or a hub `org/name` package)"
             )
         resolved.append(judge_config_type(raw["id"]).model_validate(raw))
@@ -120,7 +120,7 @@ def check_judges(entries: Sequence[JudgeConfig]) -> None:
     for entry in entries:
         if not entry.id:
             raise ValueError(
-                "each `judges` entry needs an `id` (a judge plugin: `reference`, "
+                "each `judges` entry needs an `id` (a judge plugin: `score`, `reference`, "
                 "`rubric`, a local package, or a hub `org/name` package)"
             )
     keys = [judge_key(entry) for entry in entries]

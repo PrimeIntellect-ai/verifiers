@@ -11,6 +11,8 @@ EvalConfig                       (the run + the env)
 │  └─ task: TaskConfig           (judges, scoring knobs, task-scoped server config)
 ├─ harness: HarnessConfig        (subclass resolved by --harness.id)
 │  └─ runtime: RuntimeConfig     (subprocess | docker | prime | modal)
+├─ env: EnvParams                (subclass resolved by --env.id, else the taskset's)
+│  └─ <role>: AgentConfig        (per-seat model/client/sampling/harness/limits)
 ├─ timeout: TimeoutConfig
 ├─ retries: RetryConfig
 │  └─ rollout: RolloutRetryConfig
@@ -162,6 +164,7 @@ Set `id` (leave `taskset` unset) to run a classic `verifiers.load_environment` e
 | `rollout` | `float \| None` | `None` | Max wall-clock for the rollout (the harness run). |
 | `finalize` | `float \| None` | `None` | Max wall-clock for the task's `finalize` hook. |
 | `scoring` | `float \| None` | `None` | Max wall-clock for task rewards/metrics/judges and harness metrics. |
+| `score` | `float \| None` | `None` | Max wall-clock for the env's `score()` hook (cross-trace judgement over a finished env-rollout). |
 
 > Remote sandboxes cap any harness timeout at 24 hours (provider max lifetime).
 
@@ -571,7 +574,7 @@ is supplied, billed judge usage is recorded even if parsing later fails. Plugin 
 
 ## ServeConfig — the env-server CLI
 
-`verifiers/v1/configs/serve.py` — `ServeConfig(EnvServerConfig)`. The env-server CLI. Inherits the full env + pool, so `--taskset.*` / `--harness.*` / `--pool.*` are the same flags as eval. Adds only CLI-specific serving knobs.
+`verifiers/v1/configs/serve.py` — `ServeConfig(EnvServerConfig)`. The env-server CLI. Inherits the full env + pool, so `--taskset.*` / `--harness.*` / `--env.*` / `--pool.*` are the same flags as eval. Adds only CLI-specific serving knobs.
 
 | Field | Type | Default | Aliases | Notes |
 |---|---|---|---|---|

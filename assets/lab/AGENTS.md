@@ -23,7 +23,7 @@ Use these rules when shaping public v1 APIs, configs, and environment files.
 - Expose as few knobs in the configs as possible, but as many as needed.
 - Use strict Pydantic models for structured config, tasks, messages, and state.
 - A basic taskset should fit in a few dozen idiomatic lines: typed data/task/config classes, `load()`, and decorated scoring on the task.
-- Do not override `Taskset.__init__`; implement `load()`. Do not override `Harness.__init__` or `User.__init__`; use `setup()`.
+- Do not override `Taskset.__init__`; implement `load()`. Do not override `Harness.__init__`; use `setup()`.
 - Refer to the code as the source of truth.
 - Avoid mutable module globals. Process-level locks/rate limiters and immutable constants are the narrow exceptions.
 

@@ -2,8 +2,8 @@
 
 Replay clears each trace's scores and recomputes everything computable from the saved
 transcript — trace-only handlers plus the layered config's judges. Runtime-requiring
-signals (and group rewards, which need the whole group) don't run offline, so a replay
-carries offline scores only; the source run keeps the runtime-recorded values. Its saved
+signals (and env-level `score()`, which needs the whole record) don't run offline, so a
+replay carries offline scores only; the source run keeps the runtime-recorded values. Its saved
 config is the base for replay-specific overrides.
 """
 

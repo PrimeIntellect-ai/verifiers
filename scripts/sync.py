@@ -2,10 +2,15 @@
 """Compile AGENTS.md / CLAUDE.md files from modular docs sources."""
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
+
+# Compiled guides land outside docs/v1/, so a doc-relative link (`agent.md`) would
+# dangle there; point it at the source file on GitHub instead.
+DOCS_URL = "https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1"
 
 REPO_GENERATED_NOTE = (
     "<!-- Generated for repository development workflows. Do not edit directly. -->"
@@ -110,6 +115,7 @@ def compile_agents(*, check: bool = False) -> bool:
 
 def compile_environment_guides(*, check: bool = False) -> bool:
     envs_body = read_without_title(ROOT / "docs" / "v1" / "tasksets.md")
+    envs_body = re.sub(r"\]\((\w[\w-]*\.md)\)", rf"]({DOCS_URL}/\1)", envs_body)
     repo_envs_agents = combine_sections(
         [
             "# environments/AGENTS.md",
