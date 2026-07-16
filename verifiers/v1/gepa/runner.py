@@ -22,7 +22,7 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
-from verifiers.v1.trace import EvalRunInfo, Trace
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,6 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     write_lock = asyncio.Lock()
 
     async def on_complete(trace: Trace) -> None:
-        trace.stamp(EvalRunInfo(id=config.uuid))
         if run_dir is not None:
             await append_trace(run_dir, trace, write_lock)
 
