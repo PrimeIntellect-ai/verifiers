@@ -3,7 +3,7 @@
 from typing import Any, Literal
 
 import verifiers.v1 as vf
-from openenv_v1 import (
+from verifiers.v1.tasksets import (
     OpenEnvConfig,
     OpenEnvTask,
     OpenEnvTaskset,
