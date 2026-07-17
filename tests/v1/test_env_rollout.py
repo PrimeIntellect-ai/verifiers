@@ -49,9 +49,7 @@ class DuetParams(vf.EnvParams):
 
 
 class DuetEnv(vf.Environment[DuetParams]):
-    def roles(self):
-        return {"a": vf.Role(self.params.a), "b": vf.Role(self.params.b)}
-
+    # No roles() override: the default 1:1 plays the declared a/b fields.
     async def rollout(self, task, agents):
         return list(await asyncio.gather(agents["a"].run(task), agents["b"].run(task)))
 
@@ -73,6 +71,19 @@ async def test_base_env_mints_single_agent_records():
     trace = episode.traces[0]
     assert trace.role is None and trace.trainable  # the wire matches a plain eval's
     assert episode.task.data.idx == trace.task.data.idx
+
+
+def test_default_roles_are_the_declared_agent_fields():
+    """The default roles() is the 1:1 mapping: every AgentConfig field on the params
+    block becomes a dataset-playing role of the same name — an env whose roles all
+    play the dataset never writes roles(). Declaring any field also turns
+    role-stamping on; only the true single-agent shape stays unstamped."""
+    env = DuetEnv(_env_config(env=DuetParams()))
+    assert list(env._roles) == ["a", "b"]  # declaration order
+    assert all(r.mcp is None and r.container is None for r in env._roles.values())
+    assert env._roles["b"].agent.trainable is False  # the declared default instance
+    assert env._stamp_roles
+    assert not vf.Environment(_env_config())._stamp_roles
 
 
 async def test_multi_role_records_stamp_roles():
@@ -176,9 +187,6 @@ async def test_decorated_signals_cross_agent():
     reward weights apply."""
 
     class Signals(vf.Environment[DuetParams]):
-        def roles(self):
-            return {"a": vf.Role(self.params.a), "b": vf.Role(self.params.b)}
-
         async def rollout(self, task, agents):
             return list(
                 await asyncio.gather(agents["a"].run(task), agents["b"].run(task))

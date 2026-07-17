@@ -180,6 +180,18 @@ class EnvParams(BaseConfig):
         return data
 
 
+def _declared_agent_configs(params: EnvParams) -> dict[str, AgentConfig]:
+    """The typed `AgentConfig` fields declared on an env's params block (a declared
+    default instance is what makes a field a role — the same test `_merge_role_defaults`
+    uses), in declaration order. The 1:1 config->role mapping: the default `roles()`
+    plays each as a dataset role, and declaring any is what turns role-stamping on."""
+    return {
+        name: getattr(params, name)
+        for name, field in type(params).model_fields.items()
+        if isinstance(field.default, AgentConfig)
+    }
+
+
 class StaticPoolConfig(BaseConfig):
     """Fixed env-server pool: pre-spawn `num_workers` workers up front."""
 
@@ -487,8 +499,10 @@ class Environment(Generic[ParamsT]):
     `Environment[YourParams]` (available as `self.params`, addressed as `--env.*`),
     and overrides up to three methods:
 
-      - `roles()` — which agent plays which role: one `vf.Role` each (a config,
-        plus the role's needs when the env mints its tasks itself).
+      - `roles()` — which agent plays which role: one `vf.Role` each. The default is
+        already the 1:1 mapping (every `AgentConfig` params field plays the dataset
+        under its field name); override only when a role's needs differ — the env
+        mints its tasks itself, or computes them.
       - `rollout(task, agents)` — how the agents interact on one task: imperative
         Python over `Agent` values; the returned traces are the rollout's episode.
       - `score(task, traces)` — sibling-dependent judgement over the finished set.
@@ -529,11 +543,15 @@ class Environment(Generic[ParamsT]):
                 f"{type(self).__name__}.roles() returned no roles; an env needs at "
                 "least one agent (the base default is a single 'solver' role)"
             )
-        # Traces are role-stamped except in the true single-agent shape — an env
-        # that never overrode `roles()` — where `role=None` keeps the wire identical
-        # to a plain eval's. Structural, not name-based: an env DECLARING a single
-        # 'solver' role (best-of-n) still stamps its traces.
-        self._stamp_roles = type(self).roles is not Environment.roles
+        # Traces are role-stamped except in the true single-agent shape — an env that
+        # neither declares `AgentConfig` fields nor overrides `roles()` — where
+        # `role=None` keeps the wire identical to a plain eval's. Structural, not
+        # name-based: an env declaring a single role (best-of-n's solver) still
+        # stamps its traces, even now that the default roles() plays its fields.
+        self._stamp_roles = (
+            bool(_declared_agent_configs(self.params))
+            or type(self).roles is not Environment.roles
+        )
         for fn in (
             *discover_decorated(self, "metric"),
             *discover_decorated(self, "reward"),
@@ -639,13 +657,19 @@ class Environment(Generic[ParamsT]):
 
     def roles(self) -> Mapping[str, Role]:
         """Which agent plays which role — the env's topology. Called once, at
-        construction (read `self.params` — a typed `AgentConfig` field per role is
-        the idiom, giving `--env.<role>.model` CLI/TOML addressing for free).
-        `vf.Role(config)` plays the dataset (the taskset's needs apply); declare a
-        role's own needs when the env mints its tasks itself. Default: the implied
-        single-agent case — one `"solver"` role on the run's own harness
-        (`--harness.*`)."""
-        return {"solver": Role(AgentConfig())}
+        construction. The default is the 1:1 mapping: every typed `AgentConfig` field
+        on the params block becomes a dataset-playing role of the same name (the same
+        fields that give `--env.<role>.model` CLI/TOML addressing), so an env whose
+        roles all play the dataset never writes this method. With no declared fields,
+        the implied single-agent case: one `"solver"` role on the run's own harness
+        (`--harness.*`). Override it when a role's needs differ from the taskset's —
+        the env mints its tasks itself (`vf.Role(cfg, mcp=False, container=False)`)
+        or computes them (the judge env)."""
+        declared = {
+            name: Role(config)
+            for name, config in _declared_agent_configs(self.params).items()
+        }
+        return declared or {"solver": Role(AgentConfig())}
 
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> list[Trace]:
         """One env-rollout: how the agents interact on `task`. Imperative Python over

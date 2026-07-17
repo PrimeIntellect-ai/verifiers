@@ -315,14 +315,21 @@ class DebateEnv(vf.Environment[DebateParams]):
   `AgentConfig()` is "the policy under evaluation/training" (which is what makes
   self-play trainable); a role pins only what makes it a different actor (its own
   harness, a frozen model, an off-train endpoint, tighter limits, `trainable=False`).
+- **The 1:1 mapping is the default.** With no `roles()` override, every declared
+  `AgentConfig` field plays the dataset under its field name — an env whose roles
+  all need exactly what the taskset provides (self-play, fan-out like the bundled
+  best-of-n) never writes `roles()` at all. `DebateEnv` overrides it for one
+  reason only: the judge's needs differ.
 - **A role declares what it needs from the taskset's world.** `vf.Role(cfg)`
   plays the dataset: the taskset's needs apply (declared tools mean the role's
   harness must support MCP; `NEEDS_CONTAINER` means no subprocess runtime), and the
   role is handed the taskset's shared tool servers. A role whose tasks the env
   mints itself says so — `vf.Role(cfg, mcp=False, container=False)` for a bare
   model actor like a judge or a simulated user — and then pairs with *any* taskset.
-  Keeping the declaration honest with `rollout()` is the env author's job;
-  `Agent.run` still validates every concrete task it's given, as the backstop.
+  Needs can also be computed: the bundled judge env decides `container=` from
+  whether its judge's harness executes code. Keeping the declaration honest with
+  `rollout()` is the env author's job; `Agent.run` still validates every concrete
+  task it's given, as the backstop.
 - **The base builds the agents** — one per role, inside the eval's serving resources
   (shared interception pool, shared tool servers, per-endpoint clients) — and hands
   them into `rollout()`. The hook never constructs agents.

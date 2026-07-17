@@ -24,9 +24,8 @@ class BestOfNParams(vf.EnvParams):
 
 
 class BestOfNEnv(vf.Environment[BestOfNParams]):
-    def roles(self):
-        return {"solver": vf.Role(self.params.solver)}
-
+    # No roles() override: the default 1:1 plays the declared `solver` field
+    # as a dataset role.
     async def rollout(self, task, agents):
         return list(
             await asyncio.gather(
