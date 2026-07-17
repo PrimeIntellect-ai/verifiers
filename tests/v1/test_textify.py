@@ -2,6 +2,8 @@ import asyncio
 import base64
 import io
 from types import SimpleNamespace
+from collections import OrderedDict
+import threading
 
 import pytest
 
@@ -13,6 +15,7 @@ import verifiers.v1.utils.textify as textify
 from verifiers.v1.dialects import AnthropicDialect, ChatDialect, ResponsesDialect
 from verifiers.v1.errors import TaskError
 from verifiers.v1.interception.server import InterceptionServer
+from verifiers.v1.session import RolloutSession
 from verifiers.v1.utils.textify import render_url
 
 
@@ -410,3 +413,31 @@ def test_describe_includes_output_affecting_threshold() -> None:
     assert "ramp=" in ascii_fixed and "threshold=" not in ascii_fixed
     assert "ramp=" in ascii_otsu and "threshold=otsu" in ascii_otsu
     assert "ramp=" not in braille and "threshold=0.25" in braille
+
+
+def test_textify_cache_resists_full_history_scan(monkeypatch) -> None:
+    calls: dict[str, int] = {}
+
+    def render(url: str, _cfg) -> str:
+        calls[url] = calls.get(url, 0) + 1
+        return f"rendered:{url}"
+
+    monkeypatch.setattr("verifiers.v1.session.render_url", render)
+    session = SimpleNamespace(
+        textify=vf.TextifyConfig(enabled=True),
+        _textify_cache=OrderedDict(),
+        _textify_seen=bytearray(8192),
+        _textify_lock=threading.Lock(),
+    )
+    urls = [f"data:image/png;base64,{index}" for index in range(40)]
+
+    first = [RolloutSession.render_image(session, url) for url in urls]
+    retained = set(session._textify_cache)
+    second = [RolloutSession.render_image(session, url) for url in urls]
+
+    assert first == second
+    assert len(session._textify_cache) == 32
+    assert set(session._textify_cache) == retained
+    assert sum(calls.values()) == 48  # 40 first renders + 8 overflow misses
+    assert sorted(calls.values()).count(1) == 32
+    assert sorted(calls.values()).count(2) == 8

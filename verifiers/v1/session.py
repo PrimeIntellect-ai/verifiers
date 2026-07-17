@@ -11,6 +11,8 @@ turns.
 import asyncio
 import hashlib
 import logging
+import threading
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -25,6 +27,9 @@ if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
+
+_TEXTIFY_CACHE_SIZE = 32
+_TEXTIFY_SEEN_BYTES = 8192
 
 
 @dataclass(frozen=True)
@@ -72,7 +77,18 @@ class RolloutSession:
     textify: TextifyConfig = field(default_factory=TextifyConfig)
     """How the interception server renders this rollout's wire images to text
     (`verifiers.v1.utils.textify`); disabled by default, ascii when enabled."""
-    _textify_cache: dict[str, str | None] = field(default_factory=dict, init=False)
+    _textify_cache: OrderedDict[bytes, str | None] = field(
+        default_factory=OrderedDict, init=False
+    )
+    _textify_seen: bytearray = field(
+        default_factory=lambda: bytearray(_TEXTIFY_SEEN_BYTES),
+        init=False,
+        repr=False,
+    )
+    """Bloom admission filter: false positives skip caching but never corrupt output."""
+    _textify_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -110,13 +126,35 @@ class RolloutSession:
     served response, or to None if the attempt produced no servable response (error/refuse)."""
 
     def render_image(self, url: str) -> str | None:
-        """Render one wire image once per rollout; harnesses resend the full history."""
-        key = hashlib.sha256(url.encode()).hexdigest()
-        if key not in self._textify_cache:
-            if len(self._textify_cache) >= 32:
-                self._textify_cache.pop(next(iter(self._textify_cache)))
-            self._textify_cache[key] = render_url(url, self.textify)
-        return self._textify_cache[key]
+        """Render one wire image, retaining a scan-resistant recent working set."""
+        key = hashlib.sha256(url.encode()).digest()
+        with self._textify_lock:
+            if key in self._textify_cache:
+                self._textify_cache.move_to_end(key)
+                return self._textify_cache[key]
+            seen = True
+            for offset in (0, 2):
+                bit = int.from_bytes(key[offset : offset + 2], "big")
+                byte, shift = divmod(bit, 8)
+                mask = 1 << shift
+                if not self._textify_seen[byte] & mask:
+                    seen = False
+                    self._textify_seen[byte] |= mask
+
+        rendered = render_url(url, self.textify)
+        with self._textify_lock:
+            # A concurrent request may have rendered/admitted the same image meanwhile.
+            if key in self._textify_cache:
+                self._textify_cache.move_to_end(key)
+                return self._textify_cache[key]
+            if seen:
+                # Old images beyond capacity may re-render, but never evict the recent set
+                # as a harness scans its full retained history on every request.
+                return rendered
+            if len(self._textify_cache) >= _TEXTIFY_CACHE_SIZE:
+                self._textify_cache.popitem(last=False)
+            self._textify_cache[key] = rendered
+            return rendered
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
