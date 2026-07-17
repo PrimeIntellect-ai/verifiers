@@ -3,7 +3,7 @@ name = "openenv-wordle-v1"
 version = "0.1.0"
 description = "Wordle through OpenEnv's reusable Verifiers v1 taskset."
 requires-python = ">=3.11"
-dependencies = ["verifiers", "openenv-v1"]
+dependencies = ["verifiers[openenv]"]
 
 [build-system]
 requires = ["hatchling"]
