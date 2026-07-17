@@ -224,11 +224,11 @@ class Rollout:
                     except TimeoutError:
                         trace.stop("harness_timeout")
                     except RolloutError as e:
-                        if session.error is not None:
+                        if session.error is not None and not trace.skip_scoring:
                             raise session.error from e
                         raise
                     else:
-                        if session.error is not None:
+                        if session.error is not None and not trace.skip_scoring:
                             raise session.error
             now = time.time()
             trace.timing.generation.end = now

@@ -25,7 +25,7 @@ import hashlib
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from tempfile import SpooledTemporaryFile
 from typing import Literal
@@ -174,26 +174,36 @@ class InterceptionServer(Interception):
         try:
             yield self.base_url, secret
         finally:
+            # Close registration first so no request can join while cleanup takes its snapshot.
+            self.unregister(secret)
             tasks = [*session.request_tasks, *session.tool_interceptions.values()]
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            self.unregister(secret)
+
+    @web.middleware
+    async def _track_requests(
+        self,
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+    ) -> web.StreamResponse:
+        """Keep every request for a rollout inside its cancellation boundary."""
+        session = self._session_for(request)
+        task = asyncio.current_task()
+        if session is not None and task is not None:
+            session.request_tasks.add(task)
+        try:
+            return await handler(request)
+        finally:
+            if session is not None and task is not None:
+                session.request_tasks.discard(task)
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
-            session = self.sessions.get(dialect.secret(request.headers))
-            task = asyncio.current_task()
-            if session is not None and task is not None:
-                session.request_tasks.add(task)
-            try:
-                return await self.handle_request(request, dialect)
-            finally:
-                if session is not None and task is not None:
-                    session.request_tasks.discard(task)
+            return await self.handle_request(request, dialect)
 
         return handler
 
@@ -204,7 +214,9 @@ class InterceptionServer(Interception):
         return handler
 
     async def start(self) -> None:
-        app = web.Application(client_max_size=_MAX_REQUEST_BODY)
+        app = web.Application(
+            client_max_size=_MAX_REQUEST_BODY, middlewares=[self._track_requests]
+        )
         for dialect in DIALECTS:
             for route in dialect.routes:
                 app.router.add_post(route, self._handler_for(dialect))
@@ -846,6 +858,10 @@ class InterceptionServer(Interception):
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             return web.json_response(dialect.error_body("unauthorized"), status=401)
+        if session.terminated.is_set():
+            return web.json_response(
+                dialect.error_body("rollout terminated"), status=400
+            )
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             result = await session.ctx.client.relay_aux(
@@ -869,8 +885,10 @@ class InterceptionServer(Interception):
         return web.json_response(result)
 
     def _session_for(self, request: web.Request) -> RolloutSession | None:
-        """The session a state request belongs to, by its `Authorization: Bearer <secret>` — the
-        same per-rollout secret the model routes use (dialect-independent, so parsed directly)."""
+        """Resolve a rollout with the auth carrier selected by its request route."""
+        for dialect in DIALECTS:
+            if request.path in dialect.routes or request.path in dialect.aux_routes:
+                return self.sessions.get(dialect.secret(request.headers))
         auth = request.headers.get("Authorization", "")
         secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
         return self.sessions.get(secret)
@@ -912,6 +930,8 @@ class InterceptionServer(Interception):
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
+        if session.terminated.is_set():
+            return web.json_response({"error": "rollout terminated"}, status=400)
         logger.debug("intercept PUT /state: id=%s", session.trace.id)
         state_cls = type(session.trace.state)
         raw = await request.read()
