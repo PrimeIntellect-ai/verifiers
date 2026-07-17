@@ -121,6 +121,30 @@ async def test_add_failure_records_patch_error(tmp_path):
     assert "exit=" in trace.info["patch_error"]
 
 
+async def test_reset_failure_records_patch_error(tmp_path):
+    # A git shim that fails only `reset` (e.g. ENOSPC rewriting .git/index): add and
+    # diff succeed, but a staged tree must not be reported as a successful capture.
+    runtime, base = make_repo(tmp_path)
+    (tmp_path / "src.py").write_text("edited\n")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "git").write_text(
+        '#!/bin/sh\n[ "$1" = reset ] && exit 7\nexec /usr/bin/git "$@"\n'
+    )
+    (shim / "git").chmod(0o755)
+
+    trace = trace_stub()
+    await capture_patch(
+        trace,
+        runtime,
+        base_commit=base,
+        env={"PATH": f"{shim}:/usr/local/bin:/usr/bin:/bin"},
+    )
+
+    assert "patch" not in trace.info
+    assert "exit=7" in trace.info["patch_error"]
+
+
 async def test_bad_base_records_patch_error(tmp_path):
     runtime, _ = make_repo(tmp_path)
     trace = trace_stub()

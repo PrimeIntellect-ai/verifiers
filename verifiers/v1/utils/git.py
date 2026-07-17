@@ -27,17 +27,22 @@ _FULL = "/tmp/vf_agent_patch_full"
 _CAPPED = "/tmp/vf_agent_patch"
 
 # `git reset -q` must run even when staging or diffing fails, or the error path
-# leaves the tree staged and can break scoring's later checkouts. Both the add's
-# and the diff's exit codes are preserved across the cleanup: a failed add (e.g.
-# a stale index.lock from a killed agent git command) leaves a stale index, so
-# letting the diff's clean exit stand would record a silently incomplete patch.
+# leaves the tree staged and can break scoring's later checkouts. Every mutating
+# step reports: a failure in add, diff, or reset fails the capture. A failed add
+# (e.g. a stale index.lock from a killed agent git command) leaves a stale index,
+# so letting the diff's clean exit stand would record a silently incomplete
+# patch; a failed reset (e.g. ENOSPC rewriting .git/index) leaves the tree
+# staged, so reporting success would hide a state later scoring may trip on.
 _DIFF = (
     "git add -A; "
     "add_rc=$?; "
     'git -c core.quotepath=off diff --cached --binary "$VF_DIFF_BASE" > {full}; '
-    "rc=$?; "
+    "diff_rc=$?; "
     "git reset -q; "
+    "reset_rc=$?; "
     "head -c {cap} {full} > {capped}; "
+    "rc=$diff_rc; "
+    '[ "$reset_rc" -ne 0 ] && rc=$reset_rc; '
     '[ "$add_rc" -ne 0 ] && rc=$add_rc; '
     'exit "$rc"'
 )
