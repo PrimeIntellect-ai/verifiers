@@ -305,9 +305,9 @@ def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
 def default_seat_harness(taskset_id: str) -> HarnessConfig:
     """What an unpinned role's `harness=None` resolves to: the taskset's own story —
     its bundled harness when it ships one, else the built-in `default`. Never an
-    operator-set run value: the run-level `--harness.*` configures exactly one seat
-    (the single-agent env's), so a multi-agent role's harness is always statable from
-    the env's config alone."""
+    operator-set run value (there is no run-level harness), so a role's harness is
+    always statable from the env's config alone: the user's seat pin, else the env
+    author's declared default, else this."""
     from verifiers.v1.loaders import default_harness_id, harness_config_type
 
     ident = default_harness_id(taskset_id)

@@ -150,4 +150,10 @@ class Harness(ABC, Generic[ConfigT]):
         (name -> URL) to wire in. Each harness owns the env its program needs — read
         `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
         RLM_* too). UV-script harnesses prepare dependencies in `setup`, then launch the
-        returned argv through `runtime.run_program(...)` here."""
+        returned argv through `runtime.run_program(...)` here.
+
+        The interception is the contract, not the process: a harness may run its loop
+        in-process instead of launching a program (the built-in `direct`), as long as
+        every model call still goes through `endpoint` + `secret` — traces, stops, and
+        limits are then identical to a real program's. Such a harness returns a
+        synthetic success `ProgramResult`; the trace is the record of what ran."""
