@@ -286,13 +286,13 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
                 if part.get("type") == "image":
                     source = part.get("source") or {}
                     if source.get("type") == "url":
-                        url = source.get("url", "")
-                    else:
+                        text = render(source.get("url", ""))
+                    elif source.get("type") == "base64":
                         url = (
                             f"data:{source.get('media_type', '')};base64,"
                             f"{source.get('data', '')}"
                         )
-                    text = render(url)
+                        text = render(url)
                 elif part.get("type") == "tool_result":
                     part = {**part, "content": blocks(part.get("content"))}
                 out.append({"type": "text", "text": text} if text else part)

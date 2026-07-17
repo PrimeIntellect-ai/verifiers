@@ -316,3 +316,32 @@ def test_threshold_validation() -> None:
     with pytest.raises(ValueError, match="between 0 and 1"):
         vf.TextifyConfig(threshold=1.1)
     assert vf.TextifyConfig(threshold="otsu").threshold == "otsu"
+
+
+def test_anthropic_file_images_pass_through() -> None:
+    file_image = {
+        "type": "image",
+        "source": {"type": "file", "file_id": "file_123"},
+    }
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    file_image,
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_123",
+                        "content": [file_image],
+                    },
+                ],
+            }
+        ]
+    }
+
+    def should_not_render(_: str) -> str:
+        raise AssertionError("file-backed images must pass through")
+
+    out = AnthropicDialect().textify_body(body, should_not_render)
+    assert out == body
+    assert out is not body
