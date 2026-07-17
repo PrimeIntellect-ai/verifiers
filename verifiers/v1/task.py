@@ -271,6 +271,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
+        if trace.skip_scoring:
+            return
         judges = self.plugged_judges()
         available = {"task": self.data, "trace": trace}
         if runtime is not None:
@@ -313,6 +315,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 _record_result(trace, judge.reward_name, result, judge.config.weight)
 
     async def score_group(self, traces: list[Trace]) -> None:
+        if traces and all(trace.skip_scoring for trace in traces):
+            return
         rewards = discover_decorated(self, "group_reward")
         if not rewards:
             return
@@ -327,7 +331,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
                     )
                 weight = getattr(fn, "_vf_weight", 1.0)
                 for trace, score in zip(traces, scores):
-                    trace.record_reward(fn.__name__, score, weight)
+                    if not trace.skip_scoring:
+                        trace.record_reward(fn.__name__, score, weight)
 
 
 TaskT = TypeVar("TaskT", bound=Task)

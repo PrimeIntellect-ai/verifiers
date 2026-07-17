@@ -102,15 +102,12 @@ class EvalClient(Client):
         # call instead of crashing the whole rollout on one bad response.
         try:
             raw = from_json(resp.content)
-            response = dialect.parse_response(dialect.validate_response(raw))
+            return dialect.parse_raw_response(raw)
         except (ValueError, ValidationError) as e:
             raise model_error(
                 f"malformed upstream response: {type(e).__name__}: {e}",
                 status_code=502,
             ) from e
-        # The interception server returns this full native provider object to the program.
-        response.raw = raw
-        return response
 
     def _headers(
         self,

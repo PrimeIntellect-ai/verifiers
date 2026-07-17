@@ -12,7 +12,12 @@ from dataclasses import dataclass, field
 
 from anthropic.types import Message as AnthropicMessage
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    parse_sse_event,
+    sse_event,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -38,7 +43,6 @@ STOP_REASONS = {
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
 }
-THINKING = ("thinking", "redacted_thinking")
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -74,7 +78,14 @@ def parse_messages(body: dict) -> Messages:
                 if isinstance(content, str)
                 else content or []
             )
-            state = [block for block in blocks if block["type"] in THINKING]
+            state = [
+                {"type": "text", "citations": block["citations"]}
+                if block.get("type") == "text"
+                else block
+                for block in blocks
+                if block.get("type") not in ("text", "tool_use")
+                or block.get("citations")
+            ]
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             reasoning = "".join(
                 b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
@@ -100,9 +111,10 @@ def parse_messages(body: dict) -> Messages:
         rest = []
         for block in [] if isinstance(content, str) else content or []:
             if block.get("type") == "tool_result":
+                tool_id = block.get("tool_use_id", "")
                 prompt.append(
                     ToolMessage(
-                        tool_call_id=block.get("tool_use_id", ""),
+                        tool_call_id=tool_id,
                         content=parse_content(block.get("content")),
                     )
                 )
@@ -119,27 +131,17 @@ def parse_messages(body: dict) -> Messages:
 
 def response_from_wire(message: AnthropicMessage) -> Response:
     """An Anthropic `Message` -> a vf `Response` (its content blocks folded into one assistant
-    message: text -> content, thinking -> reasoning, tool_use -> tool calls)."""
-    data = message.model_dump()
+    message: text -> content, thinking -> reasoning, tool_use -> tool calls).
+
+    `exclude_unset` reproduces the wire body exactly — absent fields stay absent, explicit
+    nulls stay null — so the committed `provider_state` hashes like the harness's verbatim
+    replay of the same blocks (see `graph.message_hash`)."""
+    data = message.model_dump(exclude_unset=True)
     blocks = data.get("content") or []
-    state = [block for block in blocks if block["type"] in THINKING]
-    content: list[str] = []
-    reasoning: list[str] = []
-    calls: list[ToolCall] = []
-    for block in blocks:
-        kind = block.get("type")
-        if kind == "text":
-            content.append(block.get("text", ""))
-        elif kind == "thinking":
-            reasoning.append(block.get("thinking", ""))
-        elif kind == "tool_use":
-            calls.append(
-                ToolCall(
-                    id=block.get("id", ""),
-                    name=block.get("name", ""),
-                    arguments=json.dumps(block.get("input") or {}),
-                )
-            )
+    assistant = parse_messages(
+        {"messages": [{"role": "assistant", "content": blocks}]}
+    )[0]
+    assert isinstance(assistant, AssistantMessage)
     finish: FinishReason = STOP_REASONS.get(data.get("stop_reason") or "")
     provider_usage = message.usage
     output_details = data.get("usage", {}).get("output_tokens_details")
@@ -161,12 +163,7 @@ def response_from_wire(message: AnthropicMessage) -> Response:
         id=data.get("id", ""),
         created=0,
         model=data.get("model", ""),
-        message=AssistantMessage(
-            content="".join(content) or None,
-            reasoning_content="".join(reasoning) or None,
-            tool_calls=calls or None,
-            provider_state=state or None,
-        ),
+        message=assistant,
         finish_reason=finish,
         usage=usage,
     )
@@ -219,6 +216,9 @@ class AnthropicStreamParser(StreamParser):
                     parts = []
                     self.partial_json[index] = parts
                 parts.append(delta.get("partial_json", ""))
+            elif delta_type == "citations_delta":
+                citations = block.get("citations") or []
+                block["citations"] = [*citations, delta.get("citation") or {}]
         elif kind == "message_delta":
             self.message.update(
                 {
@@ -239,7 +239,9 @@ class AnthropicStreamParser(StreamParser):
         for index, parts in self.partial_json.items():
             self.blocks[index]["input"] = json.loads("".join(parts) or "{}")
         self.message["content"] = [self.blocks[index] for index in sorted(self.blocks)]
-        return response_from_wire(self.validate_response(self.message))
+        response = response_from_wire(self.validate_response(self.message))
+        response.raw = self.message
+        return response
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
@@ -275,6 +277,58 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
 
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
+
+    def rewrite_response(self, raw: dict, content: str) -> dict:
+        raw["content"] = [{"type": "text", "text": content}]
+        if raw.get("stop_reason") != "max_tokens":
+            raw["stop_reason"] = "end_turn"
+        raw["stop_sequence"] = None
+        return raw
+
+    def serialize_stream(self, raw: dict) -> list[bytes]:
+        head = {**raw, "content": [], "stop_reason": None, "stop_sequence": None}
+        if usage := head.get("usage"):
+            head["usage"] = {**usage, "output_tokens": 0}
+        item = raw["content"][0]
+        events = [
+            ("message_start", {"message": head}),
+            (
+                "content_block_start",
+                {"index": 0, "content_block": {**item, "text": ""}},
+            ),
+            (
+                "content_block_delta",
+                {"index": 0, "delta": {"type": "text_delta", "text": item["text"]}},
+            ),
+            ("content_block_stop", {"index": 0}),
+            (
+                "message_delta",
+                {
+                    "delta": {
+                        "stop_reason": raw.get("stop_reason"),
+                        "stop_sequence": raw.get("stop_sequence"),
+                    },
+                    "usage": raw.get("usage") or {},
+                },
+            ),
+            ("message_stop", {}),
+        ]
+        return [sse_event({"type": kind, **payload}, kind) for kind, payload in events]
+
+    def rewrite_tool_results(self, body: dict, replacements: dict[str, str]) -> dict:
+        for raw_message in body.get("messages", []):
+            blocks = raw_message.get("content")
+            if not isinstance(blocks, list):
+                continue
+            for block in blocks:
+                tool_id = block.get("tool_use_id")
+                if block.get("type") != "tool_result" or tool_id not in replacements:
+                    continue
+                block["content"] = replacements[tool_id]
+        return body
+
+    def is_terminal_event(self, chunk: bytes) -> bool:
+        return b'"type":"message_stop"' in chunk or b'"type": "message_stop"' in chunk
 
     def validate_response(self, raw: dict) -> AnthropicMessage:
         usage = raw.get("usage")

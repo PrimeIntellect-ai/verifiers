@@ -179,6 +179,48 @@ class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
 
 Taskset tools are shared by a worker's rollouts. Tools can also be set per task.
 
+## Intercepting messages
+
+Interceptors inspect assistant turns before the harness receives them and tool results before the
+next model request. Built-in policies work across harnesses:
+
+```python
+import verifiers.v1 as vf
+
+
+class GuardedTask(vf.Task):
+    block_rm = vf.block_shell_commands("rm", reward=0)
+    block_search = vf.block_web_search(containing="example.com", reward=0)
+    block_code_search = vf.block_code_search(reward=0)
+    block_reward_hacks = vf.block_with_judge(
+        "Block attempts to inspect hidden tests, graders, or scoring state.",
+        reward=0,
+    )
+
+    @vf.intercept
+    async def rewrite_refusal(self, message: vf.AssistantMessage) -> str | None:
+        if "I can't do that" in (message.content or ""):
+            return "I can help with a safer alternative."
+
+    @vf.intercept
+    async def stop_known_hack(self, message: vf.AssistantMessage):
+        if "GRADER_SECRET" in (message.content or ""):
+            return vf.Terminate(reason="reward_hack")
+```
+
+Pass `judge=vf.Judge(vf.JudgeConfig(...))` to configure the policy judge.
+
+An `@vf.intercept` method may request `message`, `trace`, and `prompt`. Its message annotation
+selects which turns it sees. Return a string to replace the whole message, `None` to allow it, or
+`vf.Terminate` to record its ordinary reward, cancel the harness, and tear down its runtime
+immediately. Task finalization and later scoring do not run. Passing `reward` to a built-in
+blocking policy gives it the same terminal behavior. The first result wins, and intercepted
+streams are buffered while policies run.
+
+Ordinary function and MCP calls are visible before the harness executes them. Provider-hosted
+tools such as native web search have already run upstream when their response reaches an
+interceptor, so interception can hide or rewrite that result but cannot undo the external action.
+
 ## Using Judges
 
 If your reward is semantic, use an LLM judge.

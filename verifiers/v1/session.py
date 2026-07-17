@@ -12,14 +12,16 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, get_type_hints
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.decorators import invoke
+from verifiers.v1.errors import RolloutError, TaskError
+from verifiers.v1.interceptors import InterceptResult, Terminate
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Message, Messages
 
 if TYPE_CHECKING:
-    from verifiers.v1.errors import RolloutError
     from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
@@ -61,12 +63,33 @@ class RolloutLimits:
         return None
 
 
+RequestKey = tuple[str, bytes]
+
+
+@dataclass(frozen=True, slots=True)
+class StreamReplay:
+    body: bytes
+    content_type: str
+
+
+ReplayResponse = dict | StreamReplay
+
+
 @dataclass
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    intercepts: list[Callable[..., Awaitable[InterceptResult]]] = field(
+        default_factory=list
+    )
+    terminated: asyncio.Event = field(default_factory=asyncio.Event)
+    request_tasks: set[asyncio.Task] = field(default_factory=set)
+    rewritten_response_ids: set[str] = field(default_factory=set)
+    tool_interceptions: dict[str, asyncio.Task[InterceptResult]] = field(
+        default_factory=dict
+    )
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -82,23 +105,74 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
-    last_request: bytes | None = None
-    """Digest of the most recently served request body; with `last_response`, the replay cache
+    last_request: RequestKey | None = None
+    """Route plus digest of the most recently served request body; with `last_response`, the cache
     that keeps the message graph atomic under harness-SDK retries. A retry re-sends the
     byte-identical request; when it matches, the interception server replays the recorded
     response instead of re-sampling and committing a second turn — which would fork the graph
-    into a dead-end branch. Only a fully served request is cached, so a genuinely failed attempt
-    still re-runs. Turns are issued sequentially (one outstanding request at a time), so a retry
-    is always of the most recent request — keeping only the last one is sufficient and bounded."""
-    last_response: dict | None = None
+    into a dead-end branch. Only a committed response is cached, so a genuinely failed attempt
+    still re-runs; intercepted streams are cached before delivery so a disconnect after commit
+    replays instead of sampling again. Turns are issued sequentially, so keeping only the most
+    recent response is sufficient and bounded."""
+    last_response: ReplayResponse | None = None
     """The response returned for `last_request`, replayed verbatim on a retry."""
-    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
-    """Body digest -> the future of the attempt currently computing it. A retry that arrives
+    inflight: dict[RequestKey, "asyncio.Future[ReplayResponse | None]"] = field(
+        default_factory=dict
+    )
+    """Route/body digest -> the future of the attempt currently computing it. A retry that arrives
     while the first attempt is still in flight (a slow turn) awaits this future instead of
     starting a second inference — the other half of retry atomicity (with `last_response`, which
     covers a retry after the attempt finished). Because a slow turn is coalesced rather than
     re-sampled, retries stay safe without an inflated client timeout. The future resolves to the
     served response, or to None if the attempt produced no servable response (error/refuse)."""
+
+    async def intercept(
+        self, message: Message, prompt: Messages | None = None
+    ) -> InterceptResult:
+        """Return the first replacement or terminal result, else pass through."""
+        try:
+            for interceptor in self.intercepts:
+                hint = get_type_hints(interceptor).get("message")
+                if hint not in (None, Any) and not isinstance(message, hint):
+                    continue
+                replacement = await invoke(
+                    interceptor,
+                    {
+                        "message": message.model_copy(deep=True),
+                        "trace": self.trace,
+                        "prompt": prompt,
+                    },
+                )
+                if replacement is None:
+                    continue
+                if not isinstance(replacement, (str, Terminate)):
+                    raise TaskError(
+                        "@intercept must return str, vf.Terminate, or None, got "
+                        f"{type(replacement).__name__}"
+                    )
+                return replacement
+        except RolloutError:
+            raise
+        except Exception as e:
+            raise TaskError(f"@intercept failed: {type(e).__name__}: {e}") from e
+        return None
+
+    def signal_termination(self, result: Terminate) -> None:
+        """Record the terminal reward before waking the rollout to cancel its harness."""
+        if self.terminated.is_set():
+            return
+        self.error = None
+        self.trace.record_reward("interception", result.reward)
+        self.trace.skip_scoring = True
+        self.trace.stop(result.reason)
+        self.terminated.set()
+        current = asyncio.current_task()
+        for task in self.request_tasks:
+            if task is not current:
+                task.cancel()
+        for task in self.tool_interceptions.values():
+            if task is not current:
+                task.cancel()
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -106,6 +180,8 @@ class RolloutSession:
         call halts the harness (its model call errors out); Harness.run treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
+        if self.terminated.is_set():
+            return self.trace.stop_condition or "intercepted"
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)

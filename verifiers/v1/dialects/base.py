@@ -7,9 +7,8 @@ from the endpoint the program's SDK posts to — the harness declares nothing.
 
 The eval client preserves a request's native JSON fields except for eval-owned overrides, while a
 dialect-owned `StreamParser` incrementally assembles a response copy for the trace; the renderer is chat-only.
-A dialect is therefore mostly wire -> vf (`parse_request`/`parse_response`/`stream_parser`); the
-exceptions are `apply_overrides` (impose the eval's model + sampling in this format's shape) and
-`extend` (chat-only user-sim injection).
+A dialect owns both translation directions: parsing for the trace, native message replacement for
+`@intercept`, eval-owned request overrides, and chat-only user-simulator extension.
 """
 
 import json
@@ -19,7 +18,7 @@ from collections.abc import Callable, Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel
-from pydantic_core import from_json
+from pydantic_core import from_json, to_json
 
 from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
 
@@ -27,6 +26,12 @@ ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
+
+
+def sse_event(data: dict, event: str | None = None) -> bytes:
+    """Encode one complete server-sent event."""
+    prefix = f"event: {event}\n".encode() if event else b""
+    return prefix + b"data: " + to_json(data) + b"\n\n"
 
 
 def is_sse_done_event(raw: bytes) -> bool:
@@ -174,6 +179,24 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def validate_response(self, raw: dict) -> RespT:
         """Validate a native response, normalizing provider-compatible extensions if needed."""
         return self.response_type.model_validate(raw)
+
+    def parse_raw_response(self, raw: dict) -> Response:
+        """Validate and parse a native response while retaining its replayable wire body."""
+        response = self.parse_response(self.validate_response(raw))
+        response.raw = raw
+        return response
+
+    @abstractmethod
+    def rewrite_response(self, raw: dict, content: str) -> dict:
+        """Replace a native response with assistant text."""
+
+    @abstractmethod
+    def serialize_stream(self, raw: dict) -> list[bytes]:
+        """Serialize a rewritten native response as a complete SSE stream."""
+
+    @abstractmethod
+    def rewrite_tool_results(self, body: ReqT, replacements: dict[str, str]) -> ReqT:
+        """Replace tool-result messages in a native request body by tool-call id."""
 
     @abstractmethod
     def stream_parser(self) -> StreamParser:

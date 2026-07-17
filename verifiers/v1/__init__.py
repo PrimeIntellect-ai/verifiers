@@ -11,7 +11,7 @@ from verifiers.v1.clients import (
     ModelContext,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.decorators import group_reward, intercept, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
@@ -34,6 +34,14 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.interceptors import (
+    Terminate,
+    block_code_search,
+    block_shell_commands,
+    block_tool_calls,
+    block_web_search,
+    block_with_judge,
+)
 from verifiers.v1.judge import (
     Judge,
     JudgeConfig,
@@ -172,6 +180,13 @@ __all__ = [
     "TimeSpan",
     "Error",
     # decorators
+    "intercept",
+    "Terminate",
+    "block_code_search",
+    "block_shell_commands",
+    "block_tool_calls",
+    "block_web_search",
+    "block_with_judge",
     "stop",
     "tool",
     "metric",
