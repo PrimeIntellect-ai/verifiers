@@ -212,6 +212,7 @@ async def test_multi_agent_env(run_v1, tmp_path):
 
     traces = await run_v1(
         "duet-v1",
+        harness=None,  # both duet seats pin their own harness
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -237,8 +238,8 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
     plain echo taskset — n solver attempts in one episode, sibling-scored."""
     traces = await run_v1(
         "echo-v1",
-        harness="null",
-        env={"id": "best-of-n", "n": 2},
+        harness=None,  # a multi-agent env refuses the run-level harness
+        env={"id": "best-of-n", "n": 2, "solver": {"harness": {"id": "null"}}},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -254,8 +255,8 @@ async def test_env_id_judge(run_v1, tmp_path):
     from a real (direct-harness, untrainable) judge agent's verdict."""
     traces = await run_v1(
         "echo-v1",
-        harness="null",
-        env={"id": "judge"},
+        harness=None,  # the solver's harness is its seat's pin, not a run flag
+        env={"id": "judge", "solver": {"harness": {"id": "null"}}},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -280,8 +281,12 @@ async def test_env_id_judge_over_tool_taskset(run_v1, tmp_path):
     and `full_trace` shows the judge the solver's tool calls."""
     traces = await run_v1(
         "echo-tool-v1",
-        harness="null",
-        env={"id": "judge", "spec": {"view": "full_trace"}},
+        harness=None,
+        env={
+            "id": "judge",
+            "spec": {"view": "full_trace"},
+            "solver": {"harness": {"id": "null"}},
+        },
         output_dir=tmp_path,
         max_turns=6,
     )
@@ -321,8 +326,12 @@ async def test_env_id_judge_rubric_spec(run_v1, tmp_path):
     )
     traces = await run_v1(
         "echo-v1",
-        harness="null",
-        env={"id": "judge", "spec": {"id": "rubric", "path": str(rubric)}},
+        harness=None,
+        env={
+            "id": "judge",
+            "spec": {"id": "rubric", "path": str(rubric)},
+            "solver": {"harness": {"id": "null"}},
+        },
         output_dir=tmp_path / "out",
         max_turns=2,
         rollout_timeout=300,
@@ -340,6 +349,7 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
     config from wire data, and the multi-trace episode rides the serve protocol."""
     traces = await run_v1_server(
         "duet-v1",
+        harness=None,  # both duet seats pin their own harness
         output_dir=tmp_path,
         max_turns=2,
     )

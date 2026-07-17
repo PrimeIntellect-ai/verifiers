@@ -162,7 +162,7 @@ def _eval_config(
     taskset: str,
     *,
     output_dir: Path,
-    harness: str = "null",
+    harness: str | None = "null",
     n: int = 1,
     num_tasks: int = 1,
     max_tokens: int = 2048,
@@ -182,15 +182,20 @@ def _eval_config(
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
-    risks truncating the reasoning before the answer (which tanks the reward)."""
+    risks truncating the reasoning before the answer (which tanks the reward).
+
+    `harness=None` omits the run-level harness entirely — the multi-agent story: a
+    multi-agent env refuses a customized `--harness.*` (its seats pin their own), so
+    those tests pass their harness through the env's role fields instead."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
-    harness_cfg = {"id": harness, **(harness_overrides or {})}
+    harness_cfg = {"id": harness, **(harness_overrides or {})} if harness else None
     env_cfg = env or {}
     _configure_prime_runtimes(taskset_cfg)
-    _configure_prime_runtimes(harness_cfg)
+    if harness_cfg is not None:
+        _configure_prime_runtimes(harness_cfg)
     return EvalConfig(
         taskset=taskset_cfg,
-        harness=harness_cfg,
+        **({"harness": harness_cfg} if harness_cfg is not None else {}),
         num_tasks=num_tasks,
         num_rollouts=n,
         max_turns=max_turns,

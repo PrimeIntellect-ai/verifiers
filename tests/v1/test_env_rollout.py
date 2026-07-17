@@ -57,10 +57,11 @@ class DuetEnv(vf.Environment[DuetParams]):
             trace.record_metric("siblings", float(len(traces)))
 
 
-async def test_base_env_mints_single_agent_records():
-    """The base defaults ARE the single-agent case: one 'main' role on the env's
-    harness, one unstamped trace per episode, score() a no-op."""
-    env = vf.Environment(_env_config())
+async def test_single_agent_env_mints_single_agent_records():
+    """`SingleAgentEnv` is the single-agent case every plain taskset resolves to:
+    one 'solver' role on the run's `--harness.*`, one unstamped trace per episode,
+    score() a no-op."""
+    env = vf.SingleAgentEnv(_env_config())
     assert list(env._roles) == ["solver"]
     agents = _stub_agents(env)
     episode = await env.run_episode(_task(env), None)
@@ -75,14 +76,14 @@ async def test_base_env_mints_single_agent_records():
 def test_default_roles_are_the_declared_agent_fields():
     """The default roles() is the 1:1 mapping: every AgentConfig field on the params
     block becomes a dataset-playing role of the same name — an env whose roles all
-    play the dataset never writes roles(). Declaring any field also turns
-    role-stamping on; only the true single-agent shape stays unstamped."""
+    play the dataset never writes roles(). Every env stamps its traces' roles except
+    `SingleAgentEnv`, whose wire stays identical to a plain eval's."""
     env = DuetEnv(_env_config(env=DuetParams()))
     assert list(env._roles) == ["a", "b"]  # declaration order
     assert all(r.mcp is None and r.container is None for r in env._roles.values())
     assert env._roles["b"].agent.trainable is False  # the declared default instance
     assert env._stamp_roles
-    assert not vf.Environment(_env_config())._stamp_roles
+    assert not vf.SingleAgentEnv(_env_config())._stamp_roles
 
 
 def test_role_fields_must_declare_default_instances():
@@ -112,7 +113,7 @@ async def test_multi_role_records_stamp_roles():
 
 
 async def test_agent_failures_are_trace_data_not_record_errors():
-    env = vf.Environment(_env_config())
+    env = vf.SingleAgentEnv(_env_config())
     env._agents_for = lambda ctx: {"solver": StubAgent(error=RuntimeError("boom"))}  # type: ignore[method-assign]
     episode = await env.run_episode(_task(env), None)
     assert not episode.ok and not episode.errors  # the failure lives on the trace
@@ -123,7 +124,7 @@ async def test_hook_crash_keeps_completed_traces():
     """A rollout() that raises after some runs finished still yields a episode carrying
     them — the crash-safe subset — with the failure on the episode, not a trace."""
 
-    class Crashy(vf.Environment):
+    class Crashy(vf.SingleAgentEnv):
         async def rollout(self, task, agents):
             await agents["solver"].run(task)
             raise RuntimeError("hook bug")
@@ -137,7 +138,7 @@ async def test_hook_crash_keeps_completed_traces():
 
 
 async def test_score_deadline_is_a_record_error():
-    class Slow(vf.Environment):
+    class Slow(vf.SingleAgentEnv):
         async def score(self, task, traces):
             await asyncio.sleep(60)
 
@@ -225,7 +226,7 @@ async def test_decorated_signals_cross_agent():
 
 
 def test_decorated_signal_role_must_be_declared():
-    class Bad(vf.Environment):
+    class Bad(vf.SingleAgentEnv):
         @vf.metric(role="ghost")
         async def lost(self, traces):
             return 0.0
@@ -235,11 +236,11 @@ def test_decorated_signal_role_must_be_declared():
 
 
 async def test_decorated_signals_on_unstamped_single_role():
-    """An env subclass keeping the default roles() leaves traces unstamped (the wire
-    matches a plain eval's); a role='solver' signal still records onto them — every
-    trace belongs to the sole implicit role."""
+    """A `SingleAgentEnv` subclass leaves traces unstamped (the wire matches a plain
+    eval's); a role='solver' signal still records onto them — every trace belongs to
+    the sole implicit role."""
 
-    class Solo(vf.Environment):
+    class Solo(vf.SingleAgentEnv):
         @vf.metric(role="solver")
         async def n(self, traces):
             return float(len(traces))
@@ -255,7 +256,7 @@ async def test_decorated_signal_failure_is_an_episode_error():
     """A decorated signal raising is score() failing — a rollout-level error on the
     episode, with the finished traces kept (never blamed on a trace)."""
 
-    class Bad(vf.Environment):
+    class Bad(vf.SingleAgentEnv):
         @vf.metric
         async def broken(self, trace):
             raise RuntimeError("signal bug")
@@ -273,12 +274,15 @@ def test_roles_must_be_nonempty():
         def roles(self):
             return {}
 
-    with pytest.raises(ValueError, match="at least one agent"):
+        async def rollout(self, task, agents):
+            return []
+
+    with pytest.raises(ValueError, match="returned no roles"):
         Empty(_env_config())
 
 
 def test_slots_need_a_rollout():
-    env = vf.Environment(_env_config())
+    env = vf.SingleAgentEnv(_env_config())
     with pytest.raises(ValueError, match="n >= 1"):
         env.slots(_task(env), n=0)
 
@@ -288,7 +292,7 @@ async def test_run_slot_observes_and_completes():
     keeping the slot live (traces appear at mint) and firing `on_complete` once final."""
     from verifiers.v1.trace import Episode
 
-    env = vf.Environment(_env_config())
+    env = vf.SingleAgentEnv(_env_config())
     _stub_agents(env)
     slots = env.slots(_task(env), n=3)
     assert [s.traces for s in slots] == [[]] * 3
@@ -317,7 +321,7 @@ def test_finished_slot_from_saved_record():
 
 
 def test_role_ctx_pins_fall_back_per_field():
-    env = vf.Environment(_env_config())
+    env = vf.SingleAgentEnv(_env_config())
     ctx = vf.ModelContext(model="run-model", client=object())  # duck client
     assert env._role_ctx(vf.AgentConfig(), ctx) is ctx  # nothing pinned → the run's
     pinned = env._role_ctx(vf.AgentConfig(model="frozen-judge"), ctx)
@@ -331,7 +335,7 @@ def test_role_ctx_pins_fall_back_per_field():
 
 
 def test_role_limits_fall_back_per_field():
-    env = vf.Environment(_env_config(max_turns=7, max_output_tokens=100))
+    env = vf.SingleAgentEnv(_env_config(max_turns=7, max_output_tokens=100))
     limits = env._role_limits(vf.AgentConfig(max_turns=2))
     assert limits.max_turns == 2  # the role's own cap wins
     assert limits.max_output_tokens == 100  # unset caps stay the env's
@@ -343,13 +347,23 @@ def test_role_harness_config_narrows_by_id():
     assert spec.harness.id == "default"
 
 
-def test_role_harness_late_binds_to_the_runs():
-    """An unpinned role plays on the run's `--harness.*` — pairing an env must not
-    silently swap the policy's harness (the axes stay orthogonal)."""
+def test_run_harness_is_the_single_agent_seat():
+    """The run-level `--harness.*` configures exactly one thing: `SingleAgentEnv`'s
+    solver seat. An unpinned role elsewhere resolves to the taskset's default
+    harness — never an operator-set run value."""
     assert vf.AgentConfig().harness is None
-    env = vf.Environment(_env_config(harness={"id": "null"}))
-    assert env._harnesses["solver"] is env.harness
-    assert env.harness.config.id == "null"
+    env = vf.SingleAgentEnv(_env_config(harness={"id": "null"}))
+    assert env._harnesses["solver"].config.id == "null"
+    duet = DuetEnv(_env_config(env=DuetParams()))
+    assert duet._harnesses["a"].config.id == "default"  # the taskset's default
+    assert duet._harnesses["a"] is duet._harnesses["b"]  # one object per config
+
+
+def test_multi_agent_env_refuses_the_run_harness():
+    """A multi-agent env has no seat for the run-level `--harness.*` to configure;
+    a customized value is refused with the per-seat flags to use instead."""
+    with pytest.raises(ValueError, match="--env.a.harness"):
+        DuetEnv(_env_config(harness={"id": "null"}, env=DuetParams()))
 
 
 def test_role_harness_override_switches_the_type():
@@ -401,8 +415,8 @@ def test_env_subclass_loads_and_params_narrow():
     # the direct-constructor path narrows too (no model_validate detour needed)
     constructed = vf.EnvConfig(taskset={"id": "duet-v1"})
     assert isinstance(constructed.env, params_cls)
-    assert vf.environment_class("echo-v1") is vf.Environment
-    assert type(vf.load_environment(_env_config())) is vf.Environment
+    assert vf.environment_class("echo-v1") is vf.SingleAgentEnv
+    assert type(vf.load_environment(_env_config())) is vf.SingleAgentEnv
 
 
 def test_env_requires_its_declared_params():

@@ -63,8 +63,7 @@ def test_minted_task_roles_pair_with_tool_tasksets():
         vf.load_environment(
             EvalConfig(
                 taskset={"id": "echo-tool-v1"},
-                harness={"id": "direct"},
-                env={"id": "best-of-n"},
+                env={"id": "best-of-n", "solver": {"harness": {"id": "direct"}}},
             )
         )
 
@@ -82,8 +81,10 @@ def test_judge_env_refuses_a_code_executing_judge():
     bare = vf.load_environment(
         EvalConfig(
             taskset={"id": "echo-v1"},
-            harness={"id": "default", "runtime": {"type": "docker"}},
-            env={"id": "judge"},
+            env={
+                "id": "judge",
+                "solver": {"harness": {"runtime": {"type": "docker"}}},
+            },
         )
     )
     assert bare._roles["judge"].container is False
@@ -91,9 +92,9 @@ def test_judge_env_refuses_a_code_executing_judge():
 
 def test_agentic_judge_is_sandboxed():
     """The agentic judge is never played on the host: its role's container need is
-    STATIC (no mode-switching), its harness late-binds to the run's own — on a
-    docker run the judge lands in docker with no flags — and a fully-subprocess run
-    refuses at construction. A tool-less judge harness belongs on `judge`."""
+    STATIC (no mode-switching) — a judge resolving to the subprocess runtime refuses
+    at construction, and the fix is the judge seat's own runtime pin. A tool-less
+    judge harness belongs on `judge`."""
     with pytest.raises(ValueError, match="role 'judge' plays tasks that need a"):
         vf.load_environment(
             EvalConfig(taskset={"id": "echo-v1"}, env={"id": "agentic-judge"})
@@ -101,13 +102,16 @@ def test_agentic_judge_is_sandboxed():
     env = vf.load_environment(
         EvalConfig(
             taskset={"id": "echo-v1"},
-            harness={"id": "default", "runtime": {"type": "docker"}},
-            env={"id": "agentic-judge"},
+            env={
+                "id": "agentic-judge",
+                "judge": {"harness": {"runtime": {"type": "docker"}}},
+            },
         )
     )
     judge = env._roles["judge"]
     assert judge.container is True
-    assert judge.agent.harness is None  # late-binds to the run's harness + runtime
+    assert env._harnesses["judge"].config.runtime.type == "docker"
+    assert env._harnesses["solver"].config.runtime.type == "subprocess"  # unpinned
     # The env-server config round-trip resolves to the same shape.
     rebuilt = vf.load_environment(
         EvalConfig.model_validate(env.config.model_dump(mode="json"))
@@ -117,22 +121,24 @@ def test_agentic_judge_is_sandboxed():
         vf.load_environment(
             EvalConfig(
                 taskset={"id": "echo-v1"},
-                harness={"id": "default", "runtime": {"type": "docker"}},
                 env={"id": "agentic-judge", "judge": {"harness": {"id": "direct"}}},
             )
         )
 
 
 def test_roles_are_always_roles():
-    """The implied single-agent default is one dataset-playing `solver` role; a
-    roles() override handing back a bare AgentConfig gets a wrap-it error."""
-    env = vf.Environment(_bundled_config())
+    """`SingleAgentEnv`'s seat is one dataset-playing `solver` role; a roles()
+    override handing back a bare AgentConfig gets a wrap-it error."""
+    env = vf.SingleAgentEnv(_bundled_config())
     (name,), (role,) = env._roles.keys(), env._roles.values()
     assert name == "solver" and role.mcp is None and role.container is None
 
     class Bare(vf.Environment):
         def roles(self):
             return {"solo": vf.AgentConfig()}
+
+        async def rollout(self, task, agents):
+            return []
 
     with pytest.raises(TypeError, match="wrap it: vf.Role"):
         Bare(_bundled_config())
@@ -142,22 +148,29 @@ def _bundled_config() -> EvalConfig:
     return EvalConfig(taskset={"id": "echo-v1"})
 
 
-def test_bundled_env_solver_runs_the_runs_harness():
-    """The axes stay orthogonal when paired: `--env.id best-of-n --harness.id X`
-    runs the solver on X (an unpinned role late-binds to the run's harness), while
-    a pinned role (the judge env's judge) keeps its own."""
-    config = EvalConfig(
-        taskset={"id": "echo-v1"}, harness={"id": "null"}, env={"id": "best-of-n"}
-    )
-    env = vf.load_environment(config)
-    assert env._harnesses["solver"] is env.harness
-    assert env.harness.config.id == "null"
-    judged = vf.load_environment(
+def test_paired_env_seats_pin_their_own_harness():
+    """Pairing an env never inherits the run-level `--harness.*`: a customized one
+    is refused with the per-seat flags to use, a seat pin runs that seat on its own
+    harness, and an unpinned seat runs the taskset's default."""
+    with pytest.raises(ValueError, match="--env.solver.harness"):
+        vf.load_environment(
+            EvalConfig(
+                taskset={"id": "echo-v1"},
+                harness={"id": "null"},
+                env={"id": "best-of-n"},
+            )
+        )
+    env = vf.load_environment(
         EvalConfig(
-            taskset={"id": "echo-v1"}, harness={"id": "null"}, env={"id": "judge"}
+            taskset={"id": "echo-v1"},
+            env={"id": "best-of-n", "solver": {"harness": {"id": "null"}}},
         )
     )
-    assert judged._harnesses["solver"] is judged.harness
+    assert env._harnesses["solver"].config.id == "null"
+    judged = vf.load_environment(
+        EvalConfig(taskset={"id": "echo-v1"}, env={"id": "judge"})
+    )
+    assert judged._harnesses["solver"].config.id == "default"  # taskset's default
     assert judged._harnesses["judge"].config.id == "direct"  # the pin survives
 
 

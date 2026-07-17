@@ -7,7 +7,7 @@ from typing import Callable
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.env import EnvConfig, EnvParams, Environment
+from verifiers.v1.env import EnvConfig, EnvParams, Environment, SingleAgentEnv
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls
 from verifiers.v1.utils.install import ensure_installed
@@ -121,25 +121,25 @@ def environment_class(taskset_id: str, env_id: str = "") -> type[Environment]:
     local package, or a Hub id — and a failure to resolve it raises (an explicit
     pairing must not silently fall back). Otherwise the taskset's own story: its
     package's `Environment` subclass when it exports one via `__all__` (a recipe env
-    ships with its taskset, the same plugin idiom as a bundled harness), else the base
-    `Environment` — whose defaults ARE the single-agent case, so every plain taskset
+    ships with its taskset, the same plugin idiom as a bundled harness), else
+    `SingleAgentEnv` — one solver seat on the flat run flags, so every plain taskset
     resolves to today's behavior."""
     if env_id:
         return _plugin_class(import_environment(env_id), Environment, "environment")
     if not taskset_id:
-        return Environment
+        return SingleAgentEnv
     try:
         module = import_taskset(taskset_id)
         return _plugin_class(module, Environment, "environment")
     except (ModuleNotFoundError, TypeError, AttributeError):
-        return Environment
+        return SingleAgentEnv
 
 
 def load_environment(config: EnvConfig) -> Environment:
     """Construct the env for `config`: the `--env.id`-selected `Environment` when set,
-    else the taskset's exported subclass when there is one, else the base. Every env
-    construction site (eval, serve, gepa) goes through here so subclass envs load
-    everywhere."""
+    else the taskset's exported subclass when there is one, else `SingleAgentEnv`.
+    Every env construction site (eval, serve, gepa) goes through here so subclass
+    envs load everywhere."""
     return environment_class(config.taskset.id, config.env.id)(config)
 
 

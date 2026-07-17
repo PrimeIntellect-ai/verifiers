@@ -4,9 +4,10 @@ import asyncio
 import contextlib
 import logging
 import traceback
+from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Annotated, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Annotated, ClassVar, Generic, Literal, TypeVar
 
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
@@ -62,16 +63,21 @@ class TimeoutConfig(BaseConfig):
 
 
 class AgentConfig(BaseConfig):
-    """One env role: who plays it — the agent behind a `roles()` entry. Everything
-    defaults to the run's own settings, so `AgentConfig()` is "the policy under
-    evaluation/training" — a role pins only what makes it a different actor (its own
-    harness, a frozen model, an off-train endpoint, tighter limits)."""
+    """One env role: who plays it — the agent behind a `roles()` entry. The model leg
+    (`model`/`client`/`sampling`) defaults to the run's own — the role is played by
+    the policy under evaluation/training (the serve protocol carries those per
+    rollout request), which is what makes self-play trainable. The harness does not:
+    an unpinned role runs the taskset's default harness, and there is no run-level
+    harness to inherit — the flat `--harness.*` is the single-agent seat's sugar. A
+    role pins only what makes it a different actor (its own harness, a frozen model,
+    an off-train endpoint, tighter limits)."""
 
     harness: SerializeAsAny[HarnessConfig] | None = None
-    """The role's program + runtime policy (None = the run's `--harness.*` — late
-    binding, like `model`/`client`/`sampling`, so pairing an env never silently
-    swaps the policy's harness). Pin it to give the role its own program (e.g.
-    `vf.HarnessConfig(id="direct")` for a bare in-process chat actor)."""
+    """The role's program + runtime policy (None = the taskset's default harness —
+    its bundled one when it ships one, else the built-in `default` — so pairing an
+    env never silently swaps a seat's harness). Pin it to give the role its own
+    program (e.g. `vf.HarnessConfig(id="direct")` for a bare in-process chat actor),
+    or its own runtime (`--env.<role>.harness.runtime.type docker`)."""
     model: str | None = None
     """Model id (None = the run's model — late binding: the role is played by the
     policy being evaluated or trained, which is what makes self-play trainable)."""
@@ -155,7 +161,7 @@ class EnvParams(BaseConfig):
     id: ID = ""
     """Which `Environment` runs the taskset — the control flow between agents. Empty
     (the default) keeps the taskset's own story: the `Environment` subclass its package
-    exports, else the single-agent base. Set it to pair a reusable interaction with any
+    exports, else `SingleAgentEnv`. Set it to pair a reusable interaction with any
     taskset (`--env.id best-of-n --taskset.id gsm8k-v1`): a bundled env
     (`verifiers.v1.envs`), a local package, or a Hub `org/name[@version]`. An explicit
     id wins over the taskset's bundled env."""
@@ -214,6 +220,18 @@ def _declared_agent_configs(params: EnvParams) -> dict[str, AgentConfig]:
     }
 
 
+def default_seat_harness(taskset_id: str) -> HarnessConfig:
+    """What an unpinned role's `harness=None` resolves to: the taskset's own story —
+    its bundled harness when it ships one, else the built-in `default`. Never an
+    operator-set run value: the run-level `--harness.*` configures exactly one seat
+    (the single-agent env's), so a multi-agent role's harness is always statable from
+    the env's config alone."""
+    from verifiers.v1.loaders import default_harness_id, harness_config_type
+
+    ident = default_harness_id(taskset_id)
+    return harness_config_type(ident).model_validate({"id": ident})
+
+
 class StaticPoolConfig(BaseConfig):
     """Fixed env-server pool: pre-spawn `num_workers` workers up front."""
 
@@ -260,6 +278,12 @@ class EnvConfig(BaseConfig):
     # taskset/harness/env-specific knobs.
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
+    """The single-agent seat's harness — how the LLM interfaces with the world when
+    one agent plays the taskset. `SingleAgentEnv` consumes it (the flat `--harness.*`
+    flags are that seat's sugar); a multi-agent env refuses a customized value — its
+    roles pin their own (`--env.<role>.harness.*`), an unpinned role running the
+    taskset's default (`default_seat_harness`). Defaults to the taskset's bundled
+    harness when it ships one."""
     env: SerializeAsAny[EnvParams] = EnvParams()
     """The environment — the control flow between agents — and its parameters
     (`EnvParams`): which env runs the taskset (`--env.id`, empty = the taskset's own
@@ -511,27 +535,36 @@ class RunSlot:
 ParamsT = TypeVar("ParamsT", bound=EnvParams)
 
 
-class Environment(Generic[ParamsT]):
+class Environment(ABC, Generic[ParamsT]):
     """A taskset, the agents that play it, and how one task becomes one env-rollout.
 
-    Concrete, and its defaults ARE the single-agent case: the base class runs every
-    existing taskset exactly as `--taskset.*`/`--harness.*` configure it. A multi-agent
-    env subclasses it (exported from the taskset's package, loaded like every plugin),
-    declares its parameters as an `EnvParams` subclass bound via
+    Abstract: every run gets a concrete subclass. `SingleAgentEnv` (below) is the
+    default one — one solver seat playing the taskset exactly as the flat run flags
+    configure it — and every plain taskset resolves to it. A multi-agent env is its
+    own subclass (exported from the taskset's package, loaded like every plugin): it
+    declares each role as an `AgentConfig` field on an `EnvParams` subclass bound via
     `Environment[YourParams]` (available as `self.params`, addressed as `--env.*`),
-    and overrides up to three methods:
+    writes
+
+      - `rollout(task, agents)` — how the agents interact on one task: imperative
+        Python over `Agent` values; the returned traces are the rollout's episode.
+
+    and optionally overrides
 
       - `roles()` — which agent plays which role: one `vf.Role` each. The default is
         already the 1:1 mapping (every `AgentConfig` params field plays the dataset
         under its field name); override only when a role's needs differ — the env
         mints its tasks itself.
-      - `rollout(task, agents)` — how the agents interact on one task: imperative
-        Python over `Agent` values; the returned traces are the rollout's episode.
       - `score(task, traces)` — sibling-dependent judgement over the finished set.
 
     plus `setup()`/`teardown()` for env-owned shared resources. The base owns the rest —
     taskset + serving resources, per-role agent construction, episodes, retries,
     persistence/resume, the serve protocol — so a subclass never touches machinery."""
+
+    _stamp_roles: ClassVar[bool] = True
+    """Whether traces are stamped with their role name at mint. True for every env
+    but `SingleAgentEnv`, whose one unstamped trace keeps the wire identical to a
+    plain eval's."""
 
     def __init__(self, config: EnvConfig) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
@@ -549,7 +582,7 @@ class Environment(Generic[ParamsT]):
             )
         self.params: ParamsT = config.env  # type: ignore[assignment]
         self.taskset = load_taskset(config.taskset)
-        self.harness = load_harness(config.harness)
+        self._default_harness = default_seat_harness(config.taskset.id)
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
         self._roles: dict[str, Role] = dict(self.roles())
         for name, role in self._roles.items():
@@ -562,18 +595,12 @@ class Environment(Generic[ParamsT]):
                 )
         if not self._roles:
             raise ValueError(
-                f"{type(self).__name__}.roles() returned no roles; an env needs at "
-                "least one agent (the base default is a single 'solver' role)"
+                f"{type(self).__name__}.roles() returned no roles; declare each seat "
+                "as an AgentConfig field on the params block (the default roles() "
+                "plays them), or override roles(). The single-agent case is "
+                "SingleAgentEnv."
             )
-        # Traces are role-stamped except in the true single-agent shape — an env that
-        # neither declares `AgentConfig` fields nor overrides `roles()` — where
-        # `role=None` keeps the wire identical to a plain eval's. Structural, not
-        # name-based: an env declaring a single role (best-of-n's solver) still
-        # stamps its traces, even now that the default roles() plays its fields.
-        self._stamp_roles = (
-            bool(_declared_agent_configs(self.params))
-            or type(self).roles is not Environment.roles
-        )
+        self._check_run_harness()
         for fn in (
             *discover_decorated(self, "metric"),
             *discover_decorated(self, "reward"),
@@ -585,12 +612,16 @@ class Environment(Generic[ParamsT]):
                     f"{type(self).__name__}.{name} is decorated with "
                     f"role={role!r}, but roles() declares {sorted(self._roles)}"
                 )
-        self._harnesses: dict[str, Harness] = {
-            name: self.harness
-            if role.agent.harness is None or role.agent.harness == config.harness
-            else load_harness(role.agent.harness)
-            for name, role in self._roles.items()
-        }
+        # One loaded Harness per distinct config: seats resolving to the same
+        # harness share the object (harnesses are stateless values).
+        loaded: dict[str, Harness] = {}
+        self._harnesses: dict[str, Harness] = {}
+        for name, role in self._roles.items():
+            cfg = self._seat_harness(role.agent)
+            key = cfg.model_dump_json()
+            if key not in loaded:
+                loaded[key] = load_harness(cfg)
+            self._harnesses[name] = loaded[key]
         # Each role's resolved needs: the taskset's unless it declares its own (a
         # role playing env-minted plain tasks needs nothing from the taskset's
         # world). MCP-needing roles are also the only ones handed the taskset's
@@ -682,18 +713,16 @@ class Environment(Generic[ParamsT]):
         construction. The default is the 1:1 mapping: every typed `AgentConfig` field
         on the params block becomes a dataset-playing role of the same name (the same
         fields that give `--env.<role>.model` CLI/TOML addressing), so an env whose
-        roles all play the dataset never writes this method. With no declared fields,
-        the implied single-agent case: one `"solver"` role on the run's own harness
-        (`--harness.*`). Override it when a role's needs differ from the taskset's —
-        the env mints its tasks itself: `vf.Role(cfg, mcp=False, container=False)`
-        for a bare model actor, `container=True` when the minted tasks need a box
-        (the agentic-judge env)."""
-        declared = {
+        roles all play the dataset never writes this method. Override it when a
+        role's needs differ from the taskset's — the env mints its tasks itself:
+        `vf.Role(cfg, mcp=False, container=False)` for a bare model actor,
+        `container=True` when the minted tasks need a box (the agentic-judge env)."""
+        return {
             name: Role(config)
             for name, config in _declared_agent_configs(self.params).items()
         }
-        return declared or {"solver": Role(AgentConfig())}
 
+    @abstractmethod
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> list[Trace]:
         """One env-rollout: how the agents interact on `task`. Imperative Python over
         the handed-in agents — a loop is rounds, `asyncio.gather` is fan-out, a
@@ -701,8 +730,7 @@ class Environment(Generic[ParamsT]):
         `agents[...]` verb. The returned traces are the rollout's episode, in this
         order. An agent-run failure is data on its trace (this hook decides what a
         failed participant means); an exception raised here is the env-rollout itself
-        failing. Default: the single-agent case — `"solver"` runs the task once."""
-        return [await agents["solver"].run(task)]
+        failing."""
 
     async def score(self, task: Task, traces: list[Trace]) -> None:
         """Sibling-dependent judgement over one env-rollout's finished traces.
@@ -764,11 +792,31 @@ class Environment(Generic[ParamsT]):
 
     # --- machinery (the base owns everything below) -----------------------------
 
+    def _seat_harness(self, agent: AgentConfig) -> HarnessConfig:
+        """The harness config a role resolves to: its own pin, else the taskset's
+        default (`default_seat_harness`)."""
+        return agent.harness if agent.harness is not None else self._default_harness
+
+    def _check_run_harness(self) -> None:
+        """The run-level `--harness.*` configures exactly one thing: the single-agent
+        seat (`SingleAgentEnv.roles()` consumes it and overrides this check away).
+        Any other env has no seat for it to mean, so a customized value is refused
+        rather than silently ignored."""
+        if self.config.harness == self._default_harness:
+            return
+        seats = ", ".join(f"--env.{name}.harness.*" for name in self._roles)
+        raise ValueError(
+            f"{type(self).__name__} is not single-agent, so the run-level "
+            f"--harness.* has no seat to configure; pin each role's own harness "
+            f"instead ({seats}) — an unpinned role runs the taskset's default "
+            f"harness ({self._default_harness.id!r})."
+        )
+
     def _signal_targets(self, fn: Callable, traces: list[Trace]) -> list[Trace]:
         """Which traces a decorated env signal records onto: every trace unless
-        `role=` narrows it. Membership is the role stamp — except in the unstamped
-        single-agent shape (default `roles()`), where every trace belongs to the
-        sole implicit role."""
+        `role=` narrows it. Membership is the role stamp — except in
+        `SingleAgentEnv`'s unstamped shape, where every trace belongs to the sole
+        implicit role."""
         role = getattr(fn, "_vf_role", None)
         if role is None or not self._stamp_roles:
             return list(traces)
@@ -1018,6 +1066,29 @@ class Environment(Generic[ParamsT]):
             return
         async with serve_shared(servers, harness_is_local=self._runs_local()) as shared:
             yield shared
+
+
+class SingleAgentEnv(Environment[EnvParams]):
+    """The single-agent case — the env every plain taskset resolves to: one solver
+    seat playing the taskset exactly as the flat run flags configure it
+    (`--taskset.*` picks the rows, `--harness.*` the seat's harness, `--model` /
+    `--client` / `--sampling` its model leg). Its one trace per episode stays
+    unstamped, so the wire is identical to a plain eval's. A taskset leaves it only
+    by exporting an `Environment` subclass of its own, or being paired with one via
+    `--env.id`."""
+
+    _stamp_roles = False
+
+    def roles(self) -> Mapping[str, Role]:
+        # The one seat the flat surface configures: the run-level `--harness.*` IS
+        # this seat's harness — the sugar `_check_run_harness` refuses elsewhere.
+        return {"solver": Role(AgentConfig(harness=self.config.harness))}
+
+    def _check_run_harness(self) -> None:
+        """No-op: the run-level harness is consumed by the solver seat (`roles()`)."""
+
+    async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> list[Trace]:
+        return [await agents["solver"].run(task)]
 
 
 class _RoleAgent:

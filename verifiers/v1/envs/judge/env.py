@@ -72,13 +72,11 @@ class JudgeEnv(vf.Environment[JudgeParams]):
         self._spec = load_judge(self.params.spec)
 
     def _judge_harness(self) -> Harness:
-        """The judge seat's resolved harness: its own pinned one, else the run's."""
+        """The judge seat's resolved harness: its own pinned one, else the taskset's
+        default — never the run-level `--harness.*` (a multi-agent env refuses it)."""
         from verifiers.v1.loaders import load_harness
 
-        cfg = self.params.judge.harness
-        if cfg is None or cfg == self.config.harness:
-            return self.harness
-        return load_harness(cfg)
+        return load_harness(self._seat_harness(self.params.judge))
 
     def _check_judge_harness(self, harness: Harness) -> None:
         if harness.EXECUTES_CODE:

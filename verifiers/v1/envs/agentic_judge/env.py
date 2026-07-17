@@ -11,11 +11,11 @@ empirically. The solver's runtime is gone by judge time — a judge that must in
 the solver's live box is a custom env (`provision()` + borrowed `runtime=`), not this
 wrapper.
 
-The judge's harness late-binds to the run's own (`--harness.*`), container runtime
-included — on a docker run the judge lands in docker with no further flags, and a
-fully-subprocess run is refused at construction (pin one:
-`--env.judge.harness.runtime.type docker`). A tool-less judge (`direct`/`null`)
-belongs on `--env.id judge` and is refused here.
+The judge seat is unpinned by default, so it runs the taskset's default harness —
+the same program the solver defaults to — but always in a container: a judge whose
+harness resolves to the subprocess runtime is refused at construction (pin
+`--env.judge.harness.runtime.type docker` or `prime`). A tool-less judge
+(`direct`/`null`) belongs on `--env.id judge` and is refused here.
 """
 
 import json
@@ -69,9 +69,9 @@ class JudgeTask(vf.Task):
 
 class AgenticJudgeParams(JudgeParams):
     judge: vf.AgentConfig = vf.AgentConfig(trainable=False)
-    """The judge seat. Its harness late-binds to the run's own — the judge works a
-    mirror of the solver's world, container runtime included; pin
-    `--env.judge.harness.*` to diverge."""
+    """The judge seat. Unpinned, it runs the taskset's default harness (the same
+    program the solver defaults to) in a mirror of the solver's world — its runtime
+    must be a container: `--env.judge.harness.runtime.type docker|prime`."""
 
 
 class AgenticJudgeEnv(JudgeEnv, vf.Environment[AgenticJudgeParams]):
@@ -85,8 +85,9 @@ class AgenticJudgeEnv(JudgeEnv, vf.Environment[AgenticJudgeParams]):
 
     def roles(self):
         # The judge investigates with real execution — never on the host: its role
-        # needs a container (fail-fast at construction; a fully-subprocess run is
-        # refused with the flag to set). The harness-kind check runs first.
+        # needs a container (fail-fast at construction; a judge resolving to the
+        # subprocess runtime is refused, with the flag to set). The harness-kind
+        # check runs first.
         self._check_judge_harness(self._judge_harness())
         return {
             "solver": vf.Role(self.params.solver),
