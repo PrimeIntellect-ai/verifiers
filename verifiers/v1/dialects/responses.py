@@ -21,10 +21,6 @@ from openai.types.responses import (
     ResponseUsage,
 )
 from openai.types.responses.response_input_param import FunctionCallOutput
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
@@ -58,11 +54,27 @@ _TERMINAL_MARKERS = tuple(
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
 
 
+class ProviderUsageInputTokensDetails(BaseModel):
+    """Permissive input token details: OpenAI-compatible providers may omit fields
+    the pinned SDK declares required (e.g. ``cache_write_tokens``)."""
+
+    model_config = ConfigDict(extra="allow")
+    cache_write_tokens: int | None = None
+    cached_tokens: int | None = None
+
+
+class ProviderUsageOutputTokensDetails(BaseModel):
+    """Permissive output token details: providers may omit ``reasoning_tokens``."""
+
+    model_config = ConfigDict(extra="allow")
+    reasoning_tokens: int | None = None
+
+
 class ProviderUsage(ResponseUsage):
     """Responses usage with optional detail objects for OpenAI-compatible providers."""
 
-    input_tokens_details: InputTokensDetails | None = None
-    output_tokens_details: OutputTokensDetails | None = None
+    input_tokens_details: ProviderUsageInputTokensDetails | None = None
+    output_tokens_details: ProviderUsageOutputTokensDetails | None = None
 
 
 class OpenAIResponse(BaseModel):

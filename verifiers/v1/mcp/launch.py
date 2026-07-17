@@ -182,6 +182,10 @@ async def serve_in_runtime(
     the current rollout task from the adjacent `/task` endpoint rather than a launch argument.
     """
     env = {"VF_CONFIG": server.config.model_dump_json()}
+    if runtime.type == "subprocess":
+        # Keep provider temp files in the runtime workdir so cleanup removes them.
+        assert runtime.info.id is not None
+        env["TMPDIR"] = runtime.info.id
     if state_url:
         env["VF_STATE_URL"] = state_url
         env["VF_STATE_SECRET"] = state_secret
@@ -194,12 +198,19 @@ async def serve_in_runtime(
     else:
         port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
         env["MCP_PORT_FILE"] = port_file
-    if runtime.type == "subprocess":
-        python = sys.executable
-    else:
+    python = sys.executable
+    if runtime.type != "subprocess":
         python = await _install_in_sandbox(server, runtime)
+    command = [python, "-m", type(server).__module__]
+    if runtime.type != "subprocess":
+        # Providers may invoke uv after the install shell exits, so preserve its PATH.
+        command = [
+            "sh",
+            "-c",
+            f'export PATH="$HOME/.local/bin:$PATH"; exec {shlex.join(command)}',
+        ]
     log = f"vf_tool_{server.server_name}.log"
-    await runtime.run_background([python, "-m", type(server).__module__], env, log)
+    await runtime.run_background(command, env, log)
     if fixed is not None:
         port = fixed
     else:

@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal, TypeVar
 
 import numpy as np
 from pydantic import Field, PrivateAttr
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -24,6 +25,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     KeptTokens,
     Messages,
+    SamplingConfig,
     StrictBaseModel,
     Tool,
     ToolMessage,
@@ -212,6 +214,59 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
+TRACE_VERSION = 1
+"""Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
+breaking shape changes; optional-with-default fields are additive and don't bump it."""
+
+
+class EvalRunInfo(StrictBaseModel):
+    """An eval run, stamped by the consumer (the eval CLI / a trainer's inline eval)."""
+
+    type: Literal["eval"] = "eval"
+    id: str | None = None
+    """The producing run: the eval CLI stamps its run uuid (a resumed eval counts as
+    a new run; kept traces keep their original id), trainers stamp their own."""
+    step: int | None = None
+    """The training step an inline eval was triggered at, stamped by the trainer;
+    None for a standalone eval (the eval CLI doesn't set it)."""
+
+
+class TrainRunInfo(StrictBaseModel):
+    """A training run, stamped by the trainer."""
+
+    type: Literal["train"] = "train"
+    id: str | None = None
+    """The trainer's run identifier."""
+    step: int | None = None
+    """The training step this rollout belongs to."""
+
+
+RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
+"""The run a trace belongs to, discriminated on `type`."""
+
+
+class VersionInfo(StrictBaseModel):
+    """The verifiers build that produced this trace."""
+
+    version: str
+    """The installed verifiers package version."""
+    commit: str | None = None
+    """The verifiers git commit, when resolvable (a git-pinned install or a source
+    checkout); None otherwise (e.g. a PyPI wheel)."""
+
+
+class AgentInfo(StrictBaseModel):
+    """The agent that produced this trace's sampled turns."""
+
+    model: str
+    """The model identifier requested from the client."""
+    sampling: SamplingConfig | None = None
+    """The resolved sampling settings the rollout ran with."""
+    harness: HarnessConfig | None = None
+    """The driving harness's config. Typed as the base config, so a custom harness's
+    extra fields don't serialize — records round-trip without importing the harness."""
+
+
 class TraceTask(StrictBaseModel, Generic[DataT]):
     """The task as recorded on the trace: the row (`data`, the wire half — fully typed,
     flows into scoring) plus the Task class name that produced the rollout (`type`) —
@@ -234,6 +289,15 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
     runtime: RuntimeInfo | None = None
     """The runtime's full config plus its provisioned resource ID."""
+    version: int = TRACE_VERSION
+    """The trace record schema this trace serializes as."""
+    verifiers: VersionInfo | None = None
+    """The verifiers build that produced this trace, stamped at rollout start —
+    replayed/re-read traces keep the build that originally produced them."""
+    run: RunInfo | None = None
+    """The run this trace belongs to (eval or train), consumer-stamped."""
+    agent: AgentInfo | None = None
+    """The agent (model, sampling, harness) that produced the sampled turns."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
     tools: list[Tool] | None = None
@@ -413,6 +477,13 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
             )
         self.rewards[name] = contribution
+
+    def stamp(self, run: RunInfo | None = None, **info: Any) -> None:
+        """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the
+        trace; anything beyond `run` lands in `info`."""
+        if run is not None:
+            self.run = run
+        self.info.update(info)
 
     def stop(self, condition: str = "done") -> None:
         self.is_completed = True
