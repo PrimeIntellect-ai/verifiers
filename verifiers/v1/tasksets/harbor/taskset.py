@@ -67,8 +67,14 @@ class HarborConfig(TasksetConfig):
     """Optional Harbor `--registry-url` selector for a raw registry.json URL."""
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
+    ignore_timeouts: bool = True
+    """Drop each task's declared agent and verifier timeouts so rollouts run
+    unbounded (unless run-level `--timeout.*` limits are set). Task timeouts are
+    authored against Harbor's runtime and confound model capability with inference
+    speed; set False to apply them anyway."""
     timeout_multiplier: float = Field(1.0, gt=0)
-    """Scale each task's agent and verifier timeouts."""
+    """Scale each task's agent and verifier timeouts. Only applies with
+    `ignore_timeouts=False`."""
     resource_multiplier: float = Field(1.0, gt=0)
     """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
     require_image: bool = False
@@ -616,8 +622,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     # Older registry entries stored one author in [metadata].
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
-    harness_timeout = config.get("agent", {}).get("timeout_sec")
-    scoring_timeout = config.get("verifier", {}).get("timeout_sec")
+    if harbor_config.ignore_timeouts:
+        harness_timeout = scoring_timeout = None
+    else:
+        harness_timeout = config.get("agent", {}).get("timeout_sec")
+        scoring_timeout = config.get("verifier", {}).get("timeout_sec")
     verifier, verifier_environment = parse_verifier(
         task_dir, parsed, harbor_config.resource_multiplier
     )
