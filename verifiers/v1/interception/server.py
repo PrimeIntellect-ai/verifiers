@@ -637,7 +637,14 @@ class InterceptionServer(Interception):
         except Exception as e:
             # A mid-relay upstream failure (the provider stream died) is still a real
             # exchange; record it before the error propagates to the harness.
-            self.record_call(session, dialect, upstream_request, started, error=e)
+            self.record_call(
+                session,
+                dialect,
+                upstream_request,
+                started,
+                headers=reply.headers,
+                error=e,
+            )
             raise
         finally:
             producer.cancel()
@@ -647,6 +654,7 @@ class InterceptionServer(Interception):
             await asyncio.gather(producer, return_exceptions=True)
             await reply.close()
 
+        response: Response | None = None
         try:
             if parser_error is not None:
                 raise parser_error
@@ -663,7 +671,17 @@ class InterceptionServer(Interception):
             )
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         except Exception as e:
-            self.record_call(session, dialect, upstream_request, started, error=e)
+            # Keep whatever the exchange produced: the assembled payload when only the
+            # commit failed, and the provider headers either way.
+            self.record_call(
+                session,
+                dialect,
+                upstream_request,
+                started,
+                response=response.raw if response is not None else None,
+                headers=reply.headers,
+                error=e,
+            )
             raise
         finally:
             # Release the withheld events only now — after the commit — then close.
