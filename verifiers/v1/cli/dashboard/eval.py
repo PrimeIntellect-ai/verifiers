@@ -477,7 +477,13 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                 label = f"{base} role={t.role}" if t.role else base
                 if slot.done:  # fully scored — reward is final
                     state = "error" if t.has_error else "success"
-                    result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
+                    # A trace that recorded nothing shows no reward: a judge or
+                    # modeled-user seat's `reward=0.00` would read as a score.
+                    result = (
+                        t.error.type
+                        if t.has_error
+                        else (f"reward={t.reward:.2f}" if t.rewards else "")
+                    )
                     if t.has_error:
                         stop = ""  # error shown instead
                     else:
