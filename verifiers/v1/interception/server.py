@@ -394,89 +394,83 @@ class InterceptionServer(Interception):
                 turn = graph.prepare_turn(session.trace, prompt)
                 session.error = None
                 upstream_request: dict | None = None
-                started = time.time()
-                try:
-                    # What actually goes upstream: the native body with the rollout's model +
-                    # sampling imposed — recorded raw on the trace, per call.
-                    upstream_request = dialect.apply_overrides(
-                        body, session.ctx.model, session.ctx.sampling
-                    )
-                    response = await session.ctx.client.get_response(
-                        dialect,
-                        body,
-                        session.ctx.model,
-                        session.ctx.sampling,
-                        headers=headers,
-                        session_id=session.trace.id,
-                        turn=turn,
-                    )
-                except OverlongPromptError as e:
-                    # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
-                    # as a truncation — return the last turn if there is one, else refuse to halt
-                    # the harness (same shape as `refused` above).
-                    self.record_call(
-                        session, dialect, upstream_request, started, error=e
-                    )
-                    session.trace.stop("context_length")
-                    logger.debug("prompt too long: id=%s", session.trace.id)
-                    if response is None:
-                        return web.json_response(
-                            dialect.error_body("rollout stopped: context_length"),
-                            status=400,
-                        )
-                    return serve(response)
-                except RolloutError as e:
-                    # Stash the real cause; the rollout re-raises it after the harness returns.
-                    # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
-                    self.record_call(
-                        session, dialect, upstream_request, started, error=e
-                    )
-                    session.error = e
-                    logger.warning(
-                        "model call failed: id=%s %s: %s",
-                        session.trace.id,
-                        type(e).__name__,
-                        e,
-                    )
-                    return web.json_response(
-                        dialect.error_body(str(e)),
-                        status=getattr(e, "status_code", 502),
-                    )
-                except Exception as e:  # surface to the program as an API error
-                    self.record_call(
-                        session, dialect, upstream_request, started, error=e
-                    )
-                    logger.warning(
-                        "model call failed: id=%s %s: %s",
-                        session.trace.id,
-                        type(e).__name__,
-                        e,
-                    )
-                    return web.json_response(dialect.error_body(str(e)), status=502)
-                logger.debug(
-                    "intercept turn: id=%s tools=%d",
-                    session.trace.id,
-                    len(response.message.tool_calls or []),
-                )
+                call_response: Response | None = None
                 node: int | None = None
                 error: Exception | None = None
+                started = time.time()
                 try:
-                    node = turn.commit(response, tools)  # one node per new message;
-                    # branches fall out of walking the graph (see Trace.branches / graph)
-                except Exception as e:
-                    error = e
-                    raise
+                    try:
+                        # What actually goes upstream: the native body with the rollout's model +
+                        # sampling imposed — recorded raw on the trace, per call.
+                        upstream_request = dialect.apply_overrides(
+                            body, session.ctx.model, session.ctx.sampling
+                        )
+                        call_response = await session.ctx.client.get_response(
+                            dialect,
+                            body,
+                            session.ctx.model,
+                            session.ctx.sampling,
+                            headers=headers,
+                            session_id=session.trace.id,
+                            turn=turn,
+                        )
+                        logger.debug(
+                            "intercept turn: id=%s tools=%d",
+                            session.trace.id,
+                            len(call_response.message.tool_calls or []),
+                        )
+                        # One node per new message; branches fall out of walking the
+                        # graph (see Trace.branches / verifiers.v1.graph).
+                        node = turn.commit(call_response, tools)
+                        response = call_response
+                    except OverlongPromptError as e:
+                        # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
+                        # as a truncation — return the last turn if there is one, else refuse to halt
+                        # the harness (same shape as `refused` above).
+                        error = e
+                        session.trace.stop("context_length")
+                        logger.debug("prompt too long: id=%s", session.trace.id)
+                        if response is None:
+                            return web.json_response(
+                                dialect.error_body("rollout stopped: context_length"),
+                                status=400,
+                            )
+                        return serve(response)
+                    except RolloutError as e:
+                        # Stash the real cause; the rollout re-raises it after the harness returns.
+                        # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
+                        error = e
+                        session.error = e
+                        logger.warning(
+                            "model call failed: id=%s %s: %s",
+                            session.trace.id,
+                            type(e).__name__,
+                            e,
+                        )
+                        return web.json_response(
+                            dialect.error_body(str(e)),
+                            status=getattr(e, "status_code", 502),
+                        )
+                    except Exception as e:  # surface to the program as an API error
+                        error = e
+                        logger.warning(
+                            "model call failed: id=%s %s: %s",
+                            session.trace.id,
+                            type(e).__name__,
+                            e,
+                        )
+                        return web.json_response(dialect.error_body(str(e)), status=502)
                 finally:
-                    # The exchange completed either way; a commit failure is coupled
-                    # to the call it belongs to (node stays None).
+                    # The turn's one per-exchange record: whatever the exchange produced,
+                    # plus the error that ended it (if any).
                     self.record_call(
                         session,
                         dialect,
                         upstream_request,
                         started,
                         node=node,
-                        response=response.raw,
-                        headers=response.raw_headers,
+                        response=call_response.raw if call_response else None,
+                        headers=call_response.raw_headers if call_response else None,
                         error=error,
                     )
                 # Hand back to the program when the model wants a tool (the program runs it) or
@@ -539,132 +533,135 @@ class InterceptionServer(Interception):
             )
         session.error = None
         upstream_request: dict | None = None
-        started = time.time()
-        try:
-            turn = graph.prepare_turn(session.trace, prompt)
-            upstream_request = dialect.apply_overrides(
-                body, session.ctx.model, session.ctx.sampling
-            )
-            reply = await session.ctx.client.relay(
-                dialect,
-                body,
-                session.ctx.model,
-                session.ctx.sampling,
-                headers=request.headers,
-                session_id=session.trace.id,
-            )
-        except OverlongPromptError as e:
-            self.record_call(session, dialect, upstream_request, started, error=e)
-            session.trace.stop("context_length")
-            logger.debug("prompt too long: id=%s", session.trace.id)
-            return web.json_response(
-                dialect.error_body("rollout stopped: context_length"), status=400
-            )
-        except RolloutError as e:
-            self.record_call(session, dialect, upstream_request, started, error=e)
-            session.error = e
-            logger.warning(
-                "model call failed: id=%s %s: %s",
-                session.trace.id,
-                type(e).__name__,
-                e,
-            )
-            return web.json_response(
-                dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
-            )
-        except Exception as e:  # surface to the program as an API error
-            self.record_call(session, dialect, upstream_request, started, error=e)
-            logger.warning("model call failed: id=%s %s", session.trace.id, e)
-            return web.json_response(dialect.error_body(str(e)), status=502)
-        resp = web.StreamResponse(
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-        )
-        resp.content_type = reply.content_type.split(";")[0].strip()
-        # Parse complete events as they relay, avoiding a full-stream byte copy.
-        parser = dialect.stream_parser()
-        feed_event = parser.feed
-        on_done = parser.on_done
-        # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
-        queue: asyncio.Queue[bytes | None] = asyncio.Queue(
-            maxsize=_STREAM_QUEUE_MAXSIZE
-        )
-        ready = asyncio.Event()
-        producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
-        parser_error: Exception | None = None
-        # SSE events from the turn-ending one onward (the terminal event and any trailing
-        # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
-        # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
-        # with the turn still unrecorded.
-        deferred: list[bytes] = []
-        try:
-            await resp.prepare(request)
-            while True:
-                try:
-                    async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
-                        await ready.wait()
-                except TimeoutError:
-                    await resp.write(b": keepalive\n\n")
-                    continue
-                chunk = queue.get_nowait()
-                if queue.empty():
-                    ready.clear()
-                if chunk is None:
-                    await producer
-                    break
-                if deferred or dialect.is_terminal_event(chunk):
-                    if parser_error is None:
-                        try:
-                            if on_done is not None and is_sse_done_event(chunk):
-                                on_done()
-                            feed_event(chunk)
-                        except Exception as e:
-                            parser_error = e
-                    # forwarded after the turn is committed, below
-                    deferred.append(chunk)
-                    continue
-                await resp.write(chunk)
-                if parser_error is None:
-                    try:
-                        feed_event(chunk)
-                    except Exception as e:
-                        parser_error = e
-        except ConnectionResetError:
-            return resp
-        except Exception as e:
-            # A mid-relay upstream failure (the provider stream died) is still a real
-            # exchange; record it before the error propagates to the harness.
-            self.record_call(
-                session,
-                dialect,
-                upstream_request,
-                started,
-                headers=reply.headers,
-                error=e,
-            )
-            raise
-        finally:
-            producer.cancel()
-            # Let a canceled producer enqueue EOF while unwinding.
-            if queue.full():
-                queue.get_nowait()
-            await asyncio.gather(producer, return_exceptions=True)
-            await reply.close()
-
+        reply = None
         response: Response | None = None
         node: int | None = None
         error: Exception | None = None
+        started = time.time()
         try:
-            if parser_error is not None:
-                raise parser_error
-            response = parser.finish()
-            node = turn.commit(response, tools)
-            logger.debug("intercept stream turn: id=%s", session.trace.id)
+            try:
+                turn = graph.prepare_turn(session.trace, prompt)
+                upstream_request = dialect.apply_overrides(
+                    body, session.ctx.model, session.ctx.sampling
+                )
+                reply = await session.ctx.client.relay(
+                    dialect,
+                    body,
+                    session.ctx.model,
+                    session.ctx.sampling,
+                    headers=request.headers,
+                    session_id=session.trace.id,
+                )
+            except OverlongPromptError as e:
+                error = e
+                session.trace.stop("context_length")
+                logger.debug("prompt too long: id=%s", session.trace.id)
+                return web.json_response(
+                    dialect.error_body("rollout stopped: context_length"), status=400
+                )
+            except RolloutError as e:
+                error = e
+                session.error = e
+                logger.warning(
+                    "model call failed: id=%s %s: %s",
+                    session.trace.id,
+                    type(e).__name__,
+                    e,
+                )
+                return web.json_response(
+                    dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
+                )
+            except Exception as e:  # surface to the program as an API error
+                error = e
+                logger.warning("model call failed: id=%s %s", session.trace.id, e)
+                return web.json_response(dialect.error_body(str(e)), status=502)
+            resp = web.StreamResponse(
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+            )
+            resp.content_type = reply.content_type.split(";")[0].strip()
+            # Parse complete events as they relay, avoiding a full-stream byte copy.
+            parser = dialect.stream_parser()
+            feed_event = parser.feed
+            on_done = parser.on_done
+            # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
+            queue: asyncio.Queue[bytes | None] = asyncio.Queue(
+                maxsize=_STREAM_QUEUE_MAXSIZE
+            )
+            ready = asyncio.Event()
+            producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
+            parser_error: Exception | None = None
+            # SSE events from the turn-ending one onward (the terminal event and any trailing
+            # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
+            # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
+            # with the turn still unrecorded.
+            deferred: list[bytes] = []
+            try:
+                await resp.prepare(request)
+                while True:
+                    try:
+                        async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
+                            await ready.wait()
+                    except TimeoutError:
+                        await resp.write(b": keepalive\n\n")
+                        continue
+                    chunk = queue.get_nowait()
+                    if queue.empty():
+                        ready.clear()
+                    if chunk is None:
+                        await producer
+                        break
+                    if deferred or dialect.is_terminal_event(chunk):
+                        if parser_error is None:
+                            try:
+                                if on_done is not None and is_sse_done_event(chunk):
+                                    on_done()
+                                feed_event(chunk)
+                            except Exception as e:
+                                parser_error = e
+                        # forwarded after the turn is committed, below
+                        deferred.append(chunk)
+                        continue
+                    await resp.write(chunk)
+                    if parser_error is None:
+                        try:
+                            feed_event(chunk)
+                        except Exception as e:
+                            parser_error = e
+            except ConnectionResetError as e:
+                # The harness went away mid-stream; the provider exchange still happened.
+                error = e
+                return resp
+            finally:
+                producer.cancel()
+                # Let a canceled producer enqueue EOF while unwinding.
+                if queue.full():
+                    queue.get_nowait()
+                await asyncio.gather(producer, return_exceptions=True)
+                await reply.close()
+
+            try:
+                if parser_error is not None:
+                    raise parser_error
+                response = parser.finish()
+                node = turn.commit(response, tools)
+                logger.debug("intercept stream turn: id=%s", session.trace.id)
+            finally:
+                # Release the withheld events only now — after the commit — then close.
+                with contextlib.suppress(ConnectionResetError):
+                    for event in deferred:
+                        await resp.write(event)
+                    await resp.write_eof()
+            return resp
         except Exception as e:
-            error = e
+            # Anything that propagates (a mid-relay upstream failure, a parser or commit
+            # error) ends a real exchange; couple it to the record unless the turn already
+            # committed (then only post-commit delivery failed).
+            if node is None:
+                error = e
             raise
         finally:
-            # Record whatever the exchange produced: the assembled payload when only
-            # the commit failed, the provider headers either way.
+            # The turn's one per-exchange record: whatever the exchange produced, plus
+            # the error that ended it (if any).
             self.record_call(
                 session,
                 dialect,
@@ -672,15 +669,9 @@ class InterceptionServer(Interception):
                 started,
                 node=node,
                 response=response.raw if response is not None else None,
-                headers=reply.headers,
+                headers=reply.headers if reply is not None else None,
                 error=error,
             )
-            # Release the withheld events only now — after the commit — then close.
-            with contextlib.suppress(ConnectionResetError):
-                for event in deferred:
-                    await resp.write(event)
-                await resp.write_eof()
-        return resp
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str
