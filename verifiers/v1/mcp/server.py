@@ -127,6 +127,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         self._state_adapter = TypeAdapter(self._state_cls)
         self._inert_state: StateT = self._state_cls()  # type: ignore[assignment]
         self._state_client: AsyncClient | None = None
+        self._exit_stack = contextlib.AsyncExitStack()
 
     @property
     def state(self) -> StateT:
@@ -250,43 +251,36 @@ class ServerBase(Generic[ConfigT, StateT]):
         if port_file:
             Path(port_file).write_text(str(sock.getsockname()[1]))
 
-        async def _setup() -> None:
-            await self.setup()
-            # Shared taskset-scoped servers have no task channel and skip this hook.
-            await self._setup_task_from_channel(*self._state_channel())
-
-        asyncio.run(_setup())
-        # These servers are reached by the harness through localhost or a tunnel, never a browser.
-        from mcp.server.transport_security import TransportSecuritySettings
-
-        security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-        mcp = FastMCP(
-            self.server_name,
-            json_response=True,
-            stateless_http=True,
-            transport_security=security,
-        )
-        self._register(mcp)
-        app = mcp.streamable_http_app()
-        mcp_lifespan = app.router.lifespan_context
-
-        @contextlib.asynccontextmanager
-        async def serving_lifespan(starlette):
+        async def serve() -> None:
             import httpx
+            from mcp.server.transport_security import TransportSecuritySettings
 
             try:
                 async with (
+                    self._exit_stack,
                     httpx.AsyncClient(timeout=STATE_TIMEOUT) as client,
-                    mcp_lifespan(starlette),
                 ):
                     self._state_client = client
-                    yield
+                    await self.setup()
+                    await self._setup_task_from_channel(*self._state_channel())
+                    # These servers are reached through localhost or a tunnel, never a browser.
+                    security = TransportSecuritySettings(
+                        enable_dns_rebinding_protection=False
+                    )
+                    mcp = FastMCP(
+                        self.server_name,
+                        json_response=True,
+                        stateless_http=True,
+                        transport_security=security,
+                    )
+                    self._register(mcp)
+                    app = mcp.streamable_http_app()
+                    server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
+                    await server.serve(sockets=[sock])
             finally:
                 self._state_client = None
 
-        app.router.lifespan_context = serving_lifespan
-        server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
-        asyncio.run(server.serve(sockets=[sock]))
+        asyncio.run(serve())
 
     @classmethod
     def _config_cls(cls) -> type[BaseConfig]:
