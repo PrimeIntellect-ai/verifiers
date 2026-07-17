@@ -183,9 +183,15 @@ class Agent:
         reads stage, tokens, and turns off it)."""
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         run = RolloutRun(task=task, on_trace=on_trace, **params)
-        if await run.open():
-            await run.step()
-        trace = await run.close()
+        try:
+            if await run.open():
+                await run.step()
+            trace = await run.close()
+        except BaseException:
+            # A cancellation mid-run (or a lifetime bug raised to the caller) means
+            # close() never runs — free the run's servers and owned runtime first.
+            await run.abort()
+            raise
         self._stamp_agent(trace, params["runtime_config"], borrowed=runtime is not None)
         return trace
 

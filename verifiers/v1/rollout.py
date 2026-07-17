@@ -17,6 +17,7 @@ model turns (see `verifiers.v1.mcp.user`).
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
@@ -315,6 +316,18 @@ class RolloutRun:
             self.fail(self._session.error)
             return False
         return self.ok
+
+    async def abort(self) -> None:
+        """Free everything this run holds — the entered servers and an owned
+        runtime — without finalizing or scoring: the escape path when an exception
+        (a cancellation mid-setup, a lifetime bug raised to the caller) means the
+        driver will never reach `close()`. Safe after a partial `close()`."""
+        self._closed = True
+        with contextlib.suppress(Exception):
+            await self._stack.aclose()
+        if self._owns_runtime and self.runtime is not None:
+            with contextlib.suppress(Exception):
+                await self.runtime.stop()
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`

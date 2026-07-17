@@ -1,11 +1,13 @@
 """Agent guards that fire before any model or runtime I/O (no live calls)."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
 
 import verifiers.v1 as vf
 import verifiers.v1.agent
+import verifiers.v1.rollout
 from verifiers.v1.agent import _check_borrowed_placement
 from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 from verifiers.v1.runtimes import DockerConfig, SubprocessConfig, make_runtime
@@ -69,3 +71,32 @@ async def test_shared_tools_hit_the_mcp_pairing_guard():
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
     with pytest.raises(ValueError, match="does not support MCP"):
         await agent.run(task, shared_tools={"search": object()})  # type: ignore[dict-item]
+
+
+async def test_cancelled_run_frees_the_owned_runtime(monkeypatch):
+    """A cancellation mid-setup escapes open() before the driver reaches close();
+    the run must still free what it holds — the owned runtime, the entered
+    servers — on the way out (`RolloutRun.abort`)."""
+    started = asyncio.Event()
+
+    class HangingSetup(vf.Task):
+        async def setup(self, trace, runtime):
+            started.set()
+            await asyncio.sleep(60)
+
+    boxes = []
+    real = verifiers.v1.rollout.make_runtime
+
+    def spy(config, **kwargs):
+        boxes.append(box := real(config, **kwargs))
+        return box
+
+    monkeypatch.setattr(verifiers.v1.rollout, "make_runtime", spy)
+    run = asyncio.create_task(
+        _agent().run(HangingSetup(vf.TaskData(idx=0, prompt="hi")))
+    )
+    await asyncio.wait_for(started.wait(), 10)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert boxes and boxes[0].stopped  # the owned box was torn down on the way out
