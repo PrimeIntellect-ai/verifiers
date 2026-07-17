@@ -205,17 +205,17 @@ class GuardedTask(vf.Task):
     @vf.intercept
     async def stop_known_hack(self, message: vf.AssistantMessage):
         if "GRADER_SECRET" in (message.content or ""):
-            return vf.Terminate(reason="reward_hack", reward=0)
+            return vf.Terminate(reason="reward_hack")
 ```
 
 Pass `judge=vf.Judge(vf.JudgeConfig(...))` to configure the policy judge.
 
 An `@vf.intercept` method may request `message`, `trace`, and `prompt`. Its message annotation
 selects which turns it sees. Return a string to replace the whole message, `None` to allow it, or
-`vf.Terminate` to record its ordinary reward and stop the harness immediately. Passing `reward`
-to a built-in blocking policy gives it the same terminal behavior. Later task rewards, judges,
-and harness metrics do not run, and group-reward results are not recorded on that trace. The first
-result wins, and intercepted streams are buffered while policies run.
+`vf.Terminate` to record its ordinary reward, cancel the harness, and tear down its runtime
+immediately. Task finalization and later scoring do not run. Passing `reward` to a built-in
+blocking policy gives it the same terminal behavior. The first result wins, and intercepted
+streams are buffered while policies run.
 
 Ordinary function and MCP calls are visible before the harness executes them. Provider-hosted
 tools such as native web search have already run upstream when their response reaches an

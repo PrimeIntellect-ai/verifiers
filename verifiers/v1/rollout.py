@@ -219,6 +219,8 @@ class Rollout:
                                 termination_task,
                                 return_exceptions=True,
                             )
+                            if trace.skip_scoring:
+                                await runtime.stop()
                     except TimeoutError:
                         trace.stop("harness_timeout")
                     except RolloutError as e:
@@ -230,16 +232,18 @@ class Rollout:
                             raise session.error
             now = time.time()
             trace.timing.generation.end = now
-            trace.timing.finalize.start = now
-            self.phase = Phase.FINALIZE
-            async with boundary(TaskError, "task finalize"):
-                await asyncio.wait_for(
-                    invoke(self.task.finalize, {"trace": trace, "runtime": runtime}),
-                    self.finalize_timeout,
-                )
-            now = time.time()
-            trace.timing.finalize.end = now
             if not trace.skip_scoring:
+                trace.timing.finalize.start = now
+                self.phase = Phase.FINALIZE
+                async with boundary(TaskError, "task finalize"):
+                    await asyncio.wait_for(
+                        invoke(
+                            self.task.finalize, {"trace": trace, "runtime": runtime}
+                        ),
+                        self.finalize_timeout,
+                    )
+                now = time.time()
+                trace.timing.finalize.end = now
                 self.phase = Phase.SCORING
                 trace.timing.scoring.start = now
                 async with boundary(TaskError, "scoring"):

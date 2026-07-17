@@ -21,7 +21,7 @@ from verifiers.v1.types import (
 
 
 class Terminate(StrictBaseModel):
-    """Stop the rollout immediately with an ordinary reward."""
+    """Abort the rollout immediately with an ordinary reward."""
 
     reason: str = "intercepted"
     reward: float = 0.0

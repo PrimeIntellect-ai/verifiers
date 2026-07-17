@@ -51,7 +51,12 @@ from verifiers.v1.interception.tunnel import (
     make_tunnel,
 )
 from verifiers.v1.interceptors import Terminate
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import (
+    ReplayResponse,
+    RequestKey,
+    RolloutSession,
+    StreamReplay,
+)
 from verifiers.v1.types import AssistantMessage, Messages, Response, Tool, ToolMessage
 
 logger = logging.getLogger(__name__)
@@ -84,8 +89,14 @@ async def _request_digest(raw: bytes) -> bytes:
     return await asyncio.to_thread(_body_digest, raw)
 
 
-def _completion_response(completion: dict | None) -> web.Response:
-    """Serialize a model's JSON-native response without an intermediate string."""
+def _completion_response(completion: ReplayResponse) -> web.Response:
+    """Replay a completed JSON response or exact intercepted SSE body."""
+    if isinstance(completion, StreamReplay):
+        return web.Response(
+            body=completion.body,
+            headers={"Cache-Control": "no-cache"},
+            content_type=completion.content_type,
+        )
     try:
         body = to_json(completion, inf_nan_mode="constants")
     except PydanticSerializationError:
@@ -163,6 +174,10 @@ class InterceptionServer(Interception):
         try:
             yield self.base_url, secret
         finally:
+            tasks = [*session.request_tasks, *session.tool_interceptions.values()]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             self.unregister(secret)
 
     def _handler_for(self, dialect: Dialect):
@@ -170,7 +185,15 @@ class InterceptionServer(Interception):
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
-            return await self.handle_request(request, dialect)
+            session = self.sessions.get(dialect.secret(request.headers))
+            task = asyncio.current_task()
+            if session is not None and task is not None:
+                session.request_tasks.add(task)
+            try:
+                return await self.handle_request(request, dialect)
+            finally:
+                if session is not None and task is not None:
+                    session.request_tasks.discard(task)
 
         return handler
 
@@ -251,7 +274,7 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        req_hash = await _request_digest(raw)
+        request_key = (request.path, await _request_digest(raw))
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
@@ -264,24 +287,26 @@ class InterceptionServer(Interception):
         #      result, so a slow turn is safe without an inflated client timeout.
         # A growing conversation never repeats a body, so these only ever match a real retry; a
         # failed attempt caches nothing and re-runs normally.
-        if session.last_request == req_hash and session.last_response is not None:
+        if session.last_request == request_key and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
 
-        async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
+        async def coalesced(
+            inflight: "asyncio.Future[ReplayResponse | None]",
+        ) -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
             # response (it errored/refused), so let the SDK retry afresh.
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
-            completion = await inflight
+            completion = await asyncio.shield(inflight)
             if completion is None:
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
             return _completion_response(completion)
 
-        if (inflight := session.inflight.get(req_hash)) is not None:
+        if (inflight := session.inflight.get(request_key)) is not None:
             return await coalesced(inflight)
         if session.intercepts:
             if body.get("previous_response_id") in session.rewritten_response_ids:
@@ -397,23 +422,50 @@ class InterceptionServer(Interception):
                     len(replacements),
                 )
         if dialect.streaming(body):
-            return await self._stream(request, session, dialect, body, prompt, tools)
+            if not session.intercepts:
+                return await self._stream(
+                    request, session, dialect, body, prompt, request_key, tools
+                )
+            if (inflight := session.inflight.get(request_key)) is not None:
+                return await coalesced(inflight)
+            stream_fut: asyncio.Future[ReplayResponse | None] = (
+                asyncio.get_running_loop().create_future()
+            )
+            session.inflight[request_key] = stream_fut
+            try:
+                return await self._stream(
+                    request,
+                    session,
+                    dialect,
+                    body,
+                    prompt,
+                    request_key,
+                    tools,
+                    stream_fut,
+                )
+            finally:
+                if session.inflight.get(request_key) is stream_fut:
+                    session.inflight.pop(request_key, None)
+                if not stream_fut.done():
+                    stream_fut.set_result(None)
         headers = request.headers.copy()
         # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above) rather
         # than starting a second inference. Re-check first: an identical request may have claimed
         # it while we awaited the simulator opening. The get / create / assign below run with no
         # await between them, so two concurrent identical requests can never both become owner.
-        if (inflight := session.inflight.get(req_hash)) is not None:
+        if (inflight := session.inflight.get(request_key)) is not None:
             return await coalesced(inflight)
-        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
-        session.inflight[req_hash] = fut
+        fut: asyncio.Future[ReplayResponse | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+        session.inflight[request_key] = fut
 
         def serve(response: Response) -> web.Response:
             # Record the served turn and hand it to any coalesced retry, so a retried
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
+            session.last_request = request_key
             session.last_response = response.raw
             if not fut.done():
                 fut.set_result(response.raw)
@@ -553,8 +605,8 @@ class InterceptionServer(Interception):
             # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
             # response" (an error/refuse return above), so the waiter surfaces a retryable error.
             # Only clear our own entry — never one a later owner may have installed.
-            if session.inflight.get(req_hash) is fut:
-                session.inflight.pop(req_hash, None)
+            if session.inflight.get(request_key) is fut:
+                session.inflight.pop(request_key, None)
             if not fut.done():
                 fut.set_result(None)
 
@@ -565,7 +617,9 @@ class InterceptionServer(Interception):
         dialect: Dialect,
         body: dict,
         prompt: Messages,
+        request_key: RequestKey,
         tools: list[Tool] | None = None,
+        fut: asyncio.Future[ReplayResponse | None] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace. Single-shot — a streamed
@@ -728,20 +782,19 @@ class InterceptionServer(Interception):
                     if isinstance(replacement, Terminate):
                         turn.commit(response, tools)
                         session.signal_termination(replacement)
-                        await end_stream()
+                        if request.transport is not None:
+                            request.transport.abort()
                         return resp
                     if replacement is not None:
                         raw = dialect.rewrite_response(response.raw, replacement)
                         response = dialect.parse_raw_response(raw)
                         if response.id:
                             session.rewritten_response_ids.add(response.id)
-                        events = dialect.serialize_stream(raw)
+                        payload = b"".join(dialect.serialize_stream(raw))
                     else:
                         buffer.seek(0)
-                        events = iter(lambda: buffer.read(64 * 1024), b"")
+                        payload = buffer.read()
                 except ConnectionResetError:
-                    intercept_task.cancel()
-                    await asyncio.gather(intercept_task, return_exceptions=True)
                     return resp
                 except Exception as e:
                     session.error = (
@@ -756,16 +809,28 @@ class InterceptionServer(Interception):
                     )
                     await end_stream()
                     return resp
+                finally:
+                    if not intercept_task.done():
+                        intercept_task.cancel()
+                    await asyncio.gather(intercept_task, return_exceptions=True)
 
+            replay = (
+                StreamReplay(payload, resp.content_type) if buffer is not None else None
+            )
             try:
                 if buffer is not None:
                     # The commit is the boundary before any intercepted payload is visible.
                     await keepalive()
                 turn.commit(response, tools)
+                if replay is not None:
+                    session.last_request = request_key
+                    session.last_response = replay
+                    if fut is not None and not fut.done():
+                        fut.set_result(replay)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
-                if buffer is not None:
-                    for event in events:
-                        await resp.write(event)
+                if replay is not None:
+                    for offset in range(0, len(payload), 64 * 1024):
+                        await resp.write(payload[offset : offset + 64 * 1024])
             except ConnectionResetError:
                 return resp
             finally:
