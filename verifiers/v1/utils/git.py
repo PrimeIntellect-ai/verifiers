@@ -41,6 +41,7 @@ _DIFF = (
     "git reset -q; "
     "reset_rc=$?; "
     "head -c {cap} {full} > {capped}; "
+    "rm -f {full}; "
     "rc=$diff_rc; "
     '[ "$reset_rc" -ne 0 ] && rc=$reset_rc; '
     '[ "$add_rc" -ne 0 ] && rc=$add_rc; '
