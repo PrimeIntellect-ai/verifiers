@@ -93,6 +93,69 @@ def test_push_sample_carries_record_grouping():
     assert sample["role"] == "judge" and sample["trainable"] is False
 
 
+def test_push_samples_share_rollout_number_per_episode():
+    """Siblings/seats of one episode are the same attempt at the task: they share
+    its rollout_number instead of counting 1..n (which clashed with
+    rollouts_per_example when -r was 1)."""
+    from verifiers.v1.push import _build_samples, _EpisodeIndex
+
+    a1, a2 = _trace(0, role="solver"), _trace(0, role="solver")  # episode A: fan-out
+    b1, b2 = _trace(0, role="solver"), _trace(0, role="judge")  # episode B: judged
+    index = _EpisodeIndex(
+        trace_ids={a1.id: "A", a2.id: "A", b1.id: "B", b2.id: "B"},
+        ok={"A": True, "B": True},
+        idx={"A": 0, "B": 0},
+    )
+    samples = _build_samples([a1, a2, b1, b2], index)
+    assert [s["rollout_number"] for s in samples] == [1, 1, 2, 2]
+    # Unindexed traces (a pre-episode file) keep counting one attempt each.
+    bare = _EpisodeIndex(trace_ids={}, ok={}, idx={})
+    assert [s["rollout_number"] for s in _build_samples([a1, a2], bare)] == [1, 2]
+
+
+def test_push_error_rate_counts_episodes():
+    """avg_error mirrors the dashboard's err: episode-level failures count even when
+    their traces are clean (score() raised) or absent (rollout() died pre-trace) —
+    both invisible to the flattened trace list."""
+    from verifiers.v1.push import _EpisodeIndex, _run_metrics
+
+    clean = _trace(0)
+    index = _EpisodeIndex(
+        trace_ids={clean.id: "A"},
+        # A: clean trace, score() failed; B: zero-trace rollout() failure; C: ok.
+        ok={"A": False, "B": False, "C": True},
+        idx={"A": 0, "B": 1, "C": 2},
+    )
+    assert _run_metrics([clean], index)["avg_error"] == 2 / 3
+    # Without the file, the per-trace fallback (the old rule).
+    bare = _EpisodeIndex(trace_ids={}, ok={}, idx={})
+    assert _run_metrics([clean], bare)["avg_error"] == 0.0
+
+
+def test_episode_index_sees_zero_trace_failures(tmp_path, monkeypatch):
+    """The index reads outcomes off traces.jsonl — including an env-rollout that
+    failed before minting any trace, which the in-memory trace list can't carry."""
+    import verifiers.v1.cli.output as output
+    from verifiers.v1.configs.eval import EvalConfig
+    from verifiers.v1.push import _episode_index
+    from verifiers.v1.trace import Error
+
+    good = Episode.of(_trace(0), env="demo-v1")
+    hook_failed = Episode(
+        env="demo-v1",
+        task=_trace(1).task,
+        errors=[Error(type="TaskError", message="rollout() died")],
+    )
+    trace_failed = Episode.of(_trace(2, error=True), env="demo-v1")
+    for episode in (good, hook_failed, trace_failed):
+        write_episode(tmp_path, episode)
+    monkeypatch.setattr(output, "output_path", lambda config: tmp_path)
+    index = _episode_index(EvalConfig())
+    assert index.ok == {good.id: True, hook_failed.id: False, trace_failed.id: False}
+    assert index.idx == {good.id: 0, hook_failed.id: 1, trace_failed.id: 2}
+    assert index.trace_ids[good.traces[0].id] == good.id
+
+
 def test_append_trace_wraps_a_record(tmp_path):
     from verifiers.v1.cli.output import append_trace
 

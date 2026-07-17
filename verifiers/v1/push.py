@@ -121,24 +121,97 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     return api_key, base, frontend, team_id
 
 
-def _episode_ids(config: EvalConfig) -> dict[str, str]:
-    """trace id -> episode id, read off the run's own traces.jsonl (the durable
-    source of the grouping); pre-episode lines (bare traces) simply aren't in the map."""
+@dataclass
+class _EpisodeIndex:
+    """What push needs from the run's own traces.jsonl (the durable source of the
+    episode grouping): which episode each trace belongs to, and every episode's task
+    and outcome — including zero-trace failures (a `rollout()` that died before any
+    trace), which the in-memory trace list can't see. Empty when the file doesn't
+    exist; pre-episode lines (bare traces) simply aren't indexed."""
+
+    trace_ids: dict[str, str]
+    """trace id -> episode id."""
+    ok: dict[str, bool]
+    """episode id -> `Episode.ok` (no episode-level error, no trace errors)."""
+    idx: dict[str, int]
+    """episode id -> its task's `idx`."""
+
+
+def _episode_index(config: EvalConfig) -> _EpisodeIndex:
     from verifiers.v1.cli.output import TRACES_FILE, output_path, sniff_episode
 
-    ids: dict[str, str] = {}
+    index = _EpisodeIndex(trace_ids={}, ok={}, idx={})
     path = output_path(config) / TRACES_FILE
     if not path.exists():
-        return ids
+        return index
     with path.open(encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             row = json.loads(line)
-            if sniff_episode(row):
-                for trace_row in row.get("traces") or []:
-                    ids[trace_row["id"]] = row["id"]
-    return ids
+            if not sniff_episode(row):
+                continue
+            traces = row.get("traces") or []
+            for trace_row in traces:
+                index.trace_ids[trace_row["id"]] = row["id"]
+            index.ok[row["id"]] = not row.get("errors") and not any(
+                t.get("errors") for t in traces
+            )
+            index.idx[row["id"]] = row["task"]["data"]["idx"]
+    return index
+
+
+def _run_metrics(traces: list[Trace], index: _EpisodeIndex) -> dict[str, Any]:
+    """Run-level aggregates as v0's `GenerateMetadata`: `avg_reward` (mean reward),
+    `avg_metrics` (each sub-reward and env-metric averaged over the traces that recorded
+    it), and `avg_error` — what the overview renders. Rewards/metrics aggregate over
+    the trainable traces (the policy under evaluation): a multi-agent env's fixed
+    seats (a judge, a modeled user) are `trainable=False` and often carry no
+    rewards, so counting them dilutes every mean with structural zeros. An
+    all-untrainable run falls back to all traces (same rule as the dashboard);
+    every trace is still uploaded either way. `avg_error` is the dashboard's
+    `err`: the share of EPISODES that aren't ok — a `rollout()`/`score()` hook
+    failure counts even when its traces are clean or it left none (both invisible
+    to the flattened trace list; read off traces.jsonl). Per-trace fallback when
+    the file is absent."""
+    scored = [t for t in traces if t.trainable] or traces
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for trace in scored:
+        for name, value in {**trace.rewards, **trace.metrics}.items():
+            sums[name] = sums.get(name, 0.0) + value
+            counts[name] = counts.get(name, 0) + 1
+    n = len(scored)
+    avg_error = (
+        sum(not ok for ok in index.ok.values()) / len(index.ok)
+        if index.ok
+        else (sum(t.has_error for t in scored) / n if n else 0.0)
+    )
+    return {
+        "avg_reward": sum(t.reward for t in scored) / n if n else 0.0,
+        "avg_metrics": {name: sums[name] / counts[name] for name in sums},
+        "avg_error": avg_error,
+    }
+
+
+def _build_samples(traces: list[Trace], index: _EpisodeIndex) -> list[dict[str, Any]]:
+    """One platform sample per trace, with one `rollout_number` per EPISODE, shared by
+    its traces: a multi-agent rollout's siblings and seats are the same attempt at the
+    task, not attempts 1..n (which would clash with `rollouts_per_example`). Traces the
+    file doesn't know (no episode yet) count as an attempt each, as before."""
+    counts: dict[int, int] = {}
+    episode_numbers: dict[str, int] = {}
+    samples = []
+    for trace in traces:
+        episode_id = index.trace_ids.get(trace.id)
+        number = episode_numbers.get(episode_id) if episode_id else None
+        if number is None:
+            idx = trace.task.data.idx
+            counts[idx] = number = counts.get(idx, 0) + 1
+            if episode_id:
+                episode_numbers[episode_id] = number
+        samples.append(trace_to_sample(trace, number, episode_id=episode_id))
+    return samples
 
 
 def push_traces(
@@ -165,47 +238,22 @@ def push_traces(
         )
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
-    def compute_metrics() -> dict[str, Any]:
-        """Run-level aggregates as v0's `GenerateMetadata`: `avg_reward` (mean reward),
-        `avg_metrics` (each sub-reward and env-metric averaged over the traces that recorded it),
-        and `avg_error` (errored fraction) — what the overview renders. Aggregated over
-        the trainable traces (the policy under evaluation): a multi-agent env's fixed
-        seats (a judge, a modeled user) are `trainable=False` and often carry no
-        rewards, so counting them dilutes every mean with structural zeros. An
-        all-untrainable run falls back to all traces (same rule as the dashboard);
-        every trace is still uploaded either way."""
-        scored = [t for t in traces if t.trainable] or traces
-        sums: dict[str, float] = {}
-        counts: dict[str, int] = {}
-        for trace in scored:
-            for name, value in {**trace.rewards, **trace.metrics}.items():
-                sums[name] = sums.get(name, 0.0) + value
-                counts[name] = counts.get(name, 0) + 1
-        n = len(scored)
-        return {
-            "avg_reward": sum(t.reward for t in scored) / n if n else 0.0,
-            "avg_metrics": {name: sums[name] / counts[name] for name in sums},
-            "avg_error": sum(t.has_error for t in scored) / n if n else 0.0,
-        }
-
+    index = _episode_index(config)
     env_name = config.taskset.id or config.id
-    metrics = compute_metrics()
-    episode_ids = _episode_ids(config)
-    counts: dict[int, int] = {}
-    samples = []
-    for trace in traces:
-        counts[trace.task.data.idx] = counts.get(trace.task.data.idx, 0) + 1
-        samples.append(
-            trace_to_sample(
-                trace, counts[trace.task.data.idx], episode_id=episode_ids.get(trace.id)
-            )
-        )
-
+    metrics = _run_metrics(traces, index)
+    samples = _build_samples(traces, index)
+    # Distinct tasks over the file's episodes when available: a task whose every
+    # env-rollout failed before minting a trace still counts as attempted.
+    num_examples = (
+        len(set(index.idx.values()))
+        if index.idx
+        else len({t.task.data.idx for t in traces})
+    )
     metadata = {
         "framework": "verifiers",
         "run_id": config.uuid,
         "model": config.model,
-        "num_examples": len(counts),
+        "num_examples": num_examples,
         "rollouts_per_example": config.num_rollouts,
         **metrics,
     }
