@@ -59,7 +59,7 @@ On the `prime` runtime any pullable image reference just works: the first sandbo
 Every Harbor taskset can also be modified with a `timeout_multiplier` and a `resource_multiplier`:
 
 ```toml
-[taskset]
+[env.taskset]
 id = "MY_TASKSET"
 timeout_multiplier = 2.0
 resource_multiplier = 2.0

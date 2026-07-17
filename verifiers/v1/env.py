@@ -516,19 +516,20 @@ def validate_pairing(
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
             f"{task_cls.__name__} exposes tool servers (MCP). Run it with a harness that "
-            f"supports MCP (e.g. --harness.id default), or use tasks without tools."
+            f"supports MCP (e.g. --env.agent.harness.id default), or use tasks without tools."
         )
     if not harness.SUPPORTS_USER_SIM and task_cls.user is not None:
         raise ValueError(
             f"Harness {harness.config.id!r} does not drive a user simulator, but "
             f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
-            f"supports user simulation (e.g. --harness.id default), or use tasks without one."
+            f"supports user simulation (e.g. --env.agent.harness.id default), or use tasks "
+            "without one."
         )
     if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
-            "this run resolves to the subprocess runtime; use --harness.runtime.type "
-            "docker or prime."
+            "this run resolves to the subprocess runtime; use "
+            "--env.<role>.harness.runtime.type docker or prime."
         )
 
 
@@ -743,8 +744,8 @@ class Environment(ABC, Generic[ConfigT]):
                 logger.warning(
                     "Harness %r is running in the subprocess runtime on the local system. "
                     "Local files and settings may affect the evaluation; use subprocess only "
-                    "for debugging. Use --harness.runtime.type docker or prime for an isolated "
-                    "run.",
+                    "for debugging. Use --env.<role>.harness.runtime.type docker or prime "
+                    "for an isolated run.",
                     harness.config.id,
                 )
         self.limits = RolloutLimits(

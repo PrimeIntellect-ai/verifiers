@@ -14,13 +14,13 @@ pulls `load` on demand, task by task.
 
 Load-time knobs (dataset, split, seed) live on the taskset config; the task-facing knobs
 under its `task` subtree (`TasksetConfig.task`, a `TaskConfig`, everything under
-`--taskset.task.*`); a worker-scoped shared tool server is declared on `tools` with its knobs
-at the taskset level (`--taskset.tools.*`). All per-task behavior — runtime prep, tools,
+`--env.taskset.task.*`); a worker-scoped shared tool server is declared on `tools` with its knobs
+at the taskset level (`--env.taskset.tools.*`). All per-task behavior — runtime prep, tools,
 user simulation, `@reward`/`@metric` scoring — lives on the `Task` (see
 `verifiers.v1.task`).
 
 The class stays generic over its task and config types (`Taskset[TaskT, TasksetConfigT]`)
-so the loaders can read them: `taskset_config_type` narrows `--taskset.*` CLI/toml flags
+so the loaders can read them: `taskset_config_type` narrows `--env.taskset.*` CLI/toml flags
 to the real config, and `task_type` types the wire trace — one task type per taskset, so
 replay can rebuild every saved row as the declared type's data and re-wrap it.
 """
@@ -49,9 +49,10 @@ logger = logging.getLogger(__name__)
 
 class TasksetConfig(BaseConfig):
     id: ID = ""
-    """Local package or Hub `org/name[@version]`, set with `--taskset.id`."""
+    """Local package or Hub `org/name[@version]`, set with `--env.taskset.id` (or the
+    positional `eval <taskset-id>`)."""
     task: SerializeAsAny[TaskConfig] = TaskConfig()
-    """Config passed to each task, under `--taskset.task.*`."""
+    """Config passed to each task, under `--env.taskset.task.*`."""
 
     @property
     def name(self) -> str:

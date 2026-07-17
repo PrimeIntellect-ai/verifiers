@@ -92,7 +92,7 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
     task_config = (
         f"\n\nclass {prefix}TaskConfig(vf.TaskConfig):\n"
         '    """Knobs the task reads from ``self.config``; configure them under '
-        f'``--taskset.task.*``."""{task_config_fields}\n'
+        f'``--env.taskset.task.*``."""{task_config_fields}\n'
         if has_task_config
         else ""
     )
@@ -220,7 +220,7 @@ def _readme(
         )
     if add_harness:
         layout.append(
-            f"- `{pkg}/harness.py` — a custom harness, selectable with `--harness.id {dash}`."
+            f"- `{pkg}/harness.py` — a custom harness, selectable with `--env.agent.harness.id {dash}`."
         )
     layout_block = "\n".join(layout)
     return f"""\
@@ -242,7 +242,7 @@ uv run eval {dash} -n 3    # evaluate a few tasks with the default harness
 
 {layout_block}
 
-Tune knobs from the CLI: `--taskset.num-tasks 10`, `--model <id>`, `-n`, and `-r`.
+Tune knobs from the CLI: `--env.taskset.num-tasks 10`, `--model <id>`, `-n`, and `-r`.
 """
 
 

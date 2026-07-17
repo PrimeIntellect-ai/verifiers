@@ -227,7 +227,7 @@ def resolve_image(
             f"{task_dir.name}: environment is a Dockerfile, not a pullable "
             "[environment].docker_image — building Dockerfiles isn't supported, so this "
             "task can't run (it would otherwise score against the wrong default image). "
-            "Pass --taskset.ignore-dockerfile to run it on the harness runtime's image instead."
+            "Pass --env.taskset.ignore-dockerfile to run it on the harness runtime's image instead."
         )
     if require_image:
         raise ValueError(

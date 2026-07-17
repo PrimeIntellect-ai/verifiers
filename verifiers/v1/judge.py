@@ -41,7 +41,7 @@ for a pure call (e.g. in tests).
 A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
 `score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
 built-ins and `verifiers.v1.loaders` for resolution). Its config lives on `TaskConfig.judges`
-only — judges are config, never row data (`--taskset.task.judges`; a taskset config may
+only — judges are config, never row data (`--env.taskset.task.judges`; a taskset config may
 pre-plug them as class defaults) — and `Task.score` builds and runs it after the task's own
 `@reward`s.
 """

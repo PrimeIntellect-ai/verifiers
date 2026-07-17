@@ -47,7 +47,7 @@ class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
                 "textarena's user simulator must be colocated: it hands the game outcome to scoring "
                 "by writing OUTCOME_FILE into the harness's runtime workspace that `game_reward` reads "
                 "back, so a non-colocated user (its own workspace) would always score 0. Set "
-                "`--taskset.task.user.colocated true` (the default)."
+                "`--env.taskset.task.user.colocated true` (the default)."
             )
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)

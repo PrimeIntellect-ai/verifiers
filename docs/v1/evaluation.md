@@ -14,10 +14,10 @@ model = "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
 [sampling]
 temperature = 1.0
 
-[taskset]
+[env.taskset]
 id = "primeintellect/terminal-bench-2"
 
-[harness]
+[env.agent.harness]
 id = "codex"
 version = "0.116.0"
 ```
@@ -32,7 +32,8 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
-- `taskset.id` / `harness.id` — pick the taskset and harness
+- `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
+- `env.agent.harness.id` — pick the agent seat's harness (`[env.agent.harness]` in TOML)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — rollouts per task
@@ -49,7 +50,7 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
 
 ```toml
-[harness]
+[env.agent.harness]
 disabled_tools = ["shell_tool"]
 ```
 

@@ -118,7 +118,7 @@ class TaskConfig(BaseConfig):
     """
 
     judges: Judges = []
-    """Judge plugins run after task rewards, set through `--taskset.task.judges`."""
+    """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
 
     @model_validator(mode="before")
     @classmethod

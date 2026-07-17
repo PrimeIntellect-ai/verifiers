@@ -48,15 +48,17 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 - `owner/name` installs a Hub package on demand.
 - `owner/name@version` pins a Hub version.
 
-The leading ID is shorthand for `--taskset.id`. Select a harness independently:
+The leading ID is shorthand for `--env.taskset.id`. A harness belongs to a seat —
+`--env.agent.harness.*` on the single-agent env, `--env.<role>.harness.*` on a
+multi-agent role (there is no run-level `--harness.*`):
 
 ```bash
-prime eval run owner/name --harness.id codex --harness.runtime.type prime
+prime eval run owner/name --env.agent.harness.id codex --env.agent.harness.runtime.type prime
 ```
 
-The env — the control flow between agents — is the third independent axis. Empty keeps the
-taskset's own story (its exported `Environment` subclass, else single-agent); `--env.id` pairs
-a reusable env with any taskset, its knobs typed under `--env.*`:
+The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`
+keeps the taskset's own story (its exported `Environment` subclass, else the single-agent
+env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
 
 ```bash
 prime eval run my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
@@ -70,7 +72,7 @@ When specifying Hub tasksets, always include the owner to resolve them correctly
 Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
 
 ```toml
-[harness]
+[env.agent.harness]
 disabled_tools = ["shell_tool"]
 ```
 
@@ -81,17 +83,17 @@ The names of these tools are set by the respective harness. Research the relevan
 Taskset settings:
 
 ```bash
-prime eval run my-task-v1 --taskset.split test --taskset.difficulty hard
+prime eval run my-task-v1 --env.taskset.split test --env.taskset.difficulty hard
 ```
 
 Harness and runtime settings:
 
 ```bash
 prime eval run my-task-v1 \
-  --harness.id rlm \
-  --harness.runtime.type docker \
-  --harness.runtime.cpu 4 \
-  --harness.runtime.memory 8
+  --env.agent.harness.id rlm \
+  --env.agent.harness.runtime.type docker \
+  --env.agent.harness.runtime.cpu 4 \
+  --env.agent.harness.runtime.memory 8
 ```
 
 Sampling:
@@ -117,11 +119,11 @@ You can also use a TOML:
 ```toml
 model = "openai/gpt-5-mini"
 
-[taskset]
+[env.taskset]
 id = "my-task-v1"
 split = "test"
 
-[harness]
+[env.agent.harness]
 id = "default"
 runtime = { type = "subprocess" }
 
@@ -141,9 +143,9 @@ Whole-rollout retry is opt-in. That means if something fails in the rollout, the
 
 ```bash
 prime eval run my-task-v1 \
-  --retries.rollout.max-retries 2 \
-  --retries.rollout.include SandboxError ProviderError \
-  --retries.rollout.exclude TaskError
+  --env.retries.rollout.max-retries 2 \
+  --env.retries.rollout.include SandboxError ProviderError \
+  --env.retries.rollout.exclude TaskError
 ```
 
 ## Output and resume
