@@ -274,11 +274,34 @@ def Progress(
         ProgressBar(total=total or 1, completed=len(done)),
         Text(stats),
     )
-    breakdown = _breakdown(scored)
+    breakdown = _breakdown(scored, done_traces)
     return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
-def _breakdown(done: list[Trace]) -> Table | None:
+def _score_segments(traces: list[Trace], source: str) -> str | None:
+    """`name mean` segments for every reward/metric key seen across `traces`,
+    first-seen order (a trace records only the functions that ran for it, so keys
+    can vary); None when no trace recorded anything."""
+    names: list[str] = []
+    for trace in traces:
+        names.extend(n for n in getattr(trace, source) if n not in names)
+    if not names:
+        return None
+    segments = []
+    for name in names:
+        mean = format_mean(
+            traces, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
+        )
+        segments.append(f"{name} {mean}")
+    return "  ·  ".join(segments)
+
+
+def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
+    """Score rows read the policy view (`scored` — trainable traces); with several
+    roles in play they split per role, each role averaging over its OWN traces (no
+    dilution, so the split covers every role — an untrainable seat's received
+    rewards stay visible). Resource rows read every completed trace: a judge's
+    tokens were spent regardless of trainability."""
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim", min_width=_LABEL_WIDTH)
     grid.add_column()
@@ -286,21 +309,20 @@ def _breakdown(done: list[Trace]) -> Table | None:
     # show); usage/time below still cover errored rollouts (their resources were spent regardless).
     has_clean = any(not t.has_error for t in done)
     score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
+    by_role: dict[str | None, list[Trace]] = {}
+    for trace in done:
+        by_role.setdefault(trace.role, []).append(trace)
     for label, source in score_rows:
-        # every key seen across traces, first-seen order (a trace records only the functions
-        # that ran for it, so keys can vary)
-        names: list[str] = []
-        for trace in done:
-            names.extend(n for n in getattr(trace, source) if n not in names)
-        if not names:
-            continue
-        segments = []
-        for name in names:
-            mean = format_mean(
-                done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
-            )
-            segments.append(f"{name} {mean}")
-        grid.add_row(label, "  ·  ".join(segments))
+        if len(by_role) > 1:
+            segments = [
+                f"[dim]{role or '—'}:[/dim] {means}"
+                for role, traces in by_role.items()
+                if (means := _score_segments(traces, source)) is not None
+            ]
+            if segments:
+                grid.add_row(label, "    ".join(segments))
+        elif (means := _score_segments(scored, source)) is not None:
+            grid.add_row(label, means)
 
     # Resource use over every completed rollout (errored ones still spent tokens/time): tokens and
     # cost are summed; each timing phase is averaged over the rollouts that have it timed (averaged
