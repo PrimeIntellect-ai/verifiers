@@ -465,7 +465,15 @@ class Episode(StrictBaseModel, Generic[DataT, StateT]):
     and score as a unit, which is exactly what the episode makes atomic. `errors` are
     episode-level failures not attributable to any one trace (the env's
     `rollout`/`score` hooks, plus prior attempts' errors when the episode was retried —
-    same shape as `Trace.errors`); per-trace failures stay on the traces."""
+    same shape as `Trace.errors`); per-trace failures stay on the traces.
+
+    The type parameters serve the wire loaders, not authoring: `WireEpisode =
+    Episode[WireTaskData, State]` is how resume and the serve protocol read any
+    taskset's episodes without importing the taskset — every row loads as the same
+    lossless `WireTaskData` (unknown fields kept in `model_extra`), so uniformity
+    holds by construction. An authored episode is typically heterogeneous — a
+    taskset-typed solver trace next to a plain minted verdict trace — and uses bare
+    `Episode`: no single parameter pair can type that mix, and none needs to."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     env: str = ""
