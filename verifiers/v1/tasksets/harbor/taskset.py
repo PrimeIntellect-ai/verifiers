@@ -313,13 +313,16 @@ class HarborTask(Task[HarborData]):
                 {},
                 "Harbor artifact target cleanup",
             )
-        directories = list(dict.fromkeys(["/logs/artifacts", *directories]))
-        await run_checked(
-            runtime,
-            ["mkdir", "-p", *directories],
-            {},
-            "Harbor artifact directory restore",
-        )
+        if all(path != "/logs/artifacts" for path, _ in files):
+            directories.insert(0, "/logs/artifacts")
+        directories = list(dict.fromkeys(directories))
+        if directories:
+            await run_checked(
+                runtime,
+                ["mkdir", "-p", *directories],
+                {},
+                "Harbor artifact directory restore",
+            )
         for path, host_path in files:
             await runtime.write(path, await asyncio.to_thread(host_path.read_bytes))
 
