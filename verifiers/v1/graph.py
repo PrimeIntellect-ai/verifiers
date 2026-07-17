@@ -343,10 +343,12 @@ class PendingTurn:
             for span in tail_spans
         ]
 
-    def commit(self, response: Response, tools: list[Tool] | None = None) -> None:
-        _commit_turn(self, response)
+    def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
+        """Add this turn to the graph; returns the committed assistant node's id."""
+        assistant_id = _commit_turn(self, response)
         if tools:
             self.trace.tools = tools
+        return assistant_id
 
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
@@ -486,7 +488,7 @@ def _attribute_kept_tokens(
     node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
 
 
-def _commit_turn(turn: PendingTurn, response: Response) -> None:
+def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
@@ -595,6 +597,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     # Attribute this turn's kept-set sampling masks onto the assistant node (they are
     # completion-aligned, so only the sampled node carries them).
     _attribute_kept_tokens(trace, assistant_id, tokens.kept_tokens if tokens else None)
+
+    return assistant_id
 
 
 # --- walking the graph (views) ---------------------------------------------------------

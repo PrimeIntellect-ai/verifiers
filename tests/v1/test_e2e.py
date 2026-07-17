@@ -18,6 +18,14 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns == 1
     assert trace.reward == 1.0
+    # Every sampled turn has one raw per-call record, linked to its assistant node.
+    sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
+    assert [c.node for c in trace.calls if c.error is None] == sampled
+    for call in trace.calls:
+        assert call.request is not None
+        assert call.time.duration > 0
+        if call.error is None:
+            assert call.response is not None
 
 
 @pytest.mark.e2e

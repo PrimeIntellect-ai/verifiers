@@ -62,6 +62,37 @@ class Error(StrictBaseModel):
     traceback: str | None = None
 
 
+class ModelCall(StrictBaseModel):
+    """One provider exchange behind a sampled turn, kept raw: the request as sent upstream
+    and the native response, untyped. Recorded by the interception server for every real
+    exchange — an SDK-level retry that replays or coalesces onto an earlier attempt adds
+    nothing, a failed attempt is recorded with its `error`."""
+
+    node: int | None = None
+    """Index into `Trace.nodes` of the assistant node this call committed — the link into
+    the message graph (the call's conversation is that node's root-to-self path). None for
+    a call that committed no turn (see `error`)."""
+    endpoint: str | None = None
+    """The provider endpoint path the request went to (e.g. `/chat/completions`) — says
+    which wire format `request` and `response` are in."""
+    request: dict[str, Any] | None = None
+    """The raw request body as sent upstream: the harness's native JSON with the rollout's
+    model + sampling overrides applied — so it carries the effective sampling parameters
+    and the requested model."""
+    response: dict[str, Any] | None = None
+    """The raw native response object (for a generating client, the completion it
+    synthesized): provider response id, returned model, native usage. None for a failed call."""
+    response_headers: dict[str, str] | None = None
+    """Provider response headers (request ids, rate limits), when the transport exposes them."""
+    time: TimeSpan = Field(default_factory=TimeSpan)
+    """Wall-clock span from sending the request to the fully received response."""
+    time_to_first_token: float | None = None
+    """Seconds from sending the request to the first streamed event; None when not streaming."""
+    error: Error | None = None
+    """The failure that ended this call, coupled to the exchange that caused it; None on
+    success. A failed call still records the request it sent."""
+
+
 class Branch(StrictBaseModel):
     """A root-to-leaf graph path; each branch becomes one training sample."""
 
@@ -305,6 +336,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     committed turn wins) — never from a refused/failed request the model never saw. The full
     advertised list (not just tools called), so tool-use SFT can re-render the exact prompt;
     a trace-level snapshot: mid-rollout changes collapse to the last set the model saw."""
+    calls: list[ModelCall] = Field(default_factory=list)
+    """Every provider exchange behind the sampled turns, in order: raw wire request/response
+    plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Weighted contributions from task rewards, group rewards, and judges."""

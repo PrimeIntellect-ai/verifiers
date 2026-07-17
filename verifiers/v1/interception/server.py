@@ -25,6 +25,8 @@ import hashlib
 import json
 import logging
 import secrets
+import time
+import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -38,6 +40,7 @@ from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
+    ProviderError,
     RolloutError,
     TaskError,
     UserError,
@@ -50,6 +53,7 @@ from verifiers.v1.interception.tunnel import (
     make_tunnel,
 )
 from verifiers.v1.session import RolloutSession
+from verifiers.v1.trace import Error, ModelCall, TimeSpan
 from verifiers.v1.types import Messages, Response, Tool
 
 logger = logging.getLogger(__name__)
@@ -229,6 +233,45 @@ class InterceptionServer(Interception):
             status=getattr(error, "status_code", 502),
         )
 
+    def _record_call(
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        request: dict,
+        started: float,
+        *,
+        node: int | None = None,
+        response: dict | None = None,
+        headers: dict[str, str] | None = None,
+        first_token: float | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        """Append one provider exchange to the trace's per-call records (`Trace.calls`):
+        the raw request as sent upstream, the raw native response, timing, and — when the
+        call committed no turn — the error, coupled to the exchange that raised it. Called
+        once per real exchange; replayed/coalesced SDK retries never reach it."""
+        session.trace.calls.append(
+            ModelCall(
+                node=node,
+                endpoint=dialect.upstream_path,
+                request=request,
+                response=response,
+                response_headers=headers,
+                time=TimeSpan(start=started, end=time.time()),
+                time_to_first_token=first_token,
+                error=None
+                if error is None
+                else Error(
+                    type=type(error).__name__,
+                    message=str(error),
+                    # Provider errors already carry the actionable upstream diagnostic.
+                    traceback=None
+                    if isinstance(error, ProviderError)
+                    else traceback.format_exc(),
+                ),
+            )
+        )
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -352,6 +395,12 @@ class InterceptionServer(Interception):
                     return serve(response)
                 turn = graph.prepare_turn(session.trace, prompt)
                 session.error = None
+                # What actually goes upstream: the native body with the rollout's model +
+                # sampling imposed — recorded raw on the trace, per call.
+                upstream_request = dialect.apply_overrides(
+                    body, session.ctx.model, session.ctx.sampling
+                )
+                started = time.time()
                 try:
                     response = await session.ctx.client.get_response(
                         dialect,
@@ -362,10 +411,13 @@ class InterceptionServer(Interception):
                         session_id=session.trace.id,
                         turn=turn,
                     )
-                except OverlongPromptError:
+                except OverlongPromptError as e:
                     # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
                     # as a truncation — return the last turn if there is one, else refuse to halt
                     # the harness (same shape as `refused` above).
+                    self._record_call(
+                        session, dialect, upstream_request, started, error=e
+                    )
                     session.trace.stop("context_length")
                     logger.debug("prompt too long: id=%s", session.trace.id)
                     if response is None:
@@ -377,6 +429,9 @@ class InterceptionServer(Interception):
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
+                    self._record_call(
+                        session, dialect, upstream_request, started, error=e
+                    )
                     session.error = e
                     logger.warning(
                         "model call failed: id=%s %s: %s",
@@ -389,6 +444,9 @@ class InterceptionServer(Interception):
                         status=getattr(e, "status_code", 502),
                     )
                 except Exception as e:  # surface to the program as an API error
+                    self._record_call(
+                        session, dialect, upstream_request, started, error=e
+                    )
                     logger.warning(
                         "model call failed: id=%s %s: %s",
                         session.trace.id,
@@ -401,8 +459,17 @@ class InterceptionServer(Interception):
                     session.trace.id,
                     len(response.message.tool_calls or []),
                 )
-                turn.commit(response, tools)  # one node per new message;
+                node = turn.commit(response, tools)  # one node per new message;
                 # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
+                self._record_call(
+                    session,
+                    dialect,
+                    upstream_request,
+                    started,
+                    node=node,
+                    response=response.raw,
+                    headers=response.raw_headers,
+                )
                 # Hand back to the program when the model wants a tool (the program runs it) or
                 # when there's no user simulator to keep the conversation going.
                 if response.message.tool_calls or session.user is None:
@@ -462,6 +529,10 @@ class InterceptionServer(Interception):
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
         session.error = None
+        upstream_request = dialect.apply_overrides(
+            body, session.ctx.model, session.ctx.sampling
+        )
+        started = time.time()
         try:
             turn = graph.prepare_turn(session.trace, prompt)
             reply = await session.ctx.client.relay(
@@ -472,13 +543,15 @@ class InterceptionServer(Interception):
                 headers=request.headers,
                 session_id=session.trace.id,
             )
-        except OverlongPromptError:
+        except OverlongPromptError as e:
+            self._record_call(session, dialect, upstream_request, started, error=e)
             session.trace.stop("context_length")
             logger.debug("prompt too long: id=%s", session.trace.id)
             return web.json_response(
                 dialect.error_body("rollout stopped: context_length"), status=400
             )
         except RolloutError as e:
+            self._record_call(session, dialect, upstream_request, started, error=e)
             session.error = e
             logger.warning(
                 "model call failed: id=%s %s: %s",
@@ -490,6 +563,7 @@ class InterceptionServer(Interception):
                 dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
             )
         except Exception as e:  # surface to the program as an API error
+            self._record_call(session, dialect, upstream_request, started, error=e)
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
         resp = web.StreamResponse(
@@ -507,6 +581,7 @@ class InterceptionServer(Interception):
         ready = asyncio.Event()
         producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
         parser_error: Exception | None = None
+        first_token: float | None = None
         # SSE events from the turn-ending one onward (the terminal event and any trailing
         # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
         # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
@@ -527,6 +602,8 @@ class InterceptionServer(Interception):
                 if chunk is None:
                     await producer
                     break
+                if first_token is None:
+                    first_token = time.time() - started
                 if deferred or dialect.is_terminal_event(chunk):
                     if parser_error is None:
                         try:
@@ -557,8 +634,29 @@ class InterceptionServer(Interception):
         try:
             if parser_error is not None:
                 raise parser_error
-            turn.commit(parser.finish(), tools)
+            response = parser.finish()
+            node = turn.commit(response, tools)
+            self._record_call(
+                session,
+                dialect,
+                upstream_request,
+                started,
+                node=node,
+                response=response.raw,
+                headers=reply.headers,
+                first_token=first_token,
+            )
             logger.debug("intercept stream turn: id=%s", session.trace.id)
+        except Exception as e:
+            self._record_call(
+                session,
+                dialect,
+                upstream_request,
+                started,
+                first_token=first_token,
+                error=e,
+            )
+            raise
         finally:
             # Release the withheld events only now — after the commit — then close.
             with contextlib.suppress(ConnectionResetError):

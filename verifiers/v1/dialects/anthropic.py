@@ -239,7 +239,9 @@ class AnthropicStreamParser(StreamParser):
         for index, parts in self.partial_json.items():
             self.blocks[index]["input"] = json.loads("".join(parts) or "{}")
         self.message["content"] = [self.blocks[index] for index in sorted(self.blocks)]
-        return response_from_wire(self.validate_response(self.message))
+        response = response_from_wire(self.validate_response(self.message))
+        response.raw = self.message
+        return response
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):

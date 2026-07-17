@@ -110,6 +110,7 @@ class EvalClient(Client):
             ) from e
         # The interception server returns this full native provider object to the program.
         response.raw = raw
+        response.raw_headers = dict(resp.headers)
         return response
 
     def _headers(
@@ -217,6 +218,7 @@ class EvalClient(Client):
             content_type=resp.headers.get("content-type", "text/event-stream"),
             chunks=chunks(),
             close=resp.aclose,
+            headers=dict(resp.headers),
         )
 
     async def relay_aux(

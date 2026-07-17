@@ -271,24 +271,23 @@ class ChatStreamParser(StreamParser):
         if self.reasoning_details:
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
-        return response_from_wire(
-            ModdedChatCompletion.model_validate(
+        completion = {
+            "id": head.get("id", "vf-intercept"),
+            "object": "chat.completion",
+            "created": head.get("created", int(time.time())),
+            "model": head.get("model", ""),
+            "choices": [
                 {
-                    "id": head.get("id", "vf-intercept"),
-                    "object": "chat.completion",
-                    "created": head.get("created", int(time.time())),
-                    "model": head.get("model", ""),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": self.message,
-                            "finish_reason": self.finish_reason or "stop",
-                        }
-                    ],
-                    "usage": self.usage,
+                    "index": 0,
+                    "message": self.message,
+                    "finish_reason": self.finish_reason or "stop",
                 }
-            )
-        )
+            ],
+            "usage": self.usage,
+        }
+        response = response_from_wire(ModdedChatCompletion.model_validate(completion))
+        response.raw = completion
+        return response
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
