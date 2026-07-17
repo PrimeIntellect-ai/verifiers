@@ -291,7 +291,6 @@ class ChatStreamParser(StreamParser):
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
-    name = "chat"
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion

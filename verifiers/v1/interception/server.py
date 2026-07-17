@@ -252,7 +252,7 @@ class InterceptionServer(Interception):
         session.trace.calls.append(
             ModelCall(
                 node=node,
-                dialect=dialect.name,
+                endpoint=dialect.upstream_path,
                 request=request,
                 response=response,
                 response_headers=headers,
