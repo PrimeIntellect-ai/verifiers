@@ -10,8 +10,8 @@ import verifiers.v1 as vf
 from verifiers.v1.trace import Trace, TraceTask
 
 
-def _env_config(**kwargs) -> vf.EnvConfig:
-    return vf.EnvConfig(taskset={"id": "echo-v1"}, **kwargs)
+def _env_config(**kwargs) -> vf.SingleAgentEnvConfig:
+    return vf.SingleAgentEnvConfig(taskset={"id": "echo-v1"}, **kwargs)
 
 
 def _task(env: vf.Environment) -> vf.Task:
@@ -43,12 +43,16 @@ def _stub_agents(env: vf.Environment) -> dict[str, StubAgent]:
     return agents
 
 
-class DuetParams(vf.EnvParams):
+class DuetConfig(vf.EnvConfig):
     a: vf.AgentConfig = vf.AgentConfig()
     b: vf.AgentConfig = vf.AgentConfig(trainable=False)
 
 
-class DuetEnv(vf.Environment[DuetParams]):
+def _duet_config(**kwargs) -> "DuetConfig":
+    return DuetConfig(taskset={"id": "echo-v1"}, **kwargs)
+
+
+class DuetEnv(vf.Environment[DuetConfig]):
     async def rollout(self, task, agents):
         return list(await asyncio.gather(agents["a"].run(task), agents["b"].run(task)))
 
@@ -59,14 +63,14 @@ class DuetEnv(vf.Environment[DuetParams]):
 
 async def test_single_agent_env_mints_single_agent_records():
     """`SingleAgentEnv` is the single-agent case every plain taskset resolves to:
-    one 'solver' role on the run's `--harness.*`, one unstamped trace per episode,
+    one `agent` seat playing the seed taskset, one unstamped trace per episode,
     score() a no-op."""
     env = vf.SingleAgentEnv(_env_config())
-    assert list(env._roles) == ["solver"]
+    assert list(env._roles) == ["agent"]
     agents = _stub_agents(env)
     episode = await env.run_episode(_task(env), None)
     assert episode.ok and episode.env == "echo-v1"
-    assert agents["solver"].runs == 1
+    assert agents["agent"].runs == 1
     assert len(episode.traces) == 1
     trace = episode.traces[0]
     assert trace.role is None and trace.trainable  # the wire matches a plain eval's
@@ -78,7 +82,7 @@ def test_default_roles_are_the_declared_agent_fields():
     block becomes a dataset-playing role of the same name — an env whose roles all
     play the dataset never writes roles(). Every env stamps its traces' roles except
     `SingleAgentEnv`, whose wire stays identical to a plain eval's."""
-    env = DuetEnv(_env_config(env=DuetParams()))
+    env = DuetEnv(_duet_config())
     assert list(env._roles) == ["a", "b"]  # declaration order
     assert all(r.mcp is None and r.container is None for r in env._roles.values())
     assert env._roles["b"].agent.trainable is False  # the declared default instance
@@ -93,12 +97,21 @@ def test_role_fields_must_declare_default_instances():
 
     with pytest.raises(TypeError, match="default instance"):
 
-        class BadParams(vf.EnvParams):
+        class BadParams(vf.EnvConfig):
             solver: vf.AgentConfig = Field(default_factory=vf.AgentConfig)
 
 
+def test_role_fields_must_not_shadow_base_fields():
+    """A role named like a base `EnvConfig` field (`taskset`, `timeout`, ...) would
+    break every framework read of that name; refuse at class definition."""
+    with pytest.raises(TypeError, match="shadow"):
+
+        class Shadowed(vf.EnvConfig):
+            taskset: vf.AgentConfig = vf.AgentConfig()  # type: ignore[assignment]
+
+
 async def test_multi_role_records_stamp_roles():
-    env = DuetEnv(_env_config(env=DuetParams()))
+    env = DuetEnv(_duet_config())
     _stub_agents(env)
     seen_live: list[str | None] = []
     episode = await env.run_episode(
@@ -114,7 +127,7 @@ async def test_multi_role_records_stamp_roles():
 
 async def test_agent_failures_are_trace_data_not_record_errors():
     env = vf.SingleAgentEnv(_env_config())
-    env._agents_for = lambda ctx: {"solver": StubAgent(error=RuntimeError("boom"))}  # type: ignore[method-assign]
+    env._agents_for = lambda ctx: {"agent": StubAgent(error=RuntimeError("boom"))}  # type: ignore[method-assign]
     episode = await env.run_episode(_task(env), None)
     assert not episode.ok and not episode.errors  # the failure lives on the trace
     assert episode.traces[0].error is not None
@@ -126,7 +139,7 @@ async def test_hook_crash_keeps_completed_traces():
 
     class Crashy(vf.SingleAgentEnv):
         async def rollout(self, task, agents):
-            await agents["solver"].run(task)
+            await agents["agent"].run(task)
             raise RuntimeError("hook bug")
 
     env = Crashy(_env_config())
@@ -164,7 +177,7 @@ async def test_score_failure_keeps_rollout_order():
         async def score(self, task, traces):
             raise RuntimeError("judge crashed")
 
-    env = Reordered(_env_config(env=DuetParams()))
+    env = Reordered(_duet_config())
     _stub_agents(env)
     episode = await env.run_episode(_task(env), None)
     assert not episode.ok
@@ -184,7 +197,7 @@ async def test_score_failure_keeps_rollout_membership():
         async def score(self, task, traces):
             raise RuntimeError("judge crashed")
 
-    env = Subset(_env_config(env=DuetParams()))
+    env = Subset(_duet_config())
     _stub_agents(env)
     episode = await env.run_episode(_task(env), None)
     assert not episode.ok
@@ -197,7 +210,7 @@ async def test_decorated_signals_cross_agent():
     with the finished sibling set in reach; metrics record before rewards run, and
     reward weights apply."""
 
-    class Signals(vf.Environment[DuetParams]):
+    class Signals(vf.Environment[DuetConfig]):
         async def rollout(self, task, agents):
             return list(
                 await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
@@ -215,7 +228,7 @@ async def test_decorated_signals_cross_agent():
         async def sees_metrics(self, trace):
             return trace.metrics["b_count"]  # metrics recorded before rewards run
 
-    env = Signals(_env_config(env=DuetParams()))
+    env = Signals(_duet_config())
     _stub_agents(env)
     episode = await env.run_episode(_task(env), None)
     assert episode.ok
@@ -237,11 +250,11 @@ def test_decorated_signal_role_must_be_declared():
 
 async def test_decorated_signals_on_unstamped_single_role():
     """A `SingleAgentEnv` subclass leaves traces unstamped (the wire matches a plain
-    eval's); a role='solver' signal still records onto them — every trace belongs to
+    eval's); a role='agent' signal still records onto them — every trace belongs to
     the sole implicit role."""
 
     class Solo(vf.SingleAgentEnv):
-        @vf.metric(role="solver")
+        @vf.metric(role="agent")
         async def n(self, traces):
             return float(len(traces))
 
@@ -347,23 +360,29 @@ def test_role_harness_config_narrows_by_id():
     assert spec.harness.id == "default"
 
 
-def test_run_harness_is_the_single_agent_seat():
-    """The run-level `--harness.*` configures exactly one thing: `SingleAgentEnv`'s
-    solver seat. An unpinned role elsewhere resolves to the taskset's default
-    harness — never an operator-set run value."""
+def test_seat_harness_is_a_pin_or_the_taskset_default():
+    """There is no run-level harness: a seat runs its own pin
+    (`--env.<role>.harness.*`), and an unpinned seat resolves to the taskset's
+    default harness — never an operator-set run value."""
     assert vf.AgentConfig().harness is None
-    env = vf.SingleAgentEnv(_env_config(harness={"id": "null"}))
-    assert env._harnesses["solver"].config.id == "null"
-    duet = DuetEnv(_env_config(env=DuetParams()))
+    env = vf.SingleAgentEnv(_env_config(agent={"harness": {"id": "null"}}))
+    assert env._harnesses["agent"].config.id == "null"
+    duet = DuetEnv(_duet_config())
     assert duet._harnesses["a"].config.id == "default"  # the taskset's default
     assert duet._harnesses["a"] is duet._harnesses["b"]  # one object per config
 
 
-def test_multi_agent_env_refuses_the_run_harness():
-    """A multi-agent env has no seat for the run-level `--harness.*` to configure;
-    a customized value is refused with the per-seat flags to use instead."""
-    with pytest.raises(ValueError, match="--env.a.harness"):
-        DuetEnv(_env_config(harness={"id": "null"}, env=DuetParams()))
+def test_retired_top_level_axes_point_home():
+    """The old flat axes are refused with a pointer to their new home — a config
+    can't silently half-apply."""
+    from verifiers.v1.configs.eval import EvalConfig
+
+    with pytest.raises(ValueError, match="--env.taskset.id"):
+        EvalConfig.model_validate({"taskset": {"id": "echo-v1"}})
+    with pytest.raises(ValueError, match="--env.agent.harness"):
+        EvalConfig.model_validate(
+            {"env": {"taskset": {"id": "echo-v1"}}, "harness": {"id": "null"}}
+        )
 
 
 def test_role_harness_override_switches_the_type():
@@ -371,7 +390,7 @@ def test_role_harness_override_switches_the_type():
     discriminator switch replaces the subtree, so the old type's fields don't leak
     into the new type's (extra-forbidden) validation."""
 
-    class Pinned(vf.EnvParams):
+    class Pinned(vf.EnvConfig):
         solver: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="default"))
 
     params = Pinned.model_validate({"solver": {"harness": {"id": "null"}}})
@@ -387,7 +406,7 @@ def test_role_pins_survive_partial_overrides():
     silently reset the role's declared pins — the field-default instance deep-merges
     under the provided keys, and only an explicit override replaces a pin."""
 
-    class Pinned(vf.EnvParams):
+    class Pinned(vf.EnvConfig):
         user: vf.AgentConfig = vf.AgentConfig(model="frozen", trainable=False)
 
     params = Pinned.model_validate({"user": {"sampling": {"temperature": 0.7}}})
@@ -398,44 +417,45 @@ def test_role_pins_survive_partial_overrides():
     assert explicit.user.model == "other" and explicit.user.trainable is False
 
 
-def test_env_subclass_loads_and_params_narrow():
-    """A taskset shipping an `Environment` subclass (duet-v1): the `env` field narrows
-    to the declared params type from plain data (the `@ file.toml` / worker-rebuild /
-    direct-constructor paths alike) and `load_environment` constructs the subclass;
-    base tasksets stay base."""
-    params_cls = vf.env_params_type("duet-v1")
-    cfg = vf.EnvConfig.model_validate(
-        {"taskset": {"id": "duet-v1"}, "env": {"b": {"model": "frozen"}}}
+def test_env_subclass_loads_and_config_narrows():
+    """A taskset shipping an `Environment` subclass (duet-v1): the env config
+    narrows to the declared config class from plain data (the `@ file.toml` /
+    worker-rebuild / run-config paths alike) and `load_environment` constructs the
+    subclass; plain tasksets resolve to `SingleAgentEnv`."""
+    from verifiers.v1.configs.eval import EvalConfig
+
+    config_cls = vf.env_config_type("duet-v1")
+    cfg = vf.resolve_env_config(
+        {"taskset": {"id": "duet-v1"}, "b": {"model": "frozen"}}
     )
-    assert isinstance(cfg.env, params_cls)
-    assert cfg.env.b.model == "frozen"
-    assert cfg.env.b.trainable is False  # the pin survives the partial override
+    assert isinstance(cfg, config_cls)
+    assert cfg.b.model == "frozen"
+    assert cfg.b.trainable is False  # the pin survives the partial override
     env = vf.load_environment(cfg)
     assert type(env).__name__ == "DuetEnv" and list(env._roles) == ["a", "b"]
-    # the direct-constructor path narrows too (no model_validate detour needed)
-    constructed = vf.EnvConfig(taskset={"id": "duet-v1"})
-    assert isinstance(constructed.env, params_cls)
+    # a run config narrows its `env` field the same way
+    run = EvalConfig(env={"taskset": {"id": "duet-v1"}})
+    assert isinstance(run.env, config_cls)
     assert vf.environment_class("echo-v1") is vf.SingleAgentEnv
     assert type(vf.load_environment(_env_config())) is vf.SingleAgentEnv
 
 
-def test_env_requires_its_declared_params():
-    """Constructing an env whose config wasn't narrowed to its params type fails
+def test_env_requires_its_declared_config():
+    """Constructing an env whose config wasn't narrowed to its config class fails
     loudly instead of breaking later in `roles()`."""
-    with pytest.raises(TypeError, match="declares Environment\\[DuetParams\\]"):
+    with pytest.raises(TypeError, match="declares Environment\\[DuetConfig\\]"):
         DuetEnv(_env_config())
 
 
-def test_env_config_data_keeps_env_params():
-    """The env-server wire dict keeps the env params (dropping eval-only fields), and
-    the worker-side rebuild re-narrows them."""
+def test_env_config_data_keeps_the_env_shape():
+    """The env-server wire dict keeps the env's roles and knobs, and the worker-side
+    rebuild re-narrows them to the concrete config class."""
     from verifiers.v1.configs.eval import EvalConfig
     from verifiers.v1.serve.pool import env_config_data
 
-    config = EvalConfig(taskset={"id": "duet-v1"}, env={"a": {"max_turns": 3}})
-    data = env_config_data(config)
-    assert "env" in data and "num_rollouts" not in data
-    rebuilt = vf.EnvConfig.model_validate(data)
-    assert isinstance(rebuilt.env, vf.env_params_type("duet-v1"))
-    assert rebuilt.env.a.max_turns == 3
-    assert rebuilt.env.a.harness.id == "null"  # the fixture's pin rode the wire
+    config = EvalConfig(env={"taskset": {"id": "duet-v1"}, "a": {"max_turns": 3}})
+    data = env_config_data(config.env)
+    rebuilt = vf.resolve_env_config(data)
+    assert isinstance(rebuilt, vf.env_config_type("duet-v1"))
+    assert rebuilt.a.max_turns == 3
+    assert rebuilt.a.harness.id == "null"  # the fixture's pin rode the wire

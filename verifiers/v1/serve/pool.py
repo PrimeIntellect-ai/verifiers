@@ -261,13 +261,11 @@ class EnvServerPool:
         logger.info("EnvServerPool down")
 
 
-def env_config_data(config) -> dict:
-    """The picklable `EnvConfig` fields of a (possibly dynamically-narrowed, unpicklable)
-    config object — ship this across a process boundary, then rebuild via
-    `EnvConfig.model_validate` (its validator re-resolves the concrete taskset/harness
-    and the env's params type)."""
-    data = config.model_dump(mode="json")
-    return {k: v for k, v in data.items() if k in EnvConfig.model_fields}
+def env_config_data(env: EnvConfig) -> dict:
+    """A picklable dict of a (possibly dynamically-narrowed, unpicklable) env config —
+    ship this across a process boundary, then rebuild via `resolve_env_config`
+    (re-narrowing to the env's concrete config class)."""
+    return env.model_dump(mode="json")
 
 
 def serve_env(
@@ -335,8 +333,10 @@ def serve_env(
             if (
                 "config_data" in server_kwargs
             ):  # rebuild the env config for an in-process server
+                from verifiers.v1.loaders import resolve_env_config
+
                 server_kwargs = {
-                    "config": EnvConfig.model_validate(server_kwargs["config_data"])
+                    "config": resolve_env_config(server_kwargs["config_data"])
                 }
             cls = LegacyEnvServer if legacy else EnvServer
             cls.run_server(

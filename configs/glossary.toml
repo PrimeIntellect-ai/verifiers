@@ -3,5 +3,5 @@
 #   uv run eval glossary-v1 @ configs/glossary.toml
 num_tasks = 1
 
-[taskset]
+[env.taskset]
 id = "glossary-v1"

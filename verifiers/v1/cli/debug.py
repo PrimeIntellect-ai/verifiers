@@ -301,7 +301,9 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    argv = with_positional_taskset(list(sys.argv[1:]) if argv is None else list(argv))
+    argv = with_positional_taskset(
+        list(sys.argv[1:]) if argv is None else list(argv), flag="--taskset.id"
+    )
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)

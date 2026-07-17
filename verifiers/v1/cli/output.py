@@ -37,13 +37,19 @@ def output_path(config: EvalConfig) -> Path:
     `--output-dir`). The per-run `uuid` leaf means runs never overwrite each other."""
     if config.output_dir is not None:
         return config.output_dir
-    env = config.taskset.name
-    if config.taskset.id and config.env.id:
+    taskset = config.env.taskset
+    env = taskset.name if taskset is not None else "no-taskset"
+    if taskset is not None and taskset.id and config.env.id:
         # The env axis is part of the run's identity (the same compounding as
         # `EnvConfig.env_id`): a `best-of-n+gsm8k-v1` run must not share a parent
         # dir with a plain `gsm8k-v1` one.
         env = f"{env_name(config.env.id)}+{env}"
-    name = f"{env}--{config.model.replace('/', '--')}--{config.harness.name}"
+    # The harness leg of the name: every seat's resolved harness, distinct, in
+    # role order — `default` for one plain seat, `default+direct` for a judge run.
+    harness = "+".join(
+        dict.fromkeys(h.name for h in config.env.seat_harnesses().values())
+    )
+    name = f"{env}--{config.model.replace('/', '--')}--{harness or 'default'}"
     return Path("outputs") / name / config.uuid
 
 

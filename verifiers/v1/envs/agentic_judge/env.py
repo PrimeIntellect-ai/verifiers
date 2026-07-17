@@ -21,7 +21,7 @@ harness resolves to the subprocess runtime is refused at construction (pin
 import json
 
 import verifiers.v1 as vf
-from verifiers.v1.envs.judge.env import JudgeEnv, JudgeParams
+from verifiers.v1.envs.judge.env import JudgeEnv, JudgeEnvConfig
 from verifiers.v1.harness import Harness
 
 TRANSCRIPT_MD = "/tmp/transcript.md"
@@ -67,14 +67,14 @@ class JudgeTask(vf.Task):
             await runtime.write(path, content)
 
 
-class AgenticJudgeParams(JudgeParams):
+class AgenticJudgeEnvConfig(JudgeEnvConfig):
     judge: vf.AgentConfig = vf.AgentConfig(trainable=False)
     """The judge seat. Unpinned, it runs the taskset's default harness (the same
     program the solver defaults to) in a mirror of the solver's world — its runtime
     must be a container: `--env.judge.harness.runtime.type docker|prime`."""
 
 
-class AgenticJudgeEnv(JudgeEnv, vf.Environment[AgenticJudgeParams]):
+class AgenticJudgeEnv(JudgeEnv, vf.Environment[AgenticJudgeEnvConfig]):
     def _check_judge_harness(self, harness: Harness) -> None:
         if not harness.EXECUTES_CODE:
             raise ValueError(
@@ -90,8 +90,8 @@ class AgenticJudgeEnv(JudgeEnv, vf.Environment[AgenticJudgeParams]):
         # check runs first.
         self._check_judge_harness(self._judge_harness())
         return {
-            "solver": vf.Role(self.params.solver),
-            "judge": vf.Role(self.params.judge, mcp=False, container=True),
+            "solver": vf.Role(self.config.solver),
+            "judge": vf.Role(self.config.judge, mcp=False, container=True),
         }
 
     async def rollout(self, task, agents):

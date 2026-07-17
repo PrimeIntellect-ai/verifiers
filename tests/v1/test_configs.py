@@ -23,7 +23,8 @@ CONFIGS = sorted(
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
-    assert config.taskset.id or config.id  # resolved to a v1 taskset or a v0 env id
+    # resolved to a v1 taskset or a v0 env id
+    assert (config.env.taskset is not None and config.env.taskset.id) or config.id
 
 
 def test_output_path_compounds_env_id():
@@ -32,7 +33,7 @@ def test_output_path_compounds_env_id():
     run never shares a parent dir with the plain run of the same taskset."""
     from verifiers.v1.cli.output import output_path
 
-    plain = EvalConfig(taskset={"id": "echo-v1"})
-    paired = EvalConfig(taskset={"id": "echo-v1"}, env={"id": "best-of-n"})
+    plain = EvalConfig(env={"taskset": {"id": "echo-v1"}})
+    paired = EvalConfig(env={"id": "best-of-n", "taskset": {"id": "echo-v1"}})
     assert output_path(plain).parent.name.startswith("echo-v1--")
     assert output_path(paired).parent.name.startswith("best-of-n+echo-v1--")

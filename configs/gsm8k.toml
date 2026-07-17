@@ -4,5 +4,5 @@
 num_tasks = 5
 num_rollouts = 3
 
-[taskset]
+[env.taskset]
 id = "gsm8k-v1"

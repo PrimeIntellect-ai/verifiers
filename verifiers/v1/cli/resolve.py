@@ -1,39 +1,40 @@
-"""Shared CLI resolution: select the taskset + harness by their `id`.
+"""Shared CLI resolution: select the environment (and its taskset) by id.
 
-Both entrypoints (`cli/eval.py`, `cli/serve.py`) select their plugins the same way — a `.id`
-per plugin (`--taskset.id`, `--harness.id`), the discriminator. We read those ids from argv
-*before* the typed parse, resolve each to its config type (a package imported by id), and
-narrow the `taskset` / `harness` fields of the base config. So the single `cli()` parse keeps
-both typed and `-h` shows the resolved config types.
-
-The taskset id has a positional shorthand: a leading bare token is the taskset id
-(`eval gsm8k` == `eval --taskset.id gsm8k`). Narrowing reads ids from the CLI only — a config
-file (`@ file.toml`) needn't repeat them: `EnvConfig._resolve_plugins` resolves each field to
-its specific type from the parsed data at validation time (the path prime-rl uses), so a
-fully-specified config runs with just `@ file.toml`. We only avoid pre-narrowing a field a
-config file may set, and leave that to the validator.
+The eval/serve/gepa entrypoints parse one config whose `env` field is the selected
+environment's own config class. We read the ids from argv *before* the typed parse
+(`--env.id`, `--env.taskset.id`, the positional taskset shorthand), resolve them to
+the env's config type, and narrow the base config's `env` field — so the single
+`cli()` parse stays typed and `-h` renders the real flags (`--env.<role>.model`,
+`--env.taskset.<knob>`). Ids can also come from a `@ file.toml`: validation narrows
+from the parsed data (`resolve_env_field`), so we only pre-narrow what the CLI
+states explicitly — never to a type a config file could then contradict.
 """
 
 import verifiers.v1 as vf
 
 
-def with_positional_taskset(argv: list[str]) -> list[str]:
-    """A leading bare token is the taskset id — `eval gsm8k` == `eval --taskset.id gsm8k`."""
+def with_positional_taskset(
+    argv: list[str], flag: str = "--env.taskset.id"
+) -> list[str]:
+    """A leading bare token is the taskset id — `eval gsm8k` == `eval --env.taskset.id
+    gsm8k` (the taskset-first CLIs `validate`/`debug` pass their own root flag)."""
     if argv and not argv[0].startswith(("-", "@")):
-        return ["--taskset.id", argv[0], *argv[1:]]
+        return [flag, argv[0], *argv[1:]]
     return argv
 
 
 def references_config_file(argv: list[str]) -> bool:
-    """Whether argv points at a `@ file.toml` (any token starting with `@`). Its ids are
-    resolved by `EnvConfig` from the parsed data, so the CLI needn't repeat them."""
+    """Whether argv points at a `@ file.toml` (any token starting with `@`). Its ids
+    are resolved from the parsed data at validation time, so the CLI needn't repeat
+    them."""
     return any(arg.startswith("@") for arg in argv)
 
 
 def extract_id(argv: list[str], field: str, default: str = "") -> str:
-    """The chosen `<field>.id` from `--<field>.id <x>` (or `=<x>`) on the CLI, before the typed
-    parse (the positional taskset shorthand is applied upstream). Absent here, the id can still
-    come from a `@ file.toml` — `EnvConfig` resolves it from the parsed data."""
+    """The chosen `<field>.id` from `--<field>.id <x>` (or `=<x>`) on the CLI, before
+    the typed parse (the positional taskset shorthand is applied upstream). Absent
+    here, the id can still come from a `@ file.toml` — validation resolves it from
+    the parsed data."""
     flag = f"--{field}.id"
     for i, arg in enumerate(argv):
         if arg == flag and i + 1 < len(argv):
@@ -44,37 +45,33 @@ def extract_id(argv: list[str], field: str, default: str = "") -> str:
 
 
 def narrow_config(base: type, argv: list[str]) -> type:
-    """`base` (an `EnvConfig` subclass) with `taskset`/`harness` narrowed to the config types
-    of the ids given on the CLI — so the single `cli()` parse stays typed and `-h` renders
-    them. A field whose id isn't on the CLI is left as the base type for `EnvConfig` to resolve
-    from a `@ file.toml` (never pre-narrowed to a type the config could then contradict).
-    Absent a config file, the harness falls back to the taskset's bundled harness (if it ships
-    one) else `default`, so bare `-h` renders the harness that will actually run. A taskset
-    that ships an `Environment` subclass gets its `env` params field narrowed the same way,
-    so its role fields (`--env.<role>.model`, ...) parse typed and render in `-h`."""
-    taskset_id = extract_id(argv, "taskset")
-    harness_id = extract_id(argv, "harness")
+    """`base` (a config owning an `env` field) with `env` narrowed to the config
+    class of the env the CLI names (`--env.id`, else the taskset's own env, else the
+    single-agent env) — including its `taskset` sub-field — so the single `cli()`
+    parse stays typed and `-h` renders role fields and taskset knobs. Ids a config
+    file may set are left to the validator (never pre-narrowed to a type the file
+    could then contradict); an explicit CLI `--env.id` always narrows (the id is
+    authoritative)."""
+    taskset_id = extract_id(argv, "env.taskset")
     env_id = extract_id(argv, "env")
-    if not harness_id and not references_config_file(argv):
-        harness_id = vf.default_harness_id(taskset_id)
-    annotations: dict[str, type] = {}
-    fields: dict[str, object] = {}
-    for field, resolve, ident in (
-        ("taskset", vf.taskset_config_type, taskset_id),
-        ("harness", vf.harness_config_type, harness_id),
-    ):
-        if ident:
-            ftype = resolve(ident)
-            annotations[field] = ftype
-            fields[field] = ftype(id=ident)
-    # Same guard as the harness fallback: a taskset-derived env is only pre-narrowed
-    # when no config file is in play — a `@ file.toml` may pair `--env.id` over a
-    # recipe-env taskset, and the validator resolves that from the parsed data. An
-    # explicit CLI `--env.id` always narrows (the id is authoritative, as for
-    # taskset/harness).
-    if env_id or (taskset_id and not references_config_file(argv)):
-        params_type = vf.env_params_type(taskset_id, env_id)
-        if params_type is not vf.EnvParams or env_id:
-            annotations["env"] = params_type
-            fields["env"] = params_type(id=env_id) if env_id else params_type()
-    return type(base.__name__, (base,), {"__annotations__": annotations, **fields})
+    if not env_id and (not taskset_id or references_config_file(argv)):
+        return base
+    env_type = vf.env_config_type(taskset_id, env_id)
+    if taskset_id:
+        # Nest the narrowing: the env config's `taskset` field gets the taskset's
+        # own config type, so `--env.taskset.<knob>` parses typed and renders.
+        taskset_type = vf.taskset_config_type(taskset_id)
+        env_type = type(
+            env_type.__name__,
+            (env_type,),
+            {
+                "__annotations__": {"taskset": taskset_type},
+                "taskset": taskset_type(id=taskset_id),
+            },
+        )
+    default = env_type(id=env_id) if env_id else env_type()
+    return type(
+        base.__name__,
+        (base,),
+        {"__annotations__": {"env": env_type}, "env": default},
+    )

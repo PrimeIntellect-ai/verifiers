@@ -67,10 +67,9 @@ class AgentConfig(BaseConfig):
     (`model`/`client`/`sampling`) defaults to the run's own — the role is played by
     the policy under evaluation/training (the serve protocol carries those per
     rollout request), which is what makes self-play trainable. The harness does not:
-    an unpinned role runs the taskset's default harness, and there is no run-level
-    harness to inherit — the flat `--harness.*` is the single-agent seat's sugar. A
-    role pins only what makes it a different actor (its own harness, a frozen model,
-    an off-train endpoint, tighter limits)."""
+    an unpinned role runs the taskset's default harness — there is no run-level
+    harness to inherit. A role pins only what makes it a different actor (its own
+    harness, a frozen model, an off-train endpoint, tighter limits)."""
 
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The role's program + runtime policy (None = the taskset's default harness —
@@ -101,12 +100,14 @@ class AgentConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):
-        """Narrow a *pinned* `harness` to its specific config type by `id` (the same
-        resolution as `EnvConfig`), so role-harness fields validate typed. An absent
-        harness stays None — the run's harness, resolved at env construction."""
-        from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
-
+        """Narrow a *pinned* `harness` to its specific config type by `id`, so
+        role-harness fields validate typed. An absent harness stays None — the
+        taskset's default, resolved at env construction. (The import lives inside
+        the branch: a pin-less `AgentConfig()` must construct while this module is
+        still initializing — class-body defaults — without touching `loaders`.)"""
         if isinstance(data, dict) and data.get("harness") is not None:
+            from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
+
             narrow_plugin_field(data, "harness", harness_config_type, "default")
         return data
 
@@ -149,22 +150,88 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
-class EnvParams(BaseConfig):
-    """An environment's own parameters: the typed block a multi-agent env declares —
-    its roles as `AgentConfig` fields, plus any env-level knobs — living under
-    `--env.*` / `[env]` on every run config (`--env.user.model`, `--env.attempts 8`).
-    Subclass it next to your `Environment` subclass and bind it via
-    `Environment[YourParams]`; the framework narrows the `EnvConfig.env` field to it
-    by the env `id` (else the taskset id), exactly like `taskset`/`harness`. The base
-    is empty — the single-agent case has no params."""
+class EnvConfig(BaseConfig):
+    """An environment's config — the run's single `[env]` block. One subclass per
+    `Environment` class (bound via `Environment[YourConfig]`, available as
+    `self.config`): declare each role as an `AgentConfig` field with a default
+    instance, plus any env-level knobs, and the framework narrows the run's `env`
+    field to it by the env `id` (else the taskset id) — which is what gives
+    `--env.<role>.model`, `--env.judge.harness.runtime.type`, `[env.taskset]`
+    CLI/TOML addressing. The base carries what every environment has: which env
+    (`id`), the seed taskset, and the env-agnostic run limits (timeouts, retries,
+    turn/token caps, interception)."""
 
     id: ID = ""
-    """Which `Environment` runs the taskset — the control flow between agents. Empty
-    (the default) keeps the taskset's own story: the `Environment` subclass its package
+    """Which `Environment` runs — the control flow between agents. Empty (the
+    default) keeps the taskset's own story: the `Environment` subclass its package
     exports, else `SingleAgentEnv`. Set it to pair a reusable interaction with any
-    taskset (`--env.id best-of-n --taskset.id gsm8k-v1`): a bundled env
-    (`verifiers.v1.envs`), a local package, or a Hub `org/name[@version]`. An explicit
-    id wins over the taskset's bundled env."""
+    taskset (`--env.id best-of-n --env.taskset.id gsm8k-v1`): a bundled env
+    (`verifiers.v1.envs`), a local package, or a Hub `org/name[@version]`. An
+    explicit id wins over the taskset's bundled env."""
+    # SerializeAsAny: holds a resolved subclass (e.g. MathConfig); without it
+    # model_dump() narrows to the base type and drops the taskset-specific knobs, so
+    # the env-server subconfig the orchestrator writes would lose them.
+    taskset: SerializeAsAny[TasksetConfig] | None = None
+    """The seed taskset — what to solve: the rows every rollout starts from, their
+    data and per-trace judgement (`--env.taskset.id`, positional shorthand
+    `uv run eval <taskset-id>`). None only for an env that mints its tasks without a
+    dataset; every bundled env requires one."""
+    timeout: TimeoutConfig = TimeoutConfig()
+    retries: RetryConfig = RetryConfig()
+    max_turns: int | None = None
+    """Max model turns per rollout (None = no limit). Enforced by the framework (the
+    interception server refuses turns past it), so it applies to any harness — turn
+    capping is a framework concern, never an harness or task field."""
+    max_input_tokens: int | None = None
+    """Max input (prompt) tokens per rollout (None = no limit). Caps the trace's
+    `num_input_tokens`; framework-enforced between turns."""
+    max_output_tokens: int | None = None
+    """Max output (completion) tokens per rollout (None = no limit). Caps the trace's
+    `num_output_tokens`; framework-enforced between turns."""
+    max_total_tokens: int | None = None
+    """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
+    trace's `num_total_tokens`; framework-enforced between turns."""
+    interception: InterceptionConfig = ElasticInterceptionPoolConfig()
+    """The interception shape (see `verifiers.v1.interception`): `elastic` (the
+    default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
+    with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
+    such servers)."""
+
+    @property
+    def env_id(self) -> str:
+        """The run's identifier — the taskset id, prefixed by the selected env when
+        `--env.id` pairs one in (so `best-of-n+gsm8k-v1` and a plain `gsm8k-v1` run
+        stay distinguishable on episodes and output dirs)."""
+        taskset_id = self.taskset.id if self.taskset is not None else ""
+        if taskset_id and self.id:
+            return f"{self.id}+{taskset_id}"
+        return taskset_id or self.id
+
+    def seat_harnesses(self) -> dict[str, HarnessConfig]:
+        """Each declared role's resolved harness config: its own pin, else the
+        taskset's default (`default_seat_harness`) — what a run-surface consumer
+        (output naming, the dashboard) can know without constructing the env."""
+        default = default_seat_harness(
+            self.taskset.id if self.taskset is not None else ""
+        )
+        return {
+            name: cfg.harness if cfg.harness is not None else default
+            for name, cfg in _declared_agent_configs(self).items()
+        }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_taskset(cls, data):
+        """Resolve the generic `taskset` to its specific config type by `id`, so
+        taskset-specific fields validate against the real plugin config (no untyped
+        args dict). (Import inside the branch: a taskset-less config must construct
+        while this module is still initializing — class-body defaults — without
+        touching `loaders`.)"""
+        if isinstance(data, dict) and data.get("taskset") is not None:
+            from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
+
+            narrow_plugin_field(data, "taskset", taskset_config_type)
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -190,15 +257,21 @@ class EnvParams(BaseConfig):
         """A role field must carry its declared default *instance* — it's what the
         deep-merge and the default `roles()` read. A `Field(default_factory=...)` or
         bare annotation would silently fall out of both, so refuse it at class
-        definition."""
+        definition — as is a role shadowing a base field (`taskset`, `timeout`, ...),
+        which would break every framework read of that name."""
         super().__pydantic_init_subclass__(**kwargs)
         for name, info in cls.model_fields.items():
             annotation = info.annotation
-            if (
-                isinstance(annotation, type)
-                and issubclass(annotation, AgentConfig)
-                and not isinstance(info.default, AgentConfig)
+            if not (
+                isinstance(annotation, type) and issubclass(annotation, AgentConfig)
             ):
+                continue
+            if name in EnvConfig.model_fields:
+                raise TypeError(
+                    f"{cls.__name__}.{name}: a role can't shadow the base EnvConfig "
+                    f"field {name!r}; pick another role name"
+                )
+            if not isinstance(info.default, AgentConfig):
                 raise TypeError(
                     f"{cls.__name__}.{name}: declare the role with a default "
                     f"instance (`{name}: vf.AgentConfig = vf.AgentConfig(...)`), "
@@ -208,14 +281,23 @@ class EnvParams(BaseConfig):
                 )
 
 
-def _declared_agent_configs(params: EnvParams) -> dict[str, AgentConfig]:
-    """The typed `AgentConfig` fields declared on an env's params block (a declared
+class SingleAgentEnvConfig(EnvConfig):
+    """`SingleAgentEnv`'s config: the one `agent` seat over the seed taskset."""
+
+    agent: AgentConfig = AgentConfig()
+    """The one seat — the policy under evaluation/training. `AgentConfig()` is the
+    run's own model/client/sampling on the taskset's default harness; pin
+    `--env.agent.harness.*` to choose its program or runtime."""
+
+
+def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
+    """The typed `AgentConfig` fields declared on an env's config (a declared
     default instance is what makes a field a role — the same test `_merge_role_defaults`
     uses), in declaration order. The 1:1 config->role mapping: the default `roles()`
-    plays each as a dataset role, and declaring any is what turns role-stamping on."""
+    plays each as a dataset role."""
     return {
-        name: getattr(params, name)
-        for name, field in type(params).model_fields.items()
+        name: getattr(config, name)
+        for name, field in type(config).model_fields.items()
         if isinstance(field.default, AgentConfig)
     }
 
@@ -268,53 +350,78 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
     return {"max_workers": pool.num_workers, "elastic": False}
 
 
-class EnvConfig(BaseConfig):
-    """A run's three axes: the taskset (what to solve), the harness (how the LLM
-    interfaces with the world), and the env (the control flow between agents)."""
+def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> dict:
+    """The `mode="before"` body shared by every run config owning an `env` field
+    (`EnvServerConfig`, `GEPAConfig`): refuse the retired top-level axes with a
+    pointer to their new home, and narrow `env` to the concrete env's config class
+    so role fields and env knobs validate typed on every path — CLI, TOML, the
+    env-server wire. `narrowed` is the field's already-narrowed annotation when the
+    CLI pre-resolved it (`narrow_config`) — the id it narrowed by is authoritative,
+    so validate against it directly."""
+    if not isinstance(data, dict):
+        return data
+    if "taskset" in data:
+        raise ValueError(
+            "the taskset lives on the env now: --env.taskset.id <id> "
+            "(TOML: [env.taskset]), or the positional `eval <taskset-id>`"
+        )
+    if "harness" in data:
+        raise ValueError(
+            "a harness belongs to a seat now: --env.agent.harness.* on the "
+            "single-agent env, --env.<role>.harness.* on a multi-agent role "
+            "(TOML: [env.agent.harness])"
+        )
+    raw = data.get("env")
+    if raw is None:
+        return data
+    if narrowed is not None:
+        if not isinstance(raw, narrowed):
+            data["env"] = narrowed.model_validate(
+                raw.model_dump() if isinstance(raw, BaseConfig) else raw
+            )
+        return data
+    from verifiers.v1.loaders import resolve_env_config
 
-    # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig,
-    # a multi-agent env's params); without it model_dump() narrows to the base type and drops
-    # the subclass fields, so the env-server subconfig the orchestrator writes would lose
-    # taskset/harness/env-specific knobs.
-    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
-    """The single-agent seat's harness — how the LLM interfaces with the world when
-    one agent plays the taskset. `SingleAgentEnv` consumes it (the flat `--harness.*`
-    flags are that seat's sugar); a multi-agent env refuses a customized value — its
-    roles pin their own (`--env.<role>.harness.*`), an unpinned role running the
-    taskset's default (`default_seat_harness`). Defaults to the taskset's bundled
-    harness when it ships one."""
-    env: SerializeAsAny[EnvParams] = EnvParams()
-    """The environment — the control flow between agents — and its parameters
-    (`EnvParams`): which env runs the taskset (`--env.id`, empty = the taskset's own
-    story) plus its roles and knobs, narrowed to the env's declared params type by the
-    env id, else the taskset id (`--env.user.model`, `[env]` in TOML). Empty for plain
-    tasksets."""
-    timeout: TimeoutConfig = TimeoutConfig()
-    retries: RetryConfig = RetryConfig()
-    max_turns: int | None = None
-    """Max model turns per rollout (None = no limit). Enforced by the framework (the
-    interception server refuses turns past it), so it applies to any harness — turn
-    capping is a framework concern, never an harness or task field."""
-    max_input_tokens: int | None = None
-    """Max input (prompt) tokens per rollout (None = no limit). Caps the trace's
-    `num_input_tokens`; framework-enforced between turns."""
-    max_output_tokens: int | None = None
-    """Max output (completion) tokens per rollout (None = no limit). Caps the trace's
-    `num_output_tokens`; framework-enforced between turns."""
-    max_total_tokens: int | None = None
-    """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
-    trace's `num_total_tokens`; framework-enforced between turns."""
-    interception: InterceptionConfig = ElasticInterceptionPoolConfig()
-    """The interception shape (see `verifiers.v1.interception`): `elastic` (the
-    default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
-    with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
-    such servers)."""
+    data["env"] = resolve_env_config(raw)
+    return data
+
+
+def _narrowed_env_annotation(cls) -> "type[EnvConfig] | None":
+    """The env field's annotation when the CLI pre-narrowed it to a concrete env
+    config class (`narrow_config` overrides the annotation with a plain subclass);
+    the base declaration reads as `EnvConfig` itself (SerializeAsAny unwraps), which
+    is not a narrowing — only a proper subclass counts."""
+    annotation = cls.model_fields["env"].annotation
+    if (
+        isinstance(annotation, type)
+        and issubclass(annotation, EnvConfig)
+        and annotation is not EnvConfig
+    ):
+        return annotation
+    return None
+
+
+class EnvServerConfig(BaseConfig):
+    """A run's environment plus how it's *served*: the `env` block and the worker-pool
+    sizing. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator, so
+    they all configure the pool the same way (`--pool.type elastic|static`)."""
+
+    # SerializeAsAny: holds the selected env's resolved config subclass; without it
+    # model_dump() narrows to the base type and drops the roles and knobs, so the
+    # env-server subconfig the orchestrator writes would lose them.
+    env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
+    """The environment — the run's `[env]` block: which env (`--env.id`), its seed
+    taskset (`--env.taskset.*`), each seat (`--env.<role>.*`), its knobs, and the
+    run limits. Narrowed to the selected env's config class by the env id, else the
+    taskset id."""
+    pool: PoolConfig = ElasticPoolConfig()
+    """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
+    scales up on demand; `static` pre-spawns a fixed `num_workers`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
     hub on demand), loaded via `verifiers.load_environment` and run through the legacy
-    bridge. Set this *instead of* `taskset` to run a v0 environment."""
+    bridge. Set this *instead of* `env.taskset` to run a v0 environment."""
     args: dict = {}
     """Construction kwargs forwarded to `load_environment(id, **args)`."""
     extra_env_kwargs: dict = {}
@@ -324,74 +431,23 @@ class EnvConfig(BaseConfig):
 
     @property
     def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): a legacy `id` is set and no v1 `taskset`."""
-        return self.id is not None and not self.taskset.id
+        """A v0/legacy env (run via the bridge): a legacy `id` is set and no v1 taskset."""
+        return self.id is not None and (
+            self.env.taskset is None or not self.env.taskset.id
+        )
 
     @property
     def env_id(self) -> str:
-        """The run's identifier — the v1 taskset id (prefixed by the selected env when
-        `--env.id` pairs one in, so `best-of-n+gsm8k-v1` and a plain `gsm8k-v1` run
-        stay distinguishable on episodes and output dirs), else the legacy v0 env id."""
-        if self.taskset.id and self.env.id:
-            return f"{self.env.id}+{self.taskset.id}"
-        return self.taskset.id or self.id or ""
+        """The run's identifier: the v1 env's (`EnvConfig.env_id`), else the legacy
+        v0 env id."""
+        return self.env.env_id or self.id or ""
 
     # --- end legacy -----------------------------------------------------------
 
     @model_validator(mode="before")
     @classmethod
-    def _resolve_plugins(cls, data):
-        """Resolve the generic `taskset` / `harness` / `env` to its specific config type,
-        so env-specific fields validate against the real plugin config (no untyped args
-        dict) — taskset/harness by their `id`, the env params by the taskset id (a
-        taskset shipping an `Environment` subclass declares its params type via
-        `Environment[YourParams]`)."""
-        from verifiers.v1.loaders import (
-            default_harness_id,
-            env_params_type,
-            harness_config_type,
-            narrow_plugin_field,
-            taskset_config_type,
-        )
-
-        narrow_plugin_field(data, "taskset", taskset_config_type)
-        taskset = data.get("taskset")
-        taskset_id = (
-            taskset.get("id")
-            if isinstance(taskset, dict)
-            else getattr(taskset, "id", None)
-        )
-        # A taskset that bundles its own harness runs with it by default; an explicit
-        # `--harness.id` / toml id (already on the field) takes precedence.
-        narrow_plugin_field(
-            data, "harness", harness_config_type, default_harness_id(taskset_id or "")
-        )
-        raw = data.get("env")
-        env_id = (
-            getattr(raw, "id", "")
-            if isinstance(raw, BaseConfig)
-            else (raw or {}).get("id", "")
-            if isinstance(raw, dict)
-            else ""
-        )
-        params_cls = env_params_type(taskset_id or "", env_id or "")
-        if isinstance(raw, EnvParams) and isinstance(raw, params_cls):
-            pass  # already at least as specifically typed (e.g. programmatic) — keep
-        else:
-            if isinstance(raw, BaseConfig):
-                raw = raw.model_dump()
-            data["env"] = params_cls.model_validate(raw or {})
-        return data
-
-
-class EnvServerConfig(EnvConfig):
-    """An env plus how it's *served*: the env definition (`EnvConfig`) and the worker-pool
-    sizing. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator, so
-    they all configure the pool the same way (`--pool.type elastic|static`)."""
-
-    pool: PoolConfig = ElasticPoolConfig()
-    """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
-    scales up on demand; `static` pre-spawns a fixed `num_workers`."""
+    def _resolve_env(cls, data):
+        return resolve_env_field(data, _narrowed_env_annotation(cls))
 
 
 logger = logging.getLogger(__name__)
@@ -532,19 +588,18 @@ class RunSlot:
         )
 
 
-ParamsT = TypeVar("ParamsT", bound=EnvParams)
+ConfigT = TypeVar("ConfigT", bound=EnvConfig)
 
 
-class Environment(ABC, Generic[ParamsT]):
+class Environment(ABC, Generic[ConfigT]):
     """A taskset, the agents that play it, and how one task becomes one env-rollout.
 
     Abstract: every run gets a concrete subclass. `SingleAgentEnv` (below) is the
-    default one — one solver seat playing the taskset exactly as the flat run flags
-    configure it — and every plain taskset resolves to it. A multi-agent env is its
-    own subclass (exported from the taskset's package, loaded like every plugin): it
-    declares each role as an `AgentConfig` field on an `EnvParams` subclass bound via
-    `Environment[YourParams]` (available as `self.params`, addressed as `--env.*`),
-    writes
+    default one — one `agent` seat playing the seed taskset — and every plain taskset
+    resolves to it. A multi-agent env is its own subclass (exported from the
+    taskset's package, loaded like every plugin): it declares each role as an
+    `AgentConfig` field on an `EnvConfig` subclass bound via `Environment[YourConfig]`
+    (available as `self.config`, addressed as `--env.*`), writes
 
       - `rollout(task, agents)` — how the agents interact on one task: imperative
         Python over `Agent` values; the returned traces are the rollout's episode.
@@ -566,21 +621,26 @@ class Environment(ABC, Generic[ParamsT]):
     but `SingleAgentEnv`, whose one unstamped trace keeps the wire identical to a
     plain eval's."""
 
-    def __init__(self, config: EnvConfig) -> None:
+    def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
 
-        self.config = config
-        params_cls = (
-            generic_type(type(self), EnvParams, origin=Environment) or EnvParams
+        config_cls = (
+            generic_type(type(self), EnvConfig, origin=Environment) or EnvConfig
         )
-        if not isinstance(config.env, params_cls):
+        if not isinstance(config, config_cls):
             raise TypeError(
-                f"{type(self).__name__} declares Environment[{params_cls.__name__}], "
-                f"but config.env is {type(config.env).__name__}; build the config "
-                "naming this taskset (its validator narrows `env`), or pass "
-                f"env={params_cls.__name__}(...) explicitly"
+                f"{type(self).__name__} declares Environment[{config_cls.__name__}], "
+                f"but was handed a {type(config).__name__}; build the run config "
+                "naming this env (its `env` field narrows to it), or pass "
+                f"{config_cls.__name__}(...) explicitly"
             )
-        self.params: ParamsT = config.env  # type: ignore[assignment]
+        self.config: ConfigT = config
+        if config.taskset is None:
+            raise ValueError(
+                f"{type(self).__name__} needs a seed taskset — every rollout starts "
+                "from one of its tasks: set --env.taskset.id (or the positional "
+                "`eval <taskset-id>`)"
+            )
         self.taskset = load_taskset(config.taskset)
         self._default_harness = default_seat_harness(config.taskset.id)
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
@@ -596,11 +656,10 @@ class Environment(ABC, Generic[ParamsT]):
         if not self._roles:
             raise ValueError(
                 f"{type(self).__name__}.roles() returned no roles; declare each seat "
-                "as an AgentConfig field on the params block (the default roles() "
+                "as an AgentConfig field on the env's config (the default roles() "
                 "plays them), or override roles(). The single-agent case is "
                 "SingleAgentEnv."
             )
-        self._check_run_harness()
         for fn in (
             *discover_decorated(self, "metric"),
             *discover_decorated(self, "reward"),
@@ -711,7 +770,7 @@ class Environment(ABC, Generic[ParamsT]):
     def roles(self) -> Mapping[str, Role]:
         """Which agent plays which role — the env's topology. Called once, at
         construction. The default is the 1:1 mapping: every typed `AgentConfig` field
-        on the params block becomes a dataset-playing role of the same name (the same
+        on the env's config becomes a dataset-playing role of the same name (the same
         fields that give `--env.<role>.model` CLI/TOML addressing), so an env whose
         roles all play the dataset never writes this method. Override it when a
         role's needs differ from the taskset's — the env mints its tasks itself:
@@ -719,7 +778,7 @@ class Environment(ABC, Generic[ParamsT]):
         `container=True` when the minted tasks need a box (the agentic-judge env)."""
         return {
             name: Role(config)
-            for name, config in _declared_agent_configs(self.params).items()
+            for name, config in _declared_agent_configs(self.config).items()
         }
 
     @abstractmethod
@@ -796,21 +855,6 @@ class Environment(ABC, Generic[ParamsT]):
         """The harness config a role resolves to: its own pin, else the taskset's
         default (`default_seat_harness`)."""
         return agent.harness if agent.harness is not None else self._default_harness
-
-    def _check_run_harness(self) -> None:
-        """The run-level `--harness.*` configures exactly one thing: the single-agent
-        seat (`SingleAgentEnv.roles()` consumes it and overrides this check away).
-        Any other env has no seat for it to mean, so a customized value is refused
-        rather than silently ignored."""
-        if self.config.harness == self._default_harness:
-            return
-        seats = ", ".join(f"--env.{name}.harness.*" for name in self._roles)
-        raise ValueError(
-            f"{type(self).__name__} is not single-agent, so the run-level "
-            f"--harness.* has no seat to configure; pin each role's own harness "
-            f"instead ({seats}) — an unpinned role runs the taskset's default "
-            f"harness ({self._default_harness.id!r})."
-        )
 
     def _signal_targets(self, fn: Callable, traces: list[Trace]) -> list[Trace]:
         """Which traces a decorated env signal records onto: every trace unless
@@ -1068,27 +1112,19 @@ class Environment(ABC, Generic[ParamsT]):
             yield shared
 
 
-class SingleAgentEnv(Environment[EnvParams]):
-    """The single-agent case — the env every plain taskset resolves to: one solver
-    seat playing the taskset exactly as the flat run flags configure it
-    (`--taskset.*` picks the rows, `--harness.*` the seat's harness, `--model` /
-    `--client` / `--sampling` its model leg). Its one trace per episode stays
-    unstamped, so the wire is identical to a plain eval's. A taskset leaves it only
-    by exporting an `Environment` subclass of its own, or being paired with one via
-    `--env.id`."""
+class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
+    """The single-agent case — the env every plain taskset resolves to: one `agent`
+    seat playing the seed taskset (`--env.agent.*` addresses it: its model leg
+    defaults to the run's own `--model`/`--client`/`--sampling`, its harness to the
+    taskset's default — pin `--env.agent.harness.*` to choose). Its one trace per
+    episode stays unstamped, so the wire is identical to a plain eval's. A taskset
+    leaves it only by exporting an `Environment` subclass of its own, or being
+    paired with one via `--env.id`."""
 
     _stamp_roles = False
 
-    def roles(self) -> Mapping[str, Role]:
-        # The one seat the flat surface configures: the run-level `--harness.*` IS
-        # this seat's harness — the sugar `_check_run_harness` refuses elsewhere.
-        return {"solver": Role(AgentConfig(harness=self.config.harness))}
-
-    def _check_run_harness(self) -> None:
-        """No-op: the run-level harness is consumed by the solver seat (`roles()`)."""
-
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> list[Trace]:
-        return [await agents["solver"].run(task)]
+        return [await agents["agent"].run(task)]
 
 
 class _RoleAgent:

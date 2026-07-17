@@ -128,7 +128,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             "extra_env_kwargs": config.extra_env_kwargs,
         }
         if legacy
-        else {"config_data": env_config_data(config)}  # picklable across the spawn
+        else {"config_data": env_config_data(config.env)}  # picklable across the spawn
     )
     # The pool broker + workers are spawned (fresh interpreters, no logging) — hand them
     # the same loguru setup the main process uses (stderr + the run's log file) so their

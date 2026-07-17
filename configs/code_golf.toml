@@ -6,5 +6,5 @@
 num_tasks = 1
 num_rollouts = 1
 
-[taskset]
+[env.taskset]
 id = "code-golf-v1"

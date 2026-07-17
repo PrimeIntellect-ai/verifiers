@@ -14,7 +14,7 @@ import verifiers.v1 as vf
 from echo_v1 import EchoTaskset, lenient_match
 
 
-class DuetParams(vf.EnvParams):
+class DuetEnvConfig(vf.EnvConfig):
     # Both seats pin the lean `null` chat loop (roles are independent of the env-level
     # `--harness.*`); "b" plays a fixed, untrainable participant.
     a: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
@@ -23,7 +23,7 @@ class DuetParams(vf.EnvParams):
     )
 
 
-class DuetEnv(vf.Environment[DuetParams]):
+class DuetEnv(vf.Environment[DuetEnvConfig]):
     async def rollout(self, task, agents):
         return list(await asyncio.gather(agents["a"].run(task), agents["b"].run(task)))
 

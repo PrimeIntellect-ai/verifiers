@@ -7,7 +7,7 @@ from typing import Callable
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.env import EnvConfig, EnvParams, Environment, SingleAgentEnv
+from verifiers.v1.env import EnvConfig, Environment, SingleAgentEnv
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls
 from verifiers.v1.utils.install import ensure_installed
@@ -140,7 +140,8 @@ def load_environment(config: EnvConfig) -> Environment:
     else the taskset's exported subclass when there is one, else `SingleAgentEnv`.
     Every env construction site (eval, serve, gepa) goes through here so subclass
     envs load everywhere."""
-    return environment_class(config.taskset.id, config.env.id)(config)
+    taskset_id = config.taskset.id if config.taskset is not None else ""
+    return environment_class(taskset_id, config.id)(config)
 
 
 def load_taskset(config: TasksetConfig) -> Taskset:
@@ -176,17 +177,42 @@ def judge_config_type(judge_id: str) -> type[JudgeConfig]:
     return judge_config_cls(judge_class(judge_id))
 
 
-def env_params_type(taskset_id: str, env_id: str = "") -> type[EnvParams]:
-    """Resolve the env's params specialization (`Environment[YourParams]`) through its
-    MRO — keyed by the selected env id when set, else the taskset's own env — the empty
-    base `EnvParams` for a plain taskset. `EnvConfig` narrows its `env` field to this,
-    which is what gives `--env.<role>.model` CLI/TOML addressing."""
+def env_config_type(taskset_id: str, env_id: str = "") -> type[EnvConfig]:
+    """Resolve the env's config specialization (`Environment[YourConfig]`) through its
+    MRO — keyed by the selected env id when set, else the taskset's own env —
+    `SingleAgentEnvConfig` for a plain taskset. The run's `env` field narrows to
+    this, which is what gives `--env.<role>.model` CLI/TOML addressing."""
     return (
         generic_type(
-            environment_class(taskset_id, env_id), EnvParams, origin=Environment
+            environment_class(taskset_id, env_id), EnvConfig, origin=Environment
         )
-        or EnvParams
+        or EnvConfig
     )
+
+
+def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
+    """Narrow raw env-config data to the concrete env class's config type — by the
+    env `id` when set, else the taskset's exported env, else `SingleAgentEnvConfig` —
+    and validate. The one entry every consumer takes (CLI parse, TOML, the
+    env-server wire), so `--env.judge.model`-style fields always validate against
+    the real config class."""
+    if isinstance(data, EnvConfig):
+        taskset_id = data.taskset.id if data.taskset is not None else ""
+        cls = env_config_type(taskset_id, data.id)
+        if isinstance(data, cls):
+            return data  # already at least as specifically typed — keep
+        data = data.model_dump()
+    raw = dict(data or {})
+    taskset = raw.get("taskset")
+    taskset_id = (
+        taskset.get("id", "")
+        if isinstance(taskset, dict)
+        else getattr(taskset, "id", "")
+        if taskset is not None
+        else ""
+    )
+    cls = env_config_type(taskset_id or "", raw.get("id") or "")
+    return cls.model_validate(raw)
 
 
 def task_type(taskset_id: str) -> type[Task]:

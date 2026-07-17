@@ -16,7 +16,7 @@ from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import pool_serve_kwargs
 from verifiers.v1.serve import serve_env
 
-USAGE = "usage: uv run serve [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
+USAGE = "usage: uv run serve [<taskset-id>] [--env.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -28,14 +28,18 @@ def main(argv: list[str] | None = None) -> None:
         cli(narrow_config(ServeConfig, argv))
         return
     legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
+    # A retired flat axis (--taskset.*/--harness.*) skips the usage gate so the
+    # parse renders its pointer to the new flags instead of a bare usage line.
+    retired_axis = any(a.startswith(("--taskset.", "--harness.")) for a in argv)
     if (
-        not extract_id(argv, "taskset")
+        not extract_id(argv, "env.taskset")
         and not legacy_id
         and not references_config_file(argv)
+        and not retired_axis
     ):
         raise SystemExit(
             USAGE
-        )  # need a --taskset.id (v1), a legacy --id (v0), or @ file.toml
+        )  # need a taskset (positional / --env.taskset.id), a legacy --id, or @ file.toml
 
     config_type = narrow_config(ServeConfig, argv)
     sys.argv = [sys.argv[0], *argv]
@@ -57,7 +61,7 @@ def main(argv: list[str] | None = None) -> None:
             "extra_env_kwargs": config.extra_env_kwargs,
         }
         if config.is_legacy
-        else {"config": config}
+        else {"config": config.env}
     )
     serve_env(
         **pool_serve_kwargs(config.pool),

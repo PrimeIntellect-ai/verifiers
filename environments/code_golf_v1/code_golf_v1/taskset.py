@@ -64,17 +64,17 @@ class CodeGolfTask(vf.Task[CodeGolfData]):
         return trace.metrics.get("passed", 0.0)
 
 
-class CodeGolfParams(vf.EnvParams):
+class CodeGolfEnvConfig(vf.EnvConfig):
     golfer: vf.AgentConfig = vf.AgentConfig()
     attempts: int = Field(2, ge=1)
     """Independent attempts per env-rollout, scored against each other."""
 
 
-class CodeGolfEnv(vf.Environment[CodeGolfParams]):
+class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
     async def rollout(self, task, agents):
         return list(
             await asyncio.gather(
-                *(agents["golfer"].run(task) for _ in range(self.params.attempts))
+                *(agents["golfer"].run(task) for _ in range(self.config.attempts))
             )
         )
 

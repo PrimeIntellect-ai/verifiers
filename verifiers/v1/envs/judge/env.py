@@ -35,7 +35,7 @@ from verifiers.v1.judges.score import ScoreJudgeConfig
 from verifiers.v1.task import _record_result
 
 
-class JudgeParams(vf.EnvParams):
+class JudgeEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
     judge: vf.AgentConfig = vf.AgentConfig(
         harness=vf.HarnessConfig(id="direct"), trainable=False
@@ -64,19 +64,19 @@ class JudgeParams(vf.EnvParams):
         return data
 
 
-class JudgeEnv(vf.Environment[JudgeParams]):
-    def __init__(self, config: vf.EnvConfig) -> None:
+class JudgeEnv(vf.Environment[JudgeEnvConfig]):
+    def __init__(self, config: JudgeEnvConfig) -> None:
         super().__init__(config)
         from verifiers.v1.loaders import load_judge
 
-        self._spec = load_judge(self.params.spec)
+        self._spec = load_judge(self.config.spec)
 
     def _judge_harness(self) -> Harness:
         """The judge seat's resolved harness: its own pinned one, else the taskset's
-        default — never the run-level `--harness.*` (a multi-agent env refuses it)."""
+        default."""
         from verifiers.v1.loaders import load_harness
 
-        return load_harness(self._seat_harness(self.params.judge))
+        return load_harness(self._seat_harness(self.config.judge))
 
     def _check_judge_harness(self, harness: Harness) -> None:
         if harness.EXECUTES_CODE:
@@ -94,8 +94,8 @@ class JudgeEnv(vf.Environment[JudgeParams]):
         # check runs here so it fires before the role-needs validation.
         self._check_judge_harness(self._judge_harness())
         return {
-            "solver": vf.Role(self.params.solver),
-            "judge": vf.Role(self.params.judge, mcp=False, container=False),
+            "solver": vf.Role(self.config.solver),
+            "judge": vf.Role(self.config.judge, mcp=False, container=False),
         }
 
     async def rollout(self, task, agents):

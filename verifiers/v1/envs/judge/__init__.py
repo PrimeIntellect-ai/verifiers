@@ -1,3 +1,3 @@
-from verifiers.v1.envs.judge.env import JudgeEnv, JudgeParams
+from verifiers.v1.envs.judge.env import JudgeEnv, JudgeEnvConfig
 
-__all__ = ["JudgeEnv", "JudgeParams"]
+__all__ = ["JudgeEnv", "JudgeEnvConfig"]

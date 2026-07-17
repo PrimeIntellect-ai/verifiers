@@ -14,6 +14,7 @@ from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
+from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.env import RunSlot
@@ -73,17 +74,17 @@ def _limits(config: EvalConfig) -> list[str]:
     """Per-rollout caps for the overview (concurrency first, then turns, tokens). An unset cap
     reads as 'no ...' rather than being hidden."""
     toks = []
-    if config.max_input_tokens:
-        toks.append(f"in≤{config.max_input_tokens}")
-    if config.max_output_tokens:
-        toks.append(f"out≤{config.max_output_tokens}")
-    if config.max_total_tokens:
-        toks.append(f"total≤{config.max_total_tokens}")
+    if config.env.max_input_tokens:
+        toks.append(f"in≤{config.env.max_input_tokens}")
+    if config.env.max_output_tokens:
+        toks.append(f"out≤{config.env.max_output_tokens}")
+    if config.env.max_total_tokens:
+        toks.append(f"total≤{config.env.max_total_tokens}")
     return [
         f"≤{config.max_concurrent} concurrent"
         if config.max_concurrent
         else "no concurrency cap",
-        f"{config.max_turns} turns" if config.max_turns else "no turn cap",
+        f"{config.env.max_turns} turns" if config.env.max_turns else "no turn cap",
         f"{', '.join(toks)} tokens" if toks else "no token cap",
     ]
 
@@ -93,7 +94,7 @@ def _timeouts(config: EvalConfig) -> list[str]:
     timeout')."""
     return [
         f"{stage} {v:g}s"
-        if (v := getattr(config.timeout, stage))
+        if (v := getattr(config.env.timeout, stage))
         else f"no {stage} timeout"
         for stage in ("setup", "rollout", "finalize", "scoring")
     ]
@@ -132,9 +133,15 @@ def _interrupt_footer() -> Group | None:
 
 
 def _warning(config: EvalConfig) -> Text | None:
-    """A local-runtime caution for a code-running harness (none for the tool-less `null`),
-    shown above the overview rather than as a row in it."""
-    if config.harness.id != "null" and config.harness.runtime.type == "subprocess":
+    """A local-runtime caution when any code-running seat resolves to the subprocess
+    runtime (the tool-less chat loops are exempt), shown above the overview rather
+    than as a row in it."""
+    from verifiers.v1.loaders import harness_class
+
+    if any(
+        h.runtime.type == "subprocess" and harness_class(h.id).EXECUTES_CODE
+        for h in config.env.seat_harnesses().values()
+    ):
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
             "evaluation. Use subprocess only for debugging, or use docker or prime for an "
@@ -199,22 +206,38 @@ def Overview(config: EvalConfig) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
-    grid.add_row(
-        "env",
-        f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
+    seats = config.env.seat_harnesses()
+    taskset = config.env.taskset
+    env_label = taskset.name if taskset is not None else "no taskset"
+    if config.env.id:
+        env_label = f"{env_name(config.env.id)}+{env_label}"
+    # One seat story when every seat resolves the same way (the common case); one
+    # row per seat when they diverge (a judge on its own harness/runtime).
+    stories = list(
+        dict.fromkeys(
+            f"{h.name} harness  ·  {h.runtime.type} runtime" for h in seats.values()
+        )
     )
+    if len(stories) == 1:
+        grid.add_row("env", f"{env_label}  ·  {stories[0]}")
+    else:
+        grid.add_row("env", env_label)
+        for role, h in seats.items():
+            grid.add_row(f"  {role}", f"{h.name} harness  ·  {h.runtime.type} runtime")
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
     # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
     # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
     # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
     # here), but only for the harness — `taskset.task.tools.runtime.type` has no other display.
-    if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
-        grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
-    if harness_over := overrides(
-        config.harness, skip=frozenset({"id", "runtime.type"})
+    if taskset is not None and (
+        taskset_over := overrides(taskset, skip=frozenset({"id"}))
     ):
-        grid.add_row("harness", escape("  ·  ".join(harness_over)))
+        grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
+    for role, h in seats.items():
+        if harness_over := overrides(h, skip=frozenset({"id", "runtime.type"})):
+            label = f"{role}.harness" if len(seats) > 1 else "harness"
+            grid.add_row(label, escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
@@ -693,7 +716,16 @@ def _render(
         header,
         progress,
         Rule(style="dim"),
-        Rows(page_groups, now, config.harness.runtime.type),
+        Rows(
+            page_groups,
+            now,
+            "/".join(
+                dict.fromkeys(
+                    h.runtime.type for h in config.env.seat_harnesses().values()
+                )
+            )
+            or "subprocess",
+        ),
     ]
     if footer is not None:
         parts.append(footer)

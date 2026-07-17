@@ -184,32 +184,34 @@ def _eval_config(
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward).
 
-    `harness=None` omits the run-level harness entirely — the multi-agent story: a
-    multi-agent env refuses a customized `--harness.*` (its seats pin their own), so
-    those tests pass their harness through the env's role fields instead."""
+    `harness=None` leaves every seat on its own story — the multi-agent case: there
+    is no run-level harness, so a single-agent test's `harness` lands on the `agent`
+    seat and a multi-agent test pins its seats through `env` role fields instead."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
-    harness_cfg = {"id": harness, **(harness_overrides or {})} if harness else None
-    env_cfg = env or {}
+    env_cfg = dict(env or {})
     _configure_prime_runtimes(taskset_cfg)
-    if harness_cfg is not None:
+    if harness:
+        harness_cfg = {"id": harness, **(harness_overrides or {})}
         _configure_prime_runtimes(harness_cfg)
+        env_cfg.setdefault("agent", {})["harness"] = harness_cfg
     return EvalConfig(
-        taskset=taskset_cfg,
-        **({"harness": harness_cfg} if harness_cfg is not None else {}),
+        env={
+            "taskset": taskset_cfg,
+            "max_turns": max_turns,
+            "max_output_tokens": max_tokens,
+            "timeout": {"rollout": rollout_timeout, "scoring": 60},
+            "retries": {"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
+            **env_cfg,
+        },
         num_tasks=num_tasks,
         num_rollouts=n,
-        max_turns=max_turns,
-        max_output_tokens=max_tokens,
         sampling={
             "max_tokens": max_tokens,
             "temperature": 0,
             "reasoning_effort": reasoning_effort,
         },
-        timeout={"rollout": rollout_timeout, "scoring": 60},
-        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
         rich=False,
         output_dir=output_dir,
-        **({"env": env_cfg} if env_cfg else {}),
         **({"pool": pool} if pool else {}),
         **({"model": model} if model else {}),
     )

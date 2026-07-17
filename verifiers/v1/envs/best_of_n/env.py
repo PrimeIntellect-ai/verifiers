@@ -15,7 +15,7 @@ from pydantic import Field
 import verifiers.v1 as vf
 
 
-class BestOfNParams(vf.EnvParams):
+class BestOfNEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
     n: int = Field(4, ge=1)
     """Independent attempts per env-rollout, scored against each other."""
@@ -23,11 +23,11 @@ class BestOfNParams(vf.EnvParams):
     """A sibling counts as solved when its task reward reaches this (`pass_at_n`)."""
 
 
-class BestOfNEnv(vf.Environment[BestOfNParams]):
+class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
     async def rollout(self, task, agents):
         return list(
             await asyncio.gather(
-                *(agents["solver"].run(task) for _ in range(self.params.n))
+                *(agents["solver"].run(task) for _ in range(self.config.n))
             )
         )
 
@@ -44,4 +44,4 @@ class BestOfNEnv(vf.Environment[BestOfNParams]):
         """Whether any sibling reached the threshold — a rollout-level fact, so the
         same value is recorded as `pass_at_n` on every sibling's `metrics` (flat
         consumers see it without reconstructing the group)."""
-        return float(max(t.reward for t in traces) >= self.params.threshold)
+        return float(max(t.reward for t in traces) >= self.config.threshold)

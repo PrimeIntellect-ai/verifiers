@@ -23,7 +23,7 @@ from verifiers.v1.configs.eval import EvalConfig
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
+    "usage: uv run eval [<taskset-id>] [--env.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
     "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
 )
 
@@ -48,14 +48,18 @@ def main(argv: list[str] | None = None) -> None:
         config = load_resume_config(resume_dir)
     else:
         legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
+        # A retired flat axis (--taskset.*/--harness.*) skips the usage gate so the
+        # parse renders its pointer to the new flags instead of a bare usage line.
+        retired_axis = any(a.startswith(("--taskset.", "--harness.")) for a in argv)
         if (
-            not extract_id(argv, "taskset")
+            not extract_id(argv, "env.taskset")
             and not legacy_id
             and not references_config_file(argv)
+            and not retired_axis
         ):
             raise SystemExit(
                 USAGE
-            )  # need a taskset (positional / --taskset.id), a legacy --id, or a @ file.toml
+            )  # need a taskset (positional / --env.taskset.id), a legacy --id, or a @ file.toml
 
         config_type = narrow_config(EvalConfig, argv)
         sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
@@ -98,7 +102,7 @@ def main(argv: list[str] | None = None) -> None:
 
             traces = asyncio.run(run_eval_server(config))
         else:  # in-process (default), with or without the live dashboard
-            env = vf.load_environment(config)
+            env = vf.load_environment(config.env)
             traces = asyncio.run(run_eval(env, config))
     except KeyboardInterrupt:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on

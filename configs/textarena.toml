@@ -6,11 +6,13 @@
 #   uv run eval @ configs/textarena.toml --model <small-instruct-model>
 num_tasks = 5
 num_rollouts = 2
+
+[env]
 max_turns = 15
 
-[taskset]
+[env.taskset]
 id = "textarena"
 game = "Wordle-v0"
 
-[harness]
+[env.agent.harness]
 id = "null"

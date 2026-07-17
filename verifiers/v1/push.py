@@ -239,7 +239,9 @@ def push_traces(
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
     index = _episode_index(config)
-    env_name = config.taskset.id or config.id
+    env_name = (
+        config.env.taskset.id if config.env.taskset is not None else ""
+    ) or config.id
     metrics = _run_metrics(traces, index)
     samples = _build_samples(traces, index)
     # Distinct tasks over the file's episodes when available: a task whose every

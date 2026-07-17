@@ -36,7 +36,7 @@ class EnvServer:
         self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
     ) -> None:
         self.address = address
-        self.taskset_id = config.taskset.id
+        self.taskset_id = config.taskset.id if config.taskset is not None else ""
         self.env = load_environment(config)
         # A finite taskset is materialized up front (its count is served via `info`); an
         # infinite one is pulled off its generator on demand (see `_task`), so

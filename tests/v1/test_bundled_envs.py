@@ -6,8 +6,8 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNParams
-from verifiers.v1.envs.judge.env import JudgeParams
+from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNEnvConfig
+from verifiers.v1.envs.judge.env import JudgeEnvConfig
 from verifiers.v1.judges.rubric import RubricJudgeConfig
 from verifiers.v1.judges.score import ScoreJudge
 from verifiers.v1.trace import Trace, TraceTask
@@ -15,7 +15,7 @@ from verifiers.v1.trace import Trace, TraceTask
 
 def test_env_id_resolves_bundled():
     assert vf.environment_class("", "best-of-n") is BestOfNEnv
-    assert vf.env_params_type("", "best-of-n") is BestOfNParams
+    assert vf.env_config_type("", "best-of-n") is BestOfNEnvConfig
 
 
 def test_env_id_wins_over_taskset_export():
@@ -32,17 +32,17 @@ def test_unknown_env_id_raises():
 
 
 def test_env_field_narrows_by_env_id():
-    config = EvalConfig(taskset={"id": "echo-v1"}, env={"id": "best-of-n", "n": 2})
-    assert isinstance(config.env, BestOfNParams) and config.env.n == 2
+    config = EvalConfig(env={"id": "best-of-n", "taskset": {"id": "echo-v1"}, "n": 2})
+    assert isinstance(config.env, BestOfNEnvConfig) and config.env.n == 2
     assert config.env_id == "best-of-n+echo-v1"  # runs stay distinguishable
     # Round-trip (config.toml, resume): the id re-narrows the field.
     rebuilt = EvalConfig.model_validate(config.model_dump(mode="json"))
-    assert isinstance(rebuilt.env, BestOfNParams) and rebuilt.env.n == 2
+    assert isinstance(rebuilt.env, BestOfNEnvConfig) and rebuilt.env.n == 2
 
 
 def test_load_environment_honors_env_id():
-    config = EvalConfig(taskset={"id": "echo-v1"}, env={"id": "best-of-n", "n": 3})
-    env = vf.load_environment(config)
+    config = EvalConfig(env={"id": "best-of-n", "taskset": {"id": "echo-v1"}, "n": 3})
+    env = vf.load_environment(config.env)
     assert isinstance(env, BestOfNEnv)
     assert set(env.roles()) == {"solver"}
 
@@ -53,7 +53,7 @@ def test_minted_task_roles_pair_with_tool_tasksets():
     loads over a tool-declaring taskset — the pairing that used to refuse at
     construction — while the SOLVER role still validates against the dataset."""
     env = vf.load_environment(
-        EvalConfig(taskset={"id": "echo-tool-v1"}, env={"id": "judge"})
+        vf.resolve_env_config({"id": "judge", "taskset": {"id": "echo-tool-v1"}})
     )
     assert env._role_needs_mcp["judge"] is False
     assert env._role_needs_mcp["solver"]
@@ -61,9 +61,12 @@ def test_minted_task_roles_pair_with_tool_tasksets():
     # that can't mount MCP is still an impossible pairing.
     with pytest.raises(ValueError, match="role 'solver' plays tasks with MCP"):
         vf.load_environment(
-            EvalConfig(
-                taskset={"id": "echo-tool-v1"},
-                env={"id": "best-of-n", "solver": {"harness": {"id": "direct"}}},
+            vf.resolve_env_config(
+                {
+                    "id": "best-of-n",
+                    "taskset": {"id": "echo-tool-v1"},
+                    "solver": {"harness": {"id": "direct"}},
+                }
             )
         )
 
@@ -73,18 +76,21 @@ def test_judge_env_refuses_a_code_executing_judge():
     at one that executes code is a different env — the error says which."""
     with pytest.raises(ValueError, match="agentic-judge"):
         vf.load_environment(
-            EvalConfig(
-                taskset={"id": "echo-v1"},
-                env={"id": "judge", "judge": {"harness": {"id": "default"}}},
+            vf.resolve_env_config(
+                {
+                    "id": "judge",
+                    "taskset": {"id": "echo-v1"},
+                    "judge": {"harness": {"id": "default"}},
+                }
             )
         )
     bare = vf.load_environment(
-        EvalConfig(
-            taskset={"id": "echo-v1"},
-            env={
+        vf.resolve_env_config(
+            {
                 "id": "judge",
+                "taskset": {"id": "echo-v1"},
                 "solver": {"harness": {"runtime": {"type": "docker"}}},
-            },
+            }
         )
     )
     assert bare._roles["judge"].container is False
@@ -97,15 +103,15 @@ def test_agentic_judge_is_sandboxed():
     judge harness belongs on `judge`."""
     with pytest.raises(ValueError, match="role 'judge' plays tasks that need a"):
         vf.load_environment(
-            EvalConfig(taskset={"id": "echo-v1"}, env={"id": "agentic-judge"})
+            vf.resolve_env_config({"id": "agentic-judge", "taskset": {"id": "echo-v1"}})
         )
     env = vf.load_environment(
-        EvalConfig(
-            taskset={"id": "echo-v1"},
-            env={
+        vf.resolve_env_config(
+            {
                 "id": "agentic-judge",
+                "taskset": {"id": "echo-v1"},
                 "judge": {"harness": {"runtime": {"type": "docker"}}},
-            },
+            }
         )
     )
     judge = env._roles["judge"]
@@ -114,24 +120,27 @@ def test_agentic_judge_is_sandboxed():
     assert env._harnesses["solver"].config.runtime.type == "subprocess"  # unpinned
     # The env-server config round-trip resolves to the same shape.
     rebuilt = vf.load_environment(
-        EvalConfig.model_validate(env.config.model_dump(mode="json"))
+        vf.resolve_env_config(env.config.model_dump(mode="json"))
     )
     assert rebuilt._roles["judge"].container is True
     with pytest.raises(ValueError, match="use --env.id judge"):
         vf.load_environment(
-            EvalConfig(
-                taskset={"id": "echo-v1"},
-                env={"id": "agentic-judge", "judge": {"harness": {"id": "direct"}}},
+            vf.resolve_env_config(
+                {
+                    "id": "agentic-judge",
+                    "taskset": {"id": "echo-v1"},
+                    "judge": {"harness": {"id": "direct"}},
+                }
             )
         )
 
 
 def test_roles_are_always_roles():
-    """`SingleAgentEnv`'s seat is one dataset-playing `solver` role; a roles()
+    """`SingleAgentEnv`'s seat is one dataset-playing `agent` role; a roles()
     override handing back a bare AgentConfig gets a wrap-it error."""
     env = vf.SingleAgentEnv(_bundled_config())
     (name,), (role,) = env._roles.keys(), env._roles.values()
-    assert name == "solver" and role.mcp is None and role.container is None
+    assert name == "agent" and role.mcp is None and role.container is None
 
     class Bare(vf.Environment):
         def roles(self):
@@ -144,31 +153,25 @@ def test_roles_are_always_roles():
         Bare(_bundled_config())
 
 
-def _bundled_config() -> EvalConfig:
-    return EvalConfig(taskset={"id": "echo-v1"})
+def _bundled_config() -> vf.SingleAgentEnvConfig:
+    return vf.SingleAgentEnvConfig(taskset={"id": "echo-v1"})
 
 
 def test_paired_env_seats_pin_their_own_harness():
-    """Pairing an env never inherits the run-level `--harness.*`: a customized one
-    is refused with the per-seat flags to use, a seat pin runs that seat on its own
-    harness, and an unpinned seat runs the taskset's default."""
-    with pytest.raises(ValueError, match="--env.solver.harness"):
-        vf.load_environment(
-            EvalConfig(
-                taskset={"id": "echo-v1"},
-                harness={"id": "null"},
-                env={"id": "best-of-n"},
-            )
-        )
+    """There is no run-level harness to inherit: a seat pin runs that seat on its
+    own harness, and an unpinned seat runs the taskset's default."""
     env = vf.load_environment(
-        EvalConfig(
-            taskset={"id": "echo-v1"},
-            env={"id": "best-of-n", "solver": {"harness": {"id": "null"}}},
+        vf.resolve_env_config(
+            {
+                "id": "best-of-n",
+                "taskset": {"id": "echo-v1"},
+                "solver": {"harness": {"id": "null"}},
+            }
         )
     )
     assert env._harnesses["solver"].config.id == "null"
     judged = vf.load_environment(
-        EvalConfig(taskset={"id": "echo-v1"}, env={"id": "judge"})
+        vf.resolve_env_config({"id": "judge", "taskset": {"id": "echo-v1"}})
     )
     assert judged._harnesses["solver"].config.id == "default"  # taskset's default
     assert judged._harnesses["judge"].config.id == "direct"  # the pin survives
@@ -181,8 +184,9 @@ def _scored_trace(reward: float) -> Trace:
 
 
 def test_best_of_n_sibling_scoring():
-    config = EvalConfig(taskset={"id": "echo-v1"}, env={"id": "best-of-n", "n": 2})
-    env = vf.load_environment(config)
+    env = vf.load_environment(
+        vf.resolve_env_config({"id": "best-of-n", "taskset": {"id": "echo-v1"}, "n": 2})
+    )
     traces = [_scored_trace(0.4), _scored_trace(1.0)]
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
     asyncio.run(env.score(task, traces))
@@ -216,12 +220,12 @@ def test_score_judge_verdict():
 def test_judge_spec_resolves_like_a_judges_entry():
     """The env's verdict spec rides the judge-plugin registry: an explicit id swaps
     (and narrows) it; a partial override tunes the default without resetting it."""
-    swapped = JudgeParams.model_validate(
+    swapped = JudgeEnvConfig.model_validate(
         {"spec": {"id": "rubric", "path": "grading.toml"}}
     )
     assert isinstance(swapped.spec, RubricJudgeConfig)
     assert swapped.spec.view == "full_trace"  # the rubric's own default
-    tuned = JudgeParams.model_validate({"spec": {"view": "full_trace"}})
+    tuned = JudgeEnvConfig.model_validate({"spec": {"view": "full_trace"}})
     assert type(tuned.spec).__name__ == "ScoreJudgeConfig"
     assert tuned.spec.view == "full_trace"
     assert tuned.spec.name == "judge"  # the pinned reward key survives
