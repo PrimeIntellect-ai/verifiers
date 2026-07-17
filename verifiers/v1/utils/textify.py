@@ -118,7 +118,7 @@ def _grid_shape(h: int, w: int, cfg: TextifyConfig) -> tuple[int, int]:
                 height -= 1
             else:
                 break
-    if width * height > 1_000_000:
+    if width * height + height - 1 > 1_000_000:
         raise ValueError(
             "textify output exceeds the one-million-character safety limit"
         )

@@ -17,7 +17,7 @@ from verifiers.v1.dialects import AnthropicDialect, ChatDialect, ResponsesDialec
 from verifiers.v1.errors import TaskError
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
-from verifiers.v1.utils.textify import render_url
+from verifiers.v1.utils.textify import _grid_shape, render_url
 
 
 def _data_url(arr: np.ndarray) -> str:
@@ -609,3 +609,12 @@ def test_anthropic_system_images_textify_or_pass_through() -> None:
 
     without_system = {"messages": []}
     assert "system" not in AnthropicDialect().textify_body(without_system, render)
+
+
+def test_hard_output_ceiling_counts_newlines() -> None:
+    allowed = vf.TextifyConfig(width=999, height=1000, max_chars=None)
+    assert _grid_shape(1, 1, allowed) == (1000, 999)
+
+    oversized = vf.TextifyConfig(width=1000, height=1000, max_chars=None)
+    with pytest.raises(ValueError, match="one-million-character"):
+        _grid_shape(1, 1, oversized)
