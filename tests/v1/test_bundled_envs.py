@@ -130,7 +130,7 @@ def test_roles_are_always_roles():
             return {"solo": vf.AgentConfig()}
 
         async def rollout(self, task, agents):
-            return []
+            return {}
 
     with pytest.raises(TypeError, match="wrap it: vf.Role"):
         Bare(_bundled_config())
@@ -178,12 +178,12 @@ def test_best_of_n_sibling_scoring():
     )
     traces = [_scored_trace(0.4), _scored_trace(1.0)]
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
-    asyncio.run(env.score(task, traces))
+    asyncio.run(env.score(task, {"solver": traces}))
     assert [t.metrics["best"] for t in traces] == [0.0, 1.0]
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)
 
     misses = [_scored_trace(0.2), _scored_trace(0.2)]
-    asyncio.run(env.score(task, misses))
+    asyncio.run(env.score(task, {"solver": misses}))
     # Ties share `best`; nothing reached the threshold.
     assert [t.metrics["best"] for t in misses] == [1.0, 1.0]
     assert all(t.metrics["pass_at_n"] == 0.0 for t in misses)

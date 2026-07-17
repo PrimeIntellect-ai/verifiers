@@ -49,15 +49,15 @@ acquires slots. Without one, an Agent entered as an async context manager owns a
 elastic pool so concurrent runs share servers (`async with agent: ...`); un-entered,
 each run brings up its own per-rollout server — fine for scripts.
 
-`shared_tools=` completes the borrowing set: live `SharedToolServer`s (taskset-scoped
-MCP, served once by their owner — an eval's `serving()`, or a program via
-`serve_shared`) that every run of the agent reuses. Like the others, they're borrowed —
-never started or torn down by the agent — and they count in the up-front pairing check
-(a harness that can't drive MCP tools is refused).
+`run(task, shared_tools=...)` completes the borrowing set: live `SharedToolServer`s
+(taskset-scoped MCP, served once by their owner — an eval's `serving()`, or a program
+via `serve_shared`) wired into that run. Per run, not per agent — the same agent can
+run with and without tools — and borrowed like the others: never started or torn down
+by the agent, counted in the pairing check (a harness that can't drive MCP tools is
+refused).
 
 Chaining needs no framework: mint the next task's `TaskData` from earlier traces with a
-plain function, stamping `sources` (trace ids) and `relation` so lineage survives into
-the traces.
+plain function and hand it to the next agent.
 
 ## Same-box agentic judging
 
@@ -79,8 +79,6 @@ def judge_task(solver_trace: vf.Trace) -> vf.Task:
             "work product is at /app/answer.txt. Recompute the expected result yourself "
             'and reply with ONLY {"verdict": "correct" | "incorrect", "reasoning": "..."}'
         ),
-        sources=(solver_trace.id,),
-        relation="judges",
     ))
 
 task = vf.Task(vf.TaskData(
@@ -119,8 +117,8 @@ Fan-out is plain `asyncio.gather` — each run gets its own fresh box, and the e
 agent's interception pool keeps N concurrent runs cheap. The Agent deliberately has no
 group verb: each run scores its rollout on its own, and comparing siblings — relative
 success, preference, advantages — belongs to whoever gathered the traces (in training,
-prime-rl samples the group). The structure of a multi-agent run lives on the traces
-themselves, via the lineage stamps.
+prime-rl samples the group; in an `Environment`, `score()` compares the finished
+views).
 
 Reward/metric handlers are `async def` — a sync handler fails at scoring time.
 

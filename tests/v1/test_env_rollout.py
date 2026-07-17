@@ -26,7 +26,9 @@ class StubAgent:
         self.runs = 0
         self.error = error
 
-    async def run(self, task: vf.Task, *, runtime=None, on_trace=None) -> Trace:
+    async def run(
+        self, task: vf.Task, *, runtime=None, shared_tools=None, on_trace=None
+    ) -> Trace:
         self.runs += 1
         trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
         if on_trace is not None:
@@ -54,11 +56,12 @@ def _duet_config(**kwargs) -> "DuetConfig":
 
 class DuetEnv(vf.Environment[DuetConfig]):
     async def rollout(self, task, agents):
-        return list(await asyncio.gather(agents["a"].run(task), agents["b"].run(task)))
+        a, b = await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
+        return {"a": a, "b": b}
 
-    async def score(self, task, traces):
-        for trace in traces:
-            trace.record_metric("siblings", float(len(traces)))
+    async def score(self, task, views):
+        for trace in views.values():
+            trace.record_metric("siblings", float(len(views)))
 
 
 async def test_single_agent_env_mints_single_agent_records():
@@ -78,8 +81,8 @@ async def test_single_agent_env_mints_single_agent_records():
 
 
 def test_default_roles_are_the_declared_agent_fields():
-    """The default roles() is the 1:1 mapping: every AgentConfig field on the params
-    block becomes a dataset-playing role of the same name — an env whose roles all
+    """The default roles() is the 1:1 mapping: every AgentConfig field on the env's
+    config becomes a dataset-playing role of the same name — an env whose roles all
     play the dataset never writes roles(). Every env stamps its traces' roles except
     `SingleAgentEnv`, whose wire stays identical to a plain eval's."""
     env = DuetEnv(_duet_config())
@@ -92,7 +95,7 @@ def test_default_roles_are_the_declared_agent_fields():
 
 def test_role_fields_must_declare_default_instances():
     """A `Field(default_factory=...)` role would silently fall out of role discovery
-    and the CLI deep-merge; the params class refuses at definition instead."""
+    and the CLI deep-merge; the config class refuses at definition instead."""
     from pydantic import Field
 
     with pytest.raises(TypeError, match="default instance"):
@@ -152,7 +155,7 @@ async def test_hook_crash_keeps_completed_traces():
 
 async def test_score_deadline_is_a_record_error():
     class Slow(vf.SingleAgentEnv):
-        async def score(self, task, traces):
+        async def score(self, task, views):
             await asyncio.sleep(60)
 
     env = Slow(_env_config(timeout={"score": 0.05}))
@@ -163,18 +166,18 @@ async def test_score_deadline_is_a_record_error():
     assert len(episode.traces) == 1  # the finished traces survive the score failure
 
 
-async def test_score_failure_keeps_rollout_order():
-    """Once rollout() returns, its list is authoritative — a score() failure must
-    not demote the episode to the completion-order buffer (a fan-out's finish
-    order may differ from the declared one)."""
+async def test_score_failure_keeps_the_views():
+    """Once rollout() returns its views, they decide episode membership — a score()
+    failure must not demote the episode to the completed buffer. The record
+    flattens in mapping order (physical, not semantic)."""
 
     class Reordered(DuetEnv):
         async def rollout(self, task, agents):
             a = await agents["a"].run(task)
             b = await agents["b"].run(task)
-            return [b, a]  # declared order != completion order
+            return {"b": b, "a": a}
 
-        async def score(self, task, traces):
+        async def score(self, task, views):
             raise RuntimeError("judge crashed")
 
     env = Reordered(_duet_config())
@@ -192,9 +195,9 @@ async def test_score_failure_keeps_rollout_membership():
     class Subset(DuetEnv):
         async def rollout(self, task, agents):
             await agents["a"].run(task)  # ran, but the hook drops it
-            return [await agents["b"].run(task)]
+            return {"b": await agents["b"].run(task)}
 
-        async def score(self, task, traces):
+        async def score(self, task, views):
             raise RuntimeError("judge crashed")
 
     env = Subset(_duet_config())
@@ -202,6 +205,41 @@ async def test_score_failure_keeps_rollout_membership():
     episode = await env.run_episode(_task(env), None)
     assert not episode.ok
     assert [t.role for t in episode.traces] == ["b"]
+
+
+async def test_views_must_be_a_named_bag():
+    """rollout() returns a mapping of named views; any other shape is the
+    env-rollout failing, recorded on the episode."""
+
+    class Listy(vf.SingleAgentEnv):
+        async def rollout(self, task, agents):
+            return [await agents["agent"].run(task)]  # the retired list shape
+
+    env = Listy(_env_config())
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert not episode.ok and episode.error is not None
+    assert "local views as a mapping" in episode.error.message
+
+
+async def test_a_view_may_fan_out():
+    """A list-valued view is a fanned-out seat: all its traces land on the episode."""
+
+    class Fan(DuetEnv):
+        async def rollout(self, task, agents):
+            return {
+                "a": [await agents["a"].run(task) for _ in range(2)],
+                "b": await agents["b"].run(task),
+            }
+
+        async def score(self, task, views):
+            pass
+
+    env = Fan(_duet_config())
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert episode.ok
+    assert [t.role for t in episode.traces] == ["a", "a", "b"]
 
 
 async def test_decorated_signals_cross_agent():
@@ -212,9 +250,8 @@ async def test_decorated_signals_cross_agent():
 
     class Signals(vf.Environment[DuetConfig]):
         async def rollout(self, task, agents):
-            return list(
-                await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
-            )
+            a, b = await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
+            return {"a": a, "b": b}
 
         @vf.metric(role="a")
         async def b_count(self, traces):
@@ -288,7 +325,7 @@ def test_roles_must_be_nonempty():
             return {}
 
         async def rollout(self, task, agents):
-            return []
+            return {}
 
     with pytest.raises(ValueError, match="returned no roles"):
         Empty(_env_config())

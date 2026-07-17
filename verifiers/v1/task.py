@@ -154,13 +154,6 @@ class TaskData(StrictBaseModel):
     workdir: str | None = None
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
-    sources: tuple[str, ...] = ()
-    """Trace ids this task was derived from — stamped when a task is minted out of
-    earlier traces (a judge task from a solver trace, a solver task from a proposer trace).
-    Empty for a dataset task."""
-    relation: str | None = None
-    """How this task relates to its `sources` (e.g. "judges", "solves", "monitors").
-    Free-form; meaningful only when `sources` is non-empty."""
 
     @property
     def prompt_text(self) -> str:

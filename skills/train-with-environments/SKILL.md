@@ -112,7 +112,7 @@ can override it.
 - If groups are mostly all-one, increase difficulty or sample a harder task distribution.
 - Choose `batch_size` with whole groups, packing, sequence length, and GPU memory in mind.
 
-Sibling-dependent scoring (best-of-n selection, zero-sum payoffs) lives on `Environment.score(task, traces)` and runs inside the env — one env-rollout is one `Episode`, its traces role-stamped and `trainable`-flagged. `-r` stays purely the trainer's group size: n independent env-rollouts per task; env-internal fan-out is the env's own knob (`--env.n`).
+Sibling-dependent scoring (best-of-n selection, zero-sum payoffs) lives on `Environment.score(task, views)` and runs inside the env — one env-rollout is one `Episode`, its traces role-stamped and `trainable`-flagged. `-r` stays purely the trainer's group size: n independent env-rollouts per task; env-internal fan-out is the env's own knob (`--env.n`).
 
 ## Difficulty filtering
 

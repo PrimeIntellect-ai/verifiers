@@ -1,30 +1,23 @@
 """agentic-judge: a solver plays the task, a code-executing judge verifies it in a sandbox.
 
-Agent-as-judge as a reusable env (`--env.id agentic-judge` over any taskset): the judge
-is a real agent that investigates with real execution, ALWAYS in its own sandbox, never
-on the host. Its verdict task mirrors the solver task's world (same image/workdir/
-resources — a FRESH box, in its original state), and the graded transcript is uploaded
-into it (`/tmp/transcript.md` rendered, `/tmp/transcript.json` the raw trace record) so
-the judge can reconstruct and test the agent's work empirically. The solver's runtime
-is gone by judge time — a judge that must inspect the solver's live box is a custom env
-(`provision()` + borrowed `runtime=`), not this wrapper.
+Agent-as-judge as a reusable env (`--env.id agentic-judge` over any taskset). The
+judge's verdict task mirrors the solver task's world (same image/workdir/resources — a
+FRESH box, in its original state; the solver's runtime is gone by judge time), with the
+graded transcript uploaded (`/tmp/transcript.md` rendered, `/tmp/transcript.json` the
+raw record) so the judge can reconstruct and test the work empirically — always in its
+own sandbox, never on the host.
 
-The verdict spec is a JUDGE PLUGIN (`--env.spec.id score|rubric|reference|org/name` —
+The verdict spec is a judge plugin (`--env.spec.id score|rubric|reference|org/name`,
 the same registry as an `env.taskset.task.judges` entry): the prompt+parse a plugged
 judge runs as one bare call is here executed as a real agent run, and `spec.verdict()`
-parses the judge's final reply, recorded on the SOLVER's trace exactly as the plugged
-tier records it (reward key + weight from the spec's config; a rubric spec also lands
-its per-criterion metrics). Write your grading criteria once; a judgement that doesn't
-need execution belongs on the plugged tier, not on an agent. The spec's
-`model`/`client`/`sampling` are ignored — the judge AGENT makes the calls; route it
-with `--env.judge.*` (its own trace is role-stamped and untrainable by default).
+lands on the SOLVER's trace exactly as the plugged tier records it. The spec's
+`model`/`client`/`sampling` are ignored — the judge agent makes the calls; route it
+with `--env.judge.*` (role-stamped, untrainable by default).
 
-The judge seat is unpinned by default, so it runs the taskset's default harness —
-the same program the solver defaults to — but always in a container: a judge whose
-harness resolves to the subprocess runtime is refused at construction (pin
-`--env.judge.harness.runtime.type docker` or `prime`). A tool-less judge harness
-(`null`) is refused too — a verdict that needs no execution is a plugged judge, not
-an agent.
+The judge seat is unpinned by default (the taskset's default harness) but must land in
+a container — a subprocess-resolving judge is refused at construction (pin
+`--env.judge.harness.runtime.type docker|prime`), as is a tool-less one (`null`): a
+verdict that needs no execution is a plugged judge, not an agent.
 """
 
 import json
@@ -158,8 +151,6 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
                 image=task.data.image,
                 workdir=task.data.workdir,
                 resources=task.data.resources.model_copy(),
-                sources=(solution.id,),
-                relation="judges",
             ),
             files={
                 TRANSCRIPT_MD: solution.transcript.encode(),
@@ -167,13 +158,13 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
             },
         )
         verdict = await agents["judge"].run(judge_task)
-        return [solution, verdict]
+        return {"solver": solution, "judge": verdict}
 
-    async def score(self, task, traces):
+    async def score(self, task, views):
         """Parse the judge agent's reply through the spec and record it like the
         plugged tier would — a malformed verdict raises, failing the env-rollout
         (retryable) rather than scoring the solver 0."""
-        solution, verdict = traces
+        solution, verdict = views["solver"], views["judge"]
         result = self._spec.verdict(task.data, solution, verdict.last_reply or "")
         _record_result(
             solution, self._spec.reward_name, result, self._spec.config.weight

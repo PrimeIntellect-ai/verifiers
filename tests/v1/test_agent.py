@@ -65,8 +65,7 @@ async def test_shared_tools_hit_the_mcp_pairing_guard():
         NoMcpHarness(DefaultHarnessConfig()),
         "test-model",
         None,  # type: ignore[arg-type]
-        shared_tools={"search": object()},  # type: ignore[dict-item]
     )
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
     with pytest.raises(ValueError, match="does not support MCP"):
-        await agent.run(task)
+        await agent.run(task, shared_tools={"search": object()})  # type: ignore[dict-item]

@@ -523,23 +523,18 @@ WireTrace = Trace[WireTaskData]
 
 
 class Episode(StrictBaseModel, Generic[DataT, StateT]):
-    """One run of the env — the GLOBAL view of what happened, where each of its
-    traces is one agent's LOCAL view (one rollout: its own conversation, role-stamped;
-    a judge's verdict trace is separate from the solution it judges). The atom of
-    `traces.jsonl` (one episode per line) and of the serve protocol: a single-agent
-    episode carries one trace, a multi-agent env's one per role — they succeed, resume,
-    and score as a unit, which is exactly what the episode makes atomic. `errors` are
-    episode-level failures not attributable to any one trace (the env's
-    `rollout`/`score` hooks, plus prior attempts' errors when the episode was retried —
-    same shape as `Trace.errors`); per-trace failures stay on the traces.
+    """One run of the env — the global view, each trace one agent's local view. The
+    atom of `traces.jsonl` and of the serve protocol: a single-agent episode carries
+    one trace, a multi-agent env's the traces of its views — they succeed, resume,
+    and score as a unit. `errors` are failures not attributable to any one trace
+    (the env's `rollout`/`score` hooks, plus prior attempts' when retried); per-trace
+    failures stay on the traces.
 
     The type parameters serve the wire loaders, not authoring: `WireEpisode =
-    Episode[WireTaskData, State]` is how resume and the serve protocol read any
-    taskset's episodes without importing the taskset — every row loads as the same
-    lossless `WireTaskData` (unknown fields kept in `model_extra`), so uniformity
-    holds by construction. An authored episode is typically heterogeneous — a
-    taskset-typed solver trace next to a plain minted verdict trace — and uses bare
-    `Episode`: no single parameter pair can type that mix, and none needs to."""
+    Episode[WireTaskData, State]` reads any taskset's episodes without importing the
+    taskset (unknown row fields kept in `model_extra`). An authored episode is
+    typically heterogeneous — a taskset-typed solver trace next to a plain minted
+    verdict trace — and uses bare `Episode`."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     env: str = ""

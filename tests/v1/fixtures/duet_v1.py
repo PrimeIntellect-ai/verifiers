@@ -15,8 +15,8 @@ from echo_v1 import EchoTaskset, lenient_match
 
 
 class DuetEnvConfig(vf.EnvConfig):
-    # Both seats pin the lean `null` chat loop (roles are independent of the env-level
-    # `--harness.*`); "b" plays a fixed, untrainable participant.
+    # Both seats pin the lean `null` chat loop; "b" plays a fixed, untrainable
+    # participant.
     a: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
     b: vf.AgentConfig = vf.AgentConfig(
         harness=vf.HarnessConfig(id="null"), trainable=False
@@ -25,15 +25,16 @@ class DuetEnvConfig(vf.EnvConfig):
 
 class DuetEnv(vf.Environment[DuetEnvConfig]):
     async def rollout(self, task, agents):
-        return list(await asyncio.gather(agents["a"].run(task), agents["b"].run(task)))
+        a, b = await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
+        return {"a": a, "b": b}
 
-    async def score(self, task, traces):
+    async def score(self, task, views):
         # A sibling-dependent signal: did every seat echo the phrase?
         echoed = all(
             lenient_match(task.data.answer, t.last_reply) and not t.has_error
-            for t in traces
+            for t in views.values()
         )
-        for trace in traces:
+        for trace in views.values():
             trace.record_metric("duet", float(echoed))
 
 
