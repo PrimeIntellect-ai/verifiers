@@ -1,7 +1,7 @@
 from proposer_solver_v1.taskset import (
     ProposerSolverEnv,
-    ProposerSolverParams,
+    ProposerSolverEnvConfig,
     ProposerSolverTaskset,
 )
 
-__all__ = ["ProposerSolverTaskset", "ProposerSolverEnv", "ProposerSolverParams"]
+__all__ = ["ProposerSolverTaskset", "ProposerSolverEnv", "ProposerSolverEnvConfig"]

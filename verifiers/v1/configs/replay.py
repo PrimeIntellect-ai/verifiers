@@ -51,5 +51,11 @@ class ReplayConfig(BaseConfig):
     def _resolve_taskset(cls, data):
         from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
+        if isinstance(data, dict) and not data.get("taskset"):
+            # The base layer is usually a saved eval config, which keeps its
+            # taskset on the [env] block — lift it onto replay's root surface.
+            env = data.get("env")
+            if isinstance(env, dict) and env.get("taskset"):
+                data["taskset"] = env["taskset"]
         narrow_plugin_field(data, "taskset", taskset_config_type)
         return data

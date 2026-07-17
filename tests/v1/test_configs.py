@@ -37,3 +37,19 @@ def test_output_path_compounds_env_id():
     paired = EvalConfig(env={"id": "best-of-n", "taskset": {"id": "echo-v1"}})
     assert output_path(plain).parent.name.startswith("echo-v1--")
     assert output_path(paired).parent.name.startswith("best-of-n+echo-v1--")
+
+
+def test_replay_lifts_the_saved_eval_taskset():
+    """Replay layers the source run's saved config as its base. An eval run keeps
+    its taskset on the [env] block — replay's root taskset must pick it up; an
+    earlier replay's own root taskset stays authoritative."""
+    from verifiers.v1.configs.replay import ReplayConfig
+
+    lifted = ReplayConfig.model_validate(
+        {"env": {"taskset": {"id": "echo-v1"}, "max_turns": 2}, "model": "m"}
+    )
+    assert lifted.taskset.id == "echo-v1"
+    rooted = ReplayConfig.model_validate(
+        {"taskset": {"id": "echo-v1"}, "env": {"taskset": {"id": "other-v1"}}}
+    )
+    assert rooted.taskset.id == "echo-v1"

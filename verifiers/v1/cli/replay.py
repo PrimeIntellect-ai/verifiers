@@ -42,9 +42,11 @@ USAGE = (
 
 
 def _narrow(config_path: Path) -> type[ReplayConfig]:
-    """Narrow replay config to the saved taskset's config type."""
+    """Narrow replay config to the saved taskset's config type. The source may be
+    an eval run (taskset on the [env] block) or an earlier replay (root taskset)."""
     data = tomllib.loads(config_path.read_text())
-    taskset_id = (data.get("taskset") or {}).get("id")
+    taskset = data.get("taskset") or (data.get("env") or {}).get("taskset") or {}
+    taskset_id = taskset.get("id")
     if not taskset_id:
         return ReplayConfig
     ftype = vf.taskset_config_type(taskset_id)
