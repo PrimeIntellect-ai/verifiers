@@ -14,6 +14,7 @@ EvalConfig                       (the run + the env)
 ├─ timeout: TimeoutConfig
 ├─ retries: RetryConfig
 │  └─ rollout: RolloutRetryConfig
+├─ textify: TextifyConfig
 ├─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
 ├─ multiplex
 └─ pool: PoolConfig              (static | elastic) — env-server only
@@ -47,7 +48,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 
 Validator: `--rich` + `--server` together is rejected (the dashboard is in-process only).
 
-Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`timeout`](#timeout-config), [`retries`](#retry-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, [`multiplex`](#envconfig--the-environment), the legacy `id` / `args` / `extra_env_kwargs`.
+Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`timeout`](#timeout-config), [`retries`](#retry-config), [`textify`](#textify-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, [`multiplex`](#envconfig--the-environment), the legacy `id` / `args` / `extra_env_kwargs`.
 Inherited from `EnvServerConfig`: [`pool`](#pool-config).
 
 ---
@@ -104,6 +105,7 @@ behavior, tools, user simulator, and scoring; only its `TaskData` is stored on t
 | `harness` | `HarnessConfig` | `HarnessConfig(id="default")` | Resolved to its concrete subclass by `--harness.id` (or the taskset's bundled harness). See [Harness config](#harness-config). |
 | `timeout` | `TimeoutConfig` | `TimeoutConfig()` | See [Timeout config](#timeout-config). |
 | `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). |
+| `textify` | `TextifyConfig` | `TextifyConfig()` | Interception-level image→ASCII/braille transform; disabled by default. See [Textify config](#textify-config). |
 | `max_turns` | `int \| None` | `None` | Max model turns per rollout (None = no limit). Framework-enforced between turns. |
 | `max_input_tokens` | `int \| None` | `None` | Max input (prompt) tokens per rollout. Caps `trace.num_input_tokens`. |
 | `max_output_tokens` | `int \| None` | `None` | Max output (completion) tokens per rollout. Caps `trace.num_output_tokens`. |
@@ -138,6 +140,42 @@ Set `id` (leave `taskset` unset) to run a classic `verifiers.load_environment` e
 | `extra_env_kwargs` | `dict` | `{}` | Post-load kwargs applied via `env.set_kwargs(**...)` (e.g. `max_total_completion_tokens`, `max_seq_len`, `timeout_seconds`). |
 
 `EnvConfig.is_legacy` → `id is not None and not taskset.id`.
+
+## Textify config
+
+`verifiers/v1/utils/textify.py` — `TextifyConfig(BaseConfig)`. Applied at the native-v1
+interception server before dialect parsing so the provider/train renderer and trace all see the
+same rendered text. It catches base64 data-URI images in task prompts, tool results, and user
+simulator turns. Disabled is exact pass-through; enabling Textify on a legacy v0 config is
+rejected.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | `bool` | `False` | Master switch. False preserves native images; True renders supported images. |
+| `mode` | `"ascii" \| "braille"` | `"ascii"` | Character-art mode. Braille encodes a 2×4-dot grid per character but usually costs substantially more tokens. |
+| `width` | `int` | `160` (1–4096) | Output character columns before `max_chars` clamping. |
+| `height` | `int \| None` | `None` (1–4096) | Explicit output character rows. None derives rows from source and character aspect ratios. |
+| `char_aspect` | `float` | `0.5` (>0, finite) | Character-cell height/width correction when height is derived. |
+| `gamma` | `float` | `1.0` (>0, finite) | Luminance curve (`lum ** gamma`); values >1 darken midtones. |
+| `invert` | `bool \| None` | `None` | True/False forces inversion; None auto-inverts predominantly light diagrams/documents so white backgrounds become spaces. |
+| `ramp` | `str` | `" .:-=+*#%@"` | ASCII glyph ramp from dark to light before inversion (at least two characters). |
+| `threshold` | `float \| "otsu"` | `0.5` | Fixed Braille dot cutoff; `"otsu"` selects deterministic global Otsu binarization for both ASCII and braille. Otsu ASCII uses the first/last ramp glyphs. |
+| `max_chars` | `int \| None` | `40000` (≤1,000,000) | Per-image output budget including line separators; dimensions are clamped to fit. None still obeys the hard 1M-character ceiling. |
+
+Example:
+
+```toml
+[textify]
+enabled = true
+mode = "ascii"
+width = 160
+threshold = "otsu"
+```
+
+Only base64 image data URLs can be decoded locally. HTTP(S), Anthropic file sources, and
+Responses `file_id` images pass through unchanged. Textification is lossy: use it to test
+text-only representations, not as a vision-equivalent baseline. Traces store rendered content;
+original images remain on task data for scoring.
 
 ### EnvServerConfig — the pool
 
