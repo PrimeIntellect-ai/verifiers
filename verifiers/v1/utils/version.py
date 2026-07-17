@@ -36,10 +36,8 @@ def verifiers_commit() -> str | None:
     if len(lines) != 2:
         return None
     toplevel, commit = lines
-    # git discovers `.git` upward, so an installed (non-checkout) package sitting in a
-    # venv inside some unrelated git project would answer with THAT project's repo.
-    # Only trust the answer when the discovered worktree is the checkout the package
-    # lives in directly (source checkouts and editable installs).
+    # git discovers `.git` upward, so an installed package in a venv inside an
+    # unrelated git project would answer with that project's repo.
     if Path(toplevel).resolve() != package_dir.parent:
         return None
     return commit or None
