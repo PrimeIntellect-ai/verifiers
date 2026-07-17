@@ -32,5 +32,6 @@ A trace records the message graph, rewards, metrics, errors, etc. When using ver
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Harnesses](harnesses.md) — How to build custom harnesses
+- [GEPA](gepa.md) — How to optimize system prompts with GEPA
 
 For the documentation for legacy environments, go to [the v0 documentation](../v0/overview.md).
