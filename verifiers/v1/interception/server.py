@@ -298,7 +298,8 @@ class InterceptionServer(Interception):
         #   2. the first attempt is still computing (a slow turn) -> await it and return its
         #      result, so a slow turn is safe without an inflated client timeout.
         # A growing conversation never repeats a body, so these only ever match a real retry; a
-        # failed attempt caches nothing and re-runs normally.
+        # failed attempt caches nothing and re-runs normally. Cacheable attempts claim their
+        # in-flight future before any user or interceptor await below.
         if session.last_request == request_key and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
@@ -347,11 +348,12 @@ class InterceptionServer(Interception):
                         "@intercept requires exactly one Chat Completions choice"
                     ),
                 )
+        streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
             session.trace.id,
-            dialect.streaming(body),
+            streaming,
         )
         # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
         # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
@@ -361,6 +363,24 @@ class InterceptionServer(Interception):
         # the request is ground truth for what the model saw, but a refused or failed request
         # was never seen at all.
         prompt, tools = dialect.parse_request(body)
+        fut: asyncio.Future[ReplayResponse | None] | None = None
+        if session.intercepts or not streaming:
+            claimed: asyncio.Future[ReplayResponse | None] = (
+                asyncio.get_running_loop().create_future()
+            )
+            fut = claimed
+            session.inflight[request_key] = claimed
+
+            # The request task also owns exits before the stream/non-stream finalizers below.
+            def release(_task: asyncio.Task) -> None:
+                if session.inflight.get(request_key) is claimed:
+                    session.inflight.pop(request_key, None)
+                if not claimed.done():
+                    claimed.set_result(None)
+
+            owner = asyncio.current_task()
+            assert owner is not None
+            owner.add_done_callback(release)
         # Cache the opening so retries do not advance the simulator twice.
         if (
             session.user is not None
@@ -433,17 +453,12 @@ class InterceptionServer(Interception):
                     session.trace.id,
                     len(replacements),
                 )
-        if dialect.streaming(body):
+        if streaming:
             if not session.intercepts:
                 return await self._stream(
                     request, session, dialect, body, prompt, request_key, tools
                 )
-            if (inflight := session.inflight.get(request_key)) is not None:
-                return await coalesced(inflight)
-            stream_fut: asyncio.Future[ReplayResponse | None] = (
-                asyncio.get_running_loop().create_future()
-            )
-            session.inflight[request_key] = stream_fut
+            assert fut is not None
             try:
                 return await self._stream(
                     request,
@@ -453,24 +468,15 @@ class InterceptionServer(Interception):
                     prompt,
                     request_key,
                     tools,
-                    stream_fut,
+                    fut,
                 )
             finally:
-                if session.inflight.get(request_key) is stream_fut:
+                if session.inflight.get(request_key) is fut:
                     session.inflight.pop(request_key, None)
-                if not stream_fut.done():
-                    stream_fut.set_result(None)
+                if not fut.done():
+                    fut.set_result(None)
         headers = request.headers.copy()
-        # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above) rather
-        # than starting a second inference. Re-check first: an identical request may have claimed
-        # it while we awaited the simulator opening. The get / create / assign below run with no
-        # await between them, so two concurrent identical requests can never both become owner.
-        if (inflight := session.inflight.get(request_key)) is not None:
-            return await coalesced(inflight)
-        fut: asyncio.Future[ReplayResponse | None] = (
-            asyncio.get_running_loop().create_future()
-        )
-        session.inflight[request_key] = fut
+        assert fut is not None
 
         def serve(response: Response) -> web.Response:
             # Record the served turn and hand it to any coalesced retry, so a retried
