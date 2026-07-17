@@ -1,6 +1,6 @@
 ---
 title: "Agent"
-description: "Program over agents: one executable arrow, placement as a parameter, chaining as plain functions"
+description: "The reusable harness x model x runtime value: one executable arrow, placement as a parameter, chaining as plain functions"
 ---
 
 ## The Agent
@@ -119,7 +119,7 @@ Fan-out is plain `asyncio.gather` — each run gets its own fresh box, and the e
 agent's interception pool keeps N concurrent runs cheap. The Agent deliberately has no
 group verb: each run scores its rollout on its own, and comparing siblings — relative
 success, preference, advantages — belongs to whoever gathered the traces (in training,
-prime-rl samples the group). The structure of a multi-agent program lives on the traces
+prime-rl samples the group). The structure of a multi-agent run lives on the traces
 themselves, via the lineage stamps.
 
 Reward/metric handlers are `async def` — a sync handler fails at scoring time.

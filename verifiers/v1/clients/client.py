@@ -80,12 +80,7 @@ class Client(ABC):
 
 @dataclass(frozen=True)
 class ModelContext:
-    """The model leg, as one value: which model (`model`), over which wire (`client`),
-    with which defaults (`sampling` — provider defaults when omitted). Everything that
-    does model I/O consumes one: a rollout for its turns, an `Agent` binds one at
-    construction, the Environment builds one per eval. The client is the expensive,
-    shareable part — consumers on one endpoint should share one `Client` (one
-    connection pool)."""
+    """Client, model, and sampling settings for one rollout."""
 
     model: str
     client: Client

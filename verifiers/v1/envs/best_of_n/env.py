@@ -37,11 +37,14 @@ class BestOfNEnv(vf.Environment[BestOfNParams]):
     @vf.metric
     async def best(self, trace, traces):
         """The sibling comparison: marks the argmax-reward attempt (ties share —
-        degenerate all-equal rollouts mark every sibling)."""
+        degenerate all-equal rollouts mark every sibling). Like every decorated env
+        signal it runs once per target trace, and the return value is recorded on
+        that trace's `metrics` under the method's name: `trace.metrics["best"]`."""
         return float(trace.reward == max(t.reward for t in traces))
 
     @vf.metric
     async def pass_at_n(self, trace, traces):
-        """Whether any sibling reached the threshold — a rollout-level fact recorded
-        on each trace so it survives flat consumers."""
+        """Whether any sibling reached the threshold — a rollout-level fact, so the
+        same value is recorded as `pass_at_n` on every sibling's `metrics` (flat
+        consumers see it without reconstructing the group)."""
         return float(max(t.reward for t in traces) >= self.params.threshold)

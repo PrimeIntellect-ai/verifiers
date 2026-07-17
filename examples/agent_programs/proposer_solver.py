@@ -37,29 +37,29 @@ class ProposedData(vf.TaskData):
 class ProposedTask(vf.Task[ProposedData]):
     """Judgement for solver runs on a proposed task."""
 
+    @classmethod
+    def from_trace(cls, proposer_trace: vf.Trace) -> "ProposedTask":
+        """trace -> Task: mint the solver task out of the proposer's final message."""
+        reply = proposer_trace.last_reply
+        match = re.search(r"\{.*\}", reply or "", re.DOTALL)
+        if match is None:
+            raise ValueError(f"proposer did not reply with a JSON object: {reply!r}")
+        proposed = json.loads(match.group())
+        return cls(
+            ProposedData(
+                idx=0,
+                prompt=proposed["problem"]
+                + "\n\nEnd your reply with just the final integer.",
+                answer=str(proposed["answer"]),
+                sources=(proposer_trace.id,),
+                relation="solves",
+            )
+        )
+
     @vf.reward
     async def correct(self, trace: vf.Trace) -> float:
         numbers = re.findall(r"-?\d+", (trace.last_reply or "").replace(",", ""))
         return 1.0 if numbers and numbers[-1] == self.data.answer else 0.0
-
-
-def proposed_task(proposer_trace: vf.Trace) -> ProposedTask:
-    """traces -> Task: mint the solver task out of the proposer's final message."""
-    reply = proposer_trace.last_reply
-    match = re.search(r"\{.*\}", reply or "", re.DOTALL)
-    if match is None:
-        raise ValueError(f"proposer did not reply with a JSON object: {reply!r}")
-    proposed = json.loads(match.group())
-    return ProposedTask(
-        ProposedData(
-            idx=0,
-            prompt=proposed["problem"]
-            + "\n\nEnd your reply with just the final integer.",
-            answer=str(proposed["answer"]),
-            sources=(proposer_trace.id,),
-            relation="solves",
-        )
-    )
 
 
 async def main() -> None:
@@ -72,7 +72,7 @@ async def main() -> None:
         proposer_trace = await proposer.run(
             vf.Task(vf.TaskData(idx=0, prompt=PROPOSER_PROMPT))
         )
-        task = proposed_task(proposer_trace)
+        task = ProposedTask.from_trace(proposer_trace)
         print("proposed problem:", task.data.prompt_text[:200])
         print("claimed answer:  ", task.data.answer)
 

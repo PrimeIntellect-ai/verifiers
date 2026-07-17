@@ -40,6 +40,6 @@ A trace records the message graph, rewards, metrics, errors, etc. When using ver
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Harnesses](harnesses.md) — How to build custom harnesses
-- [Agent](agent.md) — Program over agents: run tasks, place runs into shared sandboxes, chain traces into new tasks
+- [Agent](agent.md) — run tasks, place runs into shared sandboxes, chain traces into new tasks
 
 For the documentation for legacy environments, go to [the v0 documentation](../v0/overview.md).

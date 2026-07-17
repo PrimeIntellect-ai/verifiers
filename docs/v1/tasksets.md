@@ -87,8 +87,6 @@ __all__ = ["AdditionTaskset"]
 
 The exported `AdditionTaskset` is what verifiers loads and makes discoverable for evaluation.
 
-You can also use `@vf.metric` to record non-scored values, which might be useful for training.
-
 ## Data and configuration
 
 Keep values on the narrowest object that needs them:
@@ -252,8 +250,25 @@ class DebateParams(vf.EnvParams):
     judge: vf.AgentConfig = vf.AgentConfig(model="openai/gpt-5-mini", trainable=False)
 
 
+def judge_task(task: vf.Task, pro: vf.Trace, con: vf.Trace) -> vf.Task:
+    """Traces -> the judge's task: a plain minted row, lineage stamped."""
+    prompt = (
+        f"Question: {task.data.prompt_text}\n\n"
+        f"PRO argued:\n{pro.last_reply}\n\nCON argued:\n{con.last_reply}\n\n"
+        "Who won? Reply with exactly 'pro' or 'con'."
+    )
+    return vf.Task(
+        vf.TaskData(
+            idx=task.data.idx,
+            prompt=prompt,
+            sources=(pro.id, con.id),
+            relation="judges",
+        )
+    )
+
+
 class DebateEnv(vf.Environment[DebateParams]):
-    def roles(self):
+    def roles(self) -> dict[str, vf.Role]:
         """The topology: who plays which role, and what each needs. The debaters
         play the dataset; the judge grades an env-minted verdict task."""
         return {
@@ -262,7 +277,9 @@ class DebateEnv(vf.Environment[DebateParams]):
             "judge": vf.Role(self.params.judge, mcp=False, container=False),
         }
 
-    async def rollout(self, task, agents):
+    async def rollout(
+        self, task: vf.Task, agents: Mapping[str, vf.Agent]
+    ) -> list[vf.Trace]:
         """How the agents interact on one task: imperative Python over Agent values.
         A loop is rounds, asyncio.gather is fan-out, a function from traces to task
         data is chaining. The returned traces are the rollout's episode."""
@@ -272,12 +289,13 @@ class DebateEnv(vf.Environment[DebateParams]):
         verdict = await agents["judge"].run(judge_task(task, pro, con))
         return [pro, con, verdict]
 
-    async def score(self, task, traces):
+    async def score(self, task: vf.Task, traces: list[vf.Trace]) -> None:
         """Sibling-dependent judgement over the finished set (per-trace judgement
         already ran on each trace's own task). Attach via record_reward/record_metric."""
         pro, con, verdict = traces
-        pro.record_reward("won", float("pro" in verdict.last_reply))
-        con.record_reward("won", float("con" in verdict.last_reply))
+        winner = verdict.last_reply or ""
+        pro.record_reward("won", float("pro" in winner))
+        con.record_reward("won", float("con" in winner))
 ```
 
 - **Roles are typed fields on the env's params block** (`Environment[DebateParams]`
@@ -361,4 +379,4 @@ Bundled envs (`verifiers/v1/envs/`):
 | id | roles | what it does |
 | --- | --- | --- |
 | `best-of-n` | `solver` | `--env.n` independent attempts per rollout; `score()` marks the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
-| `judge` | `solver`, `judge` | the solver plays the task; a judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, same registry and format as `taskset.task.judges`) — write your grading criteria once, run them as a bare call or as an agent. Verdict + per-criterion metrics land on the solver's trace; point `--env.judge.harness.id` at a real harness and the judge investigates with tools, `--env.spec.view full_trace` shows it the whole transcript. |
+| `judge` | `solver`, `judge` | the solver plays the task; a judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, same registry and format as `taskset.task.judges`) — write your grading criteria once, run them as a bare call or as an agent. Verdict + per-criterion metrics land on the solver's trace; point `--env.judge.harness.id` at a real harness and the judge investigates with tools, `--env.spec.view full_trace` shows it the whole transcript. A judge that executes code is always played in its own sandbox, never on the host: its verdict task mirrors the solver task's world (same image, a fresh box in its original state) with the graded transcript uploaded (`/tmp/transcript.md`/`.json`), riding the run's container runtime — a fully-subprocess run must pin one (`--env.judge.harness.runtime.type docker`). |
