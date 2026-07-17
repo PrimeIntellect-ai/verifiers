@@ -133,7 +133,7 @@ def test_prime_start_forwards_egress_idle_timeout_and_hard_lifetime(monkeypatch)
             network_access=False,
             idle_timeout=61,
             timeout=121,
-            labels=["emulatorbench"],
+            labels=["generic-runtime-test"],
         )
     )
     asyncio.run(runtime.start())
@@ -143,7 +143,7 @@ def test_prime_start_forwards_egress_idle_timeout_and_hard_lifetime(monkeypatch)
     assert request["network_access"] is False
     assert request["idle_timeout_minutes"] == 2
     assert request["timeout_minutes"] == 3
-    assert request["labels"] == ["emulatorbench"]
+    assert request["labels"] == ["generic-runtime-test"]
 
 
 def test_modal_start_forwards_egress_block_and_hard_lifetime(monkeypatch):
