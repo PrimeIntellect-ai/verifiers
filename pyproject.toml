@@ -35,7 +35,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "prime-tunnel>=0.1.8",
-    "prime-sandboxes>=0.2.27",
+    "prime-sandboxes>=0.2.31",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -55,7 +55,7 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers>=0.1.8.dev40",
+    "renderers>=0.1.8",
     "typing_extensions; python_version < '3.12'",
 ]
 
@@ -77,14 +77,14 @@ dev = [
     "nltk>=3.9.2",
     "textarena==0.7.4",
 ]
-# v1 example environments vendored under environments/, resolved by id via [tool.uv.sources].
+# V1 examples and support packages, resolved from their local sources below.
 # Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, serve) run straight
 # from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "reverse-text-v1", "color-codeword-v1",
-    "wordle-v1", "alphabet-sort-v1", "scratchpad-v1", "mmmu-v1",
+    "wordle-v1", "openenv-wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
 ]
 
 [project.optional-dependencies]
@@ -109,6 +109,9 @@ modal = [
 ]
 notebook = [
     "nest-asyncio>=1.6.0",
+]
+openenv = [
+    "openenv>=0.4.1",
 ]
 quest = [
     "certifi",
@@ -147,12 +150,11 @@ wiki-search-v1 = { path = "environments/wiki_search_v1", editable = true }
 gsm8k-v1 = { path = "environments/gsm8k_v1", editable = true }
 code-golf-v1 = { path = "environments/code_golf_v1", editable = true }
 reverse-text-v1 = { path = "environments/reverse_text_v1", editable = true }
-reverse-text = { path = "environments/reverse_text", editable = true }
 wordle-v1 = { path = "environments/wordle_v1", editable = true }
+openenv-wordle-v1 = { path = "environments/openenv_wordle_v1", editable = true }
 color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
-mmmu-v1 = { path = "environments/mmmu_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)

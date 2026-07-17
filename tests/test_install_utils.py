@@ -73,7 +73,7 @@ class TestIsHubEnv:
         assert is_hub_env("gsm8k") is False
 
     def test_local_env_relative_path(self):
-        assert is_hub_env("./environments/gsm8k") is False
+        assert is_hub_env("./environments/gsm8k_v1") is False
 
     def test_local_env_absolute_path(self):
         assert is_hub_env("/path/to/gsm8k") is False

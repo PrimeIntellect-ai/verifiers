@@ -100,12 +100,18 @@ from verifiers.v1.mcp import (
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
+    TRACE_VERSION,
+    AgentInfo,
     Branch,
     Error,
+    EvalRunInfo,
+    RunInfo,
     TimeSpan,
     Timing,
     Trace,
     TraceTask,
+    TrainRunInfo,
+    VersionInfo,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -162,6 +168,12 @@ __all__ = [
     "Trace",
     "TraceTask",
     "WireTrace",
+    "TRACE_VERSION",
+    "AgentInfo",
+    "RunInfo",
+    "EvalRunInfo",
+    "TrainRunInfo",
+    "VersionInfo",
     "State",
     "StateT",
     "MessageNode",

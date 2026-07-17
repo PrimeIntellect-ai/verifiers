@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
+from verifiers import __version__
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -30,7 +31,8 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import TraceTask, Trace
+from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
+from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,12 @@ class Rollout:
         trace: Trace = Trace(
             task=TraceTask(type=type(self.task).__name__, data=self.task.data),
             state=state_cls(type(self.task))(),
+            verifiers=VersionInfo(version=__version__, commit=verifiers_commit()),
+            agent=AgentInfo(
+                model=self.ctx.model,
+                sampling=self.ctx.sampling,
+                harness=self.harness.config,
+            ),
         )
         self.trace = trace  # expose for the --rich dashboard
         self.phase = Phase.BOOT  # leaving the queue: the runtime boots now

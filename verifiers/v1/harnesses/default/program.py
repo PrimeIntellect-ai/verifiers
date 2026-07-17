@@ -177,7 +177,9 @@ async def chat(
     return completion.choices[0].message
 
 
-async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
+async def connect_mcp(
+    stack: AsyncExitStack, config: dict, reserved: set[str]
+) -> tuple[list[dict], dict]:
     """Connect to each configured MCP server (a streamable-HTTP `url`); return
     (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw tool name))."""
     from mcp import ClientSession
@@ -198,7 +200,12 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
-            full = f"{name}_{tool.name}"
+            # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
+            full = f"{name}_{tool.name}" if name else tool.name
+            if full in reserved or full in dispatch:
+                raise ValueError(
+                    f"duplicate tool name {full!r}; keep MCP tool names qualified"
+                )
             tool_schemas.append(
                 {
                     "type": "function",
@@ -259,22 +266,22 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
-    # No client-side retries: re-sending a request whose turn the interception already committed
-    # re-samples it and forks the trace into an extra dead-end branch. A generous timeout lets a
-    # slow turn finish instead of timing out and re-sending; genuine failures surface as error rows.
-    client = AsyncOpenAI(
-        base_url=args.base_url, api_key=args.api_key, timeout=1800.0, max_retries=0
-    )
+    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
-        mcp_tools, dispatch = (
-            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
-        )
         tools = [BASH_TOOL]
+        reserved = {"bash"}
         if args.edit:
             tools.append(EDIT_TOOL)
+            reserved.add("edit")
         if args.search:
             tools.append(SEARCH_TOOL)
+            reserved.add("search")
+        mcp_tools, dispatch = (
+            await connect_mcp(stack, config, reserved)
+            if config.get("mcpServers")
+            else ([], {})
+        )
         tools += mcp_tools
         messages = (
             [{"role": "system", "content": args.system_prompt}]
