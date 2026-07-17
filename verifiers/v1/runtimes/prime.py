@@ -62,6 +62,8 @@ class PrimeConfig(BaseConfig):
     """Disk in GB."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
+    timeout: float = MAX_LIFETIME
+    """Hard maximum sandbox lifetime in seconds."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
@@ -74,6 +76,8 @@ class PrimeConfig(BaseConfig):
                 f"idle_timeout ({self.idle_timeout}s) must not exceed the "
                 f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
             )
+        if not 60 <= self.timeout <= MAX_LIFETIME:
+            raise ValueError(f"timeout must be between 60 and {MAX_LIFETIME} seconds")
         return self
 
 
@@ -116,7 +120,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": MAX_LIFETIME // 60,
+            "timeout_minutes": math.ceil(self.config.timeout / 60),
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
@@ -258,6 +262,24 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def stop_confirmed(self) -> None:
+        """Delete the Prime sandbox or preserve cleanup state and raise."""
+        client = self._client
+        if client is None:
+            if self.info.id is None:
+                return
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without its live client"
+            )
+        if self.info.id is None:
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without a provider ID"
+            )
+        await client.delete(self.info.id)
+        self._client = None
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

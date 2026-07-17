@@ -14,6 +14,7 @@ import shlex
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -52,6 +53,8 @@ class ModalConfig(BaseConfig):
     creates_per_sec: float | None = 40.0
     """Pace sandbox creation to this many per second, enforced host-wide across every
     env-server worker process (None/<= 0 disables it)."""
+    timeout: float = Field(default=24 * 60 * 60, ge=60, le=24 * 60 * 60)
+    """Hard maximum sandbox lifetime in seconds."""
 
 
 class ModalRuntimeInfo(ModalConfig, BaseRuntimeInfo):
@@ -100,7 +103,7 @@ class ModalRuntime(Runtime):
                     gpu=self.config.gpu,
                     region=self.config.region,
                     block_network=not self.config.network_access,
-                    timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
+                    timeout=int(self.config.timeout),
                     encrypted_ports=[SERVICE_PORT],
                 )
             self.info.id = self._sandbox.object_id
@@ -181,6 +184,22 @@ class ModalRuntime(Runtime):
             await self._sandbox.filesystem.write_bytes.aio(data, target)
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def stop_confirmed(self) -> None:
+        """Terminate the Modal sandbox or preserve cleanup state and raise."""
+        sandbox = self._sandbox
+        if sandbox is None:
+            if self.info.id is None:
+                return
+            raise RuntimeError(
+                "modal sandbox termination cannot be confirmed without its live handle"
+            )
+        if self.info.id is None:
+            raise RuntimeError(
+                "modal sandbox termination cannot be confirmed without a provider ID"
+            )
+        await sandbox.terminate.aio()
+        self._sandbox = None
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async API can't run once the loop is gone): terminate
