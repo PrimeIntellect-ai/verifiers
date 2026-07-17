@@ -365,7 +365,13 @@ async def test_opening_textify_failure_does_not_advance_user(monkeypatch) -> Non
     async def fail(*_) -> vf.Messages:
         raise TaskError("textify failed")
 
-    session = SimpleNamespace(opening=None, user=user, _opening_lock=asyncio.Lock())
+    session = SimpleNamespace(
+        opening=None,
+        user=user,
+        _opening_textified=False,
+        _opening_lock=asyncio.Lock(),
+        error=None,
+    )
     server = InterceptionServer()
     monkeypatch.setattr(server, "_textify_messages", fail)
 
@@ -392,6 +398,7 @@ async def test_concurrent_opening_calls_user_once() -> None:
     session = SimpleNamespace(
         opening=None,
         user=user,
+        _opening_textified=False,
         _opening_lock=asyncio.Lock(),
         textify=vf.TextifyConfig(),
     )
@@ -497,3 +504,61 @@ async def test_typed_and_wire_paths_share_render_cache(monkeypatch) -> None:
     assert calls == 1
     assert isinstance(out[0].content, list)
     assert out[0].content[0] == vf.TextContentPart(text=f"rendered:{url}")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_opening_textify_is_serialized(monkeypatch) -> None:
+    user_calls = 0
+    textify_calls = 0
+    active = 0
+    max_active = 0
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def user(_: str) -> vf.Messages:
+        nonlocal user_calls
+        user_calls += 1
+        return [vf.UserMessage(content="raw")]
+
+    async def textify_opening(_session, _messages) -> vf.Messages:
+        nonlocal textify_calls, active, max_active
+        textify_calls += 1
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            if textify_calls == 1:
+                first_started.set()
+                await release_first.wait()
+                raise TaskError("first textify failed")
+            return [vf.UserMessage(content="rendered")]
+        finally:
+            active -= 1
+
+    session = SimpleNamespace(
+        opening=None,
+        user=user,
+        _opening_textified=False,
+        _opening_lock=asyncio.Lock(),
+        error=None,
+        trace=SimpleNamespace(id="trace"),
+    )
+    server = InterceptionServer()
+    monkeypatch.setattr(server, "_textify_messages", textify_opening)
+    first = asyncio.create_task(server._opening_messages(session))
+    await first_started.wait()
+    second = asyncio.create_task(server._opening_messages(session))
+    await asyncio.sleep(0)
+    release_first.set()
+    results = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert isinstance(results[0], TaskError)
+    assert results[1] == [vf.UserMessage(content="rendered")]
+    assert user_calls == 1
+    assert textify_calls == 2
+    assert max_active == 1
+    assert session._opening_textified
+    assert session.opening == results[1]
+    assert session.error is results[0]
+    session.error = None  # winning request clears the prior failure before inference
+    server._error_response(session, ChatDialect(), results[0])
+    assert session.error is None

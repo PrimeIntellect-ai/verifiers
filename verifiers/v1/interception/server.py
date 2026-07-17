@@ -216,12 +216,10 @@ class InterceptionServer(Interception):
                 self.tunnel.expose(self.port)
             )
 
-    def _fail(
+    def _error_response(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (a `@stop` or user simulator raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error."""
-        session.error = error
+        """Report an already-attributed rollout failure to the harness."""
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
@@ -229,6 +227,13 @@ class InterceptionServer(Interception):
             dialect.error_body(str(error)),
             status=getattr(error, "status_code", 502),
         )
+
+    def _fail(
+        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+    ) -> web.Response:
+        """Stash a model-turn-adjacent failure for the rollout, then report it."""
+        session.error = error
+        return self._error_response(session, dialect, error)
 
     async def _textify_body(
         self, session: RolloutSession, dialect: Dialect, body: dict
@@ -261,10 +266,18 @@ class InterceptionServer(Interception):
                 respond = session.user
                 assert respond is not None
                 session.opening = await respond("")
-            opening = session.opening
-        opening = await self._textify_messages(session, opening)
-        session.opening = opening
-        return opening
+            if not session._opening_textified:
+                try:
+                    session.opening = await self._textify_messages(
+                        session, session.opening
+                    )
+                except TaskError as e:
+                    # Store while holding the lock. The caller only writes the HTTP response,
+                    # so it cannot poison a later successful attempt after that attempt clears it.
+                    session.error = e
+                    raise
+                session._opening_textified = True
+            return session.opening
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
@@ -337,7 +350,7 @@ class InterceptionServer(Interception):
             try:
                 opening = await self._opening_messages(session)
             except TaskError as e:
-                return self._fail(session, dialect, e)
+                return self._error_response(session, dialect, e)
             body = dialect.extend(body, None, opening)
             prompt = [*prompt, *opening]
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
