@@ -237,7 +237,7 @@ class InterceptionServer(Interception):
         self,
         session: RolloutSession,
         dialect: Dialect,
-        request: dict,
+        request: dict | None,
         started: float,
         *,
         node: int | None = None,
@@ -393,13 +393,14 @@ class InterceptionServer(Interception):
                     return serve(response)
                 turn = graph.prepare_turn(session.trace, prompt)
                 session.error = None
-                # What actually goes upstream: the native body with the rollout's model +
-                # sampling imposed — recorded raw on the trace, per call.
-                upstream_request = dialect.apply_overrides(
-                    body, session.ctx.model, session.ctx.sampling
-                )
+                upstream_request: dict | None = None
                 started = time.time()
                 try:
+                    # What actually goes upstream: the native body with the rollout's model +
+                    # sampling imposed — recorded raw on the trace, per call.
+                    upstream_request = dialect.apply_overrides(
+                        body, session.ctx.model, session.ctx.sampling
+                    )
                     response = await session.ctx.client.get_response(
                         dialect,
                         body,
@@ -527,12 +528,13 @@ class InterceptionServer(Interception):
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
         session.error = None
-        upstream_request = dialect.apply_overrides(
-            body, session.ctx.model, session.ctx.sampling
-        )
+        upstream_request: dict | None = None
         started = time.time()
         try:
             turn = graph.prepare_turn(session.trace, prompt)
+            upstream_request = dialect.apply_overrides(
+                body, session.ctx.model, session.ctx.sampling
+            )
             reply = await session.ctx.client.relay(
                 dialect,
                 body,
@@ -618,6 +620,11 @@ class InterceptionServer(Interception):
                         parser_error = e
         except ConnectionResetError:
             return resp
+        except Exception as e:
+            # A mid-relay upstream failure (the provider stream died) is still a real
+            # exchange; record it before the error propagates to the harness.
+            self.record_call(session, dialect, upstream_request, started, error=e)
+            raise
         finally:
             producer.cancel()
             # Let a canceled producer enqueue EOF while unwinding.

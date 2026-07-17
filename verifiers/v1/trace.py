@@ -78,7 +78,9 @@ class ModelCall(StrictBaseModel):
     request: dict[str, Any] | None = None
     """The raw request body as sent upstream: the harness's native JSON with the rollout's
     model + sampling overrides applied — so it carries the effective sampling parameters
-    and the requested model."""
+    and the requested model. The generating (renderer) client sends this conversation as
+    rendered token ids instead of JSON; its record keeps this native shape — the logical
+    exchange — just like its `response` is the completion it synthesizes."""
     response: dict[str, Any] | None = None
     """The raw native response object (for a generating client, the completion it
     synthesized): provider response id, returned model, native usage. None for a failed call."""
