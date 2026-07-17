@@ -3,6 +3,7 @@ import base64
 import io
 from types import SimpleNamespace
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import threading
 
 import pytest
@@ -441,3 +442,26 @@ def test_textify_cache_resists_full_history_scan(monkeypatch) -> None:
     assert sum(calls.values()) == 48  # 40 first renders + 8 overflow misses
     assert sorted(calls.values()).count(1) == 32
     assert sorted(calls.values()).count(2) == 8
+
+
+def test_textify_cache_concurrent_access_is_bounded(monkeypatch) -> None:
+    def render(url: str, _cfg) -> str:
+        return f"rendered:{url}"
+
+    monkeypatch.setattr("verifiers.v1.session.render_url", render)
+    session = SimpleNamespace(
+        textify=vf.TextifyConfig(enabled=True),
+        _textify_cache=OrderedDict(),
+        _textify_seen=bytearray(8192),
+        _textify_lock=threading.Lock(),
+    )
+    urls = [f"data:image/png;base64,{index % 40}" for index in range(400)]
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(
+            pool.map(lambda url: RolloutSession.render_image(session, url), urls)
+        )
+
+    assert results == [f"rendered:{url}" for url in urls]
+    assert len(session._textify_cache) <= 32
+    assert len(session._textify_seen) == 8192
