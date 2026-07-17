@@ -562,3 +562,10 @@ async def test_concurrent_opening_textify_is_serialized(monkeypatch) -> None:
     session.error = None  # winning request clears the prior failure before inference
     server._error_response(session, ChatDialect(), results[0])
     assert session.error is None
+
+
+def test_oversized_payload_rejected_after_decode(monkeypatch) -> None:
+    monkeypatch.setattr(textify, "_MAX_IMAGE_BYTES", 3)
+    monkeypatch.setattr(textify.base64, "b64decode", lambda *_, **__: b"four")
+    with pytest.raises(ValueError, match="byte safety limit"):
+        textify.data_url_bytes("data:image/png;base64,AAAA")

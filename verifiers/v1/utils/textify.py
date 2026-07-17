@@ -272,11 +272,11 @@ def data_url_bytes(url: str) -> bytes | None:
         raise ValueError("textify image payload exceeds the byte safety limit")
     try:
         data = base64.b64decode(payload, validate=True)
-        if len(data) > _MAX_IMAGE_BYTES:
-            raise ValueError("textify image payload exceeds the byte safety limit")
-        return data
-    except (binascii.Error, ValueError) as e:
+    except binascii.Error as e:
         raise ValueError("invalid base64 image data URL") from e
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise ValueError("textify image payload exceeds the byte safety limit")
+    return data
 
 
 def render_url(url: str, cfg: TextifyConfig) -> str | None:
