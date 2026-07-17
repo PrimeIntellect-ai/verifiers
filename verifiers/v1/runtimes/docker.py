@@ -231,6 +231,25 @@ class DockerRuntime(Runtime):
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
 
+    async def stop_confirmed(self) -> None:
+        if self._container is None:
+            return
+        removed = await docker("rm", "--force", self._container)
+        remaining = await docker(
+            "ps",
+            "--all",
+            "--filter",
+            f"name=^/{self._container}$",
+            "--format",
+            "{{.Names}}",
+        )
+        if remaining.exit_code or self._container in remaining.stdout.splitlines():
+            detail = (removed.stderr or remaining.stderr or removed.stdout).strip()
+            raise SandboxError(
+                f"docker container {self._container!r} deletion was not confirmed: {detail}"
+            )
+        self._stopped = True
+
     def cleanup(self) -> None:
         if self._container is None or self._stopped:
             return

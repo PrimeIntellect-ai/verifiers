@@ -327,6 +327,24 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
 
+    async def stop_confirmed(self) -> None:
+        """Delete the sandbox or preserve cleanup state and raise."""
+        client = self._client
+        if client is None:
+            if self.info.id is None:
+                return
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without its live client"
+            )
+        if self.info.id is None:
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without a provider ID"
+            )
+        await client.delete(self.info.id)
+        self._client = None
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
         # the sandbox via the sync client, so the costly resource isn't left to its max-lifetime.

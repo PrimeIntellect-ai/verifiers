@@ -129,6 +129,12 @@ class Runtime(ABC):
         `teardown`, not this."""
         await run_shielded(self.teardown())
 
+    async def stop_confirmed(self) -> None:
+        """Free the resource or raise when deletion cannot be confirmed."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support confirmed teardown"
+        )
+
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
         that must be async (e.g. a remote API call); `stop` shields it from cancellation.

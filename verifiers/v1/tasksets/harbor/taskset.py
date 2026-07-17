@@ -171,7 +171,7 @@ class HarborTask(Task[HarborData]):
         with tempfile.TemporaryDirectory() as temp:
             files, directories = await self._collect_artifacts(runtime, Path(temp))
             # No verifier process starts until the agent runtime is gone.
-            await runtime.stop()
+            await runtime.stop_confirmed()
             target = make_runtime(
                 scoring_runtime_config, name=f"{runtime.name}-verifier"
             )
