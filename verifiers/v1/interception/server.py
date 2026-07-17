@@ -458,8 +458,22 @@ class InterceptionServer(Interception):
                     session.trace.id,
                     len(response.message.tool_calls or []),
                 )
-                node = turn.commit(response, tools)  # one node per new message;
-                # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
+                try:
+                    node = turn.commit(response, tools)  # one node per new message;
+                    # branches fall out of walking the graph (see Trace.branches / graph)
+                except Exception as e:
+                    # The provider exchange completed even though committing it failed;
+                    # record it, with the failure, before the error propagates.
+                    self.record_call(
+                        session,
+                        dialect,
+                        upstream_request,
+                        started,
+                        response=response.raw,
+                        headers=response.raw_headers,
+                        error=e,
+                    )
+                    raise
                 self.record_call(
                     session,
                     dialect,

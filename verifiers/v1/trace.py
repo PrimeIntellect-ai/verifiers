@@ -83,7 +83,9 @@ class ModelCall(StrictBaseModel):
     exchange — just like its `response` is the completion it synthesizes."""
     response: dict[str, Any] | None = None
     """The raw native response object (for a generating client, the completion it
-    synthesized): provider response id, returned model, native usage. None for a failed call."""
+    synthesized): provider response id, returned model, native usage. None when the
+    exchange itself failed; kept alongside `error` when a response arrived but
+    recording its turn failed."""
     response_headers: dict[str, str] | None = None
     """Provider response headers (request ids, rate limits), when the transport exposes them."""
     time: TimeSpan = Field(default_factory=TimeSpan)
