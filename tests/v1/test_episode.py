@@ -181,9 +181,9 @@ def test_resume_env_complete_override(tmp_path):
 
 
 def test_legacy_bridge_run_rollout_wraps_a_record():
-    """The v0 bridge speaks protocol 2: `run_rollout` answers with `episode`. (The
-    response type renamed its field from `trace`, and pydantic drops an unknown
-    kwarg silently — a bridged rollout must survive the rename.)"""
+    """The v0 bridge speaks the episode protocol: `run_rollout` answers with
+    `episode`. (The response type renamed its field from `trace`, and pydantic drops
+    an unknown kwarg silently — a bridged rollout must survive the rename.)"""
     from verifiers.v1 import legacy
     from verifiers.v1.clients.config import EvalClientConfig
     from verifiers.v1.serve.types import RunRolloutRequest

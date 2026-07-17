@@ -7,10 +7,10 @@ from verifiers.v1.task import WireTaskData
 from verifiers.v1.trace import Trace, WireEpisode
 from verifiers.v1.types import SamplingConfig
 
-PROTOCOL_VERSION = 2
-"""The serve wire protocol: bumped when response shapes change. 1 = bare traces;
-2 = `run_rollout` returns an `Episode` (the multi-agent atom). Consumers
-(prime-rl's orchestrator) read it off `info` to detect a mismatched server."""
+PROTOCOL_VERSION = 1
+"""The serve wire protocol: bumped when response shapes change (consumers —
+prime-rl's orchestrator — read it off `info` to detect a mismatched server). In
+protocol 1, `run_rollout` answers with an `Episode` (the multi-agent atom)."""
 
 
 class BaseRequest(BaseModel):
@@ -44,8 +44,7 @@ class InfoResponse(BaseResponse):
     server always reports False (sibling-dependent signals run inside the env's
     own rollout)."""
     protocol: int = 1
-    """The server's wire protocol version (`PROTOCOL_VERSION`); a pre-episode server
-    doesn't send the field, so it reads as 1."""
+    """The server's wire protocol version (`PROTOCOL_VERSION`)."""
 
 
 class RunRolloutRequest(BaseRequest):
