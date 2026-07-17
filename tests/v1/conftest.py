@@ -226,7 +226,7 @@ def run_v1():
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        return await run_eval(load_environment(config), config)
+        return await run_eval(load_environment(config.env), config)
 
     return _run
 

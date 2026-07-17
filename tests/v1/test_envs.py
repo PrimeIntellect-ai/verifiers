@@ -52,10 +52,9 @@ def test_eval(taskset: str):
         pytest.skip("no model API key configured")
 
     cmd = [
-        "uv", "run", "--no-sync", "eval",
-        "--taskset.id", taskset,
+        "uv", "run", "--no-sync", "eval", taskset,
         *model,
-        "-n", "1", "-r", "1", "--max-turns", "4",
+        "-n", "1", "-r", "1", "--env.max-turns", "4",
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:
