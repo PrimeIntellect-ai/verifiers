@@ -139,16 +139,3 @@ CUA execution options:
 1. **Prebuilt image** (default): fastest startup
 2. **Binary upload** (`use_prebuilt_image=False`): custom server workflows
 3. **Manual local server** (`use_sandbox=False`): local development/debugging
-
-## Example Environments
-
-For complete reference implementations, see:
-
-- **DOM example:** `environments/browser_dom_example/`
-  - `environments/browser_dom_example/browser_dom_example.py`
-  - `environments/browser_dom_example/README.md`
-- **CUA example:** `environments/browser_cua_example/`
-  - `environments/browser_cua_example/browser_cua_example.py`
-  - `environments/browser_cua_example/README.md`
-
-These examples show end-to-end `load_environment()` setup, evaluation commands, and recommended runtime flags.

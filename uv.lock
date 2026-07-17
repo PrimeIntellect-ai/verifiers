@@ -2791,23 +2791,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mmmu-v1"
-version = "0.1.0"
-source = { editable = "environments/mmmu_v1" }
-dependencies = [
-    { name = "datasets" },
-    { name = "pillow" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "pillow" },
-    { name = "verifiers" },
-]
-
-[[package]]
 name = "modal"
 version = "1.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -6247,7 +6230,6 @@ examples = [
     { name = "deepwiki-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
-    { name = "mmmu-v1" },
     { name = "reverse-text-v1" },
     { name = "scratchpad-v1" },
     { name = "wiki-search-v1" },
@@ -6333,7 +6315,6 @@ examples = [
     { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
-    { name = "mmmu-v1", editable = "environments/mmmu_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
     { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },
     { name = "wiki-search-v1", editable = "environments/wiki_search_v1" },
