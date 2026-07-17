@@ -333,10 +333,8 @@ class DebateEnv(vf.Environment[DebateParams]):
   role is handed the taskset's shared tool servers. A role whose tasks the env
   mints itself says so — `vf.Role(cfg, mcp=False, container=False)` for a bare
   model actor like a judge or a simulated user — and then pairs with *any* taskset.
-  Needs can also be computed: the bundled judge env decides `container=` from
-  whether its judge's harness executes code. Keeping the declaration honest with
-  `rollout()` is the env author's job; `Agent.run` still validates every concrete
-  task it's given, as the backstop.
+  Keeping the declaration honest with `rollout()` is the env author's job;
+  `Agent.run` still validates every concrete task it's given, as the backstop.
 - **The base builds the agents** — one per role, inside the eval's serving resources
   (shared interception pool, shared tool servers, per-endpoint clients) — and hands
   them into `rollout()`. The hook never constructs agents.
@@ -365,10 +363,11 @@ class DebateEnv(vf.Environment[DebateParams]):
 - `score()` is bounded by `--timeout.score`; `setup()`/`teardown()` hooks bracket the
   serving lifetime for env-owned shared resources.
 
-The judge seat above is the pattern the bundled judge env productionizes: pair
+The judge seat above is the pattern the bundled judge envs productionize: pair
 `--env.id judge` with any taskset and the same grading runs spec-driven (write
-criteria once, as a plugin) and sandboxed when the judge executes code — reach for
-it before writing a `judge_task` of your own (see the bundled envs below).
+criteria once, as a plugin); `--env.id agentic-judge` is the sandboxed tier for a
+judge that verifies with real execution — reach for these before writing a
+`judge_task` of your own (see the bundled envs below).
 
 For the single-agent case none of this is visible: the base `roles()` is one `"solver"`
 role driven by `--harness.*`, `rollout()` is `[await agents["solver"].run(task)]`, and
@@ -405,4 +404,5 @@ Bundled envs (`verifiers/v1/envs/`):
 | id | roles | what it does |
 | --- | --- | --- |
 | `best-of-n` | `solver` | `--env.n` independent attempts per rollout; `score()` marks the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
-| `judge` | `solver`, `judge` | the solver plays the task; a judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, same registry and format as `taskset.task.judges`) — write your grading criteria once, run them as a bare call or as an agent. Verdict + per-criterion metrics land on the solver's trace; point `--env.judge.harness.id` at a real harness and the judge investigates with tools, `--env.spec.view full_trace` shows it the whole transcript. A judge that executes code is always played in its own sandbox, never on the host: its verdict task mirrors the solver task's world (same image, a fresh box in its original state) with the graded transcript uploaded (`/tmp/transcript.md`/`.json`), riding the run's container runtime — a fully-subprocess run must pin one (`--env.judge.harness.runtime.type docker`). |
+| `judge` | `solver`, `judge` | the solver plays the task; a bare judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, same registry and format as `taskset.task.judges`) — write your grading criteria once, run them as a bare call or as an agent. Verdict + per-criterion metrics land on the solver's trace; `--env.spec.view full_trace` shows the judge the whole transcript. A code-executing judge harness is refused here — that's `agentic-judge`. |
+| `agentic-judge` | `solver`, `judge` | the sandboxed tier of agent-as-judge: same spec plugin and recording, but the judge investigates with real execution, always in its own sandbox, never on the host. Its verdict task mirrors the solver task's world (same image, a fresh box in its original state) with the graded transcript uploaded (`/tmp/transcript.md`/`.json`); the judge's harness late-binds to the run's own, container runtime included — on a docker run it lands in docker with no flags, and a fully-subprocess run refuses at construction (`--env.judge.harness.runtime.type docker`). |

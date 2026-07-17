@@ -524,7 +524,7 @@ class Environment(Generic[ParamsT]):
       - `roles()` — which agent plays which role: one `vf.Role` each. The default is
         already the 1:1 mapping (every `AgentConfig` params field plays the dataset
         under its field name); override only when a role's needs differ — the env
-        mints its tasks itself, or computes them.
+        mints its tasks itself.
       - `rollout(task, agents)` — how the agents interact on one task: imperative
         Python over `Agent` values; the returned traces are the rollout's episode.
       - `score(task, traces)` — sibling-dependent judgement over the finished set.
@@ -685,8 +685,9 @@ class Environment(Generic[ParamsT]):
         roles all play the dataset never writes this method. With no declared fields,
         the implied single-agent case: one `"solver"` role on the run's own harness
         (`--harness.*`). Override it when a role's needs differ from the taskset's —
-        the env mints its tasks itself (`vf.Role(cfg, mcp=False, container=False)`)
-        or computes them (the judge env)."""
+        the env mints its tasks itself: `vf.Role(cfg, mcp=False, container=False)`
+        for a bare model actor, `container=True` when the minted tasks need a box
+        (the agentic-judge env)."""
         declared = {
             name: Role(config)
             for name, config in _declared_agent_configs(self.params).items()
