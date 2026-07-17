@@ -457,23 +457,23 @@ WireTrace = Trace[WireTaskData]
 
 
 class Episode(StrictBaseModel, Generic[DataT, StateT]):
-    """One rollout of the env — the GLOBAL view of what happened, where each of its
-    traces is one agent's LOCAL view (its own conversation, role-stamped; a judge's
-    verdict trace is separate from the solution it judges). The atom of `traces.jsonl` (one episode
-    per line) and of the serve protocol: a single-agent rollout carries one trace, a
-    multi-agent env's one per role — they succeed, resume, and score as a unit,
-    which is exactly what the episode makes atomic. `errors` are rollout-level
-    failures not attributable to any one trace (the env's `rollout`/`score` hooks,
-    plus prior attempts' errors when the episode was retried — same shape as
-    `Trace.errors`); per-trace failures stay on the traces."""
+    """One run of the env — the GLOBAL view of what happened, where each of its
+    traces is one agent's LOCAL view (one rollout: its own conversation, role-stamped;
+    a judge's verdict trace is separate from the solution it judges). The atom of
+    `traces.jsonl` (one episode per line) and of the serve protocol: a single-agent
+    episode carries one trace, a multi-agent env's one per role — they succeed, resume,
+    and score as a unit, which is exactly what the episode makes atomic. `errors` are
+    episode-level failures not attributable to any one trace (the env's
+    `rollout`/`score` hooks, plus prior attempts' errors when the episode was retried —
+    same shape as `Trace.errors`); per-trace failures stay on the traces."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     env: str = ""
-    """The env (taskset) id that produced this rollout — provenance for mixed files."""
+    """The env (taskset) id that produced this episode — provenance for mixed files."""
     task: TraceTask[DataT]
     """The task rolled out, as recorded on its traces (class name + row)."""
     errors: list[Error] = Field(default_factory=list)
-    """Rollout-level errors, oldest first (more than one only when the rollout was
+    """Episode-level errors, oldest first (more than one only when the episode was
     retried). `error` exposes the most recent."""
     traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
 
@@ -483,7 +483,7 @@ class Episode(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def ok(self) -> bool:
-        """Whether the whole rollout is good — no episode-level error and no trace
+        """Whether the whole episode is good — no episode-level error and no trace
         errors. The resume unit: anything less is redone."""
         return not self.errors and not any(t.errors for t in self.traces)
 

@@ -122,7 +122,7 @@ def _creds() -> tuple[str | None, str, str, str | None]:
 
 
 def _episode_ids(config: EvalConfig) -> dict[str, str]:
-    """trace id -> rollout-episode id, read off the run's own traces.jsonl (the durable
+    """trace id -> episode id, read off the run's own traces.jsonl (the durable
     source of the grouping); pre-episode lines (bare traces) simply aren't in the map."""
     from verifiers.v1.cli.output import TRACES_FILE, output_path, sniff_episode
 
