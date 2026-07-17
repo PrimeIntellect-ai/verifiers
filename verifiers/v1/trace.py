@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
+from verifiers.v1.dialects import DialectName
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import HarnessConfig
@@ -72,9 +73,8 @@ class ModelCall(StrictBaseModel):
     """Index into `Trace.nodes` of the assistant node this call committed — the link into
     the message graph (the call's conversation is that node's root-to-self path). None for
     a call that committed no turn (see `error`)."""
-    endpoint: str | None = None
-    """The provider endpoint path the request went to (e.g. `/chat/completions`) — says
-    which wire format `request` and `response` are in."""
+    dialect: DialectName | None = None
+    """The wire format `request` and `response` are shaped as."""
     request: dict[str, Any] | None = None
     """The raw request body as sent upstream: the harness's native JSON with the rollout's
     model + sampling overrides applied — so it carries the effective sampling parameters
@@ -86,8 +86,6 @@ class ModelCall(StrictBaseModel):
     """Provider response headers (request ids, rate limits), when the transport exposes them."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """Wall-clock span from sending the request to the fully received response."""
-    time_to_first_token: float | None = None
-    """Seconds from sending the request to the first streamed event; None when not streaming."""
     error: Error | None = None
     """The failure that ended this call, coupled to the exchange that caused it; None on
     success. A failed call still records the request it sent."""

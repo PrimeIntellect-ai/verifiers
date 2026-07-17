@@ -233,7 +233,7 @@ class InterceptionServer(Interception):
             status=getattr(error, "status_code", 502),
         )
 
-    def _record_call(
+    def record_call(
         self,
         session: RolloutSession,
         dialect: Dialect,
@@ -243,7 +243,6 @@ class InterceptionServer(Interception):
         node: int | None = None,
         response: dict | None = None,
         headers: dict[str, str] | None = None,
-        first_token: float | None = None,
         error: Exception | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
@@ -253,12 +252,11 @@ class InterceptionServer(Interception):
         session.trace.calls.append(
             ModelCall(
                 node=node,
-                endpoint=dialect.upstream_path,
+                dialect=dialect.name,
                 request=request,
                 response=response,
                 response_headers=headers,
                 time=TimeSpan(start=started, end=time.time()),
-                time_to_first_token=first_token,
                 error=None
                 if error is None
                 else Error(
@@ -415,7 +413,7 @@ class InterceptionServer(Interception):
                     # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
                     # as a truncation — return the last turn if there is one, else refuse to halt
                     # the harness (same shape as `refused` above).
-                    self._record_call(
+                    self.record_call(
                         session, dialect, upstream_request, started, error=e
                     )
                     session.trace.stop("context_length")
@@ -429,7 +427,7 @@ class InterceptionServer(Interception):
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
-                    self._record_call(
+                    self.record_call(
                         session, dialect, upstream_request, started, error=e
                     )
                     session.error = e
@@ -444,7 +442,7 @@ class InterceptionServer(Interception):
                         status=getattr(e, "status_code", 502),
                     )
                 except Exception as e:  # surface to the program as an API error
-                    self._record_call(
+                    self.record_call(
                         session, dialect, upstream_request, started, error=e
                     )
                     logger.warning(
@@ -461,7 +459,7 @@ class InterceptionServer(Interception):
                 )
                 node = turn.commit(response, tools)  # one node per new message;
                 # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
-                self._record_call(
+                self.record_call(
                     session,
                     dialect,
                     upstream_request,
@@ -544,14 +542,14 @@ class InterceptionServer(Interception):
                 session_id=session.trace.id,
             )
         except OverlongPromptError as e:
-            self._record_call(session, dialect, upstream_request, started, error=e)
+            self.record_call(session, dialect, upstream_request, started, error=e)
             session.trace.stop("context_length")
             logger.debug("prompt too long: id=%s", session.trace.id)
             return web.json_response(
                 dialect.error_body("rollout stopped: context_length"), status=400
             )
         except RolloutError as e:
-            self._record_call(session, dialect, upstream_request, started, error=e)
+            self.record_call(session, dialect, upstream_request, started, error=e)
             session.error = e
             logger.warning(
                 "model call failed: id=%s %s: %s",
@@ -563,7 +561,7 @@ class InterceptionServer(Interception):
                 dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
             )
         except Exception as e:  # surface to the program as an API error
-            self._record_call(session, dialect, upstream_request, started, error=e)
+            self.record_call(session, dialect, upstream_request, started, error=e)
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
         resp = web.StreamResponse(
@@ -581,7 +579,6 @@ class InterceptionServer(Interception):
         ready = asyncio.Event()
         producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
         parser_error: Exception | None = None
-        first_token: float | None = None
         # SSE events from the turn-ending one onward (the terminal event and any trailing
         # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
         # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
@@ -602,8 +599,6 @@ class InterceptionServer(Interception):
                 if chunk is None:
                     await producer
                     break
-                if first_token is None:
-                    first_token = time.time() - started
                 if deferred or dialect.is_terminal_event(chunk):
                     if parser_error is None:
                         try:
@@ -636,7 +631,7 @@ class InterceptionServer(Interception):
                 raise parser_error
             response = parser.finish()
             node = turn.commit(response, tools)
-            self._record_call(
+            self.record_call(
                 session,
                 dialect,
                 upstream_request,
@@ -644,18 +639,10 @@ class InterceptionServer(Interception):
                 node=node,
                 response=response.raw,
                 headers=reply.headers,
-                first_token=first_token,
             )
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         except Exception as e:
-            self._record_call(
-                session,
-                dialect,
-                upstream_request,
-                started,
-                first_token=first_token,
-                error=e,
-            )
+            self.record_call(session, dialect, upstream_request, started, error=e)
             raise
         finally:
             # Release the withheld events only now — after the commit — then close.

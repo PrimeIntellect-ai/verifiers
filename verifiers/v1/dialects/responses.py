@@ -279,6 +279,7 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
+    name = "responses"
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse

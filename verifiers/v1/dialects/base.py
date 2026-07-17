@@ -16,7 +16,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, Literal, TypeVar
 
 from pydantic import BaseModel
 from pydantic_core import from_json
@@ -25,6 +25,9 @@ from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
+
+DialectName = Literal["chat", "responses", "anthropic"]
+"""The registered wire formats — how a trace's raw per-call `request`/`response` are shaped."""
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +123,9 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     (`RespT`). The single place a protocol lives: implement a `Dialect` + register it in
     `dialects.DIALECTS` and a harness speaking that format works end-to-end (the eval client and
     interception server are generic over this interface)."""
+
+    name: ClassVar[DialectName]
+    """This dialect's wire-format name, recorded on the trace's per-call records."""
 
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts model turns to. The interception server serves

@@ -245,6 +245,7 @@ class AnthropicStreamParser(StreamParser):
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
+    name = "anthropic"
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
