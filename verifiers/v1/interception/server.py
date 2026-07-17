@@ -243,7 +243,7 @@ class InterceptionServer(Interception):
         node: int | None = None,
         response: dict | None = None,
         headers: dict[str, str] | None = None,
-        error: Exception | None = None,
+        error: BaseException | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the raw request as sent upstream, the raw native response, timing, and — when the
@@ -263,9 +263,11 @@ class InterceptionServer(Interception):
                     type=type(error).__name__,
                     message=str(error),
                     # Provider errors already carry the actionable upstream diagnostic.
+                    # Format from the exception object: the record is written in a
+                    # `finally`, where the ambient exception state is already cleared.
                     traceback=None
                     if isinstance(error, ProviderError)
-                    else traceback.format_exc(),
+                    else "".join(traceback.format_exception(error)),
                 ),
             )
         )
@@ -460,6 +462,11 @@ class InterceptionServer(Interception):
                             e,
                         )
                         return web.json_response(dialect.error_body(str(e)), status=502)
+                    except BaseException as e:
+                        # A cancelled exchange (harness disconnect, shutdown) is still
+                        # recorded, coupled to its cancellation.
+                        error = e
+                        raise
                 finally:
                     # The turn's one per-exchange record: whatever the exchange produced,
                     # plus the error that ended it (if any).
@@ -537,10 +544,10 @@ class InterceptionServer(Interception):
         response: Response | None = None
         node: int | None = None
         error: Exception | None = None
+        turn = graph.prepare_turn(session.trace, prompt)
         started = time.time()
         try:
             try:
-                turn = graph.prepare_turn(session.trace, prompt)
                 upstream_request = dialect.apply_overrides(
                     body, session.ctx.model, session.ctx.sampling
                 )
@@ -652,10 +659,10 @@ class InterceptionServer(Interception):
                         await resp.write(event)
                     await resp.write_eof()
             return resp
-        except Exception as e:
+        except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit
-            # error) ends a real exchange; couple it to the record unless the turn already
-            # committed (then only post-commit delivery failed).
+            # error, a cancellation) ends a real exchange; couple it to the record unless
+            # the turn already committed (then only post-commit delivery failed).
             if node is None:
                 error = e
             raise
