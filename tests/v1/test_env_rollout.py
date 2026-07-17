@@ -85,6 +85,17 @@ def test_default_roles_are_the_declared_agent_fields():
     assert not vf.Environment(_env_config())._stamp_roles
 
 
+def test_role_fields_must_declare_default_instances():
+    """A `Field(default_factory=...)` role would silently fall out of role discovery
+    and the CLI deep-merge; the params class refuses at definition instead."""
+    from pydantic import Field
+
+    with pytest.raises(TypeError, match="default instance"):
+
+        class BadParams(vf.EnvParams):
+            solver: vf.AgentConfig = Field(default_factory=vf.AgentConfig)
+
+
 async def test_multi_role_records_stamp_roles():
     env = DuetEnv(_env_config(env=DuetParams()))
     _stub_agents(env)

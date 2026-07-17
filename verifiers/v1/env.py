@@ -179,6 +179,28 @@ class EnvParams(BaseConfig):
                     )
         return data
 
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs):
+        """A role field must carry its declared default *instance* — it's what the
+        deep-merge and the default `roles()` read. A `Field(default_factory=...)` or
+        bare annotation would silently fall out of both, so refuse it at class
+        definition."""
+        super().__pydantic_init_subclass__(**kwargs)
+        for name, info in cls.model_fields.items():
+            annotation = info.annotation
+            if (
+                isinstance(annotation, type)
+                and issubclass(annotation, AgentConfig)
+                and not isinstance(info.default, AgentConfig)
+            ):
+                raise TypeError(
+                    f"{cls.__name__}.{name}: declare the role with a default "
+                    f"instance (`{name}: vf.AgentConfig = vf.AgentConfig(...)`), "
+                    "not default_factory or a bare annotation — the declared "
+                    "instance is the role's author default (CLI overrides "
+                    "deep-merge onto it, and the default roles() plays it)"
+                )
+
 
 def _declared_agent_configs(params: EnvParams) -> dict[str, AgentConfig]:
     """The typed `AgentConfig` fields declared on an env's params block (a declared
