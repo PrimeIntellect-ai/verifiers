@@ -1,7 +1,7 @@
 import asyncio
 import base64
 import io
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -465,3 +465,35 @@ def test_textify_cache_concurrent_access_is_bounded(monkeypatch) -> None:
     assert results == [f"rendered:{url}" for url in urls]
     assert len(session._textify_cache) <= 32
     assert len(session._textify_seen) == 8192
+
+
+@pytest.mark.asyncio
+async def test_typed_and_wire_paths_share_render_cache(monkeypatch) -> None:
+    calls = 0
+
+    def render(url: str, _cfg) -> str:
+        nonlocal calls
+        calls += 1
+        return f"rendered:{url}"
+
+    monkeypatch.setattr("verifiers.v1.session.render_url", render)
+    session = SimpleNamespace(
+        textify=vf.TextifyConfig(enabled=True),
+        _textify_cache=OrderedDict(),
+        _textify_seen=bytearray(8192),
+        _textify_lock=threading.Lock(),
+    )
+    session.render_image = MethodType(RolloutSession.render_image, session)
+    url = "data:image/png;base64,same-image"
+    assert session.render_image(url) == f"rendered:{url}"
+
+    messages: vf.Messages = [
+        vf.UserMessage(
+            content=[vf.ImageUrlContentPart(image_url=vf.ImageUrlSource(url=url))]
+        )
+    ]
+    out = await InterceptionServer()._textify_messages(session, messages)
+
+    assert calls == 1
+    assert isinstance(out[0].content, list)
+    assert out[0].content[0] == vf.TextContentPart(text=f"rendered:{url}")

@@ -19,6 +19,7 @@ import base64
 import binascii
 import io
 import logging
+from collections.abc import Callable
 from typing import Literal
 
 import numpy as np
@@ -289,12 +290,18 @@ def render_url(url: str, cfg: TextifyConfig) -> str | None:
     return f"```image[{cfg.mode}]\n{art}\n```"
 
 
-def textify_messages(messages: Messages, cfg: TextifyConfig) -> Messages:
+def textify_messages(
+    messages: Messages,
+    cfg: TextifyConfig,
+    render: Callable[[str], str | None] | None = None,
+) -> Messages:
     """Replace each data-URI image part with its fenced rendering, in place in the
     content structure. Identity when disabled. Non-image parts, `str` bodies, and
-    non-data image URLs pass through unchanged."""
+    non-data image URLs pass through unchanged. `render` lets interception reuse its
+    per-rollout image cache; public callers default to direct rendering."""
     if not cfg.enabled:
         return messages
+    render = render or (lambda url: render_url(url, cfg))
     out: list[Message] = []
     for message in messages:
         content = getattr(message, "content", None)
@@ -306,7 +313,7 @@ def textify_messages(messages: Messages, cfg: TextifyConfig) -> Messages:
         parts = []
         for part in content:
             text = (
-                render_url(part.image_url.url, cfg)
+                render(part.image_url.url)
                 if isinstance(part, ImageUrlContentPart)
                 else None
             )

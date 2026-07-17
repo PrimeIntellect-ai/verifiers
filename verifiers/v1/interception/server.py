@@ -248,7 +248,9 @@ class InterceptionServer(Interception):
         if not session.textify.enabled:
             return messages
         try:
-            return await asyncio.to_thread(textify_messages, messages, session.textify)
+            return await asyncio.to_thread(
+                textify_messages, messages, session.textify, session.render_image
+            )
         except Exception as e:
             raise TaskError(f"textify failed: {type(e).__name__}: {e}") from e
 
