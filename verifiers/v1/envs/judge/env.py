@@ -14,15 +14,28 @@ per run.
 Default spec: the built-in `score` judge (one 0-10 verdict) under the reward key
 `judge`, reading the solver's final reply; a rubric spec defaults to the whole
 transcript (`--env.spec.view full_trace`), which is how an agentic solver's *process*
-gets judged. The judge's own trace is role-stamped and untrainable by default, and the
-solver's runtime is gone by judge time — a judge that must inspect the solver's live
-box is a custom env (`provision()` + borrowed `runtime=`), not this wrapper.
+gets judged. The judge's own trace is role-stamped and untrainable by default.
+
+A judge that executes code (any harness beyond the tool-less chat loops,
+`Harness.EXECUTES_CODE`) is always played in its own sandbox, never on the host: its
+role needs a container — a judge harness left on the default subprocess runtime rides
+the run's own container runtime, and a fully-subprocess run must pin one
+(`--env.judge.harness.runtime.type docker`). Its verdict task mirrors the solver
+task's world (same image/workdir/resources — a FRESH box, in its original state), and
+the graded transcript is uploaded into it (`/tmp/transcript.md` rendered,
+`/tmp/transcript.json` the raw trace record) so the judge can reconstruct and test the
+agent's work empirically. The solver's runtime is still gone by judge time — a judge
+that must inspect the solver's live box is a custom env (`provision()` + borrowed
+`runtime=`), not this wrapper.
 
 Unlike the plugged tiers (`config.judges` — a bare call inside the rollout;
 `vf.Judge` — a call in your own reward code), the verdict here is a real, inspectable,
 budgeted agent trace. The spec's `model`/`client`/`sampling` are ignored — the judge
 AGENT makes the calls; route it with `--env.judge.*`.
 """
+
+import json
+from functools import cached_property
 
 from pydantic import SerializeAsAny, model_validator
 
@@ -31,6 +44,9 @@ from verifiers.v1.env import _deep_merge
 from verifiers.v1.judge import JudgeConfig
 from verifiers.v1.judges.score import ScoreJudgeConfig
 from verifiers.v1.task import _record_result
+
+TRANSCRIPT_MD = "/tmp/transcript.md"
+TRANSCRIPT_JSON = "/tmp/transcript.json"
 
 
 class JudgeParams(vf.EnvParams):
@@ -62,6 +78,45 @@ class JudgeParams(vf.EnvParams):
         return data
 
 
+def _sandbox_note(solver: vf.TaskData) -> str:
+    """What an agentic judge must know about its box before it starts verifying."""
+    world = (
+        f"a fresh instance of the same environment the graded agent worked in "
+        f"(image {solver.image}), in its ORIGINAL state — the agent's edits are "
+        "NOT applied; reconstruct them from the transcript to verify"
+        if solver.image is not None
+        else "your own — the graded agent worked elsewhere"
+    )
+    return (
+        f"\n\n## Your workspace\nYour sandbox is {world}. The agent's full transcript "
+        f"is uploaded at {TRANSCRIPT_MD} (rendered) and {TRANSCRIPT_JSON} (the raw "
+        "trace record)."
+    )
+
+
+def _noted(prompt: str | vf.Messages, note: str) -> str | vf.Messages:
+    if isinstance(prompt, str):
+        return prompt + note
+    return [*prompt, vf.UserMessage(content=note.strip())]
+
+
+class JudgeTask(vf.Task):
+    """An agentic judge's verdict task: the solver task's world mirrored onto the
+    minted row, with the graded transcript uploaded before the judge starts.
+    `NEEDS_CONTAINER` keeps `Agent.run`'s per-task backstop aligned with the role's
+    declared container need — judge-written code never runs on the host."""
+
+    NEEDS_CONTAINER = True
+
+    def __init__(self, data: vf.TaskData, files: dict[str, bytes]) -> None:
+        super().__init__(data)
+        self._files = files
+
+    async def setup(self, trace, runtime):
+        for path, content in self._files.items():
+            await runtime.write(path, content)
+
+
 class JudgeEnv(vf.Environment[JudgeParams]):
     def __init__(self, config: vf.EnvConfig) -> None:
         super().__init__(config)
@@ -69,25 +124,81 @@ class JudgeEnv(vf.Environment[JudgeParams]):
 
         self._spec = load_judge(self.params.spec)
 
+    @cached_property
+    def _agentic(self) -> bool:
+        """Whether the judge investigates with real execution — a harness that hands
+        the model local execution (`EXECUTES_CODE`) — which is what forces the
+        sandbox rules; a tool-less judge stays a bare model actor."""
+        from verifiers.v1.loaders import load_harness
+
+        cfg = self.params.judge.harness
+        harness = (
+            self.harness
+            if cfg is None or cfg == self.config.harness
+            else load_harness(cfg)
+        )
+        return harness.EXECUTES_CODE
+
     def roles(self):
         # The topology: the solver plays the dataset (the taskset's needs apply);
-        # the judge plays env-minted plain tasks — a bare model actor, so it pairs
-        # with any taskset, tools and containers included.
+        # the judge plays env-minted verdict tasks. A tool-less judge (the default
+        # `direct`) is a bare model actor — it pairs with any taskset, tools and
+        # containers included. A judge that executes code is never played on the
+        # host: its role needs a container (fail-fast at construction), and a judge
+        # harness left on the default subprocess runtime rides the run's own
+        # container runtime — `--env.judge.harness.id default` on a docker run puts
+        # the judge in docker with no further flags.
+        judge = self.params.judge
+        if (
+            self._agentic
+            and judge.harness is not None
+            and isinstance(judge.harness.runtime, vf.SubprocessConfig)
+            and not isinstance(self.config.harness.runtime, vf.SubprocessConfig)
+        ):
+            judge = judge.model_copy(
+                update={
+                    "harness": judge.harness.model_copy(
+                        update={"runtime": self.config.harness.runtime}
+                    )
+                }
+            )
         return {
             "solver": vf.Role(self.params.solver),
-            "judge": vf.Role(self.params.judge, mcp=False, container=False),
+            "judge": vf.Role(judge, mcp=False, container=self._agentic),
         }
 
     async def rollout(self, task, agents):
         solution = await agents["solver"].run(task)
-        judge_task = vf.Task(
-            vf.TaskData(
-                idx=task.data.idx,
-                prompt=self._spec.render(task.data, solution),
-                sources=(solution.id,),
-                relation="judges",
+        prompt = self._spec.render(task.data, solution)
+        if self._agentic:
+            # A code-running judge gets the solver task's world: a fresh box of the
+            # same image (original state — the solver's edits live only in the
+            # solver's box), the transcript uploaded, the prompt told where things
+            # stand.
+            judge_task = JudgeTask(
+                vf.TaskData(
+                    idx=task.data.idx,
+                    prompt=_noted(prompt, _sandbox_note(task.data)),
+                    image=task.data.image,
+                    workdir=task.data.workdir,
+                    resources=task.data.resources.model_copy(),
+                    sources=(solution.id,),
+                    relation="judges",
+                ),
+                files={
+                    TRANSCRIPT_MD: solution.transcript.encode(),
+                    TRANSCRIPT_JSON: json.dumps(solution.to_record()).encode(),
+                },
             )
-        )
+        else:
+            judge_task = vf.Task(
+                vf.TaskData(
+                    idx=task.data.idx,
+                    prompt=prompt,
+                    sources=(solution.id,),
+                    relation="judges",
+                )
+            )
         verdict = await agents["judge"].run(judge_task)
         return [solution, verdict]
 

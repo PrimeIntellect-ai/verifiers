@@ -601,13 +601,11 @@ class Environment(Generic[ParamsT]):
                     "env mints this role's tasks itself, declare its needs on the "
                     "roles() entry (vf.Role(cfg, container=False))."
                 )
-            # The warning is about the *agent* running arbitrary code on the host: every harness
-            # hands it local execution (bash/edit, or a CLI agent) except the tool-less chat
-            # loops — `null` (relays the model and remote MCP tools) and the in-process
-            # `direct` (runs nothing in the runtime at all) — so exempt those, warn for the
-            # rest (once per distinct harness across roles).
+            # The warning is about the *agent* running arbitrary code on the host
+            # (`EXECUTES_CODE` — the tool-less chat loops are exempt), once per
+            # distinct harness across roles.
             if (
-                harness.config.id not in ("null", "direct")
+                harness.EXECUTES_CODE
                 and isinstance(harness.config.runtime, SubprocessConfig)
                 and harness.config.id not in warned
             ):

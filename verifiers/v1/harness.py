@@ -54,6 +54,12 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_MCP: ClassVar[bool] = False
     SUPPORTS_USER_SIM: ClassVar[bool] = False
     SUPPORTS_MESSAGE_PROMPT: ClassVar[bool] = False
+    EXECUTES_CODE: ClassVar[bool] = True
+    """Whether the program hands the model local execution in the runtime (bash/edit,
+    or a CLI agent) — true for every real harness, so it's the default; the tool-less
+    chat loops (`direct`, `null`) override to False (their only tools are remote MCP
+    servers). Read wherever model-directed execution changes the rules: the
+    subprocess-on-host warning, the judge env's sandbox requirement."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

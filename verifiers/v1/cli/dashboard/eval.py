@@ -493,10 +493,17 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     state, result, stop = "error", err.type, ""
                 else:
                     state, result, stop = _stage(t), "", ""
-                descriptor = t.runtime.id if t.runtime is not None else None
-                runtime = (
-                    f"{runtime_type}({descriptor})" if descriptor else runtime_type
-                )
+                # The trace's own stamp, not the run-level runtime: a role's harness
+                # may resolve elsewhere (the judge env's sandboxed judge on a
+                # subprocess run).
+                if t.runtime is not None:
+                    runtime = (
+                        f"{t.runtime.type}({t.runtime.id})"
+                        if t.runtime.id
+                        else t.runtime.type
+                    )
+                else:
+                    runtime = runtime_type
                 turns = t.num_turns
                 start = t.timing.boot.start or t.timing.setup.start
                 end = (

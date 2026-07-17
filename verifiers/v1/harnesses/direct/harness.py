@@ -29,6 +29,7 @@ class DirectHarness(Harness[DirectHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = False
     SUPPORTS_MESSAGE_PROMPT = True
+    EXECUTES_CODE = False
 
     async def launch(
         self,

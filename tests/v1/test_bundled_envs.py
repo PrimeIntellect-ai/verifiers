@@ -69,6 +69,44 @@ def test_minted_task_roles_pair_with_tool_tasksets():
         )
 
 
+def test_agentic_judge_is_sandboxed():
+    """A judge that executes code (`EXECUTES_CODE`) is never played on the host: its
+    role needs a container — a fully-subprocess run refuses at construction — and a
+    judge harness left on the default subprocess runtime rides the run's own
+    container runtime. The tool-less default (`direct`) stays a bare model actor."""
+    with pytest.raises(ValueError, match="role 'judge' plays tasks that need a"):
+        vf.load_environment(
+            EvalConfig(
+                taskset={"id": "echo-v1"},
+                env={"id": "judge", "judge": {"harness": {"id": "default"}}},
+            )
+        )
+    env = vf.load_environment(
+        EvalConfig(
+            taskset={"id": "echo-v1"},
+            harness={"id": "default", "runtime": {"type": "docker"}},
+            env={"id": "judge", "judge": {"harness": {"id": "default"}}},
+        )
+    )
+    judge = env._roles["judge"]
+    assert judge.container is True
+    assert judge.agent.harness.runtime.type == "docker"  # lifted into the run's
+    # The lift is value-based, so the env-server config round-trip resolves the same.
+    rebuilt = vf.load_environment(
+        EvalConfig.model_validate(env.config.model_dump(mode="json"))
+    )
+    assert rebuilt._roles["judge"].agent.harness.runtime.type == "docker"
+    bare = vf.load_environment(
+        EvalConfig(
+            taskset={"id": "echo-v1"},
+            harness={"id": "default", "runtime": {"type": "docker"}},
+            env={"id": "judge"},
+        )
+    )
+    assert bare._roles["judge"].container is False
+    assert bare._roles["judge"].agent.harness.runtime.type == "subprocess"
+
+
 def test_roles_are_always_roles():
     """The implied single-agent default is one dataset-playing `solver` role; a
     roles() override handing back a bare AgentConfig gets a wrap-it error."""
