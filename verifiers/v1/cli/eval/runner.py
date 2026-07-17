@@ -16,7 +16,7 @@ from verifiers.v1.cli.output import (
     save_config,
 )
 from verifiers.v1.env import Environment, RunSlot
-from verifiers.v1.trace import Episode, Trace
+from verifiers.v1.trace import Episode, EvalRunInfo, Trace
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     write_lock = asyncio.Lock()
 
     async def on_complete(episode: Episode) -> None:
+        for trace in episode.traces:
+            trace.stamp(EvalRunInfo(id=config.uuid))
         await append_episode(out, episode, write_lock)
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
@@ -230,6 +232,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     sampling=config.sampling,
                 )
             for trace in traces:
+                trace.stamp(EvalRunInfo(id=config.uuid))
                 await append_trace(out, trace, write_lock, env=config.env_id)
             return traces
 
@@ -241,6 +244,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     model=config.model,
                     sampling=config.sampling,
                 )
+            for trace in episode.traces:
+                trace.stamp(EvalRunInfo(id=config.uuid))
             await append_episode(out, episode, write_lock)
             return list(episode.traces)
 

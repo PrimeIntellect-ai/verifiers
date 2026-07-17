@@ -1,10 +1,8 @@
-"""Smoke-eval every v1 example taskset in `environments/` through the `eval` CLI.
+"""Smoke-eval every V1 example taskset in `environments/` through the `eval` CLI.
 
-The v0 counterpart (`tests/test_envs.py`) covers v0 envs (`vf.load_environment` + `vf-eval`);
-here we run each `_v1` taskset with its required harness for one short, capped rollout and
-require it to succeed — so a broken example taskset fails CI. `compact` is excluded (it's a
-harness, not a taskset); SWE/container tasksets need a docker/prime runtime and are covered by
-the dedicated v1 e2e tests instead.
+Each `_v1` taskset runs with its required harness for one short, capped rollout, so a broken
+example taskset fails CI. `compact` is excluded (it's a harness, not a taskset);
+SWE/container tasksets need a docker/prime runtime and are covered by dedicated V1 e2e tests.
 """
 
 import os

@@ -6,8 +6,8 @@ import pytest
 @pytest.mark.e2e
 async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     """Single-turn (echo a short phrase back)."""
-    if harness == "codex":
-        pytest.skip("codex is a coding agent, not reliable on a no-op echo chat task")
+    if harness in {"codex", "claude-code"}:
+        pytest.skip("coding agents are not reliable on a no-op echo chat task")
     (trace,) = await run_v1(
         "echo-v1",
         harness=harness,
@@ -18,8 +18,8 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns == 1
     assert trace.reward == 1.0
-    # The resolved sampling rides the trace (policy metadata for trainers).
-    assert trace.sampling is not None and trace.sampling.temperature == 0
+    # The seat's resolved identity rides the trace (policy metadata for trainers).
+    assert trace.agent is not None and trace.agent.sampling.temperature == 0
 
 
 @pytest.mark.e2e

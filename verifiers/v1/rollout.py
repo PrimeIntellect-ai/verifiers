@@ -22,6 +22,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 
+from verifiers import __version__
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -47,7 +48,8 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import TraceTask, Trace
+from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
+from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +129,14 @@ class RolloutRun:
         self.trace: Trace = Trace(
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
-            # The resolved sampling this run's calls are made with (role overrides
-            # included) — policy metadata a training consumer reads off the trace.
-            sampling=ctx.sampling,
+            verifiers=VersionInfo(version=__version__, commit=verifiers_commit()),
+            # The seat's resolved identity (role overrides included) — policy
+            # metadata a training consumer reads off the trace.
+            agent=AgentInfo(
+                model=ctx.model,
+                sampling=ctx.sampling,
+                harness=harness.config,
+            ),
         )
         if on_trace is not None:
             on_trace(self.trace)
