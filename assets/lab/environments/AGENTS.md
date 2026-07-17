@@ -307,9 +307,9 @@ class DebateEnv(vf.Environment[DebateParams]):
         """Sibling-dependent judgement over the finished set (per-trace judgement
         already ran on each trace's own task). Attach via record_reward/record_metric."""
         pro, con, verdict = traces
-        winner = verdict.last_reply or ""
-        pro.record_reward("won", float("pro" in winner))
-        con.record_reward("won", float("con" in winner))
+        winner = (verdict.last_reply or "").strip().lower()
+        pro.record_reward("won", float(winner == "pro"))
+        con.record_reward("won", float(winner == "con"))
 ```
 
 - **Roles are typed fields on the env's params block** (`Environment[DebateParams]`
