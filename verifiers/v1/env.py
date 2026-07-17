@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
 class TimeoutConfig(BaseConfig):
     """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit). Each bounds one stage of `run_rollout`: task and harness setup, the harness
+    limit). Each bounds one stage of a rollout: task and harness setup, the harness
     run, the task's `finalize` hook, then scoring. `score` is the one env-level stage:
     the cross-trace `Environment.score` hook, run once per env-rollout after its traces
     finish."""

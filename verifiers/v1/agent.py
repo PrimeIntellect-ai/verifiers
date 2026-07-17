@@ -22,7 +22,7 @@ agents share one pool of servers and tunnels). Without one, entering the agent
 share interception servers like an eval does. Un-entered, each run brings up its own
 per-rollout interception server — fine for scripts and small programs.
 
-The execution machinery is the standard rollout engine (`run_rollout`: staged lifecycle,
+The execution machinery is the standard rollout engine (`RolloutRun`: staged lifecycle,
 typed error attribution, token-true trace capture). The Agent only decides what goes into
 the rollout.
 """
@@ -42,7 +42,7 @@ from verifiers.v1.env import (
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import ElasticInterceptionPool, Interception
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import run_rollout
+from verifiers.v1.rollout import RolloutRun
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -201,7 +201,10 @@ class Agent:
         caller watches the run live (the eval dashboard reads stage, tokens, and
         turns off it)."""
         params = self._rollout_params(task, runtime)
-        trace = await run_rollout(task=task, on_trace=on_trace, **params)
+        run = RolloutRun(task=task, on_trace=on_trace, **params)
+        if await run.open():
+            await run.step()
+        trace = await run.close()
         self._stamp_agent(trace, params["runtime_config"], borrowed=runtime is not None)
         return trace
 
@@ -285,7 +288,7 @@ class Agent:
         try:
             # start inside the try: a failed start may already hold a remote sandbox,
             # so it must reach `stop()` (safe on a partially-started runtime) like in
-            # `run_rollout`.
+            # `RolloutRun.open`.
             await runtime.start()
             yield runtime
         finally:

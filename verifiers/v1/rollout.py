@@ -10,10 +10,10 @@ start and teardown). Cross-trace judgement runs afterwards (`Environment.score`,
 over the finished sibling traces alone), so a runtime is never kept up past its own
 rollout.
 
-`run_rollout` is the one-call form. `Agent` is its only caller: an agent decides
-what goes into a rollout, this module runs it. A task-declared user simulator
-(`Task.user`) rides the session inside the model boundary — the interception server
-injects its replies between model turns (see `verifiers.v1.mcp.user`).
+`Agent.run` is its only driver: an agent decides what goes into a rollout, this
+module runs it. A task-declared user simulator (`Task.user`) rides the session
+inside the model boundary — the interception server injects its replies between
+model turns (see `verifiers.v1.mcp.user`).
 """
 
 import asyncio
@@ -379,43 +379,3 @@ class RolloutRun:
             trace.error.type if trace.error else trace.stop_condition,
         )
         return trace
-
-
-async def run_rollout(
-    *,
-    task: Task,
-    harness: Harness,
-    ctx: ModelContext,
-    runtime_config: RuntimeConfig,
-    setup_timeout: float | None = None,
-    harness_timeout: float | None = None,
-    finalize_timeout: float | None = None,
-    scoring_timeout: float | None = None,
-    limits: RolloutLimits | None = None,
-    shared_tools: dict[str, SharedToolServer] | None = None,
-    interception: Interception | None = None,
-    runtime: Runtime | None = None,
-    on_trace: Callable[[Trace], None] | None = None,
-) -> Trace:
-    """Run one rollout to completion and return its trace: the harness program runs
-    on the task's prompt until it exits, which completes the trace
-    (`agent_completed`). A task-declared user simulator (`Task.user`) extends the
-    run turn-by-turn inside the model boundary, transparently to the harness."""
-    run = RolloutRun(
-        task=task,
-        harness=harness,
-        ctx=ctx,
-        runtime_config=runtime_config,
-        setup_timeout=setup_timeout,
-        harness_timeout=harness_timeout,
-        finalize_timeout=finalize_timeout,
-        scoring_timeout=scoring_timeout,
-        limits=limits,
-        shared_tools=shared_tools,
-        interception=interception,
-        runtime=runtime,
-        on_trace=on_trace,
-    )
-    if await run.open():
-        await run.step()
-    return await run.close()
