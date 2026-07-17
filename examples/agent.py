@@ -1,4 +1,9 @@
-"""Demo 1: the primitive. One agent, one task, one trace — subprocess runtime."""
+"""The standalone Agent: one agent, one task, one trace — subprocess runtime.
+
+`PRIME_API_KEY` in the environment, then: uv run python examples/agent.py
+Multi-agent interactions belong in an `Environment` (see docs/v1/environments.md);
+this is the primitive underneath.
+"""
 
 import asyncio
 import json
