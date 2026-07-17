@@ -569,3 +569,43 @@ def test_oversized_payload_rejected_after_decode(monkeypatch) -> None:
     monkeypatch.setattr(textify.base64, "b64decode", lambda *_, **__: b"four")
     with pytest.raises(ValueError, match="byte safety limit"):
         textify.data_url_bytes("data:image/png;base64,AAAA")
+
+
+def test_anthropic_system_images_textify_or_pass_through() -> None:
+    url = _data_url(np.zeros((2, 2, 3), dtype=np.uint8))
+    encoded = url.split(",", 1)[1]
+    cfg = vf.TextifyConfig(enabled=True, width=2)
+
+    def render(value: str) -> str | None:
+        return render_url(value, cfg)
+
+    base64_image = {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": encoded,
+        },
+    }
+    file_image = {
+        "type": "image",
+        "source": {"type": "file", "file_id": "file_123"},
+    }
+    body = {
+        "system": [
+            {"type": "text", "text": "system text"},
+            base64_image,
+            file_image,
+        ],
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    out = AnthropicDialect().textify_body(body, render)
+    assert out["system"][0] == body["system"][0]
+    assert out["system"][1]["type"] == "text"
+    assert out["system"][1]["text"].startswith("```image[ascii]\n")
+    assert out["system"][2] == file_image
+    assert body["system"][1] == base64_image
+
+    without_system = {"messages": []}
+    assert "system" not in AnthropicDialect().textify_body(without_system, render)

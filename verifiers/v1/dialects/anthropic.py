@@ -298,13 +298,16 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
                 out.append({"type": "text", "text": text} if text else part)
             return out
 
-        return {
+        transformed = {
             **body,
             "messages": [
                 {**raw, "content": blocks(raw.get("content"))}
                 for raw in body.get("messages", [])
             ],
         }
+        if "system" in body:
+            transformed["system"] = blocks(body["system"])
+        return transformed
 
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
