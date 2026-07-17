@@ -87,7 +87,11 @@ class ModelCall(StrictBaseModel):
     exchange itself failed; kept alongside `error` when a response arrived but
     recording its turn failed."""
     response_headers: dict[str, str] | None = None
-    """Provider response headers (request ids, rate limits), when the transport exposes them."""
+    """Provider response headers (request ids, rate limits), when the transport exposes
+    them — kept for failed exchanges too, when the failure carried an HTTP response."""
+    status: int | None = None
+    """The HTTP status a failed exchange surfaced (from the provider, or chosen for a
+    transport fault); None on success — a recorded turn implies a 2xx exchange."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """Wall-clock span from sending the request to the fully received response."""
     error: Error | None = None

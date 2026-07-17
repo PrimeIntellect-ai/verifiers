@@ -255,7 +255,12 @@ class InterceptionServer(Interception):
                 endpoint=dialect.upstream_path,
                 request=request,
                 response=response,
-                response_headers=headers,
+                # A failed exchange's HTTP response still carries diagnostics (request
+                # ids, rate limits): fall back to the headers stashed on the error.
+                response_headers=headers
+                if headers is not None
+                else getattr(error, "headers", None),
+                status=getattr(error, "status_code", None),
                 time=TimeSpan(start=started, end=time.time()),
                 error=None
                 if error is None
