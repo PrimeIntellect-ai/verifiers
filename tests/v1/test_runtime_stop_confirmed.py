@@ -80,6 +80,17 @@ def test_confirmed_stop_fails_when_remote_handle_was_consumed_without_confirmati
         asyncio.run(modal.stop_confirmed())
 
 
+def test_prime_idle_timeout_cannot_exceed_hard_lifetime():
+    with pytest.raises(ValueError, match="must not exceed the hard sandbox timeout"):
+        PrimeConfig(idle_timeout=121, timeout=120)
+
+
+def test_prime_idle_timeout_must_be_positive_or_disabled():
+    with pytest.raises(ValueError, match="must be positive or None"):
+        PrimeConfig(idle_timeout=0)
+    assert PrimeConfig(idle_timeout=None, timeout=60).idle_timeout is None
+
+
 class AsyncCallable:
     def __init__(self, function):
         self.function = function

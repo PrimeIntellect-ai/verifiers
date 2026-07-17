@@ -71,13 +71,16 @@ class PrimeConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _validate_idle_timeout(self) -> "PrimeConfig":
-        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
-            raise ValueError(
-                f"idle_timeout ({self.idle_timeout}s) must not exceed the "
-                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
-            )
         if not 60 <= self.timeout <= MAX_LIFETIME:
             raise ValueError(f"timeout must be between 60 and {MAX_LIFETIME} seconds")
+        if self.idle_timeout is not None:
+            if self.idle_timeout <= 0:
+                raise ValueError("idle_timeout must be positive or None")
+            if self.idle_timeout > self.timeout:
+                raise ValueError(
+                    f"idle_timeout ({self.idle_timeout}s) must not exceed the "
+                    f"hard sandbox timeout ({self.timeout}s)"
+                )
         return self
 
 
