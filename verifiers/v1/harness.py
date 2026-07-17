@@ -58,7 +58,7 @@ class Harness(ABC, Generic[ConfigT]):
     EXECUTES_CODE: ClassVar[bool] = True
     """Whether the program hands the model local execution in the runtime (bash/edit,
     or a CLI agent) — true for every real harness, so it's the default; the tool-less
-    chat loops (`direct`, `null`) override to False (their only tools are remote MCP
+    chat loops (`null`) override to False (their only tools are remote MCP
     servers). Read wherever model-directed execution changes the rules: the
     subprocess-on-host warning, the judge env's sandbox requirement."""
 
@@ -153,7 +153,7 @@ class Harness(ABC, Generic[ConfigT]):
         returned argv through `runtime.run_program(...)` here.
 
         The interception is the contract, not the process: a harness may run its loop
-        in-process instead of launching a program (the built-in `direct`), as long as
-        every model call still goes through `endpoint` + `secret` — traces, stops, and
-        limits are then identical to a real program's. Such a harness returns a
-        synthetic success `ProgramResult`; the trace is the record of what ran."""
+        in-process instead of launching a program, as long as every model call still
+        goes through `endpoint` + `secret` — traces, stops, and limits are then
+        identical to a real program's. Such a harness returns a synthetic success
+        `ProgramResult`; the trace is the record of what ran."""

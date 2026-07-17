@@ -77,7 +77,7 @@ class DebateEnv(vf.Environment[DebateConfig]):
   pins only what makes it a different actor: its own harness or runtime
   (`--env.judge.harness.runtime.type docker`), a frozen model, an off-train
   endpoint, tighter limits, `trainable=False` — and a declared pin is the env
-  author's per-seat default (the judge env's judge ships pinned to `direct`).
+  author's per-seat default.
 - **The 1:1 mapping is the default.** With no `roles()` override, every declared
   `AgentConfig` field plays the dataset under its field name — an env whose roles
   all need exactly what the taskset provides (self-play, fan-out like the bundled
@@ -114,16 +114,17 @@ class DebateEnv(vf.Environment[DebateConfig]):
   ```
 
   Override `score()` for imperative control (dynamic names or weights,
-  parse-and-fail — the bundled judge env, or the debate verdict above);
+  parse-and-fail — the bundled agentic-judge env, or the debate verdict above);
   `await super().score(task, traces)` keeps the decorated ones running.
 - `score()` is bounded by `--env.timeout.score`; `setup()`/`teardown()` hooks bracket the
   serving lifetime for env-owned shared resources.
 
-The judge seat above is the pattern the bundled judge envs productionize: pair
-`--env.id judge` with any taskset and the same grading runs spec-driven (write
-criteria once, as a plugin); `--env.id agentic-judge` is the sandboxed tier for a
-judge that verifies with real execution — reach for these before writing a
-`judge_task` of your own (see the bundled envs below).
+The judge seat above is the pattern the bundled `agentic-judge` env productionizes:
+pair it with any taskset and the grading runs spec-driven (write criteria once, as a
+plugin), the judge verifying with real execution in its own sandbox — reach for it
+before writing a `judge_task` of your own (see the bundled envs below). A judgement
+that needs no execution doesn't need an agent at all: plug the same spec in as an
+`env.taskset.task.judges` entry (one bare call inside `Task.score`).
 
 For the single-agent case none of this is machinery the user sees: `SingleAgentEnv`
 declares one `agent` seat (`--env.agent.harness.id codex`,
@@ -148,7 +149,7 @@ modeled user — is its own plugin, paired with any taskset from the CLI:
 
 ```bash
 uv run eval gsm8k-v1 --env.id best-of-n --env.n 8
-uv run eval my-task-v1 --env.id judge --env.judge.model openai/gpt-5-mini
+uv run eval my-task-v1 --env.id agentic-judge --env.judge.harness.runtime.type docker
 ```
 
 `--env.id` resolves like every plugin id — a bundled env (below), a local package
@@ -164,5 +165,4 @@ Bundled envs (`verifiers/v1/envs/`):
 | id | roles | what it does |
 | --- | --- | --- |
 | `best-of-n` | `solver` | `--env.n` independent attempts per rollout; `score()` marks the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
-| `judge` | `solver`, `judge` | the solver plays the task; a bare judge agent (in-process `direct` harness, `trainable=False` by default) grades the finished attempt. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, same registry and format as `taskset.task.judges`) — write your grading criteria once, run them as a bare call or as an agent. Verdict + per-criterion metrics land on the solver's trace; `--env.spec.view full_trace` shows the judge the whole transcript. A code-executing judge harness is refused here — that's `agentic-judge`. |
-| `agentic-judge` | `solver`, `judge` | the sandboxed tier of agent-as-judge: same spec plugin and recording, but the judge investigates with real execution, always in its own sandbox, never on the host. Its verdict task mirrors the solver task's world (same image, a fresh box in its original state) with the graded transcript uploaded (`/tmp/transcript.md`/`.json`); the judge seat defaults to the taskset's default harness — the same program the solver defaults to — and must land in a container: pin `--env.judge.harness.runtime.type docker\|prime`, or construction refuses. A tool-less judge harness belongs on `judge`. |
+| `agentic-judge` | `solver`, `judge` | agent-as-judge: the solver plays the task; a code-executing judge agent verifies the finished attempt with real execution, always in its own sandbox, never on the host. The verdict spec is a **judge plugin** (`--env.spec.id score\|rubric\|reference`, the same registry and format as `env.taskset.task.judges`) — write your grading criteria once; the parsed verdict + per-criterion metrics land on the solver's trace exactly as the plugged tier records them. The judge's verdict task mirrors the solver task's world (same image, a fresh box in its original state) with the graded transcript uploaded (`/tmp/transcript.md`/`.json`); the judge seat defaults to the taskset's default harness and must land in a container: pin `--env.judge.harness.runtime.type docker\|prime`, or construction refuses. A judgement that needs no execution belongs on the plugged tier, not on an agent. |

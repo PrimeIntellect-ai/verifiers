@@ -41,7 +41,7 @@ Before starting with the implementation, think about the following things:
 - What is the dataset about, which fields does it have?
 - Does it come with custom tools that are strictly necessary and not added by common harnesses? For example, a lot of harnesses come with bash or web search tools, which makes custom tools obsolete. Always prefer harnesses over custom tools
 - Does the taskset need a user simulator?
-- Does one rollout involve more than one agent run (attempts, a judge)? Then the package also exports an `Environment` subclass — or an existing bundled env (`--env.id best-of-n|judge`) already covers it.
+- Does one rollout involve more than one agent run (attempts, a judge)? Then the package also exports an `Environment` subclass — or an existing bundled env (`--env.id best-of-n|agentic-judge`) already covers it.
 - Which rewards are needed for scoring? What additional metrics might be nice to have, either for debugging, training or potentially in the future?
 - How should the tasks be scored, is a judge needed?
 
@@ -194,7 +194,7 @@ The selected harness must support user simulation, which a lot of the built-in, 
 
 ## Multi-agent environments
 
-When one rollout is more than one agent run, export an `Environment` subclass next to the taskset: declare each role as a `vf.AgentConfig` field with a default instance on a `vf.EnvConfig` subclass (bound via `Environment[YourConfig]`, read as `self.config`, addressed as `--env.<role>.*`) — with no `roles()` override, every declared field plays the dataset under its field name. A role's declared pin is its author default (a judge pinned to the `direct` harness); an unpinned role runs the taskset's default harness, and its model leg defaults to the run's own. Override `roles()` only when a role's needs differ from the taskset's: a role whose tasks the env mints itself declares `vf.Role(cfg, mcp=False, container=False)` and then pairs with any taskset. Then write `rollout(task, agents)` (imperative control flow) and optionally `score(task, traces)` (sibling-dependent judgement). Before writing one, check the bundled envs (`--env.id best-of-n | judge | agentic-judge`) and the reference implementation (`environments/code_golf_v1`). See docs/v1/environments.md.
+When one rollout is more than one agent run, export an `Environment` subclass next to the taskset: declare each role as a `vf.AgentConfig` field with a default instance on a `vf.EnvConfig` subclass (bound via `Environment[YourConfig]`, read as `self.config`, addressed as `--env.<role>.*`) — with no `roles()` override, every declared field plays the dataset under its field name. A role's declared pin is its author default; an unpinned role runs the taskset's default harness, and its model leg defaults to the run's own. Override `roles()` only when a role's needs differ from the taskset's: a role whose tasks the env mints itself declares `vf.Role(cfg, mcp=False, container=False)` and then pairs with any taskset. Then write `rollout(task, agents)` (imperative control flow) and optionally `score(task, traces)` (sibling-dependent judgement). Before writing one, check the bundled envs (`--env.id best-of-n | agentic-judge`) and the reference implementation (`environments/code_golf_v1`). See docs/v1/environments.md.
 
 ## Custom harnesses
 

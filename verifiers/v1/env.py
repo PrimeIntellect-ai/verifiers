@@ -75,8 +75,8 @@ class AgentConfig(BaseConfig):
     """The role's program + runtime policy (None = the taskset's default harness —
     its bundled one when it ships one, else the built-in `default` — so pairing an
     env never silently swaps a seat's harness). Pin it to give the role its own
-    program (e.g. `vf.HarnessConfig(id="direct")` for a bare in-process chat actor),
-    or its own runtime (`--env.<role>.harness.runtime.type docker`)."""
+    program (e.g. `vf.HarnessConfig(id="null")` for a lean tool-less chat loop), or
+    its own runtime (`--env.<role>.harness.runtime.type docker`)."""
     model: str | None = None
     """Model id (None = the run's model — late binding: the role is played by the
     policy being evaluated or trained, which is what makes self-play trainable)."""

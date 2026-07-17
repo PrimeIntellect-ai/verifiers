@@ -62,7 +62,8 @@ env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `-
 
 ```bash
 prime eval run my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
-prime eval run my-task-v1 --env.id judge                    # a judge agent grades each attempt
+prime eval run my-task-v1 --env.id agentic-judge \
+  --env.judge.harness.runtime.type docker                   # a judge agent verifies each attempt in a sandbox
 ```
 
 When specifying Hub tasksets, always include the owner to resolve them correctly.

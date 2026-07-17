@@ -7,7 +7,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNEnvConfig
-from verifiers.v1.envs.judge.env import JudgeEnvConfig
+from verifiers.v1.envs.agentic_judge import AgenticJudgeEnvConfig
 from verifiers.v1.judges.rubric import RubricJudgeConfig
 from verifiers.v1.judges.score import ScoreJudge
 from verifiers.v1.trace import Trace, TraceTask
@@ -48,12 +48,18 @@ def test_load_environment_honors_env_id():
 
 
 def test_minted_task_roles_pair_with_tool_tasksets():
-    """A role playing env-minted plain tasks (`vf.Role(cfg, mcp=False,
-    container=False)`) needs nothing from the taskset's world: the judge env
-    loads over a tool-declaring taskset — the pairing that used to refuse at
-    construction — while the SOLVER role still validates against the dataset."""
+    """A role whose tasks the env mints itself declares its own needs: the agentic
+    judge env loads over a tool-declaring taskset — the judge's `mcp=False` waives
+    the taskset's MCP need — while the SOLVER role still validates against the
+    dataset."""
     env = vf.load_environment(
-        vf.resolve_env_config({"id": "judge", "taskset": {"id": "echo-tool-v1"}})
+        vf.resolve_env_config(
+            {
+                "id": "agentic-judge",
+                "taskset": {"id": "echo-tool-v1"},
+                "judge": {"harness": {"runtime": {"type": "docker"}}},
+            }
+        )
     )
     assert env._role_needs_mcp["judge"] is False
     assert env._role_needs_mcp["solver"]
@@ -65,35 +71,10 @@ def test_minted_task_roles_pair_with_tool_tasksets():
                 {
                     "id": "best-of-n",
                     "taskset": {"id": "echo-tool-v1"},
-                    "solver": {"harness": {"id": "direct"}},
+                    "solver": {"harness": {"id": "terminus-2"}},
                 }
             )
         )
-
-
-def test_judge_env_refuses_a_code_executing_judge():
-    """The bare judge env's judge is a tool-less model actor; pointing its harness
-    at one that executes code is a different env — the error says which."""
-    with pytest.raises(ValueError, match="agentic-judge"):
-        vf.load_environment(
-            vf.resolve_env_config(
-                {
-                    "id": "judge",
-                    "taskset": {"id": "echo-v1"},
-                    "judge": {"harness": {"id": "default"}},
-                }
-            )
-        )
-    bare = vf.load_environment(
-        vf.resolve_env_config(
-            {
-                "id": "judge",
-                "taskset": {"id": "echo-v1"},
-                "solver": {"harness": {"runtime": {"type": "docker"}}},
-            }
-        )
-    )
-    assert bare._roles["judge"].container is False
 
 
 def test_agentic_judge_is_sandboxed():
@@ -123,13 +104,15 @@ def test_agentic_judge_is_sandboxed():
         vf.resolve_env_config(env.config.model_dump(mode="json"))
     )
     assert rebuilt._roles["judge"].container is True
-    with pytest.raises(ValueError, match="use --env.id judge"):
+    # A tool-less judge harness is refused: a verdict that needs no execution is
+    # a plugged judge (env.taskset.task.judges), not an agent.
+    with pytest.raises(ValueError, match="plugged judge"):
         vf.load_environment(
             vf.resolve_env_config(
                 {
                     "id": "agentic-judge",
                     "taskset": {"id": "echo-v1"},
-                    "judge": {"harness": {"id": "direct"}},
+                    "judge": {"harness": {"id": "null", "runtime": {"type": "docker"}}},
                 }
             )
         )
@@ -171,10 +154,16 @@ def test_paired_env_seats_pin_their_own_harness():
     )
     assert env._harnesses["solver"].config.id == "null"
     judged = vf.load_environment(
-        vf.resolve_env_config({"id": "judge", "taskset": {"id": "echo-v1"}})
+        vf.resolve_env_config(
+            {
+                "id": "agentic-judge",
+                "taskset": {"id": "echo-v1"},
+                "judge": {"harness": {"runtime": {"type": "docker"}}},
+            }
+        )
     )
     assert judged._harnesses["solver"].config.id == "default"  # taskset's default
-    assert judged._harnesses["judge"].config.id == "direct"  # the pin survives
+    assert judged._harnesses["judge"].config.runtime.type == "docker"  # the pin
 
 
 def _scored_trace(reward: float) -> Trace:
@@ -220,12 +209,12 @@ def test_score_judge_verdict():
 def test_judge_spec_resolves_like_a_judges_entry():
     """The env's verdict spec rides the judge-plugin registry: an explicit id swaps
     (and narrows) it; a partial override tunes the default without resetting it."""
-    swapped = JudgeEnvConfig.model_validate(
+    swapped = AgenticJudgeEnvConfig.model_validate(
         {"spec": {"id": "rubric", "path": "grading.toml"}}
     )
     assert isinstance(swapped.spec, RubricJudgeConfig)
     assert swapped.spec.view == "full_trace"  # the rubric's own default
-    tuned = JudgeEnvConfig.model_validate({"spec": {"view": "full_trace"}})
+    tuned = AgenticJudgeEnvConfig.model_validate({"spec": {"view": "full_trace"}})
     assert type(tuned.spec).__name__ == "ScoreJudgeConfig"
     assert tuned.spec.view == "full_trace"
     assert tuned.spec.name == "judge"  # the pinned reward key survives

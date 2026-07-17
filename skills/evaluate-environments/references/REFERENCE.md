@@ -113,9 +113,9 @@ trace.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs: a bundled env (`best-of-n`, `judge`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Environment` subclass, else `SingleAgentEnv`). |
+| `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Environment` subclass, else `SingleAgentEnv`). |
 | `taskset` | `TasksetConfig \| None` | `None` | The seed taskset every rollout starts from; resolved to its concrete subclass by `--env.taskset.id` (positional shorthand: `eval <taskset-id>`). See [Taskset config](#taskset-config). `None` only for a taskset-less env; every bundled env requires one. |
-| *(roles)* | `AgentConfig` | env-declared | Each declared seat: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the judge envs, the env's own names elsewhere. See [Agent config](#agent-config--the-seats). |
+| *(roles)* | `AgentConfig` | env-declared | Each declared seat: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the agentic-judge env, the env's own names elsewhere. See [Agent config](#agent-config--the-seats). |
 | `timeout` | `TimeoutConfig` | `TimeoutConfig()` | See [Timeout config](#timeout-config). Set via `--env.timeout.*`. |
 | `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). Set via `--env.retries.*`. |
 | `max_turns` | `int \| None` | `None` | Max model turns per rollout (None = no limit). Framework-enforced between turns. |

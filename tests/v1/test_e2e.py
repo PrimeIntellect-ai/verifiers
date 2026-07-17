@@ -250,15 +250,23 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_env_id_judge(run_v1, tmp_path):
-    """The judge env over the echo taskset: the solver's trace gains a `judge` reward
-    from a real (direct-harness, untrainable) judge agent's verdict."""
+async def test_env_id_agentic_judge(run_v1, tmp_path):
+    """The agentic judge over the echo taskset (needs docker): the judge lands in
+    its own box with the graded transcript uploaded, investigates with real
+    execution, and its parsed verdict lands on the solver's trace under the spec's
+    reward key. Wiring, not taste: the judge followed the default `score` spec's
+    output contract — the grade itself is the model's call."""
     traces = await run_v1(
         "echo-v1",
-        harness=None,  # the solver's harness is its seat's pin, not a run flag
-        env={"id": "judge", "solver": {"harness": {"id": "null"}}},
+        harness=None,  # seats pin their own harness; there is no run-level one
+        env={
+            "id": "agentic-judge",
+            "solver": {"harness": {"id": "null"}},
+            "judge": {"harness": {"runtime": {"type": "docker"}}},
+        },
         output_dir=tmp_path,
-        max_turns=2,
+        max_turns=10,
+        rollout_timeout=600,
     )
     assert sorted(t.role for t in traces) == ["judge", "solver"]
     (solver,) = [t for t in traces if t.role == "solver"]
@@ -266,81 +274,8 @@ async def test_env_id_judge(run_v1, tmp_path):
     assert solver.errors == [] and judge.errors == []
     assert judge.trainable is False
     assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
-    # Wiring, not taste: the judge followed the default `score` spec's output
-    # contract and its parsed verdict is exactly what landed on the solver (the
-    # grade itself is the model's call — a bare echo can be judged middling).
     assert "SCORE:" in (judge.last_reply or "")
     assert 0.0 <= solver.rewards["judge"] <= 1.0
-
-
-@pytest.mark.e2e
-async def test_env_id_judge_over_tool_taskset(run_v1, tmp_path):
-    """The headline pairing: a TOOL-USING solver judged on its whole process. The
-    judge seat plays env-minted plain tasks (`vf.Role(cfg, mcp=False)`), so the env
-    loads over a tool-declaring taskset — the pairing construction used to refuse —
-    and `full_trace` shows the judge the solver's tool calls."""
-    traces = await run_v1(
-        "echo-tool-v1",
-        harness=None,
-        env={
-            "id": "judge",
-            "spec": {"view": "full_trace"},
-            "solver": {"harness": {"id": "null"}},
-        },
-        output_dir=tmp_path,
-        max_turns=6,
-    )
-    (solver,) = [t for t in traces if t.role == "solver"]
-    (judge,) = [t for t in traces if t.role == "judge"]
-    assert solver.errors == [] and judge.errors == []
-    assert solver.num_turns >= 2  # the solver actually used its tool
-    assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
-    assert "SCORE:" in (judge.last_reply or "")
-    assert 0.0 <= solver.rewards["judge"] <= 1.0
-
-
-@pytest.mark.e2e
-async def test_env_id_judge_rubric_spec(run_v1, tmp_path):
-    """One rubric file, agent-executed: the judge env's verdict spec is a judge
-    plugin, so the same grading criteria a `taskset.task.judges` entry runs as a
-    bare call here drive a real judge agent — per-criterion metrics and the weighted
-    total land on the solver exactly as the plugged tier episodes them."""
-    import json
-
-    rubric = tmp_path / "grading.json"
-    rubric.write_text(
-        json.dumps(
-            {
-                "criteria": [
-                    {
-                        "name": "echoed",
-                        "text": "Does the response repeat the user's phrase?",
-                    },
-                    {
-                        "name": "no_extras",
-                        "text": "Is the response free of extra commentary?",
-                    },
-                ]
-            }
-        )
-    )
-    traces = await run_v1(
-        "echo-v1",
-        harness=None,
-        env={
-            "id": "judge",
-            "spec": {"id": "rubric", "path": str(rubric)},
-            "solver": {"harness": {"id": "null"}},
-        },
-        output_dir=tmp_path / "out",
-        max_turns=2,
-        rollout_timeout=300,
-    )
-    (solver,) = [t for t in traces if t.role == "solver"]
-    (judge,) = [t for t in traces if t.role == "judge"]
-    assert solver.errors == [] and judge.errors == []
-    assert 0.0 <= solver.rewards["rubric"] <= 1.0
-    assert set(solver.metrics) >= {"rubric/echoed", "rubric/no_extras"}
 
 
 @pytest.mark.e2e
