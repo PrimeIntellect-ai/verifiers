@@ -18,10 +18,14 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
+verifiers = false
+prime-pydantic-config = false
+tasksets = false
 prime-tunnel = false
 prime-sandboxes = false
-prime-pydantic-config = false
 renderers = false
+harnesses = false
+prime = false
 
 [[package]]
 name = "accelerate"
@@ -3128,23 +3132,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/f9/dc3787ee5c813cc27fe79f45ad4500d9b5437f23a7402435cc34e07c7718/mmh3-5.2.1-cp313-cp313-win32.whl", hash = "sha256:54b64fb2433bc71488e7a449603bf8bd31fbcf9cb56fbe1eb6d459e90b86c37b", size = 40769, upload-time = "2026-03-05T15:55:05.277Z" },
     { url = "https://files.pythonhosted.org/packages/43/67/850e0b5a1e97799822ebfc4ca0e8c6ece3ed8baf7dcdf64de817dfdda2ca/mmh3-5.2.1-cp313-cp313-win_amd64.whl", hash = "sha256:cae6383181f1e345317742d2ddd88f9e7d2682fa4c9432e3a74e47d92dce0229", size = 41563, upload-time = "2026-03-05T15:55:06.283Z" },
     { url = "https://files.pythonhosted.org/packages/c0/cc/98c90b28e1da5458e19fbfaf4adb5289208d3bfccd45dd14eab216a2f0bb/mmh3-5.2.1-cp313-cp313-win_arm64.whl", hash = "sha256:022aa1a528604e6c83d0a7705fdef0b5355d897a9e0fa3a8d26709ceaa06965d", size = 39310, upload-time = "2026-03-05T15:55:07.323Z" },
-]
-
-[[package]]
-name = "mmmu-v1"
-version = "0.1.0"
-source = { editable = "environments/mmmu_v1" }
-dependencies = [
-    { name = "datasets" },
-    { name = "pillow" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "pillow" },
-    { name = "verifiers" },
 ]
 
 [[package]]
@@ -6793,7 +6780,6 @@ examples = [
     { name = "deepwiki-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
-    { name = "mmmu-v1" },
     { name = "openenv-v1" },
     { name = "openenv-wordle-v1" },
     { name = "reverse-text-v1" },
@@ -6881,7 +6867,6 @@ examples = [
     { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
-    { name = "mmmu-v1", editable = "environments/mmmu_v1" },
     { name = "openenv-v1", editable = "packages/openenv_v1" },
     { name = "openenv-wordle-v1", editable = "environments/openenv_wordle_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
