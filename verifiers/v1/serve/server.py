@@ -40,7 +40,7 @@ class EnvServer:
         # A finite taskset is materialized up front (its count is served via `info`); an
         # infinite one is pulled off its generator on demand (see `_task`), so
         # `num_tasks=None` on the wire ⟺ the taskset is infinite.
-        self._task_iter = iter(self.env.taskset.load())
+        self._task_iter = iter(self.env.taskset.iter_tasks())
         self._tasks: list = []
         self.num_tasks: int | None = None
         if not type(self.env.taskset).INFINITE:
@@ -88,10 +88,10 @@ class EnvServer:
     def _task(self, idx: int):
         """The task at `idx`; an infinite taskset is generated (and cached) up to `idx`
         on demand. Generation must be deterministic — every pool worker runs its own
-        `load()`, so idx-addressing relies on all of them producing the same sequence.
-        Lazy generation is capped at `MAX_LAZY_TASKS`: an idx that far ahead is a
-        runaway driver, and generating (and caching) toward it would hang the worker
-        and exhaust memory instead of failing the one request."""
+        `iter_tasks()`, so idx-addressing relies on all of them producing the same
+        sequence. Lazy generation is capped at `MAX_LAZY_TASKS`: an idx that far ahead
+        is a runaway driver, and generating (and caching) toward it would hang the
+        worker and exhaust memory instead of failing the one request."""
         while len(self._tasks) <= idx:
             if idx >= MAX_LAZY_TASKS:
                 raise IndexError(

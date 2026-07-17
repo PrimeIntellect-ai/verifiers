@@ -56,13 +56,24 @@ ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
 class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
-    """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
+    """Emit the task-side system prompt as a separate system message instead of folding
+    it into the user prompt. (Harness-owned framing is composed separately via
+    `compose_system_prompt` — harness first, then task.)"""
     SUPPORTS_MCP: ClassVar[bool] = False
     SUPPORTS_USER_SIM: ClassVar[bool] = False
     SUPPORTS_MESSAGE_PROMPT: ClassVar[bool] = False
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+
+    def system_prompt(self) -> str | None:
+        """Harness-owned framing (tools/protocol). None if none."""
+        return None
+
+    def compose_system_prompt(self, task_system: str | None) -> str | None:
+        """Harness framing first, then the task-side system prompt."""
+        parts = [p for p in (self.system_prompt(), task_system) if p]
+        return "\n\n".join(parts) or None
 
     def resolve_prompt(
         self, task: TaskData

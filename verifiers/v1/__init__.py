@@ -90,7 +90,7 @@ from verifiers.v1.task import (
     TaskTimeout,
     WireTaskData,
 )
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.taskset import Taskset, TasksetConfig, resolve_system_prompt
 from verifiers.v1.mcp import (
     Toolset,
     SharedToolsetConfig,
@@ -208,6 +208,7 @@ __all__ = [
     "Taskset",
     "TaskConfig",
     "TasksetConfig",
+    "resolve_system_prompt",
     "BaseConfig",
     "Harness",
     "HarnessConfig",

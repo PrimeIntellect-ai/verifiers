@@ -216,6 +216,8 @@ fields become typed dotted flags such as `--taskset.split test`.
 |---|---|---|---|
 | `id` | `ID` | `""` | Local package or Hub `org/name[@version]`; selects the taskset and its config type. Set via `--taskset.id`. |
 | `task` | `TaskConfig` | `TaskConfig()` | Task-facing config passed to every constructed task. `SerializeAsAny` preserves a narrowed subclass. Set through `--taskset.task.*`. |
+| `system_prompt` | `str \| None` | `None` | Config-layer system prompt: replaces bake-in `TaskData.system_prompt` after `load()` (GEPA optimizes this layer). Mutually exclusive with `system_prompt_file`. |
+| `system_prompt_file` | `Path \| None` | `None` | File override for `system_prompt` (read as UTF-8 text), same mutual-exclusion pattern as `JudgeConfig.prompt` / `prompt_file`. |
 
 `.name` → the package name (id with org / version stripped).
 
@@ -430,7 +432,7 @@ value in the run's `TimeoutConfig` wins; otherwise the corresponding row value i
 | `name` | `str \| None` | `None` | Optional human-readable label used in logs and dashboards. |
 | `description` | `str \| None` | `None` | Optional human-readable description. |
 | `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` lets the user simulator open via `respond("")`. |
-| `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
+| `system_prompt` | `str \| None` | `None` | Bake-in task-side system prompt (per-task or taskset default). Config `taskset.system_prompt` / `_file` replaces it after `load()`. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message (harness framing first via `compose_system_prompt` when set); otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
 | `timeout` | `TaskTimeout` | `TaskTimeout()` | Per-stage timeout requests described above. |

@@ -59,7 +59,6 @@ class LeanTaskConfig(TaskConfig):
 class LeanConfig(TasksetConfig):
     dataset: LeanDatasetConfig
     docker_image: str = DEFAULT_DOCKER_IMAGE
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT
     task: LeanTaskConfig = LeanTaskConfig()
 
 
@@ -185,7 +184,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     idx=index,
                     name=str(name) if name else f"task_{index:05d}",
                     prompt=self._build_prompt(formal_statement, header),
-                    system_prompt=config.system_prompt,
+                    system_prompt=DEFAULT_SYSTEM_PROMPT,
                     image=config.docker_image,
                     workdir=config.task.lean_project_path,
                     resources=resources,

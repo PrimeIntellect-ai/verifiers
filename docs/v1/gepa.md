@@ -6,7 +6,7 @@ verifiers offers built in support for [GEPA](https://github.com/gepa-ai/gepa), a
 uv run gepa reverse-text-v1
 ```
 
-`gepa` runs GEPA where a number of rollouts are done before a teacher LLM reflects on the results to propose a better `Task.system_prompt` without any gradient based training. It runs against native v1 tasksets.
+`gepa` runs GEPA where a number of rollouts are done before a teacher LLM reflects on the results to propose a better system prompt without any gradient based training. It runs against native v1 tasksets.
 
 GEPA reuses the same `taskset` / `harness` / `client` / `sampling` config as eval, so the `.toml` config remains very similar:
 
@@ -35,10 +35,17 @@ Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA,
 
 ## Output
 
-Results go under `outputs/<taskset>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is printed when the run finishes.
+Results go under `outputs/<taskset>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is written to `best_system_prompt.txt` and printed when the run finishes.
+
+Reuse it in eval or training via the same taskset knobs:
+
+```bash
+uv run eval reverse-text-v1 \
+  --taskset.system-prompt-file outputs/<run>/best_system_prompt.txt
+```
 
 ## Limitations
 
-**Tasksets** — GEPA optimizes `Task.system_prompt`, so the taskset must provide one. Tasksets that bake instructions into the user `prompt` instead (e.g. `gsm8k-v1`) are not supported out of the box.
+**Tasksets** — GEPA seeds from `--taskset.system-prompt` / `-file` when set, otherwise from a baked-in `TaskData.system_prompt`. Tasksets that only put instructions in the user `prompt` (e.g. `gsm8k-v1`) need an explicit config seed to work with GEPA.
 
 **Harnesses** — any eval harness works. With `APPENDS_SYSTEM_PROMPT`, the optimized prompt is used as a system message but otherwise is folded into the user prompt.

@@ -38,15 +38,18 @@ class _GEPALog:
 
 def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
-    all_tasks = env.taskset.select(config.num_train + config.num_val, config.shuffle)
+    all_tasks = env.taskset.select(
+        config.num_train + config.num_val,
+        config.shuffle,
+        apply_config=False,
+    )
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
     selected_tasks = [*train_tasks, *val_tasks]
     reject_group_reward_tasksets(
         selected_tasks
     )  # GEPA scores n=1 per task; groups need >=2
-    # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
-    # a taskset with per-task system prompts could otherwise seed from a task in neither split.
-    seed_prompt = resolve_gepa_seed_prompt(selected_tasks, config.initial_prompt)
+    # Config-layer seed (explicit override, else bake-in from train ∪ val tasks).
+    seed_prompt = resolve_gepa_seed_prompt(env.taskset.config, selected_tasks)
     tasks_by_idx = {task.data.idx: task for task in selected_tasks}
 
     run_dir = output_path(config) if config.save_results else None
@@ -109,7 +112,13 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
                 skip_perfect_score=False,
                 logger=_GEPALog(),
             )
-            return optimize(**optimize_kwargs)
+            result = optimize(**optimize_kwargs)
+            if run_dir is not None:
+                best = result.best_candidate.get("system_prompt", "")
+                path = run_dir / "best_system_prompt.txt"
+                path.write_text(best, encoding="utf-8")
+                logger.info("best system prompt: %s", path)
+            return result
         finally:
             loop.run_until_complete(serving.__aexit__(None, None, None))
     finally:

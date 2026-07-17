@@ -8,6 +8,7 @@ other entrypoint): two disjoint slices.
 
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.task import Task
+from verifiers.v1.taskset import TasksetConfig, resolve_system_prompt
 
 
 def reject_group_reward_tasksets(tasks: list[Task]) -> None:
@@ -37,23 +38,26 @@ def split_tasks(
     return tasks[:num_train], tasks[num_train : num_train + num_val]
 
 
-def resolve_gepa_seed_prompt(tasks: list[Task], initial_prompt: str | None) -> str:
-    """The system prompt GEPA starts optimizing from: `initial_prompt` if given, else the first
-    task that sets `system_prompt`. Some tasksets (e.g. `gsm8k-v1`) bake instructions into
-    `prompt` rather than `system_prompt` and can't be optimized this way — pass `--initial-prompt`
-    to seed one explicitly.
+def resolve_gepa_seed_prompt(config: TasksetConfig, tasks: list[Task]) -> str:
+    """The config-layer system prompt GEPA starts from.
 
-    How the resolved prompt reaches the model at rollout time — a real system message vs. folded
-    into the user prompt — is the harness's call: `Harness.resolve_prompt` owns that policy and
-    warns when it folds, so it isn't re-policed here."""
-    if initial_prompt is not None:
-        return initial_prompt
+    Prefer `--taskset.system-prompt` / `--taskset.system-prompt-file` when set; otherwise
+    bootstrap from the first bake-in `TaskData.system_prompt` on `tasks` (expected to be
+    pre-overlay / `select(apply_config=False)`). Tasksets that only put instructions in
+    `prompt` (e.g. `gsm8k-v1`) need an explicit config seed.
+
+    How the prompt reaches the model — a real system message vs. folded into the user
+    prompt — is the harness's call (`Harness.resolve_prompt` / `compose_system_prompt`).
+    """
+    if (override := resolve_system_prompt(config)) is not None:
+        return override
     for task in tasks:
         if task.data.system_prompt is not None:
             return task.data.system_prompt
     raise ValueError(
-        "no task in this taskset sets Task.system_prompt — some tasksets bake instructions "
-        "directly into `prompt` instead (e.g. gsm8k-v1) and can't be optimized this way. Pass "
-        "--initial-prompt to seed one explicitly, or pick a taskset whose load() sets "
-        "system_prompt on its task data (e.g. reverse-text-v1, lean, textarena)."
+        "no config system prompt and no task sets TaskData.system_prompt — some "
+        "tasksets bake instructions into `prompt` instead (e.g. gsm8k-v1). Pass "
+        "--taskset.system-prompt or --taskset.system-prompt-file as the GEPA seed, "
+        "or pick a taskset that sets a bake-in system_prompt (e.g. reverse-text-v1, "
+        "lean, textarena)."
     )
