@@ -250,9 +250,12 @@ def describe(cfg: TextifyConfig) -> str:
     )
     if cfg.max_chars is not None:
         parts.append(f"max_chars={cfg.max_chars}")
-    parts.append(
-        f"ramp={cfg.ramp!r}" if cfg.mode == "ascii" else f"threshold={cfg.threshold}"
-    )
+    if cfg.mode == "ascii":
+        parts.append(f"ramp={cfg.ramp!r}")
+        if cfg.threshold == "otsu":
+            parts.append("threshold=otsu")
+    else:
+        parts.append(f"threshold={cfg.threshold}")
     return "rendered with " + ", ".join(parts)
 
 
