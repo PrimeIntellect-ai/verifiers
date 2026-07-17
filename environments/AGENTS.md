@@ -2,7 +2,7 @@
 
 <!-- Generated for repository development workflows. Do not edit directly. -->
 
-This file mirrors the "Tasksets" documentation page.
+This file mirrors the "Tasksets" and "Multi-agent environments" documentation pages.
 
 ---
 
@@ -242,12 +242,19 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
 
 To override the judge model, set `taskset.task.judge.model` in your config (it is a string).
 
+## Beyond one agent
+
+One eval rollout doesn't have to be one agent run: roles, the control flow between
+agents, and cross-agent rewards are the environment's job — see
+[Multi-agent environments](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/environments.md).
+
 ## Multi-agent environments
 
 One eval rollout doesn't have to be one agent run. `Environment` is a concrete class
 whose defaults are the single-agent case; a package can export a subclass (via
-`__all__`, alongside its `Taskset` — the same plugin idiom as a bundled harness) that
-declares its parameters as an `EnvParams` subclass and overrides up to three methods:
+`__all__`, alongside its [`Taskset`](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/tasksets.md) — the same plugin idiom as a bundled
+harness) that declares its parameters as an `EnvParams` subclass and overrides up to
+three methods:
 
 ```python
 class DebateParams(vf.EnvParams):

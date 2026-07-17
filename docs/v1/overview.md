@@ -38,6 +38,7 @@ A trace records the message graph, rewards, metrics, errors, etc. When using ver
 - [Architecture](architecture.md) — An overview about the architecture and runtime of verifiers
 - [Tasksets](tasksets.md) — How to create tasksets
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
+- [Multi-agent environments](environments.md) — Roles, the control flow between agents, and cross-agent rewards
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — run tasks, place runs into shared sandboxes, chain traces into new tasks
