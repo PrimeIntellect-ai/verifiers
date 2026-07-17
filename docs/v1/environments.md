@@ -114,6 +114,11 @@ class DebateEnv(vf.Environment[DebateParams]):
 - `score()` is bounded by `--timeout.score`; `setup()`/`teardown()` hooks bracket the
   serving lifetime for env-owned shared resources.
 
+The judge seat above is the pattern the bundled judge env productionizes: pair
+`--env.id judge` with any taskset and the same grading runs spec-driven (write
+criteria once, as a plugin) and sandboxed when the judge executes code — reach for
+it before writing a `judge_task` of your own (see the bundled envs below).
+
 For the single-agent case none of this is visible: the base `roles()` is one `"solver"`
 role driven by `--harness.*`, `rollout()` is `[await agents["solver"].run(task)]`, and
 the episode wraps exactly one unstamped trace.
