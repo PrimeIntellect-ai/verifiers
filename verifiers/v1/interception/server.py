@@ -252,6 +252,18 @@ class InterceptionServer(Interception):
         except Exception as e:
             raise TaskError(f"textify failed: {type(e).__name__}: {e}") from e
 
+    async def _opening_messages(self, session: RolloutSession) -> Messages:
+        """Get the simulator opening once; cache it before fallible textification."""
+        async with session._opening_lock:
+            if session.opening is None:
+                respond = session.user
+                assert respond is not None
+                session.opening = await respond("")
+            opening = session.opening
+        opening = await self._textify_messages(session, opening)
+        session.opening = opening
+        return opening
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -320,14 +332,12 @@ class InterceptionServer(Interception):
             and session.trace.task.data.prompt is None
             and session.trace.num_turns == 0
         ):
-            if session.opening is None:
-                opening = await session.user("")
-                try:
-                    session.opening = await self._textify_messages(session, opening)
-                except TaskError as e:
-                    return self._fail(session, dialect, e)
-            body = dialect.extend(body, None, session.opening)
-            prompt = [*prompt, *session.opening]
+            try:
+                opening = await self._opening_messages(session)
+            except TaskError as e:
+                return self._fail(session, dialect, e)
+            body = dialect.extend(body, None, opening)
+            prompt = [*prompt, *opening]
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):

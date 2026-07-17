@@ -79,6 +79,9 @@ class RolloutSession:
     injected as a user turn, and the model is re-prompted — all within one program request,
     transparently to the harness."""
     opening: Messages | None = None
+    _opening_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, init=False, repr=False
+    )
     """Cached opening `respond("")` messages for a no-prompt task. Computed once and re-injected on
     every request until the first turn lands on the trace — so a retried opening request (e.g. the
     harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`

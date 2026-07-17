@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 from types import SimpleNamespace
@@ -345,3 +346,57 @@ def test_anthropic_file_images_pass_through() -> None:
     out = AnthropicDialect().textify_body(body, should_not_render)
     assert out == body
     assert out is not body
+
+
+@pytest.mark.asyncio
+async def test_opening_textify_failure_does_not_advance_user(monkeypatch) -> None:
+    calls = 0
+    raw: vf.Messages = [vf.UserMessage(content="opening")]
+
+    async def user(_: str) -> vf.Messages:
+        nonlocal calls
+        calls += 1
+        return raw
+
+    async def fail(*_) -> vf.Messages:
+        raise TaskError("textify failed")
+
+    session = SimpleNamespace(opening=None, user=user, _opening_lock=asyncio.Lock())
+    server = InterceptionServer()
+    monkeypatch.setattr(server, "_textify_messages", fail)
+
+    with pytest.raises(TaskError, match="textify failed"):
+        await server._opening_messages(session)
+    with pytest.raises(TaskError, match="textify failed"):
+        await server._opening_messages(session)
+
+    assert calls == 1
+    assert session.opening is raw
+
+
+@pytest.mark.asyncio
+async def test_concurrent_opening_calls_user_once() -> None:
+    calls = 0
+    release = asyncio.Event()
+
+    async def user(_: str) -> vf.Messages:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return [vf.UserMessage(content="opening")]
+
+    session = SimpleNamespace(
+        opening=None,
+        user=user,
+        _opening_lock=asyncio.Lock(),
+        textify=vf.TextifyConfig(),
+    )
+    server = InterceptionServer()
+    first = asyncio.create_task(server._opening_messages(session))
+    second = asyncio.create_task(server._opening_messages(session))
+    await asyncio.sleep(0)
+    release.set()
+    one, two = await asyncio.gather(first, second)
+
+    assert calls == 1
+    assert one == two == session.opening
