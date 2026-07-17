@@ -458,31 +458,27 @@ class InterceptionServer(Interception):
                     session.trace.id,
                     len(response.message.tool_calls or []),
                 )
+                node: int | None = None
+                error: Exception | None = None
                 try:
                     node = turn.commit(response, tools)  # one node per new message;
                     # branches fall out of walking the graph (see Trace.branches / graph)
                 except Exception as e:
-                    # The provider exchange completed even though committing it failed;
-                    # record it, with the failure, before the error propagates.
+                    error = e
+                    raise
+                finally:
+                    # The exchange completed either way; a commit failure is coupled
+                    # to the call it belongs to (node stays None).
                     self.record_call(
                         session,
                         dialect,
                         upstream_request,
                         started,
+                        node=node,
                         response=response.raw,
                         headers=response.raw_headers,
-                        error=e,
+                        error=error,
                     )
-                    raise
-                self.record_call(
-                    session,
-                    dialect,
-                    upstream_request,
-                    started,
-                    node=node,
-                    response=response.raw,
-                    headers=response.raw_headers,
-                )
                 # Hand back to the program when the model wants a tool (the program runs it) or
                 # when there's no user simulator to keep the conversation going.
                 if response.message.tool_calls or session.user is None:
@@ -655,35 +651,30 @@ class InterceptionServer(Interception):
             await reply.close()
 
         response: Response | None = None
+        node: int | None = None
+        error: Exception | None = None
         try:
             if parser_error is not None:
                 raise parser_error
             response = parser.finish()
             node = turn.commit(response, tools)
+            logger.debug("intercept stream turn: id=%s", session.trace.id)
+        except Exception as e:
+            error = e
+            raise
+        finally:
+            # Record whatever the exchange produced: the assembled payload when only
+            # the commit failed, the provider headers either way.
             self.record_call(
                 session,
                 dialect,
                 upstream_request,
                 started,
                 node=node,
-                response=response.raw,
-                headers=reply.headers,
-            )
-            logger.debug("intercept stream turn: id=%s", session.trace.id)
-        except Exception as e:
-            # Keep whatever the exchange produced: the assembled payload when only the
-            # commit failed, and the provider headers either way.
-            self.record_call(
-                session,
-                dialect,
-                upstream_request,
-                started,
                 response=response.raw if response is not None else None,
                 headers=reply.headers,
-                error=e,
+                error=error,
             )
-            raise
-        finally:
             # Release the withheld events only now — after the commit — then close.
             with contextlib.suppress(ConnectionResetError):
                 for event in deferred:
