@@ -23,7 +23,7 @@ def verifiers_commit() -> str | None:
     package_dir = Path(__file__).resolve().parents[2]
     try:
         result = subprocess.run(
-            ["git", "-C", str(package_dir), "rev-parse", "HEAD"],
+            ["git", "-C", str(package_dir), "rev-parse", "--show-toplevel", "HEAD"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -32,4 +32,14 @@ def verifiers_commit() -> str | None:
         return None
     if result.returncode != 0:
         return None
-    return result.stdout.strip() or None
+    lines = result.stdout.splitlines()
+    if len(lines) != 2:
+        return None
+    toplevel, commit = lines
+    # git discovers `.git` upward, so an installed (non-checkout) package sitting in a
+    # venv inside some unrelated git project would answer with THAT project's repo.
+    # Only trust the answer when the discovered worktree is the checkout the package
+    # lives in directly (source checkouts and editable installs).
+    if Path(toplevel).resolve() != package_dir.parent:
+        return None
+    return commit or None
