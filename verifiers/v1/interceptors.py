@@ -12,13 +12,23 @@ from verifiers.v1.types import (
     AssistantMessage,
     Message,
     Messages,
+    StrictBaseModel,
     SystemMessage,
     ToolCall,
     ToolMessage,
     UserMessage,
 )
 
-Interceptor = Callable[..., Awaitable[str | None]]
+
+class Terminate(StrictBaseModel):
+    """Stop the rollout immediately with an ordinary reward."""
+
+    reason: str = "intercepted"
+    reward: float = 0.0
+
+
+InterceptResult = str | Terminate | None
+Interceptor = Callable[..., Awaitable[InterceptResult]]
 _SHELL_TOOLS = (
     "*bash*",
     "*shell*",
@@ -84,22 +94,28 @@ def _find_tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
     return [call for call in calls if _matches(call.name, patterns)]
 
 
+def _blocked(reply: str, reward: float | None) -> str | Terminate:
+    return reply if reward is None else Terminate(reward=reward)
+
+
 def block_tool_calls(
     *patterns: str,
     containing: str | Iterable[str] | None = None,
     reply: str = "Blocked by policy.",
+    reward: float | None = None,
     priority: int = 0,
 ) -> Interceptor:
     """Build an interceptor that blocks matching client or provider-native tools.
 
     Patterns are case-insensitive globs. When `containing` is set, a matching call is blocked only
-    if the complete assistant response or tool result contains one of those strings.
+    if the complete assistant response or tool result contains one of those strings. Pass a
+    reward to terminate the rollout instead of returning `reply` to the agent.
     """
     names = tuple(pattern.casefold() for pattern in patterns)
     needles = (containing,) if isinstance(containing, str) else tuple(containing or ())
     needles = tuple(needle.casefold() for needle in needles)
 
-    async def blocker(self, message: Message) -> str | None:
+    async def blocker(self, message: Message) -> InterceptResult:
         if isinstance(message, ToolMessage):
             matched = not names or (
                 message.name is not None and _matches(message.name, names)
@@ -113,7 +129,7 @@ def block_tool_calls(
             )
         ):
             return None
-        return reply
+        return _blocked(reply, reward)
 
     return intercept(blocker, priority=priority)
 
@@ -121,6 +137,7 @@ def block_tool_calls(
 def block_shell_commands(
     *commands: str,
     reply: str = "Blocked by policy.",
+    reward: float | None = None,
     priority: int = 0,
 ) -> Interceptor:
     """Build an interceptor that blocks shell calls containing the given command names.
@@ -134,13 +151,13 @@ def block_shell_commands(
         re.IGNORECASE,
     )
 
-    async def blocker(self, message: AssistantMessage) -> str | None:
+    async def blocker(self, message: AssistantMessage) -> InterceptResult:
         calls = _find_tool_calls(message, *_SHELL_TOOLS)
         if calls and (
             not commands
             or any(command_pattern.search(call.arguments) for call in calls)
         ):
-            return reply
+            return _blocked(reply, reward)
         return None
 
     return intercept(blocker, priority=priority)
@@ -150,6 +167,7 @@ def block_web_search(
     *,
     containing: str | Iterable[str] | None = None,
     reply: str = "Blocked by policy.",
+    reward: float | None = None,
     priority: int = 0,
 ) -> Interceptor:
     """Block client or provider-hosted web search, optionally by response content."""
@@ -157,18 +175,24 @@ def block_web_search(
         *_WEB_SEARCH_TOOLS,
         containing=containing,
         reply=reply,
+        reward=reward,
         priority=priority,
     )
 
 
 def block_code_search(
-    *, reply: str = "Blocked by policy.", priority: int = 0
+    *,
+    reply: str = "Blocked by policy.",
+    reward: float | None = None,
+    priority: int = 0,
 ) -> Interceptor:
     """Block common code-search tools and rg, grep, find, or fd shell calls."""
-    tool_blocker = block_tool_calls(*_CODE_SEARCH_TOOLS, reply=reply)
-    shell_blocker = block_shell_commands(*_CODE_SEARCH_COMMANDS, reply=reply)
+    tool_blocker = block_tool_calls(*_CODE_SEARCH_TOOLS, reply=reply, reward=reward)
+    shell_blocker = block_shell_commands(
+        *_CODE_SEARCH_COMMANDS, reply=reply, reward=reward
+    )
 
-    async def blocker(self, message: Message) -> str | None:
+    async def blocker(self, message: Message) -> InterceptResult:
         return await tool_blocker(self, message) or await shell_blocker(self, message)
 
     return intercept(blocker, priority=priority)
@@ -179,6 +203,7 @@ def block_with_judge(
     *,
     judge: Judge | None = None,
     reply: str = "Blocked by policy.",
+    reward: float | None = None,
     priority: int = -1,
 ) -> Interceptor:
     """Build an interceptor that asks a judge whether each message violates a rubric.
@@ -192,7 +217,7 @@ def block_with_judge(
 
     async def blocker(
         self, message: Message, trace: Trace, prompt: Messages
-    ) -> str | None:
+    ) -> InterceptResult:
         candidate = message.model_dump_json(exclude_none=True, indent=2)
         context = json.dumps(
             [item.model_dump(mode="json", exclude_none=True) for item in prompt],
@@ -218,6 +243,6 @@ def block_with_judge(
             trace=trace,
         )
         verdict = judge_verdict(response.text, ("BLOCK", "ALLOW"))
-        return reply if verdict == "BLOCK" else None
+        return _blocked(reply, reward) if verdict == "BLOCK" else None
 
     return intercept(blocker, priority=priority)

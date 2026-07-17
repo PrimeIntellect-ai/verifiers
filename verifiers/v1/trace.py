@@ -244,6 +244,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Weighted contributions from task rewards, group rewards, and judges."""
+    skip_scoring: bool = False
+    """Whether an interceptor already stopped and rewarded this trace."""
     metrics: dict[str, float] = Field(default_factory=dict)
     """Unweighted metrics from tasks, harnesses, and judges."""
     info: dict[str, Any] = Field(default_factory=dict)

@@ -35,6 +35,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interceptors import (
+    Terminate,
     block_code_search,
     block_shell_commands,
     block_tool_calls,
@@ -180,6 +181,7 @@ __all__ = [
     "Error",
     # decorators
     "intercept",
+    "Terminate",
     "block_code_search",
     "block_shell_commands",
     "block_tool_calls",

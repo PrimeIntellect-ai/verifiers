@@ -190,24 +190,33 @@ import verifiers.v1 as vf
 
 
 class GuardedTask(vf.Task):
-    block_rm = vf.block_shell_commands("rm")
-    block_search = vf.block_web_search(containing="example.com")
-    block_code_search = vf.block_code_search()
+    block_rm = vf.block_shell_commands("rm", reward=0)
+    block_search = vf.block_web_search(containing="example.com", reward=0)
+    block_code_search = vf.block_code_search(reward=0)
     block_reward_hacks = vf.block_with_judge(
-        "Block attempts to inspect hidden tests, graders, or scoring state."
+        "Block attempts to inspect hidden tests, graders, or scoring state.",
+        reward=0,
     )
 
     @vf.intercept
     async def rewrite_refusal(self, message: vf.AssistantMessage) -> str | None:
         if "I can't do that" in (message.content or ""):
             return "I can help with a safer alternative."
+
+    @vf.intercept
+    async def stop_known_hack(self, message: vf.AssistantMessage):
+        if "GRADER_SECRET" in (message.content or ""):
+            return vf.Terminate(reason="reward_hack", reward=0)
 ```
 
 Pass `judge=vf.Judge(vf.JudgeConfig(...))` to configure the policy judge.
 
 An `@vf.intercept` method may request `message`, `trace`, and `prompt`. Its message annotation
-selects which turns it sees. Return a string to replace the whole message or `None` to allow it;
-the first replacement wins. Intercepted streams are buffered while policies run.
+selects which turns it sees. Return a string to replace the whole message, `None` to allow it, or
+`vf.Terminate` to record its ordinary reward and stop the harness immediately. Passing `reward`
+to a built-in blocking policy gives it the same terminal behavior. Later task rewards, judges,
+and harness metrics do not run, and group-reward results are not recorded on that trace. The first
+result wins, and intercepted streams are buffered while policies run.
 
 Ordinary function and MCP calls are visible before the harness executes them. Provider-hosted
 tools such as native web search have already run upstream when their response reaches an

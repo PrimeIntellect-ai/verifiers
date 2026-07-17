@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, get_type_hints
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import invoke
 from verifiers.v1.errors import RolloutError, TaskError
+from verifiers.v1.interceptors import InterceptResult, Terminate
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message, Messages
 
@@ -68,9 +69,12 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    intercepts: list[Callable[..., Awaitable[str | None]]] = field(default_factory=list)
+    intercepts: list[Callable[..., Awaitable[InterceptResult]]] = field(
+        default_factory=list
+    )
+    terminated: asyncio.Event = field(default_factory=asyncio.Event)
     rewritten_response_ids: set[str] = field(default_factory=set)
-    tool_interceptions: dict[str, asyncio.Task[str | None]] = field(
+    tool_interceptions: dict[str, asyncio.Task[InterceptResult]] = field(
         default_factory=dict
     )
     user: "Respond | None" = None
@@ -108,8 +112,8 @@ class RolloutSession:
 
     async def intercept(
         self, message: Message, prompt: Messages | None = None
-    ) -> str | None:
-        """Return the first interceptor replacement, or None for native pass-through."""
+    ) -> InterceptResult:
+        """Return the first replacement or terminal result, else pass through."""
         try:
             for interceptor in self.intercepts:
                 hint = get_type_hints(interceptor).get("message")
@@ -125,9 +129,10 @@ class RolloutSession:
                 )
                 if replacement is None:
                     continue
-                if not isinstance(replacement, str):
+                if not isinstance(replacement, (str, Terminate)):
                     raise TaskError(
-                        f"@intercept must return str or None, got {type(replacement).__name__}"
+                        "@intercept must return str, vf.Terminate, or None, got "
+                        f"{type(replacement).__name__}"
                     )
                 return replacement
         except RolloutError:
@@ -136,12 +141,24 @@ class RolloutSession:
             raise TaskError(f"@intercept failed: {type(e).__name__}: {e}") from e
         return None
 
+    def signal_termination(self, result: Terminate) -> None:
+        """Record the terminal reward before waking the rollout to cancel its harness."""
+        if self.terminated.is_set():
+            return
+        self.error = None
+        self.trace.record_reward("interception", result.reward)
+        self.trace.skip_scoring = True
+        self.trace.stop(result.reason)
+        self.terminated.set()
+
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
         call halts the harness (its model call errors out); Harness.run treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
+        if self.terminated.is_set():
+            return self.trace.stop_condition or "intercepted"
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)

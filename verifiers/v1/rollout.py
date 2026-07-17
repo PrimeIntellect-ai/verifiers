@@ -190,12 +190,35 @@ class Rollout:
                     # Prefer an intercepted model/tool/user error to the harness exit it caused.
                     # A timeout still scores the partial trajectory.
                     try:
-                        await asyncio.wait_for(
+                        harness_task = asyncio.create_task(
                             self.harness.run(
                                 ctx, trace, runtime, endpoint, secret, urls
-                            ),
-                            self.harness_timeout,
+                            )
                         )
+                        termination_task = asyncio.create_task(
+                            session.terminated.wait()
+                        )
+                        try:
+                            done, _ = await asyncio.wait(
+                                {harness_task, termination_task},
+                                timeout=self.harness_timeout,
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if not done:
+                                raise TimeoutError
+                            if termination_task in done:
+                                harness_task.cancel()
+                            else:
+                                await harness_task
+                        finally:
+                            termination_task.cancel()
+                            if not harness_task.done():
+                                harness_task.cancel()
+                            await asyncio.gather(
+                                harness_task,
+                                termination_task,
+                                return_exceptions=True,
+                            )
                     except TimeoutError:
                         trace.stop("harness_timeout")
                     except RolloutError as e:
@@ -216,18 +239,19 @@ class Rollout:
                 )
             now = time.time()
             trace.timing.finalize.end = now
-            self.phase = Phase.SCORING
-            trace.timing.scoring.start = now
-            async with boundary(TaskError, "scoring"):
-                # Group rewards run later, after the runtime is gone.
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        self.task.score(trace, runtime),
-                        self.harness.score(trace, runtime),
-                    ),
-                    self.scoring_timeout,
-                )
-            trace.timing.scoring.end = time.time()
+            if not trace.skip_scoring:
+                self.phase = Phase.SCORING
+                trace.timing.scoring.start = now
+                async with boundary(TaskError, "scoring"):
+                    # Group rewards run later, after the runtime is gone.
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            self.task.score(trace, runtime),
+                            self.harness.score(trace, runtime),
+                        ),
+                        self.scoring_timeout,
+                    )
+                trace.timing.scoring.end = time.time()
         except RolloutError as e:
             trace.capture_error(e)
         except Exception as e:

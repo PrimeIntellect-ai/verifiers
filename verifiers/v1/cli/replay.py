@@ -134,7 +134,13 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             # Generation failures have no complete transcript to score.
-            if trace.stop_condition == "error":
+            if trace.skip_scoring:
+                st.state, st.detail, st.end = (
+                    "skipped",
+                    "terminal interception",
+                    time.time(),
+                )
+            elif trace.stop_condition == "error":
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"

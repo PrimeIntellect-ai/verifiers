@@ -78,8 +78,8 @@ def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """Mark a `Task` message interceptor accepting any of `message`, `trace`, and `prompt`.
 
     The `message` annotation selects assistant turns, tool results, or both. Return None to pass
-    through or a string to replace the whole message; replacing an assistant tool call prevents it
-    from running. The first replacement wins, and intercepted streams are buffered until then.
+    through, a string to replace the whole message, or `vf.Terminate` to stop immediately with its
+    reward. The first result wins, and intercepted streams are buffered until then.
     """
     decorator = mark("intercept", intercept_priority=priority)
     return decorator if func is None else decorator(func)

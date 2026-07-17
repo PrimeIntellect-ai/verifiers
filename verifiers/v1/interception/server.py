@@ -50,6 +50,7 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
+from verifiers.v1.interceptors import Terminate
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import AssistantMessage, Messages, Response, Tool, ToolMessage
 
@@ -238,6 +239,13 @@ class InterceptionServer(Interception):
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
+        if session.terminated.is_set():
+            return web.json_response(
+                dialect.error_body(
+                    f"rollout terminated: {session.trace.stop_condition or 'intercepted'}"
+                ),
+                status=400,
+            )
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -360,6 +368,14 @@ class InterceptionServer(Interception):
                     except Exception:
                         session.tool_interceptions.pop(key, None)
                         raise
+                    if isinstance(replacement, Terminate):
+                        session.signal_termination(replacement)
+                        return web.json_response(
+                            dialect.error_body(
+                                f"rollout terminated: {replacement.reason}"
+                            ),
+                            status=400,
+                        )
                     if replacement is not None:
                         replacements[message.tool_call_id] = replacement
             except RolloutError as e:
@@ -479,6 +495,15 @@ class InterceptionServer(Interception):
                     return web.json_response(dialect.error_body(str(e)), status=502)
                 try:
                     replacement = await session.intercept(response.message, prompt)
+                    if isinstance(replacement, Terminate):
+                        turn.commit(response, tools)
+                        session.signal_termination(replacement)
+                        return web.json_response(
+                            dialect.error_body(
+                                f"rollout terminated: {replacement.reason}"
+                            ),
+                            status=400,
+                        )
                     if replacement is not None:
                         raw = dialect.rewrite_response(response.raw, replacement)
                         response = dialect.parse_raw_response(raw)
@@ -700,6 +725,11 @@ class InterceptionServer(Interception):
                         if not intercept_task.done():
                             await keepalive()
                     replacement = await intercept_task
+                    if isinstance(replacement, Terminate):
+                        turn.commit(response, tools)
+                        session.signal_termination(replacement)
+                        await end_stream()
+                        return resp
                     if replacement is not None:
                         raw = dialect.rewrite_response(response.raw, replacement)
                         response = dialect.parse_raw_response(raw)
