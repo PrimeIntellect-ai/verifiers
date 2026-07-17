@@ -23,6 +23,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 
 from verifiers import __version__
 from verifiers.v1.harness import Harness
@@ -56,6 +57,13 @@ from verifiers.v1.types import Messages
 from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SegmentResult:
+    """The harness output addressed to the exchange's user."""
+
+    visible_reply: str | None = None
 
 
 def _as_messages(raw: Messages) -> Messages:
@@ -293,22 +301,22 @@ class RolloutRun:
             self.deadline_at = asyncio.get_running_loop().time() + self._harness_timeout
         return True
 
-    async def step(self, messages: Messages | None = None) -> bool:
+    async def step(self, messages: Messages | None = None) -> SegmentResult | None:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
         for an exchange the user opens, this is also the first segment, on an
         empty conversation); without, it launches on the task's own prompt.
-        Returns whether the exchange can continue — a refused turn (limit, @stop),
-        a timeout, a failure, or a segment that made no progress all end it."""
+        Returns the segment result when it produced an assistant turn; a refused
+        turn (limit, @stop), timeout, failure, or no progress returns None."""
         if not self._opened or self._closed or not self.ok:
-            return False
+            return None
         trace = self.trace
         turns_before = trace.num_turns
         # Prefer an intercepted model/tool error to the harness exit it caused.
         # A timeout still scores the partial trajectory.
         try:
             async with asyncio.timeout_at(self.deadline_at):
-                await self.harness.run(
+                result = await self.harness.run(
                     self.ctx,
                     trace,
                     self.runtime,
@@ -328,7 +336,7 @@ class RolloutRun:
                 trace.stop("harness_timeout")
             else:
                 self.fail(e)
-            return False
+            return None
         except Exception as e:
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
@@ -336,14 +344,16 @@ class RolloutRun:
                 self.fail(real)
             else:
                 self.fail(e)
-            return False
+            return None
         if self._session.error is not None:
             self.fail(self._session.error)
-            return False
+            return None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
-        return self.ok and trace.num_turns > turns_before
+        if trace.num_turns > turns_before:
+            return SegmentResult(visible_reply=result.visible_reply)
+        return None
 
     async def abort(self) -> None:
         """Free everything this run holds — the entered servers and an owned

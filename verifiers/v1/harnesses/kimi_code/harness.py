@@ -5,6 +5,7 @@ import logging
 import shlex
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -38,8 +39,9 @@ class KimiCodeHarnessConfig(HarnessConfig):
 
 
 class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
-    APPENDS_SYSTEM_PROMPT = False
+    APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    SUPPORTS_MESSAGE_PROMPT = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info(
@@ -66,10 +68,22 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        _, prompt = self.resolve_prompt(data)
+        system_prompt, prompt = self.resolve_prompt(data)
+        if prompt is None:
+            raise ValueError("Kimi Code requires a prompt")
+        messages = [
+            *([{"role": "system", "content": system_prompt}] if system_prompt else []),
+            *(
+                [{"role": "user", "content": prompt}]
+                if isinstance(prompt, str)
+                else [message_to_wire(message) for message in prompt]
+            ),
+        ]
+        prompt = json.dumps(messages, ensure_ascii=False)
+        kimi_home = f"{KIMI_HOME}/{trace.id}"
         env = {
             **self.config.resolved_env,
-            "KIMI_CODE_HOME": KIMI_HOME,
+            "KIMI_CODE_HOME": kimi_home,
             "KIMI_MODEL_NAME": ctx.model,
             "KIMI_MODEL_API_KEY": secret,
             "KIMI_MODEL_PROVIDER_TYPE": "openai",
@@ -78,7 +92,6 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             "KIMI_DISABLE_TELEMETRY": "1",
             "KIMI_CODE_NO_AUTO_UPDATE": "1",
         }
-
         mcp = {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
         # Values are Kimi permission patterns such as `Bash` or `Bash(rm -rf*)`.
         # https://moonshotai.github.io/kimi-code/en/configuration/config-files#permission
@@ -95,7 +108,8 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             for tool in self.config.disabled_tools or []
         )
         if permission_rules:
-            await runtime.write(f"{KIMI_HOME}/config.toml", permission_rules.encode())
-        await runtime.write(f"{KIMI_HOME}/mcp.json", json.dumps(mcp).encode())
-        # `--prompt` is Kimi Code's non-interactive print mode.
+            await runtime.write(f"{kimi_home}/config.toml", permission_rules.encode())
+        await runtime.write(f"{kimi_home}/mcp.json", json.dumps(mcp).encode())
+        # Kimi ACP currently requires an interactive account login. Until it can
+        # use the intercepted provider, replay the transcript explicitly.
         return await runtime.run_program([BINARY, "--prompt", prompt], env)

@@ -8,6 +8,7 @@ from pydantic import Field
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
 
@@ -62,8 +63,9 @@ class PoolHarness(Harness[PoolHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task.data)
+        system_prompt, prompt = self.resolve_prompt(data)
         if prompt is None:
             raise ValueError("Pool requires a task prompt (it has no user simulator)")
         texts = [system_prompt] if system_prompt else []

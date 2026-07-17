@@ -49,6 +49,7 @@ class ProgramResult:
     exit_code: int
     stdout: str
     stderr: str
+    visible_reply: str | None = None
 
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:

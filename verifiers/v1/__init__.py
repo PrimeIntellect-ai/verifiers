@@ -2,6 +2,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.acp import ACP
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -238,6 +239,7 @@ __all__ = [
     "BaseConfig",
     "Harness",
     "HarnessConfig",
+    "ACP",
     "ModelContext",
     "Runtime",
     "RuntimeConfig",

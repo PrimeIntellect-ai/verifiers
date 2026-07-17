@@ -111,7 +111,7 @@ class Harness(ABC, Generic[ConfigT]):
         mcp_urls: dict[str, str],
         data: TaskData,
         messages: Messages | None = None,
-    ) -> None:
+    ) -> ProgramResult:
         """Run ONE segment of the exchange: the program from launch (or, with
         `messages`, the user's next turn(s) via `resume`) until it yields — a segment
         ends when the program exits. The rollout loop owns the exchange across
@@ -125,14 +125,13 @@ class Harness(ABC, Generic[ConfigT]):
                 result = await self.resume(
                     ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages
                 )
-        if trace.stop_condition is not None:
-            return  # a @stop refused a turn mid-rollout; the harness's exit is expected
-        if result.exit_code != 0:
+        if trace.stop_condition is None and result.exit_code != 0:
             # The real cause is at the END of a traceback, so keep the tail.
             detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )
+        return result
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Run this harness's `@metric` methods over the finished trace, recording

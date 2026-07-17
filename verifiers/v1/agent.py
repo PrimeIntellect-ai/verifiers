@@ -193,12 +193,17 @@ class ChatSession:
         elif message is not None:
             messages = _as_messages(message)
         self._started = True
-        turns_before = self.trace.num_turns
-        await self._run.step(messages)
-        if self.trace.num_turns > turns_before:
+        result = await self._run.step(messages)
+        if result is not None:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's stopped reply.
-            return Reply(text=self.trace.last_reply)
+            return Reply(
+                text=(
+                    result.visible_reply
+                    if result.visible_reply is not None
+                    else self.trace.last_reply
+                )
+            )
         self._over = True
         return Reply(text="", stopped=True)
 
