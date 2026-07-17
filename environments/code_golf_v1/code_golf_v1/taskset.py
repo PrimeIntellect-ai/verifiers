@@ -71,8 +71,6 @@ class CodeGolfParams(vf.EnvParams):
 
 
 class CodeGolfEnv(vf.Environment[CodeGolfParams]):
-    # No roles() override: the default 1:1 plays the declared `golfer` field
-    # as a dataset role.
     async def rollout(self, task, agents):
         return list(
             await asyncio.gather(
