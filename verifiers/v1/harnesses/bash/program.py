@@ -8,7 +8,7 @@ import argparse
 import asyncio
 import json
 import subprocess
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
@@ -186,39 +186,42 @@ async def chat(
 @asynccontextmanager
 async def mcp_session(spec: dict):
     """One fresh streamable-HTTP session to an MCP server, opened and closed within the caller's
-    task so AnyIO cancellation scopes stay correctly nested. Only session setup is retried —
-    nothing has reached a tool yet, so reconnecting under start-up churn is free of side effects.
-    The body runs at most once, and a teardown failure after the body completed is swallowed —
-    the result is already in hand."""
+    task so AnyIO cancellation scopes stay correctly nested. A teardown failure after the body
+    completed is swallowed — the result is already in hand, and closing noise must not fail (or
+    replay) an already-answered call."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
     )
 
-    in_body = done = False
+    stack = AsyncExitStack()
+    try:
+        http_client = await stack.enter_async_context(
+            create_mcp_http_client(
+                headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
+            )
+        )
+        read, write, *_ = await stack.enter_async_context(
+            streamable_http_client(spec["url"], http_client=http_client)
+        )
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        yield session
+    finally:
+        with suppress(Exception):
+            await stack.aclose()
+
+
+async def with_retry(call):
+    """Run one session-scoped operation, retrying with backoff. A call whose response was lost may
+    be replayed — MCP has no idempotency key, so tools should tolerate at-least-once delivery (a
+    tool that fails reports through its result, not an exception)."""
     for attempt in range(MCP_CALL_ATTEMPTS):
         try:
-            async with (
-                create_mcp_http_client(
-                    headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
-                ) as http_client,
-                streamable_http_client(spec["url"], http_client=http_client) as (
-                    read,
-                    write,
-                    *_,
-                ),
-                ClientSession(read, write) as session,
-            ):
-                await session.initialize()
-                in_body = True
-                yield session
-                done = True
-            return
+            return await call()
         except Exception:
-            if done:
-                return
-            if in_body or attempt + 1 == MCP_CALL_ATTEMPTS:
+            if attempt + 1 == MCP_CALL_ATTEMPTS:
                 raise
             await asyncio.sleep(
                 min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
@@ -236,25 +239,29 @@ async def connect_mcp(
     servers: dict[str, dict] = {}
     for name, spec in config.get("mcpServers", {}).items():
         servers[name] = spec
-        async with mcp_session(spec) as session:
-            for tool in (await session.list_tools()).tools:
-                # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
-                full = f"{name}_{tool.name}" if name else tool.name
-                if full in reserved or full in dispatch:
-                    raise ValueError(
-                        f"duplicate tool name {full!r}; keep MCP tool names qualified"
-                    )
-                tool_schemas.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": full,
-                            "description": tool.description or "",
-                            "parameters": tool.inputSchema,
-                        },
-                    }
+
+        async def list_tools(spec: dict = spec):
+            async with mcp_session(spec) as session:
+                return (await session.list_tools()).tools
+
+        for tool in await with_retry(list_tools):
+            # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
+            full = f"{name}_{tool.name}" if name else tool.name
+            if full in reserved or full in dispatch:
+                raise ValueError(
+                    f"duplicate tool name {full!r}; keep MCP tool names qualified"
                 )
-                dispatch[full] = (name, tool.name)
+            tool_schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": full,
+                        "description": tool.description or "",
+                        "parameters": tool.inputSchema,
+                    },
+                }
+            )
+            dispatch[full] = (name, tool.name)
     return tool_schemas, dispatch, servers
 
 
@@ -278,12 +285,15 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
 ) -> str | list[dict]:
-    """Call a tool once on a fresh session. The call itself is never replayed: a lost response is
-    indistinguishable from a lost request, and a tool may not be idempotent — session setup is
-    what's retried (see `mcp_session`)."""
+    """Call a tool on a fresh session per attempt — see `with_retry` for the replay semantics.
+    The result is converted outside the retry so a conversion failure fails once."""
     server_name, raw = dispatch[name]
-    async with mcp_session(servers[server_name]) as session:
-        result = await session.call_tool(raw, arguments)
+
+    async def call():
+        async with mcp_session(servers[server_name]) as session:
+            return await session.call_tool(raw, arguments)
+
+    result = await with_retry(call)
     return mcp_content_to_chat_content(result.content)
 
 

@@ -41,8 +41,10 @@ logger = logging.getLogger(__name__)
 # Sandboxed servers install the working tree, so only wheel inputs need to cross the boundary.
 VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
 
-# A user ends the trajectory through shared state and `@stop`, not through this return value.
-Respond = Callable[[str], Awaitable[Messages]]
+# One user turn: (message, seq) -> user messages, where `seq` is the conversation position the
+# user server dedups replayed turns on. A user ends the trajectory through shared state and
+# `@stop`, not through this return value.
+Respond = Callable[[str, int], Awaitable[Messages]]
 
 MCP_CALL_RETRIES = 5
 MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
@@ -439,58 +441,53 @@ async def serve_tools(
 
 @contextlib.asynccontextmanager
 async def _user_session(url: str) -> AsyncIterator[ClientSession]:
-    """One fresh session to the user server, opened and closed within the caller's task. Only
-    session setup is retried — nothing has reached the simulator yet, so reconnecting under
-    rollout-start churn is free of side effects. The body runs at most once, and a teardown
-    failure after the body completed is suppressed — the result is already in hand."""
+    """One fresh session to the user server, opened and closed within the caller's task so AnyIO
+    cancellation scopes stay correctly nested. A teardown failure after the body completed is
+    suppressed — the result is already in hand, and closing noise must not fail (or replay) an
+    already-answered call."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
     )
 
-    from verifiers.v1.retries import retrying
-
-    async def connect() -> tuple[contextlib.AsyncExitStack, ClientSession]:
-        stack = contextlib.AsyncExitStack()
-        try:
-            http_client = await stack.enter_async_context(
-                create_mcp_http_client(timeout=MCP_TIMEOUT)
-            )
-            read, write, *_ = await stack.enter_async_context(
-                streamable_http_client(url, http_client=http_client)
-            )
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-            return stack, session
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await stack.aclose()
-            raise
-
-    stack = session = None
-    async for attempt in retrying(
-        retries=MCP_CALL_RETRIES, label=f"user connect ({url})"
-    ):
-        with attempt:
-            stack, session = await connect()
-    assert stack is not None and session is not None
+    stack = contextlib.AsyncExitStack()
     try:
+        http_client = await stack.enter_async_context(
+            create_mcp_http_client(timeout=MCP_TIMEOUT)
+        )
+        read, write, *_ = await stack.enter_async_context(
+            streamable_http_client(url, http_client=http_client)
+        )
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
         yield session
     finally:
         with contextlib.suppress(Exception):
             await stack.aclose()
 
 
-async def _user_respond(url: str, message: str) -> Messages:
-    """One `respond` round-trip to the user server on a fresh session (`_user_session`). The call
-    itself is never replayed: a lost response is indistinguishable from a lost request, and a
-    duplicate `respond` would advance the simulator twice."""
+async def _user_respond(url: str, message: str, seq: int) -> Messages:
+    """One `respond` turn against the user server, on a fresh session per attempt. A retried turn
+    whose response was lost would advance the simulator twice, so the server dedups on
+    (`seq`, `message`) and replays the recorded turn — making the retry effectively exactly-once.
+    The payload is parsed outside the retry so a parse failure fails once."""
     from verifiers.v1.dialects import parse_message
+    from verifiers.v1.retries import retrying
 
     try:
-        async with _user_session(url) as session:
-            result = await session.call_tool("respond", {"message": message})
+        result = None
+        async for attempt in retrying(
+            give_up=RolloutError,
+            retries=MCP_CALL_RETRIES,
+            label=f"user respond ({url})",
+        ):
+            with attempt:
+                async with _user_session(url) as session:
+                    result = await session.call_tool(
+                        "respond", {"message": message, "seq": seq}
+                    )
+        assert result is not None
         texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
         data = json.loads("\n".join(texts))
         return [parse_message(m) for m in data["messages"]]
@@ -502,11 +499,11 @@ async def _user_respond(url: str, message: str) -> Messages:
 
 @contextlib.asynccontextmanager
 async def connect_user(url: str) -> AsyncIterator[Respond]:
-    """Yield a `respond` bound to the (probed, reachable) user server. Each call runs on a fresh
+    """Yield a `respond` bound to the (probed, reachable) user server. Each turn runs on a fresh
     session — see `_user_respond`."""
 
-    async def respond(message: str) -> Messages:
-        return await _user_respond(url, message)
+    async def respond(message: str, seq: int) -> Messages:
+        return await _user_respond(url, message, seq)
 
     yield respond
 

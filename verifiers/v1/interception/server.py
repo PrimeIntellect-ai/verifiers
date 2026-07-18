@@ -349,7 +349,10 @@ class InterceptionServer(Interception):
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
-                session.opening = await session.user("")
+                # `len(prompt)` is the conversation position — identical when this turn is
+                # retried (an SDK-retried request is byte-identical), so the user server can
+                # replay a turn whose response was lost instead of advancing twice.
+                session.opening = await session.user("", len(prompt))
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
@@ -499,7 +502,9 @@ class InterceptionServer(Interception):
                 if response.message.tool_calls or session.user is None:
                     return serve(response)
                 try:
-                    user_messages = await session.user(response.message.content or "")
+                    user_messages = await session.user(
+                        response.message.content or "", len(prompt)
+                    )
                 except RolloutError as e:
                     return self._fail(session, dialect, e)
                 except Exception as e:

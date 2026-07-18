@@ -43,10 +43,19 @@ class User(ServerBase[ConfigT, StateT]):
         from verifiers.v1.dialects.chat import message_to_wire
 
         user = self
+        last: tuple[int, str, str] | None = None
 
-        async def respond(message: str) -> str:
+        async def respond(message: str, seq: int = -1) -> str:
+            # Replay cache: the host retries a turn whose response was lost on the wire. The
+            # simulator already advanced for that turn, so serve the recorded payload instead
+            # of advancing it twice. `seq` is the caller's conversation position.
+            nonlocal last
+            if seq >= 0 and last is not None and last[:2] == (seq, message):
+                return last[2]
             messages = await user.respond(message)
             wire = [m if isinstance(m, dict) else message_to_wire(m) for m in messages]
-            return json.dumps({"messages": wire})
+            payload = json.dumps({"messages": wire})
+            last = (seq, message, payload)
+            return payload
 
         mcp.add_tool(self._with_state(respond), name="respond")
