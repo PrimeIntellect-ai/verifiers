@@ -145,6 +145,29 @@ async def test_reset_failure_records_patch_error(tmp_path):
     assert "exit=7" in trace.info["patch_error"]
 
 
+async def test_head_failure_records_patch_error(tmp_path):
+    # A head shim that fails (e.g. ENOSPC writing the capped copy): the redirect
+    # truncates the capped file before head runs, so without head's exit code the
+    # capture would read back a silently empty patch as success.
+    runtime, base = make_repo(tmp_path)
+    (tmp_path / "src.py").write_text("edited\n")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "head").write_text("#!/bin/sh\nexit 9\n")
+    (shim / "head").chmod(0o755)
+
+    trace = trace_stub()
+    await capture_patch(
+        trace,
+        runtime,
+        base_commit=base,
+        env={"PATH": f"{shim}:/usr/local/bin:/usr/bin:/bin"},
+    )
+
+    assert "patch" not in trace.info
+    assert "exit=9" in trace.info["patch_error"]
+
+
 async def test_bad_base_records_patch_error(tmp_path):
     runtime, _ = make_repo(tmp_path)
     trace = trace_stub()
