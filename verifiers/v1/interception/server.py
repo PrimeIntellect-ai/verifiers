@@ -346,10 +346,10 @@ class InterceptionServer(Interception):
         if (
             session.user is not None
             and session.trace.task.data.prompt is None
-            and session.trace.num_turns == 0
+            and all(m.role != "assistant" for m in prompt)
         ):
             if session.opening is None:
-                session.opening = await session.user("")
+                session.opening = await session.user("", len(prompt))
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
@@ -498,8 +498,11 @@ class InterceptionServer(Interception):
                 # when there's no user simulator to keep the conversation going.
                 if response.message.tool_calls or session.user is None:
                     return serve(response)
+                prompt = [*prompt, response.message]
                 try:
-                    user_messages = await session.user(response.message.content or "")
+                    user_messages = await session.user(
+                        response.message.content or "", len(prompt)
+                    )
                 except RolloutError as e:
                     return self._fail(session, dialect, e)
                 except Exception as e:
@@ -515,7 +518,7 @@ class InterceptionServer(Interception):
                 # `self.state`), caught by `refused()` at the top of the next iteration — the
                 # interception server holds no opinion about the state's contents.
                 body = dialect.extend(body, response.raw, user_messages)
-                prompt = [*prompt, response.message, *user_messages]
+                prompt = [*prompt, *user_messages]
                 # The simulator changed the payload, so this is a new operation not a retry.
                 headers.popall("idempotency-key", None)
                 headers.popall("x-idempotency-key", None)

@@ -12,10 +12,12 @@ import tarfile
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+import httpx
 
 from verifiers.v1.errors import RolloutError, ToolsetError, UserError
 from verifiers.v1.interception.tunnel import PrimeTunnel
@@ -29,6 +31,8 @@ from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
+    from mcp import ClientSession
+
     from verifiers.v1.mcp.toolset import Toolset
     from verifiers.v1.mcp.user import User
 
@@ -37,13 +41,13 @@ logger = logging.getLogger(__name__)
 # Sandboxed servers install the working tree, so only wheel inputs need to cross the boundary.
 VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
 
-# A user ends the trajectory through shared state and `@stop`, not through this return value.
-Respond = Callable[[str], Awaitable[Messages]]
+# One user turn: (message, seq) -> user messages; `seq` is the conversation position that
+# replayed turns dedup on.
+Respond = Callable[[str, int], Awaitable[Messages]]
 
-# A server can pass its in-runtime probe before its host-facing connection settles.
-_USER_CONNECT_ATTEMPTS = 12
-_USER_CONNECT_BACKOFF = 0.2  # seconds, exponential up to the cap
-_USER_CONNECT_MAX_BACKOFF = 2.0
+MCP_CALL_RETRIES = 5
+MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
+
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
@@ -435,58 +439,61 @@ async def serve_tools(
 
 
 @contextlib.asynccontextmanager
-async def connect_user(url: str) -> AsyncIterator[Respond]:
-    """Connect to a user server, retrying only initial connection failures.
-
-    Body errors propagate unchanged; transport failures after connecting become `UserError`. The
-    session stays in this frame so AnyIO cancellation scopes remain correctly nested.
-    """
+async def user_session(url: str) -> AsyncIterator[ClientSession]:
+    """One fresh session to the user server, opened and closed within the caller's task so AnyIO
+    cancellation scopes stay correctly nested. A teardown failure after the body completed is
+    suppressed — the result is already in hand, and closing noise must not fail (or replay) an
+    already-answered call."""
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamable_http_client
-
-    from verifiers.v1.dialects import parse_message
-
-    last_exc: Exception | None = None
-    for attempt in range(_USER_CONNECT_ATTEMPTS):
-        connected = in_body = False
-        try:
-            async with (
-                streamable_http_client(url) as (read, write, *_),
-                ClientSession(read, write) as session,
-            ):
-                await session.initialize()
-                connected = True
-
-                async def respond(message: str) -> Messages:
-                    result = await session.call_tool("respond", {"message": message})
-                    texts = [
-                        b.text
-                        for b in result.content
-                        if getattr(b, "type", None) == "text"
-                    ]
-                    data = json.loads("\n".join(texts))
-                    return [parse_message(m) for m in data["messages"]]
-
-                # Errors thrown into the yield belong to the harness body, not the connection.
-                in_body = True
-                yield respond
-                in_body = False
-            return
-        except RolloutError:
-            raise
-        except Exception as e:
-            if in_body:
-                raise
-            if connected:
-                # Raw transport groups bypass rollout handling, so attribute the loss here.
-                raise UserError(f"user server at {url} connection lost: {e!r}") from e
-            last_exc = e
-            await asyncio.sleep(
-                min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF)
-            )
-    raise UserError(
-        f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}"
+    from mcp.client.streamable_http import (
+        create_mcp_http_client,
+        streamable_http_client,
     )
+
+    stack = contextlib.AsyncExitStack()
+    try:
+        http_client = await stack.enter_async_context(
+            create_mcp_http_client(timeout=MCP_TIMEOUT)
+        )
+        read, write, *_ = await stack.enter_async_context(
+            streamable_http_client(url, http_client=http_client)
+        )
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        yield session
+    finally:
+        with contextlib.suppress(Exception):
+            await stack.aclose()
+
+
+async def user_respond(url: str, message: str, seq: int) -> Messages:
+    """One `respond` turn against the user server, on a fresh session per attempt. A retried turn
+    whose response was lost would advance the simulator twice, so the server dedups on
+    (`seq`, `message`) and replays the recorded turn — making the retry effectively exactly-once.
+    The payload is parsed outside the retry so a parse failure fails once."""
+    from verifiers.v1.dialects import parse_message
+    from verifiers.v1.retries import retrying
+
+    try:
+        result = None
+        async for attempt in retrying(
+            give_up=RolloutError,
+            retries=MCP_CALL_RETRIES,
+            label=f"user respond ({url})",
+        ):
+            with attempt:
+                async with user_session(url) as session:
+                    result = await session.call_tool(
+                        "respond", {"message": message, "seq": seq}
+                    )
+        assert result is not None
+        texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
+        data = json.loads("\n".join(texts))
+        return [parse_message(m) for m in data["messages"]]
+    except RolloutError:
+        raise
+    except Exception as e:
+        raise UserError(f"user server at {url} respond failed: {e!r}") from e
 
 
 @contextlib.asynccontextmanager
@@ -514,5 +521,4 @@ async def serve_user(
         state_secret=state_secret,
         state_base=state_base,
     ) as url:
-        async with connect_user(url) as respond:
-            yield respond
+        yield partial(user_respond, url)
