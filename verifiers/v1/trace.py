@@ -257,9 +257,7 @@ _NODE_DUMP_EXCLUDE: dict = {
 
 TRACE_VERSION = 2
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
-breaking shape changes (v2: `finish_reason` and `usage` moved from `MessageNode` to
-`ModelCall`);
-optional-with-default fields are additive and don't bump it."""
+breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
 
 class EvalRunInfo(StrictBaseModel):
