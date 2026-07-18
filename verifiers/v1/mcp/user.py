@@ -48,24 +48,29 @@ class User(ServerBase[ConfigT, StateT]):
         last_payload = ""
         lock = asyncio.Lock()
 
+        async def advance(message: str) -> str:
+            messages = await user.respond(message)
+            wire = [m if isinstance(m, dict) else message_to_wire(m) for m in messages]
+            return json.dumps({"messages": wire})
+
+        # State sync (pull/commit) lives *inside* the lock, so `advance` is one atomic turn.
+        synced = self._with_state(advance)
+
         async def respond(message: str, seq: int = -1) -> str:
             # Replay cache: the host retries a turn whose response was lost on the wire. The
             # simulator already advanced for that turn, so serve the recorded payload instead
-            # of advancing it twice. `seq` is the caller's conversation position. The lock
-            # serializes duplicate in-flight attempts (a retry racing a slow first execution)
-            # so they join the recorded turn rather than each advancing the simulator. The
-            # server process is launched per rollout (`serve_user`), so cache and lock span
+            # of advancing it twice. `seq` is the caller's conversation position. The whole turn
+            # — including the shared-state commit — runs under the lock, and the cache is
+            # published only after it commits, so a racing retry (racing a slow first attempt)
+            # either drives a fresh turn or joins the fully-committed one, never a mid-commit
+            # read. The server process is per-rollout (`serve_user`), so cache and lock span
             # exactly one conversation.
             nonlocal last_turn, last_payload
             async with lock:
                 if seq >= 0 and (seq, message) == last_turn:
                     return last_payload
-                messages = await user.respond(message)
-                wire = [
-                    m if isinstance(m, dict) else message_to_wire(m) for m in messages
-                ]
+                last_payload = await synced(message)
                 last_turn = (seq, message)
-                last_payload = json.dumps({"messages": wire})
                 return last_payload
 
-        mcp.add_tool(self._with_state(respond), name="respond")
+        mcp.add_tool(respond, name="respond")
