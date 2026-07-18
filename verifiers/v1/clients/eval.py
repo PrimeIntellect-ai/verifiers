@@ -106,7 +106,7 @@ class EvalClient(Client):
         except (ValueError, ValidationError) as e:
             raise model_error(
                 f"malformed upstream response: {type(e).__name__}: {e}",
-                status_code=502,
+                code=502,
                 headers=dict(resp.headers),
             ) from e
         # The interception server returns this full native provider object to the program.
@@ -156,11 +156,11 @@ class EvalClient(Client):
         try:
             response = await self.http.send(request, stream=stream)
         except httpx.TimeoutException as e:
-            raise model_error(str(e), status_code=504) from e
+            raise model_error(str(e), code=504) from e
         except httpx.HTTPError as e:
-            raise model_error(str(e), status_code=503) from e
+            raise model_error(str(e), code=503) from e
         except ConnectionResetError as e:
-            raise model_error(str(e), status_code=503) from e
+            raise model_error(str(e), code=503) from e
         if not stream:
             try:
                 response.raise_for_status()
@@ -170,7 +170,7 @@ class EvalClient(Client):
                 # make an information-free ProviderError
                 raise model_error(
                     f"upstream {e.response.status_code}: {e.response.text}",
-                    status_code=e.response.status_code,
+                    code=e.response.status_code,
                     headers=dict(e.response.headers),
                 ) from e
             return response
@@ -182,7 +182,7 @@ class EvalClient(Client):
             await response.aclose()
         raise model_error(
             f"upstream {response.status_code}: {text}",
-            status_code=response.status_code,
+            code=response.status_code,
             headers=dict(response.headers),
         )
 
