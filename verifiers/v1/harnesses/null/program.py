@@ -10,7 +10,6 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import anyio
 import httpx
 from openai import AsyncOpenAI
 
@@ -18,27 +17,6 @@ MCP_CALL_ATTEMPTS = 6
 MCP_CALL_BACKOFF = 0.2  # seconds, exponential up to the cap
 MCP_CALL_MAX_BACKOFF = 2.0
 MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
-
-
-def is_transient(exc: BaseException) -> bool:
-    """A transport-level fault worth retrying on a fresh connection, vs a real body error — often
-    wrapped in the MCP task group's `ExceptionGroup`."""
-    group = getattr(
-        exc, "exceptions", None
-    )  # an ExceptionGroup from the MCP task group
-    if group is not None:
-        return any(is_transient(e) for e in group)
-    return isinstance(
-        exc,
-        (
-            httpx.TransportError,
-            ConnectionError,
-            TimeoutError,
-            anyio.ClosedResourceError,
-            anyio.BrokenResourceError,
-            anyio.EndOfStream,
-        ),
-    )
 
 
 async def chat(
@@ -127,9 +105,9 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
 ) -> str | list[dict]:
-    """Call a tool on a fresh session, retrying transient transport drops so connection churn under
-    high concurrency doesn't crash the harness. A tool that returns an error does so in its content
-    (not an exception), so it is not retried."""
+    """Call a tool on a fresh session, retrying a dropped connection so connection churn under high
+    concurrency doesn't crash the harness. Retrying any Exception is sound: a tool that fails for
+    real returns an error in its content (not an exception), and cancellation is a BaseException."""
     server_name, raw = dispatch[name]
     spec = servers[server_name]
     for attempt in range(MCP_CALL_ATTEMPTS):
@@ -137,13 +115,12 @@ async def call_mcp(
             async with mcp_session(spec) as session:
                 result = await session.call_tool(raw, arguments)
                 return mcp_content_to_chat_content(result.content)
-        except Exception as e:
-            if is_transient(e) and attempt + 1 < MCP_CALL_ATTEMPTS:
-                await asyncio.sleep(
-                    min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
-                )
-                continue
-            raise
+        except Exception:
+            if attempt + 1 == MCP_CALL_ATTEMPTS:
+                raise
+            await asyncio.sleep(
+                min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
+            )
     raise RuntimeError("unreachable")  # loop either returns or raises
 
 

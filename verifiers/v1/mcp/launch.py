@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-import anyio
 import httpx
 
 from verifiers.v1.errors import RolloutError, ToolsetError, UserError
@@ -45,23 +44,13 @@ Respond = Callable[[str], Awaitable[Messages]]
 
 # User/tool servers are stateless-HTTP, so every turn reconnects on a fresh session (setup runs
 # once at server startup; state lives on the shared-state channel). Holding one connection open per
-# rollout is what sheds under high-concurrency churn; instead each call reconnects and retries
-# transient transport drops via the shared `retrying()` policy rather than failing the rollout.
+# rollout is what sheds under high-concurrency churn; instead each call reconnects and retries via
+# the shared `retrying()` policy rather than failing the rollout. Retrying any Exception is sound
+# here: a tool that fails for real returns an error in its result, it doesn't raise, and cancellation
+# (CancelledError / a group carrying one) is a BaseException, so it is never retried.
 MCP_CALL_RETRIES = 5
 # Generous read timeout: a `respond`/tool round-trip can wait on a model call under load.
 MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
-# Transport-level faults worth retrying, vs a real body error. The MCP client surfaces connection
-# loss as httpx transport errors or AnyIO stream-closed errors, sometimes wrapped in the task
-# group's `ExceptionGroup` — which at this boundary only ever wraps a transport failure.
-TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
-    httpx.TransportError,
-    ConnectionError,
-    TimeoutError,
-    anyio.ClosedResourceError,
-    anyio.BrokenResourceError,
-    anyio.EndOfStream,
-    BaseExceptionGroup,
-)
 
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
@@ -454,10 +443,10 @@ async def serve_tools(
 
 
 async def _user_respond(url: str, message: str) -> Messages:
-    """One `respond` round-trip to the user server on a fresh session, retrying transient transport
-    drops (rollout-start connection churn) so a blip doesn't fail the rollout. Each session is
-    opened and closed within the caller's task, keeping AnyIO cancellation scopes correctly nested;
-    the opening turn is `respond("")` from initial state, so a retry is idempotent."""
+    """One `respond` round-trip to the user server on a fresh session, retrying a dropped connection
+    (rollout-start churn) so a blip doesn't fail the rollout. Each session is opened and closed
+    within the caller's task, keeping AnyIO cancellation scopes correctly nested; the opening turn is
+    `respond("")` from initial state, so a retry is idempotent."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
@@ -469,7 +458,7 @@ async def _user_respond(url: str, message: str) -> Messages:
 
     try:
         async for attempt in retrying(
-            on=TRANSIENT_ERRORS,
+            give_up=RolloutError,
             retries=MCP_CALL_RETRIES,
             label=f"user respond ({url})",
         ):
