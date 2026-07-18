@@ -42,14 +42,7 @@ VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
 # A user ends the trajectory through shared state and `@stop`, not through this return value.
 Respond = Callable[[str], Awaitable[Messages]]
 
-# User/tool servers are stateless-HTTP, so every turn reconnects on a fresh session (setup runs
-# once at server startup; state lives on the shared-state channel). Holding one connection open per
-# rollout is what sheds under high-concurrency churn; instead each call reconnects and retries via
-# the shared `retrying()` policy rather than failing the rollout. Retrying any Exception is sound
-# here: a tool that fails for real returns an error in its result, it doesn't raise, and cancellation
-# (CancelledError / a group carrying one) is a BaseException, so it is never retried.
 MCP_CALL_RETRIES = 5
-# Generous read timeout: a `respond`/tool round-trip can wait on a model call under load.
 MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
 
 
