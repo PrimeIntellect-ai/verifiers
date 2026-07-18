@@ -52,7 +52,9 @@ class User(ServerBase[ConfigT, StateT]):
             # simulator already advanced for that turn, so serve the recorded payload instead
             # of advancing it twice. `seq` is the caller's conversation position. The lock
             # serializes duplicate in-flight attempts (a retry racing a slow first execution)
-            # so they join the recorded turn rather than each advancing the simulator.
+            # so they join the recorded turn rather than each advancing the simulator. The
+            # server process is launched per rollout (`serve_user`), so cache and lock span
+            # exactly one conversation.
             nonlocal last
             async with lock:
                 if seq >= 0 and last is not None and last[:2] == (seq, message):

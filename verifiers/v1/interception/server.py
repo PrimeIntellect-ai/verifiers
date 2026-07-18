@@ -504,6 +504,10 @@ class InterceptionServer(Interception):
                 # when there's no user simulator to keep the conversation going.
                 if response.message.tool_calls or session.user is None:
                     return serve(response)
+                # The assistant turn joins the prompt before the position is taken, so a
+                # mid-conversation `seq` is strictly greater than the opening's even when the
+                # simulator opened with zero messages and the model's reply is empty.
+                prompt = [*prompt, response.message]
                 try:
                     user_messages = await session.user(
                         response.message.content or "", len(prompt)
@@ -523,7 +527,7 @@ class InterceptionServer(Interception):
                 # `self.state`), caught by `refused()` at the top of the next iteration — the
                 # interception server holds no opinion about the state's contents.
                 body = dialect.extend(body, response.raw, user_messages)
-                prompt = [*prompt, response.message, *user_messages]
+                prompt = [*prompt, *user_messages]
                 # The simulator changed the payload, so this is a new operation not a retry.
                 headers.popall("idempotency-key", None)
                 headers.popall("x-idempotency-key", None)
