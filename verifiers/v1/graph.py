@@ -31,7 +31,6 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
 from verifiers.v1.types import (
     AssistantMessage,
-    FinishReason,
     KeptTokens,
     Message,
     Response,
@@ -104,8 +103,6 @@ class MessageNode(StrictBaseModel):
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
-    finish_reason: FinishReason = None
-    """The response's finish reason (assistant nodes only) — kept for truncation detection."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
@@ -575,7 +572,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
-            finish_reason=response.finish_reason,
             usage=response.usage,
         )
     )

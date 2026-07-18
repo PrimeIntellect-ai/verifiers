@@ -247,9 +247,10 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
-TRACE_VERSION = 1
+TRACE_VERSION = 2
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
-breaking shape changes; optional-with-default fields are additive and don't bump it."""
+breaking shape changes (v2: `finish_reason` moved from `MessageNode` to `ModelCall`);
+optional-with-default fields are additive and don't bump it."""
 
 
 class EvalRunInfo(StrictBaseModel):
@@ -442,7 +443,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
             "harness_timeout",
         ):
             return True
-        last = self._last_assistant()
+        last = next((c for c in reversed(self.calls) if c.error is None), None)
         return bool(last and last.finish_reason == "length")
 
     @property
