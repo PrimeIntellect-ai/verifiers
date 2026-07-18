@@ -277,18 +277,18 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
-    payload_fields = frozenset(
+    sampling_fields = frozenset(
         {
-            "input",
-            "instructions",
-            "prompt",
-            "tools",
-            "model",
-            "stream",
-            "stream_options",
-            # Server-side conversation state, not settings: ids linking to prior turns.
-            "previous_response_id",
-            "conversation",
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "max_tool_calls",
+            "reasoning",
+            "text",
+            "tool_choice",
+            "parallel_tool_calls",
+            "top_logprobs",
+            "truncation",
         }
     )
     routes = ("/v1/responses",)

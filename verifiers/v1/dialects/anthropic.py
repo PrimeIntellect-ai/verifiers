@@ -243,8 +243,17 @@ class AnthropicStreamParser(StreamParser):
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
-    payload_fields = frozenset(
-        {"messages", "system", "tools", "model", "stream", "stream_options"}
+    sampling_fields = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "top_k",
+            "max_tokens",
+            "stop_sequences",
+            "thinking",
+            "tool_choice",
+            "output_config",
+        }
     )
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)

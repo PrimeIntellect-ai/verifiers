@@ -64,11 +64,8 @@ class Error(StrictBaseModel):
 
 
 class ModelCall(StrictBaseModel):
-    """One provider exchange behind a sampled turn. Recorded by the interception server
-    for every real exchange — an SDK-level retry that replays or coalesces onto an
-    earlier attempt adds nothing, a failed attempt is recorded with its `error`. The
-    conversation itself is not repeated here: it is the linked node's root-to-self path
-    in the message graph."""
+    """One provider exchange behind a sampled turn; its conversation is the linked
+    node's root-to-self path, never repeated here."""
 
     node: int | None = None
     """Index into `Trace.nodes` of the assistant node this call committed — the link into
@@ -78,10 +75,9 @@ class ModelCall(StrictBaseModel):
     """The model requested from the provider. The rollout's model override makes this
     `agent.model` on every call; recorded per call because it is cheap and provable."""
     sampling: SamplingConfig | None = None
-    """The effective per-call request settings: everything on the wire request except its
-    payload (conversation, tools, model) — the eval-imposed knobs plus whatever the
-    harness set that the eval left alone (`seed`, `stop`, `tool_choice`,
-    `response_format`, ... ride along as extras)."""
+    """The call's effective settings, scraped off the wire request by the dialect's
+    `sampling_fields` whitelist — the eval-imposed knobs plus whatever the harness set
+    that the eval left alone (`seed`, `tool_choice`, `response_format`, ... as extras)."""
     endpoint: str | None = None
     """The provider endpoint path the request went to (e.g. `/chat/completions`) — says
     which wire dialect the exchange spoke."""

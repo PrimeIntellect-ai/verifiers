@@ -250,15 +250,11 @@ class InterceptionServer(Interception):
         once per real exchange; replayed/coalesced SDK retries never reach it."""
         sampling = None
         if request is not None:
-            # The wire request minus its payload is the call's effective settings: the
-            # eval-imposed knobs plus whatever the harness set that the eval left alone.
+            # The dialect's whitelisted settings off the wire request: the eval-imposed
+            # knobs plus whatever the harness set that the eval left alone.
             try:
                 sampling = SamplingConfig.model_validate(
-                    {
-                        k: v
-                        for k, v in request.items()
-                        if k not in dialect.payload_fields
-                    }
+                    {k: v for k, v in request.items() if k in dialect.sampling_fields}
                 )
             except ValidationError:
                 # A malformed harness knob must not kill recording (this runs in the

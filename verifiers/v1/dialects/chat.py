@@ -289,8 +289,28 @@ class ChatStreamParser(StreamParser):
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
-    payload_fields = frozenset(
-        {"messages", "tools", "model", "stream", "stream_options"}
+    sampling_fields = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "reasoning_effort",
+            "seed",
+            "stop",
+            "n",
+            "logprobs",
+            "top_logprobs",
+            "logit_bias",
+            "frequency_penalty",
+            "presence_penalty",
+            "repetition_penalty",
+            "response_format",
+            "tool_choice",
+            "parallel_tool_calls",
+        }
     )
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"

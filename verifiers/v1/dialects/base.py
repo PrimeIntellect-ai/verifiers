@@ -121,10 +121,11 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     `dialects.DIALECTS` and a harness speaking that format works end-to-end (the eval client and
     interception server are generic over this interface)."""
 
-    payload_fields: ClassVar[frozenset[str]] = frozenset()
-    """Request keys that carry the payload (conversation, tools, model) or transport
-    framing rather than settings — stripped when recording a call's effective settings
-    (`ModelCall.sampling`) on the trace."""
+    sampling_fields: ClassVar[frozenset[str]] = frozenset()
+    """Request keys that are call settings (decoding knobs, tool choice, output format) —
+    the whitelist scraped into the trace's per-call `ModelCall.sampling`. A whitelist so
+    payload, conversation state, and tracking fields can never leak into the record by
+    omission; an unlisted knob is simply not recorded."""
 
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts model turns to. The interception server serves
