@@ -427,6 +427,26 @@ def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str)
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
+def _configured_url(url: str, harness_runtime: Runtime, name: str) -> str:
+    """The URL an isolated harness uses for a pre-existing (not framework-launched)
+    MCP endpoint. Loopback means host-bound: on macOS it stays reachable via
+    host.docker.internal; on Linux the framework can't rebind someone else's server
+    to the offline gateway, so refuse. Anything else passes through (external URLs
+    face the runtime's allow/block lists at the cut)."""
+    if not harness_runtime.network_isolated:
+        return url
+    if urlsplit(url).hostname not in ("127.0.0.1", "localhost"):
+        return url
+    if sys.platform == "linux":
+        raise ToolsetError(
+            f"tool server {name!r} is configured at a loopback URL ({url}), which an "
+            "isolated harness can't reach on Linux — the framework didn't launch it "
+            "and can't rebind it to the offline gateway; bind it on 0.0.0.0 and use "
+            "the gateway address, or let the framework launch it"
+        )
+    return harness_runtime.host_url(url)
+
+
 @contextlib.asynccontextmanager
 async def serve_tools(
     toolsets: list[Toolset],
@@ -450,13 +470,8 @@ async def serve_tools(
             if server.external:
                 # Not ours: a pre-existing endpoint with no vf state channel. Pass the URL
                 # through bare — a state tag would be useless, and the per-rollout secret
-                # must not ride the query string to a third-party host. A loopback URL is
-                # host-bound: rewrite it for an isolated harness like any launched one.
-                urls[name] = (
-                    harness_runtime.host_url(server.url)
-                    if harness_runtime.network_isolated
-                    else server.url
-                )
+                # must not ride the query string to a third-party host.
+                urls[name] = _configured_url(server.url, harness_runtime, name)
                 logger.info("tool server '%s' (shared, external): %s", name, server.url)
                 continue
             url = harness_runtime.host_url(server.url) if server.local else server.url
@@ -472,14 +487,7 @@ async def serve_tools(
                 )
             cfg = toolset.config
             if cfg.url:
-                # A configured loopback endpoint is host-bound; rewrite it for an
-                # isolated harness like any launched host server (post-cut, loopback
-                # inside the container is the container itself).
-                urls[name] = (
-                    harness_runtime.host_url(cfg.url)
-                    if harness_runtime.network_isolated
-                    else cfg.url
-                )
+                urls[name] = _configured_url(cfg.url, harness_runtime, name)
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)
             else:
                 urls[name] = await stack.enter_async_context(
