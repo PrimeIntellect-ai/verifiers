@@ -308,7 +308,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"0.14.3"` | Kimi Code release to install, pinned. |
+| `version` | `str` | `"0.27.0"` | Kimi Code release to install, pinned. |
 
 ---
 
