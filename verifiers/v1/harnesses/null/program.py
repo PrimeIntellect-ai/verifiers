@@ -23,14 +23,14 @@ MCP_CALL_MAX_BACKOFF = 2.0
 MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
 
 
-def _is_transient(exc: BaseException) -> bool:
+def is_transient(exc: BaseException) -> bool:
     """A transport-level fault worth retrying on a fresh connection, vs a real body error — often
     wrapped in the MCP task group's `ExceptionGroup`."""
     group = getattr(
         exc, "exceptions", None
     )  # an ExceptionGroup from the MCP task group
     if group is not None:
-        return any(_is_transient(e) for e in group)
+        return any(is_transient(e) for e in group)
     return isinstance(
         exc,
         (
@@ -141,7 +141,7 @@ async def call_mcp(
                 result = await session.call_tool(raw, arguments)
                 return mcp_content_to_chat_content(result.content)
         except Exception as e:
-            if _is_transient(e) and attempt + 1 < MCP_CALL_ATTEMPTS:
+            if is_transient(e) and attempt + 1 < MCP_CALL_ATTEMPTS:
                 await asyncio.sleep(
                     min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
                 )
