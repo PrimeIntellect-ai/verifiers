@@ -342,11 +342,14 @@ class InterceptionServer(Interception):
         # the request is ground truth for what the model saw, but a refused or failed request
         # was never seen at all.
         prompt, tools = dialect.parse_request(body)
-        # Cache the opening so retries do not advance the simulator twice.
+        # Cache the opening so retries do not advance the simulator twice. The opening request is
+        # recognized by its own shape (no assistant turn yet), NOT by `trace.num_turns` — a retry
+        # of the opening request after a partially-played conversation (turns committed, response
+        # lost) must still get the cached opening injected, or its body goes upstream empty.
         if (
             session.user is not None
             and session.trace.task.data.prompt is None
-            and session.trace.num_turns == 0
+            and all(m.role != "assistant" for m in prompt)
         ):
             if session.opening is None:
                 # `len(prompt)` is the conversation position — identical when this turn is
