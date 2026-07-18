@@ -44,7 +44,8 @@ class User(ServerBase[ConfigT, StateT]):
         from verifiers.v1.dialects.chat import message_to_wire
 
         user = self
-        last: tuple[int, str, str] | None = None
+        last_turn: tuple[int, str] | None = None
+        last_payload = ""
         lock = asyncio.Lock()
 
         async def respond(message: str, seq: int = -1) -> str:
@@ -55,16 +56,16 @@ class User(ServerBase[ConfigT, StateT]):
             # so they join the recorded turn rather than each advancing the simulator. The
             # server process is launched per rollout (`serve_user`), so cache and lock span
             # exactly one conversation.
-            nonlocal last
+            nonlocal last_turn, last_payload
             async with lock:
-                if seq >= 0 and last is not None and last[:2] == (seq, message):
-                    return last[2]
+                if seq >= 0 and (seq, message) == last_turn:
+                    return last_payload
                 messages = await user.respond(message)
                 wire = [
                     m if isinstance(m, dict) else message_to_wire(m) for m in messages
                 ]
-                payload = json.dumps({"messages": wire})
-                last = (seq, message, payload)
-                return payload
+                last_turn = (seq, message)
+                last_payload = json.dumps({"messages": wire})
+                return last_payload
 
         mcp.add_tool(self._with_state(respond), name="respond")

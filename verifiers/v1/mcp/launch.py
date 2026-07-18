@@ -12,7 +12,7 @@ import tarfile
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -41,13 +41,12 @@ logger = logging.getLogger(__name__)
 # Sandboxed servers install the working tree, so only wheel inputs need to cross the boundary.
 VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
 
-# One user turn: (message, seq) -> user messages, where `seq` is the conversation position the
-# user server dedups replayed turns on. A user ends the trajectory through shared state and
-# `@stop`, not through this return value.
+# One user turn: (message, seq) -> user messages; `seq` is the conversation position that
+# replayed turns dedup on.
 Respond = Callable[[str, int], Awaitable[Messages]]
 
 MCP_CALL_RETRIES = 5
-MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
+MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
 
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
@@ -440,7 +439,7 @@ async def serve_tools(
 
 
 @contextlib.asynccontextmanager
-async def _user_session(url: str) -> AsyncIterator[ClientSession]:
+async def user_session(url: str) -> AsyncIterator[ClientSession]:
     """One fresh session to the user server, opened and closed within the caller's task so AnyIO
     cancellation scopes stay correctly nested. A teardown failure after the body completed is
     suppressed — the result is already in hand, and closing noise must not fail (or replay) an
@@ -467,7 +466,7 @@ async def _user_session(url: str) -> AsyncIterator[ClientSession]:
             await stack.aclose()
 
 
-async def _user_respond(url: str, message: str, seq: int) -> Messages:
+async def user_respond(url: str, message: str, seq: int) -> Messages:
     """One `respond` turn against the user server, on a fresh session per attempt. A retried turn
     whose response was lost would advance the simulator twice, so the server dedups on
     (`seq`, `message`) and replays the recorded turn — making the retry effectively exactly-once.
@@ -483,7 +482,7 @@ async def _user_respond(url: str, message: str, seq: int) -> Messages:
             label=f"user respond ({url})",
         ):
             with attempt:
-                async with _user_session(url) as session:
+                async with user_session(url) as session:
                     result = await session.call_tool(
                         "respond", {"message": message, "seq": seq}
                     )
@@ -495,17 +494,6 @@ async def _user_respond(url: str, message: str, seq: int) -> Messages:
         raise
     except Exception as e:
         raise UserError(f"user server at {url} respond failed: {e!r}") from e
-
-
-@contextlib.asynccontextmanager
-async def connect_user(url: str) -> AsyncIterator[Respond]:
-    """Yield a `respond` bound to the (probed, reachable) user server. Each turn runs on a fresh
-    session — see `_user_respond`."""
-
-    async def respond(message: str, seq: int) -> Messages:
-        return await _user_respond(url, message, seq)
-
-    yield respond
 
 
 @contextlib.asynccontextmanager
@@ -533,5 +521,4 @@ async def serve_user(
         state_secret=state_secret,
         state_base=state_base,
     ) as url:
-        async with connect_user(url) as respond:
-            yield respond
+        yield partial(user_respond, url)
