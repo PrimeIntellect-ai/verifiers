@@ -125,7 +125,7 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
 
 
 # --- vf -> chat wire ----------------------------------------------------------
-# `message_to_wire` (chat-only): used by `extend` (user-sim turn injection), the default harness
+# `message_to_wire` (chat-only): used by `extend` (user-sim turn injection), the bash harness
 # (a Messages prompt), and the train client (its generate request). The proxy preserves its parsed
 # native JSON independently and does not use this serializer.
 

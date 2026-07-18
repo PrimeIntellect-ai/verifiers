@@ -25,7 +25,7 @@ SEARCH_PROMPT = (
 )
 
 
-class DefaultHarnessConfig(HarnessConfig):
+class BashHarnessConfig(HarnessConfig):
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--harness.edit false` for a bash-only agent."""
@@ -36,7 +36,7 @@ class DefaultHarnessConfig(HarnessConfig):
     the agent's `bash` subprocesses don't inherit it."""
 
 
-class DefaultHarness(Harness[DefaultHarnessConfig]):
+class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_USER_SIM = True
@@ -86,7 +86,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
                 serper_key = os.environ.get("SERPER_API_KEY")
             if not serper_key:
                 raise ValueError(
-                    "default search=true requires SERPER_API_KEY in the eval environment "
+                    "bash search=true requires SERPER_API_KEY in the eval environment "
                     "(the host env or --harness.env)"
                 )
             args += ["--search", f"--serper-key={serper_key}"]

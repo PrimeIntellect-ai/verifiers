@@ -98,12 +98,12 @@ def judge_class(judge_id: str) -> type[Judge]:
 
 def default_harness_id(taskset_id: str) -> str:
     if not taskset_id:
-        return "default"
+        return "bash"
     try:
         module = import_taskset(taskset_id)
         _plugin_class(module, Harness, "harness")
     except (ModuleNotFoundError, TypeError, AttributeError):
-        return "default"
+        return "bash"
     return taskset_id
 
 

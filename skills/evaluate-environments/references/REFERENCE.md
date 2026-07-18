@@ -101,7 +101,7 @@ behavior, tools, user simulator, and scoring; only its `TaskData` is stored on t
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `taskset` | `TasksetConfig` | `TasksetConfig()` | Resolved to its concrete subclass by `--taskset.id` (see [Taskset config](#taskset-config)). `SerializeAsAny` so subclass fields survive `model_dump`. |
-| `harness` | `HarnessConfig` | `HarnessConfig(id="default")` | Resolved to its concrete subclass by `--harness.id` (or the taskset's bundled harness). See [Harness config](#harness-config). |
+| `harness` | `HarnessConfig` | `HarnessConfig(id="bash")` | Resolved to its concrete subclass by `--harness.id` (or the taskset's bundled harness). See [Harness config](#harness-config). |
 | `timeout` | `TimeoutConfig` | `TimeoutConfig()` | See [Timeout config](#timeout-config). |
 | `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). |
 | `max_turns` | `int \| None` | `None` | Max model turns per rollout (None = no limit). Framework-enforced between turns. |
@@ -257,7 +257,7 @@ A harness class also declares capability flags (ClassVars, not user-settable):
 
 All inherit the base `HarnessConfig` fields (`id`, `runtime`, `env`, `forward_env`, `disabled_tools`).
 
-#### `DefaultHarnessConfig` — `id: "default"` (the fallback)
+#### `BashHarnessConfig` — `id: "bash"` (the fallback)
 A growing-message-list chat loop with a local `bash` tool, plus optional `edit`/`search`. A uv script (deps: `openai`, `mcp`).
 
 | Field | Type | Default | Notes |
