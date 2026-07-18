@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp", "httpx"]
+# dependencies = ["openai", "mcp", "httpx", "tenacity"]
 # ///
 """Secrets arrive through argv so local tool subprocesses do not inherit them."""
 
@@ -13,13 +13,12 @@ from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 SERPER_URL = "https://google.serper.dev/search"
 
 MCP_CALL_ATTEMPTS = 6
-MCP_CALL_BACKOFF = 0.2  # seconds, exponential up to the cap
-MCP_CALL_MAX_BACKOFF = 2.0
-MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
+MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
 
 
 BASH_TOOL = {
@@ -214,18 +213,16 @@ async def mcp_session(spec: dict):
 
 
 async def with_retry(call):
-    """Run one session-scoped operation, retrying with backoff. A call whose response was lost may
-    be replayed — MCP has no idempotency key, so tools should tolerate at-least-once delivery (a
-    tool that fails reports through its result, not an exception)."""
-    for attempt in range(MCP_CALL_ATTEMPTS):
-        try:
+    """Run one session-scoped operation, retrying transient failures with backoff. A call whose
+    response was lost may be replayed — MCP has no idempotency key, so tools should tolerate
+    at-least-once delivery (a tool that fails reports through its result, not an exception)."""
+    async for attempt in AsyncRetrying(
+        stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
+        wait=wait_exponential_jitter(initial=0.5, max=30),
+        reraise=True,
+    ):
+        with attempt:
             return await call()
-        except Exception:
-            if attempt + 1 == MCP_CALL_ATTEMPTS:
-                raise
-            await asyncio.sleep(
-                min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
-            )
 
 
 async def connect_mcp(
