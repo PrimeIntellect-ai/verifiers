@@ -301,7 +301,7 @@ Runs Harbor's tmux agent through LiteLLM.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"0.19.0"` | Harbor release to install, pinned. |
+| `version` | `str` | `"0.14.0"` | Harbor release to install, pinned. |
 
 #### `KimiCodeHarnessConfig` — `id: "kimi-code"`
 Installs the Kimi Code CLI and runs it headlessly.
