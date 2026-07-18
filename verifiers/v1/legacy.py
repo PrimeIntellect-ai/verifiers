@@ -32,7 +32,7 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
-from verifiers.v1.trace import Error, TimeSpan, Timing, Trace, TraceTask
+from verifiers.v1.trace import Error, ModelCall, TimeSpan, Timing, Trace, TraceTask
 from verifiers.v1.types import (
     AssistantMessage,
     Response,
@@ -266,8 +266,19 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         if not isinstance(step, dict):
             continue
         tokens = _to_v1_tokens(step.get("tokens"))
-        graph.prepare_turn(trace, _to_v1_messages(step.get("prompt"))).commit(
-            _to_v1_response(step.get("response"), model, tokens)
+        response = _to_v1_response(step.get("response"), model, tokens)
+        node = graph.prepare_turn(trace, _to_v1_messages(step.get("prompt"))).commit(
+            response
+        )
+        # The per-call record (v0 steps carry no wire settings or timing): keeps
+        # `finish_reason` and `usage` — per-call since trace v2 — available to
+        # `is_truncated` and the token accounting.
+        trace.calls.append(
+            ModelCall(
+                node=node,
+                finish_reason=response.finish_reason,
+                usage=response.usage,
+            )
         )
     return trace
 

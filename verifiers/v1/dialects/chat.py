@@ -20,6 +20,7 @@ from verifiers.v1.types import (
     Message,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     SystemMessage,
     Tool,
@@ -271,27 +272,47 @@ class ChatStreamParser(StreamParser):
         if self.reasoning_details:
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
-        return response_from_wire(
-            ModdedChatCompletion.model_validate(
+        completion = {
+            "id": head.get("id", "vf-intercept"),
+            "object": "chat.completion",
+            "created": head.get("created", int(time.time())),
+            "model": head.get("model", ""),
+            "choices": [
                 {
-                    "id": head.get("id", "vf-intercept"),
-                    "object": "chat.completion",
-                    "created": head.get("created", int(time.time())),
-                    "model": head.get("model", ""),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": self.message,
-                            "finish_reason": self.finish_reason or "stop",
-                        }
-                    ],
-                    "usage": self.usage,
+                    "index": 0,
+                    "message": self.message,
+                    "finish_reason": self.finish_reason or "stop",
                 }
-            )
-        )
+            ],
+            "usage": self.usage,
+        }
+        return response_from_wire(ModdedChatCompletion.model_validate(completion))
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
+    sampling_fields = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "reasoning_effort",
+            "seed",
+            "stop",
+            "n",
+            "logprobs",
+            "top_logprobs",
+            "logit_bias",
+            "frequency_penalty",
+            "presence_penalty",
+            "repetition_penalty",
+            "response_format",
+            "tool_choice",
+            "parallel_tool_calls",
+        }
+    )
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
@@ -310,6 +331,14 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                 for call in message.tool_calls or []:
                     tool_names[call.id] = call.name
         return messages, parse_tools(body.get("tools"))
+
+    def parse_sampling(self, body: dict) -> Sampling:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        # Canonicalize the max-tokens alias; when both ride the wire (an eval override
+        # on top of a harness's `max_completion_tokens`), the override wins.
+        if (mct := settings.pop("max_completion_tokens", None)) is not None:
+            settings.setdefault("max_tokens", mct)
+        return Sampling.model_validate(settings)
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)

@@ -32,6 +32,7 @@ from verifiers.v1.types import (
     ImageUrlSource,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     SystemMessage,
     TextContentPart,
@@ -277,6 +278,20 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
+    sampling_fields = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "max_tool_calls",
+            "reasoning",
+            "text",
+            "tool_choice",
+            "parallel_tool_calls",
+            "top_logprobs",
+            "truncation",
+        }
+    )
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse
@@ -285,6 +300,22 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
         return any(marker in chunk for marker in _TERMINAL_MARKERS)
+
+    def parse_sampling(self, body: dict) -> Sampling:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
+        # (e.g. `summary`) as the wire sent them.
+        if isinstance(reasoning := settings.get("reasoning"), dict):
+            reasoning = dict(reasoning)
+            if reasoning.get("effort"):
+                settings["reasoning_effort"] = reasoning.pop("effort")
+            if reasoning:
+                settings["reasoning"] = reasoning
+            else:
+                settings.pop("reasoning")
+        if "max_output_tokens" in settings:
+            settings["max_tokens"] = settings.pop("max_output_tokens")
+        return Sampling.model_validate(settings)
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         prompt: Messages = []
