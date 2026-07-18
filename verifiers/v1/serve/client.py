@@ -63,32 +63,59 @@ class EnvClient:
         if self._receiver is None:
             self._receiver = asyncio.create_task(self._receive_loop())
 
+    def _fail_pending(self, exc: BaseException | None = None) -> int:
+        """Unblock every in-flight waiter. `exc is None` cancels (close path);
+        otherwise each future gets a fresh copy of `exc` (receive-loop death).
+        Returns how many were still waiting."""
+        pending = list(self._pending.values())
+        self._pending.clear()
+        n = 0
+        for future in pending:
+            if future.done():
+                continue
+            n += 1
+            if exc is None:
+                future.cancel()
+            else:
+                # Fresh instance per future — asyncio mutates the exception object.
+                future.set_exception(type(exc)(str(exc)))
+        return n
+
     async def _receive_loop(self) -> None:
         # The one receiver serves every in-flight request, so a bad frame or a delta
         # handler that raises is logged and skipped rather than allowed to end the loop.
-        while True:
-            try:
-                frames = await self.socket.recv_multipart()
-            except asyncio.CancelledError:
-                break
-            try:
-                if len(frames) != 3:
-                    raise ValueError(
-                        f"expected [request_id, kind, data], got {len(frames)} frames - "
-                        "is the env server speaking the same serve protocol?"
-                    )
-                request_id_bytes, kind, data = frames
-                request_id = request_id_bytes.decode()
-                if kind == b"delta":
-                    on_delta = self._deltas.get(request_id)
-                    if on_delta is not None:
-                        on_delta(data)
-                    continue
-                future = self._pending.pop(request_id, None)
-                if future is not None and not future.done():
-                    future.set_result(data)
-            except Exception:  # keep receiving for the other requests
-                logger.warning("dropping a malformed env-server frame", exc_info=True)
+        try:
+            while True:
+                try:
+                    frames = await self.socket.recv_multipart()
+                except asyncio.CancelledError:
+                    break
+                except zmq.ZMQError as e:
+                    logger.error("ZMQ error in env client receive loop (%s)", e)
+                    self._fail_pending(RuntimeError(f"env client ZMQ error: {e}"))
+                    break
+                try:
+                    if len(frames) != 3:
+                        raise ValueError(
+                            f"expected [request_id, kind, data], got {len(frames)} frames - "
+                            "is the env server speaking the same serve protocol?"
+                        )
+                    request_id_bytes, kind, data = frames
+                    request_id = request_id_bytes.decode()
+                    if kind == b"delta":
+                        on_delta = self._deltas.get(request_id)
+                        if on_delta is not None:
+                            on_delta(data)
+                        continue
+                    future = self._pending.pop(request_id, None)
+                    if future is not None and not future.done():
+                        future.set_result(data)
+                except Exception:  # keep receiving for the other requests
+                    logger.warning("dropping a malformed env-server frame", exc_info=True)
+        finally:
+            # Anything still waiting after the loop exits has no path to a reply.
+            if self._pending:
+                self._fail_pending(RuntimeError("env client receive loop stopped"))
 
     async def _request(
         self,
@@ -221,6 +248,11 @@ class EnvClient:
         )
 
     async def close(self) -> None:
+        # Cancel waiters before stopping the receiver so they see CancelledError
+        # (not the receive-loop RuntimeError). Matches legacy ZMQEnvClient.close.
+        n = self._fail_pending()
+        if n:
+            logger.info("cancelled %d pending env client request(s) on close", n)
         if self._receiver is not None:
             self._receiver.cancel()
             with contextlib.suppress(asyncio.CancelledError):
