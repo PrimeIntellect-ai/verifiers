@@ -14,9 +14,6 @@ import anyio
 import httpx
 from openai import AsyncOpenAI
 
-# Tool servers are stateless-HTTP, so each tool call reconnects on a fresh session rather than
-# holding one open for the whole rollout — the latter sheds connections under high-concurrency
-# churn. A transient transport drop is retried instead of crashing the harness.
 MCP_CALL_ATTEMPTS = 6
 MCP_CALL_BACKOFF = 0.2  # seconds, exponential up to the cap
 MCP_CALL_MAX_BACKOFF = 2.0
