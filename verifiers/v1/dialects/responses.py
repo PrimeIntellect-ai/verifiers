@@ -300,6 +300,15 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
         return any(marker in chunk for marker in _TERMINAL_MARKERS)
 
+    def parse_sampling(self, body: dict) -> SamplingConfig:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        if isinstance(effort := (settings.pop("reasoning", None) or {}), dict):
+            if effort.get("effort"):
+                settings["reasoning_effort"] = effort["effort"]
+        if "max_output_tokens" in settings:
+            settings["max_tokens"] = settings.pop("max_output_tokens")
+        return SamplingConfig.model_validate(settings)
+
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         prompt: Messages = []
         if instructions := body.get("instructions"):

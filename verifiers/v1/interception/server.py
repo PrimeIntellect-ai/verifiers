@@ -54,7 +54,7 @@ from verifiers.v1.interception.tunnel import (
 )
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import Error, ModelCall, TimeSpan
-from verifiers.v1.types import FinishReason, Messages, Response, SamplingConfig, Tool
+from verifiers.v1.types import FinishReason, Messages, Response, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -250,12 +250,8 @@ class InterceptionServer(Interception):
         once per real exchange; replayed/coalesced SDK retries never reach it."""
         sampling = None
         if request is not None:
-            # The dialect's whitelisted settings off the wire request: the eval-imposed
-            # knobs plus whatever the harness set that the eval left alone.
             try:
-                sampling = SamplingConfig.model_validate(
-                    {k: v for k, v in request.items() if k in dialect.sampling_fields}
-                )
+                sampling = dialect.parse_sampling(request)
             except ValidationError:
                 # A malformed harness knob must not kill recording (this runs in the
                 # exchange's `finally`); the provider rejects the request on its own.

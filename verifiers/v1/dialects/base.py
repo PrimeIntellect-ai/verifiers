@@ -122,10 +122,10 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     interception server are generic over this interface)."""
 
     sampling_fields: ClassVar[frozenset[str]] = frozenset()
-    """Request keys that are call settings (decoding knobs, tool choice, output format) —
-    the whitelist scraped into the trace's per-call `ModelCall.sampling`. A whitelist so
-    payload, conversation state, and tracking fields can never leak into the record by
-    omission; an unlisted knob is simply not recorded."""
+    """Request keys that are call settings — what shapes generation given the same
+    conversation: decoding knobs, budgets/stops, reasoning effort, output contract.
+    A whitelist, so payload, conversation state, and tracking fields can never leak
+    into the per-call record by omission; an unlisted knob is simply not recorded."""
 
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts model turns to. The interception server serves
@@ -172,6 +172,14 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
         """The native request -> vf prompt + tools (for the trace)."""
+
+    def parse_sampling(self, body: ReqT) -> SamplingConfig:
+        """The native request's call settings -> the canonical `SamplingConfig` (for the
+        trace's per-call records): the `sampling_fields` whitelist, with this format's
+        aliases mapped onto the typed knobs; dialect-specific keys ride as extras."""
+        return SamplingConfig.model_validate(
+            {k: v for k, v in body.items() if k in self.sampling_fields}
+        )
 
     @abstractmethod
     def parse_response(self, response: RespT) -> Response:
