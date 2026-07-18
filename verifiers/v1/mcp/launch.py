@@ -178,6 +178,7 @@ async def serve_in_runtime(
     exposed: bool,
     state_url: str | None = None,
     state_secret: str = "",
+    bind_host: str | None = None,
 ) -> int:
     """Start a server and return its bound port.
 
@@ -195,6 +196,9 @@ async def serve_in_runtime(
         env["VF_STATE_SECRET"] = state_secret
     if runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
+    elif bind_host is not None:
+        # A network-isolated harness (offline docker) reaches the host only here.
+        env["MCP_HOST"] = bind_host
     fixed = runtime.published_port if exposed else None
     port_file = None
     if fixed is not None:
@@ -223,7 +227,7 @@ async def serve_in_runtime(
         except ToolsetError as e:
             raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
     probe = await runtime.run(
-        ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
+        ["python3", "-c", _PROBE, f"http://{bind_host or '127.0.0.1'}:{port}/mcp"], {}
     )
     if probe.exit_code != 0:
         raise ToolsetError(
@@ -264,9 +268,31 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    bind_host: str | None = None,
 ):
     cfg = server.config
     async with contextlib.AsyncExitStack() as stack:
+        if harness_runtime is not None and harness_runtime.network_isolated:
+            # An isolated harness (docker network_access=False) reaches only colocated
+            # and host-local servers after the cut — place the server accordingly.
+            if getattr(cfg, "colocated", False):
+                if for_host:
+                    raise UserError(
+                        "a colocated user simulator is unreachable from the host when "
+                        "the harness runs offline docker (network_access=False); use "
+                        "a local (subprocess) user simulator"
+                    )
+            elif cfg.runtime.type != "subprocess":
+                raise ToolsetError(
+                    f"tool server {server.server_name!r} can't run in a "
+                    f"{cfg.runtime.type} runtime when the harness runs offline docker "
+                    "(network_access=False) — it would be unreachable after the "
+                    "network cut; use colocated or a local (subprocess) server"
+                )
+            elif bind_host is None:
+                # A host-local server must bind where the isolated harness can reach
+                # it (the offline gateway on Linux), not just loopback.
+                bind_host = harness_runtime.host_service_host
         if getattr(cfg, "colocated", False) and harness_runtime is not None:
             runtime = harness_runtime
         else:
@@ -289,6 +315,7 @@ async def serve(
             exposed=exposed,
             state_url=state_url,
             state_secret=state_secret,
+            bind_host=None if (for_host or runtime is harness_runtime) else bind_host,
         )
         # Who consumes the server decides reachability: a user sim is reached by the HOST
         # (`for_host`, always local, never colocated with it); a tool by the harness — colocated
@@ -329,13 +356,21 @@ class SharedToolServer:
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
+async def serve_shared(
+    toolsets: list[Toolset],
+    harness_is_local: bool = True,
+    *,
+    bind_host: str | None = None,
+    harness_isolated: bool = False,
+):
     """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
     Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
     locality off — the caller (`Environment.shared_tools`) passes the harness runtime's
     `harness_is_local`, so a host tool gets one host bridge (tunnel) when the harness runs
-    remotely, and a remote tool runtime publishes its own URL. Torn down when the eval ends.
+    remotely, and a remote tool runtime publishes its own URL. With an isolated harness
+    (offline docker) only host-local servers stay reachable, so a host server binds
+    `bind_host` and anything else is refused. Torn down when the eval ends.
     A shared server is task-agnostic — the taskset carries no per-row data — so its `setup`
     gets no task (its `setup_task` is never called; the per-rollout servers fetch
     theirs over the `/task` channel)."""
@@ -362,8 +397,17 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     url=cfg.url, local=False, external=True
                 )
             else:
+                if harness_isolated and cfg.runtime.type != "subprocess":
+                    raise ToolsetError(
+                        f"shared tool server {name!r} can't run in a "
+                        f"{cfg.runtime.type} runtime when the harness runs offline "
+                        "docker (network_access=False) — it would be unreachable "
+                        "after the network cut; use a local (subprocess) shared server"
+                    )
                 url = await stack.enter_async_context(
-                    serve(toolset, harness_is_local=harness_is_local)
+                    serve(
+                        toolset, harness_is_local=harness_is_local, bind_host=bind_host
+                    )
                 )
                 servers[name] = SharedToolServer(
                     url=url, local=runtime_is_local(cfg.runtime)

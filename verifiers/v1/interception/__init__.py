@@ -64,18 +64,20 @@ def requires_tunnel(
 
 
 def make_interception(
-    config: InterceptionConfig, *, requires_tunnel: bool
+    config: InterceptionConfig, *, requires_tunnel: bool, extra_host: str | None = None
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
     `make_runtime`). With `requires_tunnel` (some consumer is off the host network — see
     the `requires_tunnel` util) each server is exposed via its configured tunnel; without
     it they get none and are reached at localhost. The caller computes it (see
-    `Environment._requires_tunnel`)."""
+    `Environment._requires_tunnel`). `extra_host` is an extra address every server also
+    binds (tunnel-free only) so consumers on a restricted network (offline docker) can
+    reach it — the internal network's gateway IP."""
     if isinstance(config, InterceptionServerConfig):
-        return InterceptionServer(config, requires_tunnel)
+        return InterceptionServer(config, requires_tunnel, extra_host=extra_host)
     if isinstance(config, StaticInterceptionPoolConfig):
-        return StaticInterceptionPool(config, requires_tunnel)
-    return ElasticInterceptionPool(config, requires_tunnel)
+        return StaticInterceptionPool(config, requires_tunnel, extra_host=extra_host)
+    return ElasticInterceptionPool(config, requires_tunnel, extra_host=extra_host)
 
 
 __all__ = [

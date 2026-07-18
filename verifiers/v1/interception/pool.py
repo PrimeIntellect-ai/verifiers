@@ -48,12 +48,16 @@ class StaticInterceptionPool(Interception):
     operator's call (it's the shape for pre-provisioned/bring-your-own endpoints)."""
 
     def __init__(
-        self, config: StaticInterceptionPoolConfig, requires_tunnel: bool = False
+        self,
+        config: StaticInterceptionPoolConfig,
+        requires_tunnel: bool = False,
+        extra_host: str | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.servers = [
-            InterceptionServer(server, requires_tunnel) for server in config.servers
+            InterceptionServer(server, requires_tunnel, extra_host=extra_host)
+            for server in config.servers
         ]
 
     async def start(self) -> None:
@@ -89,10 +93,12 @@ class ElasticInterceptionPool(Interception):
         self,
         config: ElasticInterceptionPoolConfig | None = None,
         requires_tunnel: bool = False,
+        extra_host: str | None = None,
     ) -> None:
         super().__init__()
         self.config = config or ElasticInterceptionPoolConfig()
         self.requires_tunnel = requires_tunnel
+        self.extra_host = extra_host
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
         self._warm_task: asyncio.Task[InterceptionServer] | None = None
@@ -116,7 +122,9 @@ class ElasticInterceptionPool(Interception):
                 return server
         # Pin prime explicitly — the only tunnel kind that can be minted on demand.
         server = InterceptionServer(
-            InterceptionServerConfig(tunnel=PrimeTunnelConfig()), self.requires_tunnel
+            InterceptionServerConfig(tunnel=PrimeTunnelConfig()),
+            self.requires_tunnel,
+            extra_host=self.extra_host,
         )
         await self.stack.enter_async_context(server)
         self.servers.append(server)

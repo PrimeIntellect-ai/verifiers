@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+import sys
 from typing import Annotated, Literal
 
 from pydantic import Field, SerializeAsAny, model_validator
@@ -23,10 +24,12 @@ from verifiers.v1.session import RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
+    DockerConfig,
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
 )
+from verifiers.v1.runtimes.docker import ensure_offline_network
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.generic import generic_type
@@ -370,9 +373,12 @@ class Environment:
         every `episode()` built inside this context injects them into its rollouts — that's
         what keeps both eval runners (in-process and env-server) on one serving path. Build
         episodes inside this context; the resources are torn down on exit."""
-        async with self.shared_tools() as shared:
+        offline_bind = await self._offline_bind()
+        async with self.shared_tools(offline_bind) as shared:
             interception = make_interception(
-                self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+                self.config.interception,
+                requires_tunnel=self._requires_tunnel(shared),
+                extra_host=offline_bind,
             )
             async with interception:
                 self._shared_tools = shared
@@ -382,6 +388,20 @@ class Environment:
                 finally:
                     self._shared_tools = {}
                     self._interception = None
+
+    async def _offline_bind(self) -> str | None:
+        """The address host services (interception, shared host MCP servers) must also
+        bind when the harness runs offline docker on Linux — its containers reach the
+        host only at the internal network's gateway IP. None when unrestricted, and on
+        macOS, where `host.docker.internal` reaches the host's usual binds."""
+        runtime = self.harness.config.runtime
+        if (
+            sys.platform == "linux"
+            and isinstance(runtime, DockerConfig)
+            and not runtime.network_access
+        ):
+            return await ensure_offline_network()
+        return None
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: the harness
@@ -406,11 +426,18 @@ class Environment:
         )
 
     @contextlib.asynccontextmanager
-    async def shared_tools(self):
+    async def shared_tools(self, bind_host: str | None = None):
         servers = self.taskset.tool_servers()
         if not servers:
             yield {}
             return
         harness_is_local = runtime_is_local(self.harness.config.runtime)
-        async with serve_shared(servers, harness_is_local=harness_is_local) as shared:
+        runtime = self.harness.config.runtime
+        async with serve_shared(
+            servers,
+            harness_is_local=harness_is_local,
+            bind_host=bind_host,
+            harness_isolated=isinstance(runtime, DockerConfig)
+            and not runtime.network_access,
+        ) as shared:
             yield shared
