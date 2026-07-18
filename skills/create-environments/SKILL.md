@@ -189,7 +189,7 @@ Choose placement from the tool's lifetime and filesystem needs:
 
 Use a `vf.User` when the taskset, not the harness, drives the conversation.
 
-The selected harness must support user simulation, which a lot of the built-in, especially the CLI-based ones, don't. The built-in default harness does support user sim.
+The selected harness must support user simulation, which a lot of the built-in, especially the CLI-based ones, don't. The built-in `bash` harness does support user sim.
 
 ## Custom harnesses
 

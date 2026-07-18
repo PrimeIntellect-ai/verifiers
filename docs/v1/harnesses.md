@@ -1,6 +1,6 @@
 # Harnesses
 
-verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled default harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
+verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled `bash` harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
 
 ## A minimal harness implementation
 

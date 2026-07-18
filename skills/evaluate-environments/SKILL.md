@@ -113,7 +113,7 @@ id = "my-task-v1"
 split = "test"
 
 [harness]
-id = "default"
+id = "bash"
 runtime = { type = "subprocess" }
 
 [sampling]

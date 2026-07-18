@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class HarnessConfig(BaseConfig):
-    id: ID = "default"
+    id: ID = "bash"
     """Local package or Hub `org/name[@version]`, set through `--harness.id`."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Runtime for the harness program; tool servers choose their placement separately."""
