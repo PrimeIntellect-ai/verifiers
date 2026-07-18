@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["openai", "mcp"]
+# dependencies = ["openai", "mcp", "httpx"]
 # ///
 """The interception endpoint and secret arrive through argv rather than the environment."""
 
@@ -30,27 +30,44 @@ async def chat(
 
 @asynccontextmanager
 async def mcp_session(spec: dict):
-    """Open a fresh streamable-HTTP session to one MCP server, entered and exited within the
-    caller's task so AnyIO cancellation scopes stay correctly nested."""
+    """One fresh streamable-HTTP session to an MCP server, opened and closed within the caller's
+    task so AnyIO cancellation scopes stay correctly nested. Only session setup is retried —
+    nothing has reached a tool yet, so reconnecting under start-up churn is free of side effects.
+    The body runs at most once, and a teardown failure after the body completed is swallowed —
+    the result is already in hand."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
     )
 
-    async with (
-        create_mcp_http_client(
-            headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
-        ) as http_client,
-        streamable_http_client(spec["url"], http_client=http_client) as (
-            read,
-            write,
-            *_,
-        ),
-        ClientSession(read, write) as session,
-    ):
-        await session.initialize()
-        yield session
+    in_body = done = False
+    for attempt in range(MCP_CALL_ATTEMPTS):
+        try:
+            async with (
+                create_mcp_http_client(
+                    headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
+                ) as http_client,
+                streamable_http_client(spec["url"], http_client=http_client) as (
+                    read,
+                    write,
+                    *_,
+                ),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                in_body = True
+                yield session
+                done = True
+            return
+        except Exception:
+            if done:
+                return
+            if in_body or attempt + 1 == MCP_CALL_ATTEMPTS:
+                raise
+            await asyncio.sleep(
+                min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
+            )
 
 
 async def connect_mcp(config: dict) -> tuple[list[dict], dict, dict]:
@@ -105,24 +122,13 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
 ) -> str | list[dict]:
-    """Call a tool on a fresh session, retrying a dropped connection so connection churn under high
-    concurrency doesn't crash the harness. Retrying any Exception is sound: a tool that fails for
-    real returns an error in its content (not an exception), and cancellation is a BaseException."""
+    """Call a tool once on a fresh session. The call itself is never replayed: a lost response is
+    indistinguishable from a lost request, and a tool may not be idempotent — session setup is
+    what's retried (see `mcp_session`)."""
     server_name, raw = dispatch[name]
-    spec = servers[server_name]
-    for attempt in range(MCP_CALL_ATTEMPTS):
-        try:
-            async with mcp_session(spec) as session:
-                result = await session.call_tool(raw, arguments)
-        except Exception:
-            if attempt + 1 == MCP_CALL_ATTEMPTS:
-                raise
-            await asyncio.sleep(
-                min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
-            )
-            continue
-        return mcp_content_to_chat_content(result.content)
-    raise RuntimeError("unreachable")  # loop either returns or raises
+    async with mcp_session(servers[server_name]) as session:
+        result = await session.call_tool(raw, arguments)
+    return mcp_content_to_chat_content(result.content)
 
 
 def parse_args() -> argparse.Namespace:

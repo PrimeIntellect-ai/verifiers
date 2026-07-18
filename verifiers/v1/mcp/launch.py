@@ -31,6 +31,8 @@ from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
+    from mcp import ClientSession
+
     from verifiers.v1.mcp.toolset import Toolset
     from verifiers.v1.mcp.user import User
 
@@ -435,39 +437,60 @@ async def serve_tools(
         yield urls
 
 
-async def _user_respond(url: str, message: str) -> Messages:
-    """One `respond` round-trip to the user server on a fresh session, retrying a dropped connection
-    (rollout-start churn) so a blip doesn't fail the rollout. Each session is opened and closed
-    within the caller's task, keeping AnyIO cancellation scopes correctly nested; the opening turn is
-    `respond("")` from initial state, so a retry is idempotent."""
+@contextlib.asynccontextmanager
+async def _user_session(url: str) -> AsyncIterator[ClientSession]:
+    """One fresh session to the user server, opened and closed within the caller's task. Only
+    session setup is retried — nothing has reached the simulator yet, so reconnecting under
+    rollout-start churn is free of side effects. The body runs at most once, and a teardown
+    failure after the body completed is suppressed — the result is already in hand."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
     )
 
-    from verifiers.v1.dialects import parse_message
     from verifiers.v1.retries import retrying
 
-    async def call():
-        async with (
-            create_mcp_http_client(timeout=MCP_TIMEOUT) as http_client,
-            streamable_http_client(url, http_client=http_client) as (read, write, *_),
-            ClientSession(read, write) as session,
-        ):
+    async def connect() -> tuple[contextlib.AsyncExitStack, ClientSession]:
+        stack = contextlib.AsyncExitStack()
+        try:
+            http_client = await stack.enter_async_context(
+                create_mcp_http_client(timeout=MCP_TIMEOUT)
+            )
+            read, write, *_ = await stack.enter_async_context(
+                streamable_http_client(url, http_client=http_client)
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
-            return await session.call_tool("respond", {"message": message})
+            return stack, session
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await stack.aclose()
+            raise
+
+    stack = session = None
+    async for attempt in retrying(
+        retries=MCP_CALL_RETRIES, label=f"user connect ({url})"
+    ):
+        with attempt:
+            stack, session = await connect()
+    assert stack is not None and session is not None
+    try:
+        yield session
+    finally:
+        with contextlib.suppress(Exception):
+            await stack.aclose()
+
+
+async def _user_respond(url: str, message: str) -> Messages:
+    """One `respond` round-trip to the user server on a fresh session (`_user_session`). The call
+    itself is never replayed: a lost response is indistinguishable from a lost request, and a
+    duplicate `respond` would advance the simulator twice."""
+    from verifiers.v1.dialects import parse_message
 
     try:
-        result = None
-        async for attempt in retrying(
-            give_up=RolloutError,
-            retries=MCP_CALL_RETRIES,
-            label=f"user respond ({url})",
-        ):
-            with attempt:
-                result = await call()
-        assert result is not None
+        async with _user_session(url) as session:
+            result = await session.call_tool("respond", {"message": message})
         texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
         data = json.loads("\n".join(texts))
         return [parse_message(m) for m in data["messages"]]
@@ -479,8 +502,8 @@ async def _user_respond(url: str, message: str) -> Messages:
 
 @contextlib.asynccontextmanager
 async def connect_user(url: str) -> AsyncIterator[Respond]:
-    """Yield a `respond` bound to the (probed, reachable) user server. Each call reconnects on a
-    fresh session and retries transient transport drops — see `_user_respond`."""
+    """Yield a `respond` bound to the (probed, reachable) user server. Each call runs on a fresh
+    session — see `_user_respond`."""
 
     async def respond(message: str) -> Messages:
         return await _user_respond(url, message)
