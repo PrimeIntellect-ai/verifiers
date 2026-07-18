@@ -151,11 +151,15 @@ def model_error(
     becomes a plain `ProviderError`. `status_code` is the HTTP status surfaced to the harness (whose
     SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error when not given. Accepts
     an SDK error (the renderer) or the provider's raw error body (the httpx proxy)."""
+    from openai import APIStatusError
+
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
+    # An SDK status error carries the provider's HTTP response; keep its diagnostics
+    # (request ids, rate limits) when the caller didn't pass them explicitly.
+    if headers is None and isinstance(e, APIStatusError):
+        headers = dict(e.response.headers)
     if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):
-        from openai import APIStatusError
-
         # Keep the provider's real status when the failure carried one; else the class
         # default (the 400 the interception server surfaces for overlong prompts).
         if status_code is None and isinstance(e, APIStatusError):
