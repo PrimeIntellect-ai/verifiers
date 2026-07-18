@@ -14,6 +14,7 @@ agent commits.
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -23,6 +24,11 @@ if TYPE_CHECKING:
 PATCH_CAP_BYTES = 2_000_000
 """Truncate captured patches beyond this size; `info["patch_truncated"]` marks it."""
 
+# Temp paths are suffixed per invocation with a host-generated nonce: fixed names
+# would let concurrent rollouts on a shared-filesystem runtime (subprocess) read
+# each other's patches between the write and the read, and would let an agent
+# pre-create the predictable path as a FIFO so the shell's redirect blocks the
+# rollout forever.
 _FULL = "/tmp/vf_agent_patch_full"
 _CAPPED = "/tmp/vf_agent_patch"
 
@@ -36,6 +42,7 @@ _CAPPED = "/tmp/vf_agent_patch"
 # on; a failed head leaves an empty {capped} (the redirect truncates it before
 # head runs), which would read back as a silently empty patch.
 _DIFF = (
+    "rm -f {full} {capped}; "
     "git add -A; "
     "add_rc=$?; "
     'git -c core.quotepath=off diff --cached --binary "$VF_DIFF_BASE" > {full}; '
@@ -76,7 +83,9 @@ async def capture_patch(
     broken records `info["patch_error"]` instead of failing the rollout —
     scoring still runs and the error stays visible in results.
     """
-    cmd = _DIFF.format(full=_FULL, capped=_CAPPED, cap=PATCH_CAP_BYTES + 1)
+    nonce = uuid.uuid4().hex
+    full, capped = f"{_FULL}_{nonce}", f"{_CAPPED}_{nonce}"
+    cmd = _DIFF.format(full=full, capped=capped, cap=PATCH_CAP_BYTES + 1)
     try:
         result = await runtime.run(
             ["sh", "-c", cmd],
@@ -87,10 +96,17 @@ async def capture_patch(
                 f"exit={result.exit_code} {(result.stderr or '').strip()[-500:]}"
             )
             return
-        raw = await runtime.read(_CAPPED)
+        raw = await runtime.read(capped)
     except Exception as exc:  # noqa: BLE001 - capture must never fail the rollout.
         trace.info["patch_error"] = f"{type(exc).__name__}: {exc}"
         return
+    finally:
+        # Unique names don't overwrite each other, so leftovers would accumulate
+        # on shared-filesystem runtimes; removal is best-effort by design.
+        try:
+            await runtime.run(["rm", "-f", full, capped], env or {})
+        except Exception:  # noqa: BLE001,S110 - cleanup must never fail the rollout.
+            pass
     if len(raw) > PATCH_CAP_BYTES:
         raw = raw[:PATCH_CAP_BYTES]
         trace.info["patch_truncated"] = True

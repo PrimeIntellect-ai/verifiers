@@ -188,6 +188,33 @@ async def test_oversized_patch_truncates(tmp_path, monkeypatch):
     assert len(trace.info["patch"].encode()) == 100
 
 
+async def test_capture_paths_unique_per_invocation(tmp_path):
+    # Fixed temp paths let concurrent rollouts on shared-filesystem runtimes read
+    # each other's patches (and let an agent pre-create the path as a FIFO); every
+    # invocation must use fresh host-generated names.
+    runtime, base = make_repo(tmp_path)
+    (tmp_path / "src.py").write_text("edited\n")
+    seen: list[str] = []
+    orig_run = runtime.run
+
+    async def spy_run(argv, env):
+        for a in argv:
+            if "vf_agent_patch_full" in a:
+                seen.extend(p for p in a.split() if "vf_agent_patch_full" in p)
+        return await orig_run(argv, env)
+
+    runtime.run = spy_run
+    trace1, trace2 = trace_stub(), trace_stub()
+    await capture_patch(trace1, runtime, base_commit=base)
+    await capture_patch(trace2, runtime, base_commit=base)
+
+    assert trace1.info["patch"] and trace2.info["patch"]
+    full_paths = {p.rstrip(";") for p in seen}
+    assert len(full_paths) >= 2, full_paths
+    # cleanup: no capture temp files left behind
+    assert not list(runtime.tmp.glob("vf_agent_patch*"))
+
+
 async def test_resolve_head(tmp_path):
     runtime, sha = make_repo(tmp_path)
     assert await resolve_head(runtime) == sha
