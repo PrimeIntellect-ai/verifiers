@@ -235,7 +235,7 @@ A v1 verifiers environment, scaffolded with `init`.
 
 ```bash
 uv pip install -e .        # install this package (or register it in your project)
-uv run eval {dash} -n 3    # evaluate a few tasks with the default harness
+uv run eval {dash} -n 3    # evaluate a few tasks with the bash harness
 ```
 
 ## Layout
