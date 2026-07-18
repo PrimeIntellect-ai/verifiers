@@ -249,6 +249,7 @@ class Rollout:
             ):
                 if span.start and not span.end:
                     span.end = now
+            trace.split_generation()
             try:
                 await runtime.stop()
             except Exception:

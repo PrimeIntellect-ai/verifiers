@@ -32,7 +32,16 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
-from verifiers.v1.trace import Error, ModelCall, TimeSpan, Timing, Trace, TraceTask
+from verifiers.v1.trace import (
+    Error,
+    GenerationSpan,
+    ModelCall,
+    TimeSpan,
+    TimeSplit,
+    Timing,
+    Trace,
+    TraceTask,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     Response,
@@ -185,7 +194,8 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
 
 def _timing(raw: Any) -> Timing:
     """Map the v0 timing record's generation/scoring durations onto a v1 ``Timing``
-    (we only have durations, so each span is encoded as start=0, end=duration)."""
+    (we only have durations, so each span is encoded as start=0, end=duration).
+    v0's per-turn ``model``/``env`` span collections carry the generation split."""
 
     def _dur(node: Any) -> float:
         if isinstance(node, dict):
@@ -198,7 +208,12 @@ def _timing(raw: Any) -> Timing:
 
     raw = raw or {}
     return Timing(
-        generation=TimeSpan(start=0.0, end=_dur(raw.get("generation"))),
+        generation=GenerationSpan(
+            start=0.0,
+            end=_dur(raw.get("generation")),
+            model=TimeSplit(duration=_dur(raw.get("model"))),
+            harness=TimeSplit(duration=_dur(raw.get("env"))),
+        ),
         scoring=TimeSpan(start=0.0, end=_dur(raw.get("scoring"))),
     )
 
