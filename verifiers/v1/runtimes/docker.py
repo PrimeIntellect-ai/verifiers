@@ -83,7 +83,9 @@ _OFFLINE_NETWORK = "verifiers-offline"
 """The one internal network every offline container shares (created on first use, kept
 around afterwards; `docker network rm` it to clean up). `--internal` = no route off the
 network — except the bridge gateway, a host-side interface, which stays reachable:
-that's where host services (interception, host MCP servers) bind for offline containers."""
+that's where host services (interception, host MCP servers) bind for offline containers.
+Inter-container communication is disabled so concurrent rollouts can't reach each other
+(the gateway is the host, not a peer — unaffected)."""
 
 
 async def ensure_offline_network() -> str:
@@ -102,6 +104,8 @@ async def ensure_offline_network() -> str:
         "network",
         "create",
         "--internal",
+        "-o",
+        "com.docker.network.bridge.enable_icc=false",
         "--label",
         "verifiers.offline=true",
         _OFFLINE_NETWORK,

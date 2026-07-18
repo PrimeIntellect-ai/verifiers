@@ -450,8 +450,13 @@ async def serve_tools(
             if server.external:
                 # Not ours: a pre-existing endpoint with no vf state channel. Pass the URL
                 # through bare — a state tag would be useless, and the per-rollout secret
-                # must not ride the query string to a third-party host.
-                urls[name] = server.url
+                # must not ride the query string to a third-party host. A loopback URL is
+                # host-bound: rewrite it for an isolated harness like any launched one.
+                urls[name] = (
+                    harness_runtime.host_url(server.url)
+                    if harness_runtime.network_isolated
+                    else server.url
+                )
                 logger.info("tool server '%s' (shared, external): %s", name, server.url)
                 continue
             url = harness_runtime.host_url(server.url) if server.local else server.url
@@ -467,7 +472,14 @@ async def serve_tools(
                 )
             cfg = toolset.config
             if cfg.url:
-                urls[name] = cfg.url
+                # A configured loopback endpoint is host-bound; rewrite it for an
+                # isolated harness like any launched host server (post-cut, loopback
+                # inside the container is the container itself).
+                urls[name] = (
+                    harness_runtime.host_url(cfg.url)
+                    if harness_runtime.network_isolated
+                    else cfg.url
+                )
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)
             else:
                 urls[name] = await stack.enter_async_context(
