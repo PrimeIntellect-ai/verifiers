@@ -15,6 +15,7 @@ The taskset/harness class carries its types as generic args — `Taskset[TaskT, 
 (`task_type`).
 """
 
+import contextvars
 import importlib
 import importlib.util
 from types import ModuleType
@@ -26,6 +27,12 @@ from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.utils.install import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+
+
+skip_plugin_install: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "skip_plugin_install", default=False
+)
+"""Skip installing envs from the Hub during config parse (for callers that read the config but never run the env)."""
 
 
 def narrow_plugin_field(
@@ -44,8 +51,13 @@ def narrow_plugin_field(
         raw = raw.model_dump()
     raw = dict(raw or {})
     ident = raw.get("id") or default_id
-    if ident:
-        data[field] = resolve(ident).model_validate({**raw, "id": ident})
+    if not ident:
+        return
+    if skip_plugin_install.get():
+        # keep the plugin id-only; don't import/install from the Hub
+        data[field] = {"id": ident}
+        return
+    data[field] = resolve(ident).model_validate({**raw, "id": ident})
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
@@ -132,7 +144,9 @@ def default_harness_id(taskset_id: str) -> str:
     module also exports a `Harness` subclass via `__all__`, so the taskset id doubles as the
     harness id — runs with that harness by default; otherwise the shared `default` harness. An
     explicit `--harness.id` / toml id always takes precedence (this only supplies the fallback)."""
-    if not taskset_id:
+    # In skip mode, don't import the taskset just to probe for a bundled harness —
+    # fall back to the shared default (the caller never runs the harness).
+    if not taskset_id or skip_plugin_install.get():
         return "default"
     try:
         module = import_taskset(taskset_id)
