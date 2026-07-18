@@ -21,6 +21,7 @@ from verifiers.v1.types import (
     ImageUrlSource,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     SystemMessage,
     TextContentPart,
@@ -298,6 +299,20 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
 
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
+
+    def parse_sampling(self, body: dict) -> Sampling:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        # Lift `output_config.effort` (where `apply_overrides` puts the eval's
+        # reasoning effort) onto the typed knob; keep any other output-config keys.
+        if isinstance(config := settings.get("output_config"), dict):
+            config = dict(config)
+            if config.get("effort"):
+                settings["reasoning_effort"] = config.pop("effort")
+            if config:
+                settings["output_config"] = config
+            else:
+                settings.pop("output_config")
+        return Sampling.model_validate(settings)
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are

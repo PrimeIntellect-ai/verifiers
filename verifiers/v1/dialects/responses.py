@@ -303,9 +303,16 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
 
     def parse_sampling(self, body: dict) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
-        if isinstance(effort := (settings.pop("reasoning", None) or {}), dict):
-            if effort.get("effort"):
-                settings["reasoning_effort"] = effort["effort"]
+        # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
+        # (e.g. `summary`) as the wire sent them.
+        if isinstance(reasoning := settings.get("reasoning"), dict):
+            reasoning = dict(reasoning)
+            if reasoning.get("effort"):
+                settings["reasoning_effort"] = reasoning.pop("effort")
+            if reasoning:
+                settings["reasoning"] = reasoning
+            else:
+                settings.pop("reasoning")
         if "max_output_tokens" in settings:
             settings["max_tokens"] = settings.pop("max_output_tokens")
         return Sampling.model_validate(settings)
