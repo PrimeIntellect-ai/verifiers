@@ -277,7 +277,7 @@ Installs the Codex CLI into the runtime and runs `codex exec`.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"0.137.0"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
+| `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
 #### `RLMHarnessConfig` — `id: "rlm"`
 Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `HarnessConfig.env` passes any other `RLM_*` var through verbatim.
@@ -294,14 +294,14 @@ Runs the native bash-tool agent through LiteLLM.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"2.2.8"` | mini-swe-agent release to install, pinned. |
+| `version` | `str` | `"2.4.5"` | mini-swe-agent release to install, pinned. |
 
 #### `Terminus2HarnessConfig` — `id: "terminus-2"`
 Runs Harbor's tmux agent through LiteLLM.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"0.14.0"` | Harbor release to install, pinned. |
+| `version` | `str` | `"0.19.0"` | Harbor release to install, pinned. |
 
 #### `KimiCodeHarnessConfig` — `id: "kimi-code"`
 Installs the Kimi Code CLI and runs it headlessly.
