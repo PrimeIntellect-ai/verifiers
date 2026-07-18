@@ -17,10 +17,10 @@ from openai import AsyncOpenAI
 # Tool servers are stateless-HTTP, so each tool call reconnects on a fresh session rather than
 # holding one open for the whole rollout — the latter sheds connections under high-concurrency
 # churn. A transient transport drop is retried instead of crashing the harness.
-_MCP_CALL_ATTEMPTS = 6
-_MCP_CALL_BACKOFF = 0.2  # seconds, exponential up to the cap
-_MCP_CALL_MAX_BACKOFF = 2.0
-_MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
+MCP_CALL_ATTEMPTS = 6
+MCP_CALL_BACKOFF = 0.2  # seconds, exponential up to the cap
+MCP_CALL_MAX_BACKOFF = 2.0
+MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
 
 
 def _is_transient(exc: BaseException) -> bool:
@@ -65,7 +65,7 @@ async def mcp_session(spec: dict):
 
     async with (
         create_mcp_http_client(
-            headers=spec.get("headers") or None, timeout=_MCP_TIMEOUT
+            headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
         ) as http_client,
         streamable_http_client(spec["url"], http_client=http_client) as (
             read,
@@ -135,15 +135,15 @@ async def call_mcp(
     (not an exception), so it is not retried."""
     server_name, raw = dispatch[name]
     spec = servers[server_name]
-    for attempt in range(_MCP_CALL_ATTEMPTS):
+    for attempt in range(MCP_CALL_ATTEMPTS):
         try:
             async with mcp_session(spec) as session:
                 result = await session.call_tool(raw, arguments)
                 return mcp_content_to_chat_content(result.content)
         except Exception as e:
-            if _is_transient(e) and attempt + 1 < _MCP_CALL_ATTEMPTS:
+            if _is_transient(e) and attempt + 1 < MCP_CALL_ATTEMPTS:
                 await asyncio.sleep(
-                    min(_MCP_CALL_BACKOFF * 2**attempt, _MCP_CALL_MAX_BACKOFF)
+                    min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
                 )
                 continue
             raise

@@ -45,35 +45,23 @@ Respond = Callable[[str], Awaitable[Messages]]
 
 # User/tool servers are stateless-HTTP, so every turn reconnects on a fresh session (setup runs
 # once at server startup; state lives on the shared-state channel). Holding one connection open per
-# rollout is what sheds under high-concurrency churn, so instead each call retries transient
-# transport drops with a fresh connection rather than failing the rollout.
-_MCP_CALL_ATTEMPTS = 6
-_MCP_CALL_BACKOFF = 0.2  # seconds, exponential up to the cap
-_MCP_CALL_MAX_BACKOFF = 2.0
+# rollout is what sheds under high-concurrency churn; instead each call reconnects and retries
+# transient transport drops via the shared `retrying()` policy rather than failing the rollout.
+MCP_CALL_RETRIES = 5
 # Generous read timeout: a `respond`/tool round-trip can wait on a model call under load.
-_MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
-
-
-def _is_transient(exc: BaseException) -> bool:
-    """A transport-level fault worth retrying on a fresh connection, vs a real body error. The MCP
-    client surfaces connection loss as httpx transport errors or AnyIO stream-closed errors, often
-    wrapped in the task group's `ExceptionGroup`."""
-    group = getattr(
-        exc, "exceptions", None
-    )  # an ExceptionGroup from the MCP task group
-    if group is not None:
-        return any(_is_transient(e) for e in group)
-    return isinstance(
-        exc,
-        (
-            httpx.TransportError,
-            ConnectionError,
-            TimeoutError,
-            anyio.ClosedResourceError,
-            anyio.BrokenResourceError,
-            anyio.EndOfStream,
-        ),
-    )
+MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
+# Transport-level faults worth retrying, vs a real body error. The MCP client surfaces connection
+# loss as httpx transport errors or AnyIO stream-closed errors, sometimes wrapped in the task
+# group's `ExceptionGroup` — which at this boundary only ever wraps a transport failure.
+TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.TransportError,
+    ConnectionError,
+    TimeoutError,
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    anyio.EndOfStream,
+    BaseExceptionGroup,
+)
 
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
@@ -477,37 +465,40 @@ async def _user_respond(url: str, message: str) -> Messages:
     )
 
     from verifiers.v1.dialects import parse_message
+    from verifiers.v1.retries import retrying
 
-    for attempt in range(_MCP_CALL_ATTEMPTS):
-        try:
-            async with (
-                create_mcp_http_client(timeout=_MCP_TIMEOUT) as http_client,
-                streamable_http_client(url, http_client=http_client) as (
-                    read,
-                    write,
-                    *_,
-                ),
-                ClientSession(read, write) as session,
-            ):
-                await session.initialize()
-                result = await session.call_tool("respond", {"message": message})
-                texts = [
-                    b.text for b in result.content if getattr(b, "type", None) == "text"
-                ]
-                data = json.loads("\n".join(texts))
-                return [parse_message(m) for m in data["messages"]]
-        except RolloutError:
-            raise
-        except Exception as e:
-            if _is_transient(e) and attempt + 1 < _MCP_CALL_ATTEMPTS:
-                await asyncio.sleep(
-                    min(_MCP_CALL_BACKOFF * 2**attempt, _MCP_CALL_MAX_BACKOFF)
-                )
-                continue
-            raise UserError(f"user server at {url} respond failed: {e!r}") from e
-    raise UserError(
-        f"user server at {url} respond failed after {_MCP_CALL_ATTEMPTS} attempts"
-    )
+    try:
+        async for attempt in retrying(
+            on=TRANSIENT_ERRORS,
+            retries=MCP_CALL_RETRIES,
+            label=f"user respond ({url})",
+        ):
+            with attempt:
+                async with (
+                    create_mcp_http_client(timeout=MCP_TIMEOUT) as http_client,
+                    streamable_http_client(url, http_client=http_client) as (
+                        read,
+                        write,
+                        *_,
+                    ),
+                    ClientSession(read, write) as session,
+                ):
+                    await session.initialize()
+                    result = await session.call_tool("respond", {"message": message})
+                    texts = [
+                        b.text
+                        for b in result.content
+                        if getattr(b, "type", None) == "text"
+                    ]
+                    data = json.loads("\n".join(texts))
+                    return [parse_message(m) for m in data["messages"]]
+    except RolloutError:
+        raise
+    except Exception as e:
+        # A non-transient body error (never retried) or a transient one that exhausted retries;
+        # attribute either to the user boundary.
+        raise UserError(f"user server at {url} respond failed: {e!r}") from e
+    raise UserError(f"user server at {url} respond failed")  # unreachable
 
 
 @contextlib.asynccontextmanager
