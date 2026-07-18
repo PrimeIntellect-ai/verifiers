@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import anyio
+import httpx
+
 from verifiers.v1.errors import RolloutError, ToolsetError, UserError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
@@ -40,10 +43,38 @@ VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
 # A user ends the trajectory through shared state and `@stop`, not through this return value.
 Respond = Callable[[str], Awaitable[Messages]]
 
-# A server can pass its in-runtime probe before its host-facing connection settles.
-_USER_CONNECT_ATTEMPTS = 12
-_USER_CONNECT_BACKOFF = 0.2  # seconds, exponential up to the cap
-_USER_CONNECT_MAX_BACKOFF = 2.0
+# User/tool servers are stateless-HTTP, so every turn reconnects on a fresh session (setup runs
+# once at server startup; state lives on the shared-state channel). Holding one connection open per
+# rollout is what sheds under high-concurrency churn, so instead each call retries transient
+# transport drops with a fresh connection rather than failing the rollout.
+_MCP_CALL_ATTEMPTS = 6
+_MCP_CALL_BACKOFF = 0.2  # seconds, exponential up to the cap
+_MCP_CALL_MAX_BACKOFF = 2.0
+# Generous read timeout: a `respond`/tool round-trip can wait on a model call under load.
+_MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """A transport-level fault worth retrying on a fresh connection, vs a real body error. The MCP
+    client surfaces connection loss as httpx transport errors or AnyIO stream-closed errors, often
+    wrapped in the task group's `ExceptionGroup`."""
+    group = getattr(
+        exc, "exceptions", None
+    )  # an ExceptionGroup from the MCP task group
+    if group is not None:
+        return any(_is_transient(e) for e in group)
+    return isinstance(
+        exc,
+        (
+            httpx.TransportError,
+            ConnectionError,
+            TimeoutError,
+            anyio.ClosedResourceError,
+            anyio.BrokenResourceError,
+            anyio.EndOfStream,
+        ),
+    )
+
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
@@ -434,59 +465,60 @@ async def serve_tools(
         yield urls
 
 
-@contextlib.asynccontextmanager
-async def connect_user(url: str) -> AsyncIterator[Respond]:
-    """Connect to a user server, retrying only initial connection failures.
-
-    Body errors propagate unchanged; transport failures after connecting become `UserError`. The
-    session stays in this frame so AnyIO cancellation scopes remain correctly nested.
-    """
+async def _user_respond(url: str, message: str) -> Messages:
+    """One `respond` round-trip to the user server on a fresh session, retrying transient transport
+    drops (rollout-start connection churn) so a blip doesn't fail the rollout. Each session is
+    opened and closed within the caller's task, keeping AnyIO cancellation scopes correctly nested;
+    the opening turn is `respond("")` from initial state, so a retry is idempotent."""
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamable_http_client
+    from mcp.client.streamable_http import (
+        create_mcp_http_client,
+        streamable_http_client,
+    )
 
     from verifiers.v1.dialects import parse_message
 
-    last_exc: Exception | None = None
-    for attempt in range(_USER_CONNECT_ATTEMPTS):
-        connected = in_body = False
+    for attempt in range(_MCP_CALL_ATTEMPTS):
         try:
             async with (
-                streamable_http_client(url) as (read, write, *_),
+                create_mcp_http_client(timeout=_MCP_TIMEOUT) as http_client,
+                streamable_http_client(url, http_client=http_client) as (
+                    read,
+                    write,
+                    *_,
+                ),
                 ClientSession(read, write) as session,
             ):
                 await session.initialize()
-                connected = True
-
-                async def respond(message: str) -> Messages:
-                    result = await session.call_tool("respond", {"message": message})
-                    texts = [
-                        b.text
-                        for b in result.content
-                        if getattr(b, "type", None) == "text"
-                    ]
-                    data = json.loads("\n".join(texts))
-                    return [parse_message(m) for m in data["messages"]]
-
-                # Errors thrown into the yield belong to the harness body, not the connection.
-                in_body = True
-                yield respond
-                in_body = False
-            return
+                result = await session.call_tool("respond", {"message": message})
+                texts = [
+                    b.text for b in result.content if getattr(b, "type", None) == "text"
+                ]
+                data = json.loads("\n".join(texts))
+                return [parse_message(m) for m in data["messages"]]
         except RolloutError:
             raise
         except Exception as e:
-            if in_body:
-                raise
-            if connected:
-                # Raw transport groups bypass rollout handling, so attribute the loss here.
-                raise UserError(f"user server at {url} connection lost: {e!r}") from e
-            last_exc = e
-            await asyncio.sleep(
-                min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF)
-            )
+            if _is_transient(e) and attempt + 1 < _MCP_CALL_ATTEMPTS:
+                await asyncio.sleep(
+                    min(_MCP_CALL_BACKOFF * 2**attempt, _MCP_CALL_MAX_BACKOFF)
+                )
+                continue
+            raise UserError(f"user server at {url} respond failed: {e!r}") from e
     raise UserError(
-        f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}"
+        f"user server at {url} respond failed after {_MCP_CALL_ATTEMPTS} attempts"
     )
+
+
+@contextlib.asynccontextmanager
+async def connect_user(url: str) -> AsyncIterator[Respond]:
+    """Yield a `respond` bound to the (probed, reachable) user server. Each call reconnects on a
+    fresh session and retries transient transport drops — see `_user_respond`."""
+
+    async def respond(message: str) -> Messages:
+        return await _user_respond(url, message)
+
+    yield respond
 
 
 @contextlib.asynccontextmanager
