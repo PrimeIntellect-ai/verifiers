@@ -26,6 +26,7 @@ from verifiers.v1.types import (
     FinishReason,
     KeptTokens,
     Messages,
+    Sampling,
     SamplingConfig,
     StrictBaseModel,
     Tool,
@@ -77,7 +78,7 @@ class ModelCall(StrictBaseModel):
     model: str | None = None
     """The model requested from the provider. The rollout's model override makes this
     `agent.model` on every call; recorded per call because it is cheap and provable."""
-    sampling: SamplingConfig | None = None
+    sampling: Sampling | None = None
     """The call's effective settings, scraped off the wire request by the dialect's
     `sampling_fields` whitelist — the eval-imposed knobs plus whatever the harness set
     that the eval left alone (`seed`, `tool_choice`, `response_format`, ... as extras)."""
@@ -103,8 +104,6 @@ class Branch(StrictBaseModel):
     index: int
     nodes: list[MessageNode]
     calls: list[ModelCall] = Field(default_factory=list)
-    """The exchanges behind this branch's sampled turns, in path order — attached by
-    `Trace.branches` (a derived view, like the branch itself)."""
 
     @property
     def num_turns(self) -> int:
