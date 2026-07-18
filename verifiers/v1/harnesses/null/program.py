@@ -114,13 +114,14 @@ async def call_mcp(
         try:
             async with mcp_session(spec) as session:
                 result = await session.call_tool(raw, arguments)
-                return mcp_content_to_chat_content(result.content)
         except Exception:
             if attempt + 1 == MCP_CALL_ATTEMPTS:
                 raise
             await asyncio.sleep(
                 min(MCP_CALL_BACKOFF * 2**attempt, MCP_CALL_MAX_BACKOFF)
             )
+            continue
+        return mcp_content_to_chat_content(result.content)
     raise RuntimeError("unreachable")  # loop either returns or raises
 
 

@@ -449,38 +449,32 @@ async def _user_respond(url: str, message: str) -> Messages:
     from verifiers.v1.dialects import parse_message
     from verifiers.v1.retries import retrying
 
+    async def call():
+        async with (
+            create_mcp_http_client(timeout=MCP_TIMEOUT) as http_client,
+            streamable_http_client(url, http_client=http_client) as (read, write, *_),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            return await session.call_tool("respond", {"message": message})
+
     try:
+        result = None
         async for attempt in retrying(
             give_up=RolloutError,
             retries=MCP_CALL_RETRIES,
             label=f"user respond ({url})",
         ):
             with attempt:
-                async with (
-                    create_mcp_http_client(timeout=MCP_TIMEOUT) as http_client,
-                    streamable_http_client(url, http_client=http_client) as (
-                        read,
-                        write,
-                        *_,
-                    ),
-                    ClientSession(read, write) as session,
-                ):
-                    await session.initialize()
-                    result = await session.call_tool("respond", {"message": message})
-                    texts = [
-                        b.text
-                        for b in result.content
-                        if getattr(b, "type", None) == "text"
-                    ]
-                    data = json.loads("\n".join(texts))
-                    return [parse_message(m) for m in data["messages"]]
+                result = await call()
+        assert result is not None
+        texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
+        data = json.loads("\n".join(texts))
+        return [parse_message(m) for m in data["messages"]]
     except RolloutError:
         raise
     except Exception as e:
-        # A non-transient body error (never retried) or a transient one that exhausted retries;
-        # attribute either to the user boundary.
         raise UserError(f"user server at {url} respond failed: {e!r}") from e
-    raise UserError(f"user server at {url} respond failed")  # unreachable
 
 
 @contextlib.asynccontextmanager
