@@ -62,10 +62,12 @@ class GenerationSpan(TimeSpan):
     outside them (`harness`: harness logic, tools, user simulation). Stamped from the
     recorded model calls' spans by `Trace.split_generation` when the span closes, with
     `model.duration + harness.duration == duration` — concurrent calls (subagent forks)
-    are clamped to the span, saturating the model share."""
+    are clamped to the span, saturating the model share. None until stamped (e.g. a
+    reloaded trace whose run never reached teardown), so an unknown split is
+    distinguishable from a measured zero and displays leave it off."""
 
-    model: TimeSplit = Field(default_factory=TimeSplit)
-    harness: TimeSplit = Field(default_factory=TimeSplit)
+    model: TimeSplit | None = None
+    harness: TimeSplit | None = None
 
 
 class Timing(StrictBaseModel):
@@ -564,9 +566,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         gen = self.timing.generation
         if not gen.end:
             return
-        model = sum(call.time.duration for call in self.calls)
-        gen.model.duration = min(model, gen.duration)
-        gen.harness.duration = gen.duration - gen.model.duration
+        model = min(sum(call.time.duration for call in self.calls), gen.duration)
+        gen.model = TimeSplit(duration=model)
+        gen.harness = TimeSplit(duration=gen.duration - model)
 
     def capture_error(self, error: Exception) -> None:
         self.errors.append(

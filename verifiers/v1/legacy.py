@@ -206,13 +206,16 @@ def _timing(raw: Any) -> Timing:
                 return float(node["ms"]) / 1000.0
         return 0.0
 
+    def _split(node: Any) -> TimeSplit | None:
+        return TimeSplit(duration=_dur(node)) if isinstance(node, dict) else None
+
     raw = raw or {}
     return Timing(
         generation=GenerationSpan(
             start=0.0,
             end=_dur(raw.get("generation")),
-            model=TimeSplit(duration=_dur(raw.get("model"))),
-            harness=TimeSplit(duration=_dur(raw.get("env"))),
+            model=_split(raw.get("model")),
+            harness=_split(raw.get("env")),
         ),
         scoring=TimeSpan(start=0.0, end=_dur(raw.get("scoring"))),
     )

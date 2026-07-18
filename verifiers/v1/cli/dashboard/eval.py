@@ -301,6 +301,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
     phase_secs: dict[str, float] = {}
     phase_count: dict[str, int] = {}
     model_secs = harness_secs = 0.0
+    split_count = 0
     for trace in done:
         prompt, completion, cached, reasoning, _ = _tokens(trace)
         total_in += prompt
@@ -327,8 +328,11 @@ def _breakdown(done: list[Trace]) -> Table | None:
             if span.end:  # phase was timed for this rollout
                 phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
                 phase_count[phase] = phase_count.get(phase, 0) + 1
-        model_secs += trace.timing.generation.model.duration
-        harness_secs += trace.timing.generation.harness.duration
+        gen = trace.timing.generation
+        if gen.model is not None and gen.harness is not None:
+            model_secs += gen.model.duration
+            harness_secs += gen.harness.duration
+            split_count += 1
     if (
         total_in
         or total_out
@@ -362,10 +366,12 @@ def _breakdown(done: list[Trace]) -> Table | None:
         if not count:
             continue
         segment = f"{phase} {format_time(phase_secs[phase] / count)}"
-        if phase == "generation":
+        # Averaged over the rollouts whose split is stamped — a resumed run reloads
+        # traces that may predate it or never reached teardown, and those carry None.
+        if phase == "generation" and split_count:
             segment += (
-                f" (model {format_time(model_secs / count)}"
-                f" + harness {format_time(harness_secs / count)})"
+                f" (model {format_time(model_secs / split_count)}"
+                f" + harness {format_time(harness_secs / split_count)})"
             )
         time_segments.append(segment)
     if time_segments:
