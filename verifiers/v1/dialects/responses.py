@@ -286,6 +286,9 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             "model",
             "stream",
             "stream_options",
+            # Server-side conversation state, not settings: ids linking to prior turns.
+            "previous_response_id",
+            "conversation",
         }
     )
     routes = ("/v1/responses",)
