@@ -21,7 +21,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import BaseModel
 from pydantic_core import from_json
 
-from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
+from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
@@ -173,11 +173,11 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
         """The native request -> vf prompt + tools (for the trace)."""
 
-    def parse_sampling(self, body: ReqT) -> SamplingConfig:
-        """The native request's call settings -> the canonical `SamplingConfig` (for the
+    def parse_sampling(self, body: ReqT) -> Sampling:
+        """The native request's call settings -> the canonical `Sampling` (for the
         trace's per-call records): the `sampling_fields` whitelist, with this format's
         aliases mapped onto the typed knobs; dialect-specific keys ride as extras."""
-        return SamplingConfig.model_validate(
+        return Sampling.model_validate(
             {k: v for k, v in body.items() if k in self.sampling_fields}
         )
 
