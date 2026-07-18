@@ -38,7 +38,6 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
-    Usage,
 )
 
 if TYPE_CHECKING:
@@ -109,9 +108,6 @@ class MessageNode(StrictBaseModel):
     trainer. `Branch.multi_modal_data` concatenates them along the path into the training
     `mm_kwargs`. Rides the wire as raw bytes (msgpack `bin`) since pydantic can't JSON the numpy;
     kept off disk by the dump-site `exclude` in prime-rl (the tensors bloat the rollout jsonl)."""
-    usage: Usage | None = None
-    """Provider-reported token usage for this message's response (assistant nodes). Preserved
-    on the wire and on disk, including cache-read tokens when the provider reports them."""
     routed_experts: SkipJsonSchema[np.ndarray | None] = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
@@ -572,7 +568,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
-            usage=response.usage,
         )
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.

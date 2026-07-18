@@ -271,8 +271,15 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             response
         )
         # The per-call record (v0 steps carry no wire settings or timing): keeps
-        # `finish_reason` — per-call since trace v2 — available to `is_truncated`.
-        trace.calls.append(ModelCall(node=node, finish_reason=response.finish_reason))
+        # `finish_reason` and `usage` — per-call since trace v2 — available to
+        # `is_truncated` and the token accounting.
+        trace.calls.append(
+            ModelCall(
+                node=node,
+                finish_reason=response.finish_reason,
+                usage=response.usage,
+            )
+        )
     return trace
 
 

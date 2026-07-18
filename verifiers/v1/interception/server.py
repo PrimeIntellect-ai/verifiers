@@ -54,7 +54,7 @@ from verifiers.v1.interception.tunnel import (
 )
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import Error, ModelCall, TimeSpan
-from verifiers.v1.types import FinishReason, Messages, Response, Tool
+from verifiers.v1.types import FinishReason, Messages, Response, Tool, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +242,7 @@ class InterceptionServer(Interception):
         *,
         node: int | None = None,
         finish_reason: "FinishReason" = None,
+        usage: "Usage | None" = None,
         error: BaseException | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
@@ -265,6 +266,7 @@ class InterceptionServer(Interception):
                 sampling=sampling,
                 endpoint=dialect.upstream_path,
                 finish_reason=finish_reason,
+                usage=usage,
                 # Every failure surfaces an HTTP status to the harness — the error's own
                 # when it carries one, else the generic 502 the handlers return.
                 status=getattr(error, "status_code", 502)
@@ -493,6 +495,7 @@ class InterceptionServer(Interception):
                         finish_reason=call_response.finish_reason
                         if call_response
                         else None,
+                        usage=call_response.usage if call_response else None,
                         error=error,
                     )
                 # Hand back to the program when the model wants a tool (the program runs it) or
@@ -691,6 +694,7 @@ class InterceptionServer(Interception):
                 started,
                 node=node,
                 finish_reason=response.finish_reason if response is not None else None,
+                usage=response.usage if response is not None else None,
                 error=error,
             )
 

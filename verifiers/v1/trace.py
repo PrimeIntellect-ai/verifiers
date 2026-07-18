@@ -90,6 +90,9 @@ class ModelCall(StrictBaseModel):
     truth: it may differ from what the framework relays to the harness (an overlong
     prompt is relayed as a 400 whatever the provider said). None on success — a
     recorded turn implies a 2xx exchange."""
+    usage: Usage | None = None
+    """Provider-reported token usage for this exchange, cache reads included; None for
+    a failed call."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """Wall-clock span from sending the request to the fully received response."""
     error: Error | None = None
@@ -102,6 +105,9 @@ class Branch(StrictBaseModel):
 
     index: int
     nodes: list[MessageNode]
+    calls: list[ModelCall] = Field(default_factory=list)
+    """The exchanges behind this branch's sampled turns, in path order — attached by
+    `Trace.branches` (a derived view, like the branch itself)."""
 
     @property
     def num_turns(self) -> int:
@@ -206,13 +212,13 @@ class Branch(StrictBaseModel):
 
     @property
     def usage(self) -> Usage | None:
-        return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
+        return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
 
     @property
     def last_usage(self) -> Usage | None:
         """Provider usage from the final model call on this branch — the full context it saw."""
         return next(
-            (n.usage for n in reversed(self.nodes) if n.usage is not None), None
+            (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
 
     @property
@@ -251,7 +257,8 @@ _NODE_DUMP_EXCLUDE: dict = {
 
 TRACE_VERSION = 2
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
-breaking shape changes (v2: `finish_reason` moved from `MessageNode` to `ModelCall`);
+breaking shape changes (v2: `finish_reason` and `usage` moved from `MessageNode` to
+`ModelCall`);
 optional-with-default fields are additive and don't bump it."""
 
 
@@ -402,7 +409,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
-        return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
+        return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
 
     @property
     def has_response(self) -> bool:
@@ -411,7 +418,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def branches(self) -> list[Branch]:
-        """One root-to-leaf path per graph leaf."""
+        """One root-to-leaf path per graph leaf, its calls attached in path order."""
+        by_node = {c.node: c for c in self.calls if c.node is not None}
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
             path: list[int] = []
@@ -420,7 +428,13 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 path.append(nid)
                 nid = self.nodes[nid].parent
             path.reverse()
-            branches.append(Branch(index=i, nodes=[self.nodes[n] for n in path]))
+            branches.append(
+                Branch(
+                    index=i,
+                    nodes=[self.nodes[n] for n in path],
+                    calls=[by_node[n] for n in path if n in by_node],
+                )
+            )
         return branches
 
     @property
