@@ -26,8 +26,6 @@ class RelayReply:
     content_type: str
     chunks: AsyncIterator[bytes]
     close: Callable[[], Awaitable[None]]
-    headers: dict[str, str] | None = None
-    """Provider response headers, for the trace's per-call records."""
 
 
 class Client(ABC):

@@ -37,18 +37,9 @@ class ProviderError(RolloutError):
     (5xx/429/timeout) and not deterministic ones (4xx) — relayed from the provider, or chosen for a
     transport fault."""
 
-    def __init__(
-        self,
-        message: str = "",
-        *,
-        code: int = 502,
-        headers: dict[str, str] | None = None,
-    ) -> None:
+    def __init__(self, message: str = "", *, code: int = 502) -> None:
         super().__init__(message)
         self.code = code
-        self.headers = headers
-        """Provider response headers when the failure carried an HTTP response (request
-        ids, rate-limit diagnostics) — surfaced on the trace's per-call records."""
 
 
 class OverlongPromptError(ProviderError):
@@ -57,14 +48,8 @@ class OverlongPromptError(ProviderError):
     server surfaces for it — deterministic, so an SDK never retries it); `model_error`
     keeps the provider's real status when the failure carried one."""
 
-    def __init__(
-        self,
-        message: str = "",
-        *,
-        code: int = 400,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(message, code=code, headers=headers)
+    def __init__(self, message: str = "", *, code: int = 400) -> None:
+        super().__init__(message, code=code)
 
 
 class HarnessError(RolloutError):
@@ -140,12 +125,7 @@ def _provider_status(e: OpenAIError | str) -> int:
     return 502
 
 
-def model_error(
-    e: OpenAIError | str,
-    *,
-    code: int | None = None,
-    headers: dict[str, str] | None = None,
-) -> ProviderError:
+def model_error(e: OpenAIError | str, *, code: int | None = None) -> ProviderError:
     """Map a provider failure to our error type: an overlong prompt (a budget limit the interception
     server turns into a clean truncation) is told apart from any other provider call failure, which
     becomes a plain `ProviderError`. `code` is the HTTP status surfaced to the harness (whose
@@ -155,22 +135,10 @@ def model_error(
 
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
-    # An SDK status error carries the provider's HTTP response; keep its diagnostics
-    # (request ids, rate limits) when the caller didn't pass them explicitly.
-    if headers is None and isinstance(e, APIStatusError):
-        headers = dict(e.response.headers)
     if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):
         # Keep the provider's real status when the failure carried one; else the class
         # default (the 400 the interception server surfaces for overlong prompts).
         if code is None and isinstance(e, APIStatusError):
             code = e.status_code
-        return OverlongPromptError(
-            text,
-            **({} if code is None else {"code": code}),
-            headers=headers,
-        )
-    return ProviderError(
-        text,
-        code=code if code is not None else _provider_status(e),
-        headers=headers,
-    )
+        return OverlongPromptError(text, **({} if code is None else {"code": code}))
+    return ProviderError(text, code=code if code is not None else _provider_status(e))

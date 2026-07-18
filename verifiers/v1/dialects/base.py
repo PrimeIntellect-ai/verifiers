@@ -121,6 +121,11 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     `dialects.DIALECTS` and a harness speaking that format works end-to-end (the eval client and
     interception server are generic over this interface)."""
 
+    payload_fields: ClassVar[frozenset[str]] = frozenset()
+    """Request keys that carry the payload (conversation, tools, model) or transport
+    framing rather than settings — stripped when recording a call's effective settings
+    (`ModelCall.sampling`) on the trace."""
+
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts model turns to. The interception server serves
     one handler per route, so the wire format is resolved from the route the SDK chose (it

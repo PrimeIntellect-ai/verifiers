@@ -229,11 +229,7 @@ class Response(StrictBaseModel):
     usage: Usage | None = None
     tokens: TurnTokens | None = None
     raw: dict | None = Field(default=None, exclude=True, repr=False)
-    """Full native response object returned to the program; recorded raw on the trace's
-    per-call records (`Trace.calls`), never dumped as part of the typed response."""
-    raw_headers: dict[str, str] | None = Field(default=None, exclude=True, repr=False)
-    """Provider response headers (request ids, rate limits), when the transport exposes
-    them; carried to the trace's per-call records like `raw`."""
+    """Full native response object returned to the program; excluded from traces."""
 
 
 class SamplingConfig(BaseModel):

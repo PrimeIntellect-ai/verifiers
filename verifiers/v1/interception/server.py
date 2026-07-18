@@ -54,7 +54,7 @@ from verifiers.v1.interception.tunnel import (
 )
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import Error, ModelCall, TimeSpan
-from verifiers.v1.types import Messages, Response, Tool
+from verifiers.v1.types import FinishReason, Messages, Response, SamplingConfig, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -241,25 +241,38 @@ class InterceptionServer(Interception):
         started: float,
         *,
         node: int | None = None,
-        response: dict | None = None,
-        headers: dict[str, str] | None = None,
+        finish_reason: "FinishReason" = None,
         error: BaseException | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
-        the raw request as sent upstream, the raw native response, timing, and — when the
-        call committed no turn — the error, coupled to the exchange that raised it. Called
+        the model + effective settings that went upstream, timing, and — when the call
+        committed no turn — the error, coupled to the exchange that raised it. Called
         once per real exchange; replayed/coalesced SDK retries never reach it."""
+        sampling = None
+        if request is not None:
+            # The wire request minus its payload is the call's effective settings: the
+            # eval-imposed knobs plus whatever the harness set that the eval left alone.
+            try:
+                sampling = SamplingConfig.model_validate(
+                    {
+                        k: v
+                        for k, v in request.items()
+                        if k not in dialect.payload_fields
+                    }
+                )
+            except ValidationError:
+                # A malformed harness knob must not kill recording (this runs in the
+                # exchange's `finally`); the provider rejects the request on its own.
+                logger.warning(
+                    "unrecordable call settings: id=%s", session.trace.id, exc_info=True
+                )
         session.trace.calls.append(
             ModelCall(
                 node=node,
+                model=request.get("model") if request is not None else None,
+                sampling=sampling,
                 endpoint=dialect.upstream_path,
-                request=request,
-                response=response,
-                # A failed exchange's HTTP response still carries diagnostics (request
-                # ids, rate limits): fall back to the headers stashed on the error.
-                response_headers=headers
-                if headers is not None
-                else getattr(error, "headers", None),
+                finish_reason=finish_reason,
                 # Every failure surfaces an HTTP status to the harness — the error's own
                 # when it carries one, else the generic 502 the handlers return.
                 status=getattr(error, "code", 502) if error is not None else None,
@@ -475,16 +488,17 @@ class InterceptionServer(Interception):
                         error = e
                         raise
                 finally:
-                    # The turn's one per-exchange record: whatever the exchange produced,
-                    # plus the error that ended it (if any).
+                    # The turn's one per-exchange record: settings, timing, outcome, and
+                    # the error that ended it (if any).
                     self.record_call(
                         session,
                         dialect,
                         upstream_request,
                         started,
                         node=node,
-                        response=call_response.raw if call_response else None,
-                        headers=call_response.raw_headers if call_response else None,
+                        finish_reason=call_response.finish_reason
+                        if call_response
+                        else None,
                         error=error,
                     )
                 # Hand back to the program when the model wants a tool (the program runs it) or
@@ -674,16 +688,15 @@ class InterceptionServer(Interception):
                 error = e
             raise
         finally:
-            # The turn's one per-exchange record: whatever the exchange produced, plus
-            # the error that ended it (if any).
+            # The turn's one per-exchange record: settings, timing, outcome, and the
+            # error that ended it (if any).
             self.record_call(
                 session,
                 dialect,
                 upstream_request,
                 started,
                 node=node,
-                response=response.raw if response is not None else None,
-                headers=reply.headers if reply is not None else None,
+                finish_reason=response.finish_reason if response is not None else None,
                 error=error,
             )
 

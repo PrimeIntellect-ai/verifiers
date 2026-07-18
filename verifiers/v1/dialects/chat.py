@@ -285,12 +285,13 @@ class ChatStreamParser(StreamParser):
             ],
             "usage": self.usage,
         }
-        response = response_from_wire(ModdedChatCompletion.model_validate(completion))
-        response.raw = completion
-        return response
+        return response_from_wire(ModdedChatCompletion.model_validate(completion))
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
+    payload_fields = frozenset(
+        {"messages", "tools", "model", "stream", "stream_options"}
+    )
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion

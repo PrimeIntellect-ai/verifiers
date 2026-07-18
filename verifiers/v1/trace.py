@@ -23,6 +23,7 @@ from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
+    FinishReason,
     KeptTokens,
     Messages,
     SamplingConfig,
@@ -63,32 +64,30 @@ class Error(StrictBaseModel):
 
 
 class ModelCall(StrictBaseModel):
-    """One provider exchange behind a sampled turn, kept raw: the request as sent upstream
-    and the native response, untyped. Recorded by the interception server for every real
-    exchange — an SDK-level retry that replays or coalesces onto an earlier attempt adds
-    nothing, a failed attempt is recorded with its `error`."""
+    """One provider exchange behind a sampled turn. Recorded by the interception server
+    for every real exchange — an SDK-level retry that replays or coalesces onto an
+    earlier attempt adds nothing, a failed attempt is recorded with its `error`. The
+    conversation itself is not repeated here: it is the linked node's root-to-self path
+    in the message graph."""
 
     node: int | None = None
     """Index into `Trace.nodes` of the assistant node this call committed — the link into
     the message graph (the call's conversation is that node's root-to-self path). None for
     a call that committed no turn (see `error`)."""
+    model: str | None = None
+    """The model requested from the provider. The rollout's model override makes this
+    `agent.model` on every call; recorded per call because it is cheap and provable."""
+    sampling: SamplingConfig | None = None
+    """The effective per-call request settings: everything on the wire request except its
+    payload (conversation, tools, model) — the eval-imposed knobs plus whatever the
+    harness set that the eval left alone (`seed`, `stop`, `tool_choice`,
+    `response_format`, ... ride along as extras)."""
     endpoint: str | None = None
     """The provider endpoint path the request went to (e.g. `/chat/completions`) — says
-    which wire format `request` and `response` are in."""
-    request: dict[str, Any] | None = None
-    """The raw request body as sent upstream: the harness's native JSON with the rollout's
-    model + sampling overrides applied — so it carries the effective sampling parameters
-    and the requested model. The generating (renderer) client sends this conversation as
-    rendered token ids instead of JSON; its record keeps this native shape — the logical
-    exchange — just like its `response` is the completion it synthesizes."""
-    response: dict[str, Any] | None = None
-    """The raw native response object (for a generating client, the completion it
-    synthesized): provider response id, returned model, native usage. None when the
-    exchange itself failed; kept alongside `error` when a response arrived but
-    recording its turn failed."""
-    response_headers: dict[str, str] | None = None
-    """Provider response headers (request ids, rate limits), when the transport exposes
-    them — kept for failed exchanges too, when the failure carried an HTTP response."""
+    which wire dialect the exchange spoke."""
+    finish_reason: FinishReason = None
+    """Why the model stopped, normalized (`stop` / `length` / `tool_calls`); None for a
+    failed call or an unrecognized provider reason."""
     status: int | None = None
     """The HTTP status a failed exchange surfaced (the provider's, one chosen for a
     transport fault, or the generic 502 for an unexpected failure); None on success —
@@ -97,7 +96,7 @@ class ModelCall(StrictBaseModel):
     """Wall-clock span from sending the request to the fully received response."""
     error: Error | None = None
     """The failure that ended this call, coupled to the exchange that caused it; None on
-    success. A failed call still records the request it sent."""
+    success. A failed call still records the settings it was sent with."""
 
 
 class Branch(StrictBaseModel):

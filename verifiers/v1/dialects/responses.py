@@ -270,15 +270,24 @@ class ResponsesStreamParser(StreamParser):
         events = self.terminal_events or self.events
         for event in iter_sse_reverse(b"".join(events)):
             if event.get("type") in FINAL_EVENTS:
-                response = response_from_wire(
+                return response_from_wire(
                     OpenAIResponse.model_validate(event["response"])
                 )
-                response.raw = event["response"]
-                return response
         raise ValueError("Responses stream ended without a terminal event")
 
 
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
+    payload_fields = frozenset(
+        {
+            "input",
+            "instructions",
+            "prompt",
+            "tools",
+            "model",
+            "stream",
+            "stream_options",
+        }
+    )
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse

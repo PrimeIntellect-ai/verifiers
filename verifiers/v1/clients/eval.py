@@ -107,11 +107,9 @@ class EvalClient(Client):
             raise model_error(
                 f"malformed upstream response: {type(e).__name__}: {e}",
                 code=502,
-                headers=dict(resp.headers),
             ) from e
         # The interception server returns this full native provider object to the program.
         response.raw = raw
-        response.raw_headers = dict(resp.headers)
         return response
 
     def _headers(
@@ -171,7 +169,6 @@ class EvalClient(Client):
                 raise model_error(
                     f"upstream {e.response.status_code}: {e.response.text}",
                     code=e.response.status_code,
-                    headers=dict(e.response.headers),
                 ) from e
             return response
         if response.status_code < 400:
@@ -181,9 +178,7 @@ class EvalClient(Client):
         finally:
             await response.aclose()
         raise model_error(
-            f"upstream {response.status_code}: {text}",
-            code=response.status_code,
-            headers=dict(response.headers),
+            f"upstream {response.status_code}: {text}", code=response.status_code
         )
 
     async def relay(
@@ -222,7 +217,6 @@ class EvalClient(Client):
             content_type=resp.headers.get("content-type", "text/event-stream"),
             chunks=chunks(),
             close=resp.aclose,
-            headers=dict(resp.headers),
         )
 
     async def relay_aux(

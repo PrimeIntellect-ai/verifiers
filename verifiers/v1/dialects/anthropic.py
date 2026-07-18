@@ -239,12 +239,13 @@ class AnthropicStreamParser(StreamParser):
         for index, parts in self.partial_json.items():
             self.blocks[index]["input"] = json.loads("".join(parts) or "{}")
         self.message["content"] = [self.blocks[index] for index in sorted(self.blocks)]
-        response = response_from_wire(self.validate_response(self.message))
-        response.raw = self.message
-        return response
+        return response_from_wire(self.validate_response(self.message))
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
+    payload_fields = frozenset(
+        {"messages", "system", "tools", "model", "stream", "stream_options"}
+    )
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
