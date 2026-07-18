@@ -252,11 +252,6 @@ class InterceptionServer(Interception):
                 dialect.error_body(str(session.error)),
                 status=getattr(session.error, "status_code", 502),
             )
-        if session.trace.is_completed:
-            stop = session.trace.stop_condition or "completed"
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {stop}"), status=400
-            )
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -278,6 +273,11 @@ class InterceptionServer(Interception):
         if session.last_request == req_hash and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
+        if session.trace.is_completed:
+            stop = session.trace.stop_condition or "completed"
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {stop}"), status=400
+            )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
