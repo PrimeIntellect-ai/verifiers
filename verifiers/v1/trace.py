@@ -85,9 +85,11 @@ class ModelCall(StrictBaseModel):
     """Why the model stopped, normalized (`stop` / `length` / `tool_calls`); None for a
     failed call or an unrecognized provider reason."""
     status: int | None = None
-    """The HTTP status a failed exchange surfaced (the provider's, one chosen for a
-    transport fault, or the generic 502 for an unexpected failure); None on success —
-    a recorded turn implies a 2xx exchange."""
+    """The upstream HTTP status of a failed exchange (the provider's own, one chosen
+    for a transport fault, or the generic 502 for an unexpected failure). Provider-side
+    truth: it may differ from what the framework relays to the harness (an overlong
+    prompt is relayed as a 400 whatever the provider said). None on success — a
+    recorded turn implies a 2xx exchange."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """Wall-clock span from sending the request to the fully received response."""
     error: Error | None = None
