@@ -230,7 +230,7 @@ class InterceptionServer(Interception):
         )
         return web.json_response(
             dialect.error_body(str(error)),
-            status=getattr(error, "code", 502),
+            status=getattr(error, "status_code", 502),
         )
 
     def record_call(
@@ -267,7 +267,9 @@ class InterceptionServer(Interception):
                 finish_reason=finish_reason,
                 # Every failure surfaces an HTTP status to the harness — the error's own
                 # when it carries one, else the generic 502 the handlers return.
-                status=getattr(error, "code", 502) if error is not None else None,
+                status=getattr(error, "status_code", 502)
+                if error is not None
+                else None,
                 time=TimeSpan(start=started, end=time.time()),
                 error=None
                 if error is None
@@ -463,7 +465,7 @@ class InterceptionServer(Interception):
                         )
                         return web.json_response(
                             dialect.error_body(str(e)),
-                            status=getattr(e, "code", 502),
+                            status=getattr(e, "status_code", 502),
                         )
                     except Exception as e:  # surface to the program as an API error
                         error = e
@@ -589,7 +591,7 @@ class InterceptionServer(Interception):
                     e,
                 )
                 return web.json_response(
-                    dialect.error_body(str(e)), status=getattr(e, "code", 502)
+                    dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
                 )
             except Exception as e:  # surface to the program as an API error
                 error = e
@@ -715,7 +717,7 @@ class InterceptionServer(Interception):
                 e,
             )
             return web.json_response(
-                dialect.error_body(str(e)), status=getattr(e, "code", 502)
+                dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
             )
         except Exception as e:
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
