@@ -49,11 +49,30 @@ class TimeSpan(StrictBaseModel):
         return max(0.0, self.end - self.start) if self.end else 0.0
 
 
+class TimeSplit(StrictBaseModel):
+    """A span's share attributed to one side of a split: disjoint sub-intervals summed
+    into a duration, so there is no single start/end. Serialized, unlike a span's
+    derived `duration`, since it cannot be recomputed from two timestamps."""
+
+    duration: float = 0.0
+
+
+class GenerationSpan(TimeSpan):
+    """The generation span plus its split into time inside model calls (`model`) vs.
+    outside them (`harness`: harness logic, tools, user simulation). Stamped from the
+    recorded model calls' spans by `Trace.split_generation` when the span closes, with
+    `model.duration + harness.duration == duration` — concurrent calls (subagent forks)
+    are clamped to the span, saturating the model share."""
+
+    model: TimeSplit = Field(default_factory=TimeSplit)
+    harness: TimeSplit = Field(default_factory=TimeSplit)
+
+
 class Timing(StrictBaseModel):
     start: float = Field(default_factory=time.time)
     boot: TimeSpan = Field(default_factory=TimeSpan)
     setup: TimeSpan = Field(default_factory=TimeSpan)
-    generation: TimeSpan = Field(default_factory=TimeSpan)
+    generation: GenerationSpan = Field(default_factory=GenerationSpan)
     finalize: TimeSpan = Field(default_factory=TimeSpan)
     scoring: TimeSpan = Field(default_factory=TimeSpan)
 
@@ -536,6 +555,18 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         self.is_completed = True
         if self.stop_condition is None:
             self.stop_condition = condition
+
+    def split_generation(self) -> None:
+        """Stamp the closed generation span's model/harness split: model time is the
+        sum of the recorded calls' spans (clamped to the span), harness the complement.
+        Every path that closes the span calls this — a span without model calls (e.g.
+        a debug action) is all harness time."""
+        gen = self.timing.generation
+        if not gen.end:
+            return
+        model = sum(call.time.duration for call in self.calls)
+        gen.model.duration = min(model, gen.duration)
+        gen.harness.duration = gen.duration - gen.model.duration
 
     def capture_error(self, error: Exception) -> None:
         self.errors.append(
