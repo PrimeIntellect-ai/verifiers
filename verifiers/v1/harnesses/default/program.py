@@ -16,6 +16,28 @@ from openai import AsyncOpenAI
 
 SERPER_URL = "https://google.serper.dev/search"
 
+# rlm-parity compaction prompts (mirrors rlm's engine.py).
+CHECKPOINT_COMPACTION_PROMPT = (
+    "You are performing a CONTEXT CHECKPOINT COMPACTION. "
+    "Create a handoff summary for another LLM that will resume the task.\n"
+    "\n"
+    "Include:\n"
+    "- Current progress and key decisions made\n"
+    "- Important context, constraints, or user preferences\n"
+    "- What remains to be done (clear next steps)\n"
+    "- Any critical data, examples, or references needed to continue\n"
+    "\n"
+    "Be concise, structured, and focused on helping the next LLM "
+    "seamlessly continue the work."
+)
+POST_COMPACTION_FRAMING = (
+    "Another language model started to solve this problem and produced "
+    "a summary of its thinking process. Use this to build on the work "
+    "that has already been done and avoid duplicating work. Here is "
+    "the summary produced by the other language model, use the "
+    "information in this summary to assist with your own analysis:"
+)
+
 BASH_TOOL = {
     "type": "function",
     "function": {
@@ -169,12 +191,20 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
 
 
 async def chat(
-    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    tool_choice: str | None = None,
 ):
-    completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
-    )
-    return completion.choices[0].message
+    """One completion; returns (message, prompt tokens) — `usage.prompt_tokens` is the
+    context size this turn conditioned on (rlm's compaction trigger)."""
+    kwargs = {"model": model, "messages": messages, "tools": tools or None}
+    if tools and tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
+    completion = await client.chat.completions.create(**kwargs)
+    usage = completion.usage
+    return completion.choices[0].message, usage.prompt_tokens if usage else 0
 
 
 async def connect_mcp(
@@ -255,6 +285,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
+    parser.add_argument("--summarize-at-tokens", type=int, default=0)
     return parser.parse_args()
 
 
@@ -292,8 +323,11 @@ async def main() -> None:
             messages.extend(initial)
         elif args.prompt:
             messages.append({"role": "user", "content": args.prompt})
+        # Compaction keeps only the system message (rlm semantics: the original task
+        # prompt is dropped; the summary carries the goal).
+        system_messages = [m for m in messages if m.get("role") == "system"]
         while True:
-            message = await chat(client, args.model, messages, tools)
+            message, context_tokens = await chat(client, args.model, messages, tools)
             messages.append(message.model_dump(exclude_none=True))
             if not message.tool_calls:
                 break
@@ -346,6 +380,19 @@ async def main() -> None:
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": content}
                 )
+            # Compact after the turn's tool results land, so the summary sees them (rlm
+            # semantics: tools stay in the request with tool_choice="none" so the prompt
+            # renders like a regular turn; tool calls in the reply are ignored; the rebuilt
+            # list is system + framed summary, dropping the original prompt).
+            if args.summarize_at_tokens and context_tokens >= args.summarize_at_tokens:
+                messages.append(
+                    {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT}
+                )
+                summary, _ = await chat(
+                    client, args.model, messages, tools, tool_choice="none"
+                )
+                framed = POST_COMPACTION_FRAMING + "\n\n" + (summary.content or "")
+                messages = system_messages + [{"role": "user", "content": framed}]
 
 
 if __name__ == "__main__":
