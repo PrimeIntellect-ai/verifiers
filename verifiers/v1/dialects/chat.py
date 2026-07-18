@@ -20,6 +20,7 @@ from verifiers.v1.types import (
     Message,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     SystemMessage,
     Tool,
@@ -330,6 +331,14 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                 for call in message.tool_calls or []:
                     tool_names[call.id] = call.name
         return messages, parse_tools(body.get("tools"))
+
+    def parse_sampling(self, body: dict) -> Sampling:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        # Canonicalize the max-tokens alias; when both ride the wire (an eval override
+        # on top of a harness's `max_completion_tokens`), the override wins.
+        if (mct := settings.pop("max_completion_tokens", None)) is not None:
+            settings.setdefault("max_tokens", mct)
+        return Sampling.model_validate(settings)
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
