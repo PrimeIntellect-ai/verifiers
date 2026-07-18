@@ -267,17 +267,13 @@ class InterceptionServer(Interception):
                 endpoint=dialect.upstream_path,
                 finish_reason=finish_reason,
                 usage=usage,
-                # Every failure surfaces an HTTP status to the harness — the error's own
-                # when it carries one, else the generic 502 the handlers return.
-                status=getattr(error, "status_code", 502)
-                if error is not None
-                else None,
                 time=TimeSpan(start=started, end=time.time()),
                 error=None
                 if error is None
                 else Error(
                     type=type(error).__name__,
                     message=str(error),
+                    status_code=getattr(error, "status_code", None),
                     # Provider errors already carry the actionable upstream diagnostic.
                     # Format from the exception object: the record is written in a
                     # `finally`, where the ambient exception state is already cleared.

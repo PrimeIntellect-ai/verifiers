@@ -60,6 +60,9 @@ class Timing(StrictBaseModel):
 class Error(StrictBaseModel):
     type: str
     message: str
+    status_code: int | None = None
+    """The upstream HTTP status a provider failure surfaced (the provider's own, or one
+    chosen for a transport fault); None when the failure carried no HTTP exchange."""
     traceback: str | None = None
 
 
@@ -84,12 +87,6 @@ class ModelCall(StrictBaseModel):
     finish_reason: FinishReason = None
     """Why the model stopped, normalized (`stop` / `length` / `tool_calls`); None for a
     failed call or an unrecognized provider reason."""
-    status: int | None = None
-    """The upstream HTTP status of a failed exchange (the provider's own, one chosen
-    for a transport fault, or the generic 502 for an unexpected failure). Provider-side
-    truth: it may differ from what the framework relays to the harness (an overlong
-    prompt is relayed as a 400 whatever the provider said). None on success — a
-    recorded turn implies a 2xx exchange."""
     usage: Usage | None = None
     """Provider-reported token usage for this exchange, cache reads included; None for
     a failed call."""
@@ -546,6 +543,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
             Error(
                 type=type(error).__name__,
                 message=str(error),
+                status_code=getattr(error, "status_code", None),
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
                 traceback=None
