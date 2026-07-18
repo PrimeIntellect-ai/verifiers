@@ -90,8 +90,10 @@ class ModelCall(StrictBaseModel):
     """Provider response headers (request ids, rate limits), when the transport exposes
     them — kept for failed exchanges too, when the failure carried an HTTP response."""
     status: int | None = None
-    """The HTTP status a failed exchange surfaced (from the provider, or chosen for a
-    transport fault); None on success — a recorded turn implies a 2xx exchange."""
+    """The HTTP status a failed exchange surfaced (the provider's, or the one chosen for
+    a transport fault), when the failure carried one. `error` — not this — is the failure
+    signal: a non-HTTP failure (a commit error, a cancellation) records no status, and a
+    recorded turn implies a 2xx exchange."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """Wall-clock span from sending the request to the fully received response."""
     error: Error | None = None
