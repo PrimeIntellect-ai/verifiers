@@ -84,9 +84,9 @@ class RolloutSession:
     turn commits or ends in a clean truncation; the server separately versions model-turn
     failures so an overlapping auxiliary failure cannot invalidate a valid sampled response."""
     inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
-    """Request digest -> its pending or completed response future. Concurrent retries await the
-    first attempt; later retries reuse its successful result. Failed attempts are removed so a
-    fresh retry can run, and the interception server clears successful entries on slot release."""
+    """Request digest -> its pending or completed response future. Transport retries await or
+    replay the current attempt; a new operation closes completed retry windows while preserving
+    pending requests. Failed attempts are removed, and the server clears everything on release."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each

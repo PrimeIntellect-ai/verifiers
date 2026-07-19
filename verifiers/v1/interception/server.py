@@ -402,10 +402,16 @@ class InterceptionServer(Interception):
         streaming = dialect.streaming(body)
         # Graph atomicity under retries. The harness SDK retries a transient failure by
         # re-sending the byte-identical request; sampling it again would commit a second turn and
-        # fork the graph into a dead-end branch. Completed attempts are replayed and pending ones
-        # are awaited, so a slow turn is safe without an inflated client timeout.
-        # A growing conversation never repeats a body, so these only ever match a real retry; a
-        # failed attempt caches nothing and re-runs normally.
+        # fork the graph into a dead-end branch. Stainless SDKs distinguish those retries from a
+        # fresh request with this counter; explicit idempotency keys give other clients the same
+        # operation identity. A fresh identical non-stream request must still sample again.
+        idempotency_key = request.headers.get("idempotency-key") or request.headers.get(
+            "x-idempotency-key"
+        )
+        is_retry = request.headers.get("x-stainless-retry-count", "0") != "0"
+        replay_nonstream = is_retry or idempotency_key is not None
+        if not streaming and idempotency_key is not None:
+            req_hash = _body_digest(req_hash + b"\0" + idempotency_key.encode())
         if (
             streaming
             and (replays := self.stream_replays.get(secret)) is not None
@@ -434,7 +440,11 @@ class InterceptionServer(Interception):
                 )
             return _completion_response(completion)
 
-        if (inflight := session.inflight.get(req_hash)) is not None:
+        if (
+            not streaming
+            and replay_nonstream
+            and (inflight := session.inflight.get(req_hash)) is not None
+        ):
             return await coalesced(inflight)
         if session.trace.is_completed:
             stop = session.trace.stop_condition or "completed"
@@ -455,16 +465,33 @@ class InterceptionServer(Interception):
         # the request is ground truth for what the model saw, but a refused or failed request
         # was never seen at all.
         prompt, tools = dialect.parse_request(body)
+        fut: asyncio.Future[dict | None] | None = None
+        if not streaming:
+            # No reusable attempt matched, so this request starts a new operation. Close completed
+            # retry windows while preserving pending requests, then claim before the simulator can
+            # await so a real transport retry always finds this attempt.
+            for digest, completed in tuple(session.inflight.items()):
+                if completed.done():
+                    session.inflight.pop(digest)
+            fut = asyncio.get_running_loop().create_future()
+            session.inflight[req_hash] = fut
         # Cache the opening so retries do not advance the simulator twice.
         if (
             session.user is not None
             and session.trace.task.data.prompt is None
             and all(m.role != "assistant" for m in prompt)
         ):
-            if session.opening is None:
-                session.opening = await session.user("", len(prompt))
-            body = dialect.extend(body, None, session.opening)
-            prompt = [*prompt, *session.opening]
+            try:
+                if session.opening is None:
+                    session.opening = await session.user("", len(prompt))
+                body = dialect.extend(body, None, session.opening)
+                prompt = [*prompt, *session.opening]
+            except BaseException:
+                if fut is not None:
+                    if session.inflight.get(req_hash) is fut:
+                        session.inflight.pop(req_hash)
+                    fut.set_result(None)
+                raise
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
         if streaming:
@@ -501,15 +528,8 @@ class InterceptionServer(Interception):
                     streams.pop(req_hash, None)
                 if not pending.done():
                     pending.set_result(None)
+        assert fut is not None
         headers = request.headers.copy()
-        # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above) rather
-        # than starting a second inference. Re-check first: an identical request may have claimed
-        # it while we awaited the simulator opening. The get / create / assign below run with no
-        # await between them, so two concurrent identical requests can never both become owner.
-        if (inflight := session.inflight.get(req_hash)) is not None:
-            return await coalesced(inflight)
-        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
-        session.inflight[req_hash] = fut
 
         async def serve(response: Response) -> web.Response:
             # Record the served turn and hand it to any coalesced retry, so a retried
