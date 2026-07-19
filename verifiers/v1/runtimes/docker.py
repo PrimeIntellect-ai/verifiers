@@ -319,9 +319,9 @@ class DockerRuntime(Runtime):
         }
 
     async def teardown(self) -> None:
-        await super().teardown()
         if self._proxy is not None:
             await self._proxy.stop()
+        await super().teardown()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         env = {**(self._proxy_env() if self._cut else {}), **env}
