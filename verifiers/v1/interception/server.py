@@ -189,7 +189,9 @@ class InterceptionServer(Interception):
         self.stream_requests.pop(secret, None)
         for replay in self.stream_replays.pop(secret, {}).values():
             await replay.close()
-        self.sessions.pop(secret, None)
+        session = self.sessions.pop(secret, None)
+        if session is not None:
+            session.inflight.clear()
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
@@ -384,10 +386,8 @@ class InterceptionServer(Interception):
         streaming = dialect.streaming(body)
         # Graph atomicity under retries. The harness SDK retries a transient failure by
         # re-sending the byte-identical request; sampling it again would commit a second turn and
-        # fork the graph into a dead-end branch. Two cases, both resolved without re-sampling:
-        #   1. the first attempt already finished -> replay the recorded response;
-        #   2. the first attempt is still computing (a slow turn) -> await it and return its
-        #      result, so a slow turn is safe without an inflated client timeout.
+        # fork the graph into a dead-end branch. Completed attempts are replayed and pending ones
+        # are awaited, so a slow turn is safe without an inflated client timeout.
         # A growing conversation never repeats a body, so these only ever match a real retry; a
         # failed attempt caches nothing and re-runs normally.
         if (
@@ -404,22 +404,14 @@ class InterceptionServer(Interception):
         ):
             logger.debug("intercept stream coalesce: id=%s", session.trace.id)
             return await self._replay_stream(request, dialect, pending)
-        if session.last_request == req_hash and session.last_response is not None:
-            logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return _completion_response(session.last_response)
-        if session.trace.is_completed:
-            stop = session.trace.stop_condition or "completed"
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {stop}"), status=400
-            )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
             # response (it errored/refused), so let the SDK retry afresh.
             logger.debug(
-                "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
+                "intercept replay/coalesce: id=%s (retried request)", session.trace.id
             )
-            completion = await inflight
+            completion = await asyncio.shield(inflight)
             if completion is None:
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
@@ -428,6 +420,11 @@ class InterceptionServer(Interception):
 
         if (inflight := session.inflight.get(req_hash)) is not None:
             return await coalesced(inflight)
+        if session.trace.is_completed:
+            stop = session.trace.stop_condition or "completed"
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {stop}"), status=400
+            )
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -502,8 +499,6 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
-            session.last_response = response.raw
             if not fut.done():
                 fut.set_result(response.raw)
             return _completion_response(response.raw)
@@ -670,12 +665,11 @@ class InterceptionServer(Interception):
                 headers.popall("idempotency-key", None)
                 headers.popall("x-idempotency-key", None)
         finally:
-            # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
-            # response" (an error/refuse return above), so the waiter surfaces a retryable error.
-            # Only clear our own entry — never one a later owner may have installed.
-            if session.inflight.get(req_hash) is fut:
-                session.inflight.pop(req_hash, None)
+            # Retain successful responses for later retries. Failed/refused attempts are removed
+            # so a fresh retry can run; None only unblocks a retry already awaiting this attempt.
             if not fut.done():
+                if session.inflight.get(req_hash) is fut:
+                    session.inflight.pop(req_hash, None)
                 fut.set_result(None)
 
     async def _stream(
@@ -879,8 +873,6 @@ class InterceptionServer(Interception):
                     return resp
                 node = turn.commit(response, tools)
                 session.error = None
-                session.last_request = req_hash
-                session.last_response = None
                 replay = _StreamReplay(content_type, events)
                 self.stream_replays[secret][req_hash] = replay
                 cached = True  # the per-session retry cache owns the spool now
