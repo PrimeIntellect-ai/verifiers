@@ -6,9 +6,10 @@ rollout and returns its `Trace`; `runtime=` borrows a live box, `provision(task)
 hands you one.
 
 Interception follows the runtime story: inject a live `Interception` at
-construction to share servers and tunnels across agents; an entered agent
-(`async with`) owns an elastic pool; un-entered, each run brings up its own
-per-rollout server.
+construction to share servers and tunnels across agents (a pool belongs to the
+thing that spans agents — an env, a script — never to one agent); an entered
+agent (`async with`) owns one interception server; un-entered, each run brings
+up its own per-rollout server.
 """
 
 import logging
@@ -24,7 +25,7 @@ from verifiers.v1.env import (
     validate_pairing,
 )
 from verifiers.v1.harness import Harness
-from verifiers.v1.interception import ElasticInterceptionPool, Interception
+from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.rollout import RolloutRun
 from verifiers.v1.runtimes import (
@@ -80,7 +81,8 @@ class Agent:
     `Runtime` to `run(runtime=...)` to place a run into an existing box instead —
     borrowed boxes are never started or torn down by the run. `interception` is the
     same story for the model boundary: a live one is borrowed; without it, an
-    entered agent owns an elastic pool and an un-entered one brings up a per-run
+    entered agent owns one interception server (a server multiplexes concurrent
+    runs — one agent never needs a pool) and an un-entered one brings up a per-run
     server."""
 
     def __init__(
@@ -108,7 +110,7 @@ class Agent:
         self.limits = RolloutLimits() if limits is None else limits
         self.timeout = TimeoutConfig() if timeout is None else timeout
         self._entered = False
-        self._pool: ElasticInterceptionPool | None = None
+        self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
 
     async def __aenter__(self) -> "Agent":
@@ -117,36 +119,36 @@ class Agent:
         self._entered = True
         if self.interception is None:
             # Sized to the runtime policy: a remote policy needs the tunnel. Runs the
-            # pool can't serve fall back per run (`_interception_for`).
-            self._pool = ElasticInterceptionPool(
+            # server can't serve fall back per run (`_interception_for`).
+            self._server = InterceptionServer(
                 requires_tunnel=not runtime_is_local(self.runtime_config)
             )
-            await self._pool.__aenter__()
+            await self._server.__aenter__()
         return self
 
     async def __aexit__(self, *exc) -> None:
         self._entered = False
-        pool, self._pool = self._pool, None
-        if pool is not None:
-            await pool.__aexit__(*exc)
+        server, self._server = self._server, None
+        if server is not None:
+            await server.__aexit__(*exc)
 
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping
     ) -> Interception | None:
         """Which interception this run rides. An injected one always — its owner
-        sized its reach. The owned pool only when provably reachable from all of
+        sized its reach. The owned server only when provably reachable from all of
         this run's consumers: always when it tunnels, else for a local run with no
         tool servers in play (any such server may sit in a remote runtime and must
         reach `/state`). Otherwise `None` — the rollout brings up a per-run server
         sized to the task."""
         if self.interception is not None:
             return self.interception
-        if self._pool is None:
+        if self._server is None:
             return None
-        if self._pool.requires_tunnel or (
+        if self._server.tunnel is not None or (
             run_is_local and not shared_tools and not type(task).tools
         ):
-            return self._pool
+            return self._server
         return None
 
     async def run(

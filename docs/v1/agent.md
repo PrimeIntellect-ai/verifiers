@@ -45,8 +45,9 @@ Everything beyond the arrow is a parameter, not a concept:
 Interception follows the same borrowing story as runtimes: pass a live, already-entered
 `Interception` at construction (`vf.Agent(..., interception=pool)`) and several agents
 share one pool of servers and tunnels — its owner keeps the lifecycle, the agent only
-acquires slots. Without one, an Agent entered as an async context manager owns an
-elastic pool so concurrent runs share servers (`async with agent: ...`); un-entered,
+acquires slots. A pool belongs to whatever spans agents (an env, a script), never to
+one agent: entered as an async context manager, an Agent owns a single interception
+server, which multiplexes its concurrent runs (`async with agent: ...`); un-entered,
 each run brings up its own per-rollout server — fine for scripts.
 
 `run(task, shared_tools=...)` completes the borrowing set: live `SharedToolServer`s
@@ -114,7 +115,7 @@ traces = await asyncio.gather(*(solver.run(task) for _ in range(8)))
 ```
 
 Fan-out is plain `asyncio.gather` — each run gets its own fresh box, and the entered
-agent's interception pool keeps N concurrent runs cheap. The Agent deliberately has no
+agent's interception server multiplexes the N concurrent runs. The Agent deliberately has no
 group verb: each run scores its rollout on its own, and comparing siblings — relative
 success, preference, advantages — belongs to whoever gathered the traces (in training,
 prime-rl samples the group; in an `Environment`, `score()` compares the finished
