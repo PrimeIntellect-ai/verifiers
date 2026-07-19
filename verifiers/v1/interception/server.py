@@ -357,35 +357,24 @@ class InterceptionServer(Interception):
     async def _replay_stream(
         self,
         request: web.Request,
+        dialect: Dialect,
         pending: _StreamReplay | asyncio.Future[_StreamReplay | None],
     ) -> web.StreamResponse:
         """Serve a completed stream cache, or wait on the owner of an identical request."""
-        content_type = (
-            pending.content_type
-            if isinstance(pending, _StreamReplay)
-            else "text/event-stream"
-        )
+        if isinstance(pending, asyncio.Future):
+            replay = await asyncio.shield(pending)
+            if replay is None:
+                return web.json_response(
+                    dialect.error_body("upstream attempt failed"), status=503
+                )
+        else:
+            replay = pending
         resp = web.StreamResponse(
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
         )
-        resp.content_type = content_type
+        resp.content_type = replay.content_type
         try:
             await resp.prepare(request)
-            if isinstance(pending, asyncio.Future):
-                while True:
-                    try:
-                        replay = await asyncio.wait_for(
-                            asyncio.shield(pending), _KEEPALIVE_INTERVAL_SECONDS
-                        )
-                        break
-                    except TimeoutError:
-                        await resp.write(b": keepalive\n\n")
-            else:
-                replay = pending
-            if replay is None:
-                if request.transport is not None:
-                    request.transport.close()
-                return resp
             await replay.write(resp)
             await resp.write_eof()
         except ConnectionError:
@@ -400,6 +389,7 @@ class InterceptionServer(Interception):
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
+        error_snapshot = session.error
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -425,14 +415,14 @@ class InterceptionServer(Interception):
             and replay.request == req_hash
         ):
             logger.debug("intercept stream replay: id=%s", session.trace.id)
-            return await self._replay_stream(request, replay)
+            return await self._replay_stream(request, dialect, replay)
         if (
             streaming
             and (streams := self.stream_requests.get(secret)) is not None
             and (pending := streams.get(req_hash)) is not None
         ):
             logger.debug("intercept stream coalesce: id=%s", session.trace.id)
-            return await self._replay_stream(request, pending)
+            return await self._replay_stream(request, dialect, pending)
         if session.last_request == req_hash and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
@@ -488,14 +478,14 @@ class InterceptionServer(Interception):
             # another await so two identical streams cannot both reach the provider.
             replay = self.stream_replays.get(secret)
             if replay is not None and replay.request == req_hash:
-                return await self._replay_stream(request, replay)
+                return await self._replay_stream(request, dialect, replay)
             streams = self.stream_requests.get(secret)
             if streams is None or secret not in self.requests:
                 return web.json_response(
                     dialect.error_body("rollout stopped"), status=400
                 )
             if (pending := streams.get(req_hash)) is not None:
-                return await self._replay_stream(request, pending)
+                return await self._replay_stream(request, dialect, pending)
             pending = asyncio.get_running_loop().create_future()
             streams[req_hash] = pending
             try:
@@ -509,6 +499,7 @@ class InterceptionServer(Interception):
                     secret=secret,
                     req_hash=req_hash,
                     attempt=pending,
+                    error_snapshot=error_snapshot,
                 )
             finally:
                 if streams.get(req_hash) is pending:
@@ -600,10 +591,18 @@ class InterceptionServer(Interception):
                                 dialect.error_body(f"rollout stopped: {stop}"),
                                 status=400,
                             )
+                        # The snapshot check and commit contain no await, so a concurrent
+                        # failure cannot be cleared by a request admitted before it.
+                        if session.error is not error_snapshot:
+                            return web.json_response(
+                                dialect.error_body("another model call failed"),
+                                status=503,
+                            )
                         # One node per new message; branches fall out of walking the
                         # graph (see Trace.branches / verifiers.v1.graph).
                         node = turn.commit(call_response, tools)
                         session.error = None
+                        error_snapshot = None
                         response = call_response
                     except OverlongPromptError as e:
                         # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
@@ -611,7 +610,8 @@ class InterceptionServer(Interception):
                         # the harness (same shape as `refused` above).
                         error = e
                         session.trace.stop("context_length")
-                        session.error = None
+                        if session.error is error_snapshot:
+                            session.error = None
                         logger.debug("prompt too long: id=%s", session.trace.id)
                         if response is None:
                             return web.json_response(
@@ -712,6 +712,7 @@ class InterceptionServer(Interception):
         secret: str,
         req_hash: bytes,
         attempt: asyncio.Future[_StreamReplay | None],
+        error_snapshot: RolloutError | None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: buffer and validate the provider stream, commit it to
         the trace, then replay its native events to the program. Single-shot — a streamed turn
@@ -753,7 +754,8 @@ class InterceptionServer(Interception):
             except OverlongPromptError as e:
                 error = e
                 session.trace.stop("context_length")
-                session.error = None
+                if session.error is error_snapshot:
+                    session.error = None
                 logger.debug("prompt too long: id=%s", session.trace.id)
                 return web.json_response(
                     dialect.error_body("rollout stopped: context_length"),
@@ -851,11 +853,6 @@ class InterceptionServer(Interception):
                         f"malformed upstream response: {type(e).__name__}: {e}",
                         status_code=502,
                     )
-                    # Already-admitted siblings must not commit and clear this failure.
-                    current = asyncio.current_task()
-                    for sibling in tuple(self.requests.get(secret, ())):
-                        if sibling is not current:
-                            sibling.cancel()
                     error = session.error
                     logger.warning(
                         "model call failed: id=%s %s: %s",
@@ -886,6 +883,11 @@ class InterceptionServer(Interception):
                     error = e
                     return resp
                 if session.trace.is_completed or secret not in self.requests:
+                    if request.transport is not None:
+                        request.transport.close()
+                    return resp
+                # Match the atomic admission snapshot guard in the non-streaming path.
+                if session.error is not error_snapshot:
                     if request.transport is not None:
                         request.transport.close()
                     return resp
