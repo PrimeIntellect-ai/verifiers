@@ -33,7 +33,7 @@ class Slot:
     """One rollout's interception registration.
 
     `base_url` is universally reachable and `secret` authenticates the harness/tool/user
-    servers. `cancel` closes admission before cancelling model handlers, so a rollout timeout
+    servers. `cancel` closes admission before cancelling slot handlers, so a rollout timeout
     cannot race a newly accepted request.
     """
 

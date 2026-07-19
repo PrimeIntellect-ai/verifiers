@@ -28,7 +28,7 @@ import secrets
 import tempfile
 import time
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Literal
@@ -181,7 +181,7 @@ class InterceptionServer(Interception):
         return secret
 
     async def cancel(self, secret: str) -> None:
-        """Close model admission, then cancel every handler the slot already accepted."""
+        """Close slot admission, then cancel every handler the slot already accepted."""
         requests = tuple(self.requests.pop(secret, set()))
         for request in requests:
             request.cancel()
@@ -211,28 +211,56 @@ class InterceptionServer(Interception):
 
         async def handler(request: web.Request) -> web.StreamResponse:
             secret = dialect.secret(request.headers)
-            requests = self.requests.get(secret)
-            if requests is None:
-                if secret in self.sessions:
-                    return web.json_response(
-                        dialect.error_body("rollout stopped"), status=400
-                    )
-                return await self.handle_request(request, dialect)
-            task = asyncio.current_task()
-            assert task is not None
-            requests.add(task)
-            try:
-                return await self.handle_request(request, dialect)
-            finally:
-                requests.discard(task)
+            return await self._run_handler(
+                secret,
+                lambda: self.handle_request(request, dialect),
+                dialect.error_body("rollout stopped"),
+            )
 
         return handler
 
     def _aux_handler_for(self, dialect: Dialect, route: str):
         async def handler(request: web.Request) -> web.Response:
-            return await self.handle_aux(request, dialect, route)
+            secret = dialect.secret(request.headers)
+            return await self._run_handler(
+                secret,
+                lambda: self.handle_aux(request, dialect, route),
+                dialect.error_body("rollout stopped"),
+            )
 
         return handler
+
+    def _state_handler_for(
+        self, handler: Callable[[web.Request], Awaitable[web.Response]]
+    ):
+        async def tracked(request: web.Request) -> web.Response:
+            return await self._run_handler(
+                self._secret_for(request),
+                lambda: handler(request),
+                {"error": "rollout stopped"},
+            )
+
+        return tracked
+
+    async def _run_handler(
+        self,
+        secret: str,
+        run: Callable[[], Awaitable[web.StreamResponse]],
+        stopped_body: dict,
+    ) -> web.StreamResponse:
+        """Admit and track one slot-scoped request, or reject it after cancellation."""
+        requests = self.requests.get(secret)
+        if requests is None:
+            if secret in self.sessions:
+                return web.json_response(stopped_body, status=400)
+            return await run()
+        task = asyncio.current_task()
+        assert task is not None
+        requests.add(task)
+        try:
+            return await run()
+        finally:
+            requests.discard(task)
 
     async def start(self) -> None:
         app = web.Application(client_max_size=_MAX_REQUEST_BODY)
@@ -243,11 +271,11 @@ class InterceptionServer(Interception):
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
         # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool/user servers
         # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
-        app.router.add_get("/state", self.handle_state_get)
-        app.router.add_put("/state", self.handle_state_put)
+        app.router.add_get("/state", self._state_handler_for(self.handle_state_get))
+        app.router.add_put("/state", self._state_handler_for(self.handle_state_put))
         # A launched tool/user server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the same bearer secret.
-        app.router.add_get("/task", self.handle_task_get)
+        app.router.add_get("/task", self._state_handler_for(self.handle_task_get))
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
@@ -1086,12 +1114,13 @@ class InterceptionServer(Interception):
             return web.json_response(dialect.error_body(str(e)), status=502)
         return web.json_response(result)
 
-    def _session_for(self, request: web.Request) -> RolloutSession | None:
-        """The session a state request belongs to, by its `Authorization: Bearer <secret>` — the
-        same per-rollout secret the model routes use (dialect-independent, so parsed directly)."""
+    def _secret_for(self, request: web.Request) -> str:
         auth = request.headers.get("Authorization", "")
-        secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
-        return self.sessions.get(secret)
+        return auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
+
+    def _session_for(self, request: web.Request) -> RolloutSession | None:
+        """The session a state request belongs to, by its dialect-independent bearer secret."""
+        return self.sessions.get(self._secret_for(request))
 
     async def handle_state_get(self, request: web.Request) -> web.Response:
         """Hand a rollout's tool/user server the current shared `trace.state` (it pulls before each
