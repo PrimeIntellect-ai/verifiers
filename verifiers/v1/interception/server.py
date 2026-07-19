@@ -280,6 +280,7 @@ class InterceptionServer(Interception):
                     # so it cannot poison a later successful attempt after that attempt clears it.
                     session.error = e
                     raise
+                session.error = None
                 session._opening_textified = True
             return session.opening
 
@@ -334,6 +335,39 @@ class InterceptionServer(Interception):
             )
         )
 
+    @staticmethod
+    def _replay_response(session: RolloutSession, completion: dict) -> web.Response:
+        """Return a committed response and clear the post-commit failure that prompted retry."""
+        session.error = None
+        return _completion_response(completion)
+
+    @staticmethod
+    def _remember_response(
+        session: RolloutSession,
+        req_hash: bytes,
+        response: Response,
+        fut: "asyncio.Future[dict | None] | None" = None,
+    ) -> None:
+        """Cache a committed response and release any coalesced retry."""
+        session.last_request = req_hash
+        session.last_response = response.raw
+        if fut is not None and not fut.done():
+            fut.set_result(response.raw)
+
+    def _fail_after_commit(
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        req_hash: bytes,
+        response: Response,
+        error: RolloutError,
+        fut: "asyncio.Future[dict | None]",
+    ) -> web.Response:
+        """Cache a committed turn before reporting later simulator/textify failure."""
+        session.error = error
+        self._remember_response(session, req_hash, response, fut)
+        return self._error_response(session, dialect, error)
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -361,7 +395,7 @@ class InterceptionServer(Interception):
         # failed attempt caches nothing and re-runs normally.
         if session.last_request == req_hash and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return _completion_response(session.last_response)
+            return self._replay_response(session, session.last_response)
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
@@ -374,7 +408,7 @@ class InterceptionServer(Interception):
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
-            return _completion_response(completion)
+            return self._replay_response(session, completion)
 
         if (inflight := session.inflight.get(req_hash)) is not None:
             return await coalesced(inflight)
@@ -427,10 +461,7 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
-            session.last_response = response.raw
-            if not fut.done():
-                fut.set_result(response.raw)
+            self._remember_response(session, req_hash, response, fut)
             return _completion_response(response.raw)
 
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -560,17 +591,24 @@ class InterceptionServer(Interception):
                         response.message.content or "", len(prompt)
                     )
                 except RolloutError as e:
-                    return self._fail(session, dialect, e)
+                    return self._fail_after_commit(
+                        session, dialect, req_hash, response, e, fut
+                    )
                 except Exception as e:
-                    return self._fail(
+                    return self._fail_after_commit(
                         session,
                         dialect,
+                        req_hash,
+                        response,
                         UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                        fut,
                     )
                 try:
                     user_messages = await self._textify_messages(session, user_messages)
                 except TaskError as e:
-                    return self._fail(session, dialect, e)
+                    return self._fail_after_commit(
+                        session, dialect, req_hash, response, e, fut
+                    )
                 # Inject the model turn + the simulator's user turn(s): into the wire request for
                 # the next model call (`dialect.extend`, which keeps the model turn verbatim so
                 # reasoning survives) and into the typed prompt for the trace. The simulator ends

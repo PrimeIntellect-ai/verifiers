@@ -558,8 +558,7 @@ async def test_concurrent_opening_textify_is_serialized(monkeypatch) -> None:
     assert max_active == 1
     assert session._opening_textified
     assert session.opening == results[1]
-    assert session.error is results[0]
-    session.error = None  # winning request clears the prior failure before inference
+    assert session.error is None
     server._error_response(session, ChatDialect(), results[0])
     assert session.error is None
 
@@ -618,3 +617,30 @@ def test_hard_output_ceiling_counts_newlines() -> None:
     oversized = vf.TextifyConfig(width=1000, height=1000, max_chars=None)
     with pytest.raises(ValueError, match="one-million-character"):
         _grid_shape(1, 1, oversized)
+
+
+@pytest.mark.asyncio
+async def test_postcommit_failure_caches_response_before_error() -> None:
+    session = SimpleNamespace(
+        last_request=None,
+        last_response=None,
+        error=None,
+        trace=SimpleNamespace(id="trace"),
+    )
+    response = SimpleNamespace(raw={"id": "served"})
+    error = TaskError("user image textify failed")
+    server = InterceptionServer()
+
+    future: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
+    result = server._fail_after_commit(
+        session, ChatDialect(), b"request-digest", response, error, future
+    )
+
+    assert result.status == 502
+    assert await future == {"id": "served"}
+    assert session.last_request == b"request-digest"
+    assert session.last_response == {"id": "served"}
+    assert session.error is error
+    replay = server._replay_response(session, session.last_response)
+    assert replay.status == 200
+    assert session.error is None
