@@ -23,8 +23,10 @@ from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
+    FinishReason,
     KeptTokens,
     Messages,
+    Sampling,
     SamplingConfig,
     StrictBaseModel,
     Tool,
@@ -47,11 +49,30 @@ class TimeSpan(StrictBaseModel):
         return max(0.0, self.end - self.start) if self.end else 0.0
 
 
+class TimeSplit(StrictBaseModel):
+    """A span's share attributed to one side of a split: disjoint sub-intervals summed
+    into a duration, so there is no single start/end. Serialized, unlike a span's
+    derived `duration`, since it cannot be recomputed from two timestamps."""
+
+    duration: float = 0.0
+
+
+class GenerationSpan(TimeSpan):
+    """The generation span plus its split into time inside model calls (`model`) vs.
+    outside them (`harness`: harness logic, tools, user simulation). Stamped from the
+    recorded model calls' spans by `Trace.split_generation` when the span closes, with
+    `model.duration + harness.duration == duration` — concurrent calls (subagent forks)
+    are clamped to the span, saturating the model share."""
+
+    model: TimeSplit = Field(default_factory=TimeSplit)
+    harness: TimeSplit = Field(default_factory=TimeSplit)
+
+
 class Timing(StrictBaseModel):
     start: float = Field(default_factory=time.time)
     boot: TimeSpan = Field(default_factory=TimeSpan)
     setup: TimeSpan = Field(default_factory=TimeSpan)
-    generation: TimeSpan = Field(default_factory=TimeSpan)
+    generation: GenerationSpan = Field(default_factory=GenerationSpan)
     finalize: TimeSpan = Field(default_factory=TimeSpan)
     scoring: TimeSpan = Field(default_factory=TimeSpan)
 
@@ -59,7 +80,41 @@ class Timing(StrictBaseModel):
 class Error(StrictBaseModel):
     type: str
     message: str
+    status_code: int | None = None
+    """The upstream HTTP status a provider failure surfaced (the provider's own, or one
+    chosen for a transport fault); None when the failure carried no HTTP exchange."""
     traceback: str | None = None
+
+
+class ModelCall(StrictBaseModel):
+    """One provider exchange behind a sampled turn; its conversation is the linked
+    node's root-to-self path, never repeated here."""
+
+    node: int | None = None
+    """Index into `Trace.nodes` of the assistant node this call committed — the link into
+    the message graph (the call's conversation is that node's root-to-self path). None for
+    a call that committed no turn (see `error`)."""
+    model: str | None = None
+    """The model requested from the provider. The rollout's model override makes this
+    `agent.model` on every call; recorded per call because it is cheap and provable."""
+    sampling: Sampling | None = None
+    """The call's effective settings, scraped off the wire request by the dialect's
+    `sampling_fields` whitelist — the eval-imposed knobs plus whatever the harness set
+    that the eval left alone (`seed`, `tool_choice`, `response_format`, ... as extras)."""
+    endpoint: str | None = None
+    """The provider endpoint path the request went to (e.g. `/chat/completions`) — says
+    which wire dialect the exchange spoke."""
+    finish_reason: FinishReason = None
+    """Why the model stopped, normalized (`stop` / `length` / `tool_calls`); None for a
+    failed call or an unrecognized provider reason."""
+    usage: Usage | None = None
+    """Provider-reported token usage for this exchange, cache reads included; None for
+    a failed call."""
+    time: TimeSpan = Field(default_factory=TimeSpan)
+    """Wall-clock span from sending the request to the fully received response."""
+    error: Error | None = None
+    """The failure that ended this call, coupled to the exchange that caused it; None on
+    success. A failed call still records the settings it was sent with."""
 
 
 class Branch(StrictBaseModel):
@@ -67,6 +122,7 @@ class Branch(StrictBaseModel):
 
     index: int
     nodes: list[MessageNode]
+    calls: list[ModelCall] = Field(default_factory=list)
 
     @property
     def num_turns(self) -> int:
@@ -171,13 +227,13 @@ class Branch(StrictBaseModel):
 
     @property
     def usage(self) -> Usage | None:
-        return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
+        return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
 
     @property
     def last_usage(self) -> Usage | None:
         """Provider usage from the final model call on this branch — the full context it saw."""
         return next(
-            (n.usage for n in reversed(self.nodes) if n.usage is not None), None
+            (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
 
     @property
@@ -214,7 +270,7 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
-TRACE_VERSION = 1
+TRACE_VERSION = 2
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
@@ -305,6 +361,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     committed turn wins) — never from a refused/failed request the model never saw. The full
     advertised list (not just tools called), so tool-use SFT can re-render the exact prompt;
     a trace-level snapshot: mid-rollout changes collapse to the last set the model saw."""
+    calls: list[ModelCall] = Field(default_factory=list)
+    """Every provider exchange behind the sampled turns, in order: raw wire request/response
+    plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Weighted contributions from task rewards, group rewards, and judges."""
@@ -363,7 +422,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
-        return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
+        return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
 
     @property
     def has_response(self) -> bool:
@@ -372,7 +431,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def branches(self) -> list[Branch]:
-        """One root-to-leaf path per graph leaf."""
+        """One root-to-leaf path per graph leaf, its calls attached in path order."""
+        by_node = {c.node: c for c in self.calls if c.node is not None}
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
             path: list[int] = []
@@ -381,7 +441,13 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 path.append(nid)
                 nid = self.nodes[nid].parent
             path.reverse()
-            branches.append(Branch(index=i, nodes=[self.nodes[n] for n in path]))
+            branches.append(
+                Branch(
+                    index=i,
+                    nodes=[self.nodes[n] for n in path],
+                    calls=[by_node[n] for n in path if n in by_node],
+                )
+            )
         return branches
 
     @property
@@ -406,7 +472,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
             "harness_timeout",
         ):
             return True
-        last = self._last_assistant()
+        last = next((c for c in reversed(self.calls) if c.error is None), None)
         return bool(last and last.finish_reason == "length")
 
     @property
@@ -490,11 +556,24 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         if self.stop_condition is None:
             self.stop_condition = condition
 
+    def split_generation(self) -> None:
+        """Stamp the closed generation span's model/harness split: model time is the
+        sum of the recorded calls' spans (clamped to the span), harness the complement.
+        Every path that closes the span calls this — a span without model calls (e.g.
+        a debug action) is all harness time."""
+        gen = self.timing.generation
+        if not gen.end:
+            return
+        model = sum(call.time.duration for call in self.calls)
+        gen.model.duration = min(model, gen.duration)
+        gen.harness.duration = gen.duration - gen.model.duration
+
     def capture_error(self, error: Exception) -> None:
         self.errors.append(
             Error(
                 type=type(error).__name__,
                 message=str(error),
+                status_code=getattr(error, "status_code", None),
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
                 traceback=None

@@ -81,7 +81,7 @@ examples = [
     "compact",
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "reverse-text-v1", "color-codeword-v1",
-    "wordle-v1", "openenv-v1", "openenv-wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
+    "wordle-v1", "openenv-wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
 ]
 
 [project.optional-dependencies]
@@ -106,6 +106,9 @@ modal = [
 ]
 notebook = [
     "nest-asyncio>=1.6.0",
+]
+openenv = [
+    "openenv>=0.4.1",
 ]
 quest = [
     "certifi",
@@ -145,7 +148,6 @@ gsm8k-v1 = { path = "environments/gsm8k_v1", editable = true }
 code-golf-v1 = { path = "environments/code_golf_v1", editable = true }
 reverse-text-v1 = { path = "environments/reverse_text_v1", editable = true }
 wordle-v1 = { path = "environments/wordle_v1", editable = true }
-openenv-v1 = { path = "packages/openenv_v1", editable = true }
 openenv-wordle-v1 = { path = "environments/openenv_wordle_v1", editable = true }
 color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
@@ -251,7 +253,7 @@ markers = [
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
     "null: v1 e2e cases on the null harness",
-    "default: v1 e2e cases on the default harness",
+    "bash: v1 e2e cases on the bash harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",
     "codex: v1 e2e cases on the codex harness",

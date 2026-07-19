@@ -21,7 +21,7 @@ curl -fsSL https://claude.ai/install.sh | HOME={home} bash -s {version}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
-    version: str = Field(default="2.1.207", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default="2.1.214", pattern=r"^[A-Za-z0-9._+-]+$")
     """Claude Code release to install; pinned for reproducibility."""
 
 

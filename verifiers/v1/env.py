@@ -88,11 +88,11 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
 class EnvConfig(BaseConfig):
     """The taskset that loads tasks and the harness that runs them."""
 
-    # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
+    # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, BashHarnessConfig);
     # without it model_dump() narrows to the base type and drops the subclass fields, so the
     # env-server subconfig the orchestrator writes would lose taskset/harness-specific knobs.
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
+    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="bash")
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     max_turns: int | None = None

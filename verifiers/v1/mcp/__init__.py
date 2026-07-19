@@ -2,12 +2,12 @@
 
 from verifiers.v1.mcp.launch import (
     Respond,
-    connect_user,
     serve,
     SharedToolServer,
     serve_shared,
     serve_tools,
     serve_user,
+    user_respond,
 )
 from verifiers.v1.mcp.server import ServerBase
 from verifiers.v1.mcp.toolset import SharedToolsetConfig, Toolset, ToolsetConfig
@@ -21,10 +21,10 @@ __all__ = [
     "User",
     "UserConfig",
     "Respond",
-    "connect_user",
     "serve",
     "SharedToolServer",
     "serve_shared",
     "serve_tools",
     "serve_user",
+    "user_respond",
 ]

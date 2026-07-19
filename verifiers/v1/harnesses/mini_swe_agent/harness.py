@@ -9,7 +9,7 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
-    version: str = "2.2.8"
+    version: str = "2.4.5"
     """mini-swe-agent release to install, pinned for reproducibility."""
 
 

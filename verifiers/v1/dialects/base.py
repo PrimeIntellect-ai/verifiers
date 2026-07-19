@@ -21,7 +21,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import BaseModel
 from pydantic_core import from_json
 
-from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
+from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
@@ -121,6 +121,12 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     `dialects.DIALECTS` and a harness speaking that format works end-to-end (the eval client and
     interception server are generic over this interface)."""
 
+    sampling_fields: ClassVar[frozenset[str]] = frozenset()
+    """Request keys that are call settings — what shapes generation given the same
+    conversation: decoding knobs, budgets/stops, reasoning effort, output contract.
+    A whitelist, so payload, conversation state, and tracking fields can never leak
+    into the per-call record by omission; an unlisted knob is simply not recorded."""
+
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts model turns to. The interception server serves
     one handler per route, so the wire format is resolved from the route the SDK chose (it
@@ -171,6 +177,14 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
         """The native request -> vf prompt + tools (for the trace)."""
+
+    def parse_sampling(self, body: ReqT) -> Sampling:
+        """The native request's call settings -> the canonical `Sampling` (for the
+        trace's per-call records): the `sampling_fields` whitelist, with this format's
+        aliases mapped onto the typed knobs; dialect-specific keys ride as extras."""
+        return Sampling.model_validate(
+            {k: v for k, v in body.items() if k in self.sampling_fields}
+        )
 
     @abstractmethod
     def parse_response(self, response: RespT) -> Response:

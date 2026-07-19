@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp", "httpx"]
+# dependencies = ["openai", "mcp", "httpx", "tenacity"]
 # ///
 """Secrets arrive through argv so local tool subprocesses do not inherit them."""
 
@@ -8,13 +8,18 @@ import argparse
 import asyncio
 import json
 import subprocess
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 SERPER_URL = "https://google.serper.dev/search"
+
+MCP_CALL_ATTEMPTS = 6
+MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
+
 
 BASH_TOOL = {
     "type": "function",
@@ -177,29 +182,66 @@ async def chat(
     return completion.choices[0].message
 
 
-async def connect_mcp(
-    stack: AsyncExitStack, config: dict, reserved: set[str]
-) -> tuple[list[dict], dict]:
-    """Connect to each configured MCP server (a streamable-HTTP `url`); return
-    (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw tool name))."""
+@asynccontextmanager
+async def mcp_session(spec: dict):
+    """One fresh streamable-HTTP session to an MCP server, opened and closed within the caller's
+    task so AnyIO cancellation scopes stay correctly nested. A teardown failure after the body
+    completed is swallowed — the result is already in hand, and closing noise must not fail (or
+    replay) an already-answered call."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
     )
 
-    tool_schemas: list[dict] = []
-    dispatch: dict[str, tuple] = {}
-    for name, spec in config.get("mcpServers", {}).items():
+    stack = AsyncExitStack()
+    try:
         http_client = await stack.enter_async_context(
-            create_mcp_http_client(headers=spec.get("headers") or None)
+            create_mcp_http_client(
+                headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
+            )
         )
         read, write, *_ = await stack.enter_async_context(
             streamable_http_client(spec["url"], http_client=http_client)
         )
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
-        for tool in (await session.list_tools()).tools:
+        yield session
+    finally:
+        with suppress(Exception):
+            await stack.aclose()
+
+
+async def with_retry(call):
+    """Run one session-scoped operation, retrying transient failures with backoff. A call whose
+    response was lost may be replayed — MCP has no idempotency key, so tools should tolerate
+    at-least-once delivery (a tool that fails reports through its result, not an exception)."""
+    async for attempt in AsyncRetrying(
+        stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
+        wait=wait_exponential_jitter(initial=0.5, max=30),
+        reraise=True,
+    ):
+        with attempt:
+            return await call()
+
+
+async def connect_mcp(
+    config: dict, reserved: set[str]
+) -> tuple[list[dict], dict, dict]:
+    """Enumerate each configured MCP server's tools (a streamable-HTTP `url`); return (tool schemas,
+    dispatch mapping `<server>_<tool>` -> (server name, raw tool name), servers mapping name -> spec).
+    No session is held — a stateless-HTTP server is reconnected per call."""
+    tool_schemas: list[dict] = []
+    dispatch: dict[str, tuple] = {}
+    servers: dict[str, dict] = {}
+    for name, spec in config.get("mcpServers", {}).items():
+        servers[name] = spec
+
+        async def list_tools(spec: dict = spec):
+            async with mcp_session(spec) as session:
+                return (await session.list_tools()).tools
+
+        for tool in await with_retry(list_tools):
             # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
             full = f"{name}_{tool.name}" if name else tool.name
             if full in reserved or full in dispatch:
@@ -216,8 +258,8 @@ async def connect_mcp(
                     },
                 }
             )
-            dispatch[full] = (session, tool.name)
-    return tool_schemas, dispatch
+            dispatch[full] = (name, tool.name)
+    return tool_schemas, dispatch, servers
 
 
 def mcp_content_to_chat_content(blocks) -> str | list[dict]:
@@ -237,9 +279,18 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
     return parts
 
 
-async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dict]:
-    session, raw = dispatch[name]
-    result = await session.call_tool(raw, arguments)
+async def call_mcp(
+    servers: dict, dispatch: dict, name: str, arguments: dict
+) -> str | list[dict]:
+    """Call a tool on a fresh session per attempt — see `with_retry` for the replay semantics.
+    The result is converted outside the retry so a conversion failure fails once."""
+    server_name, raw = dispatch[name]
+
+    async def call():
+        async with mcp_session(servers[server_name]) as session:
+            return await session.call_tool(raw, arguments)
+
+    result = await with_retry(call)
     return mcp_content_to_chat_content(result.content)
 
 
@@ -268,84 +319,83 @@ async def main() -> None:
         initial = json.loads(payload)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
-    async with AsyncExitStack() as stack:
-        tools = [BASH_TOOL]
-        reserved = {"bash"}
-        if args.edit:
-            tools.append(EDIT_TOOL)
-            reserved.add("edit")
-        if args.search:
-            tools.append(SEARCH_TOOL)
-            reserved.add("search")
-        mcp_tools, dispatch = (
-            await connect_mcp(stack, config, reserved)
-            if config.get("mcpServers")
-            else ([], {})
-        )
-        tools += mcp_tools
-        messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
-        )
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
-        while True:
-            message = await chat(client, args.model, messages, tools)
-            messages.append(message.model_dump(exclude_none=True))
-            if not message.tool_calls:
-                break
-            for call in message.tool_calls:
-                name = call.function.name
-                try:
-                    tool_args = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError as e:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
-                        }
-                    )
-                    continue
-                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
-                # below assume a dict, so reject anything else as a tool error rather than crashing.
-                if not isinstance(tool_args, dict):
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
-                        }
-                    )
-                    continue
-                if name in dispatch:
-                    content = await call_mcp(dispatch, name, tool_args)
-                elif name == "bash":
-                    content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
-                    )
-                elif name == "edit" and args.edit:
-                    content = await asyncio.to_thread(
-                        run_edit,
-                        tool_args.get("path"),
-                        tool_args.get("old_str"),
-                        tool_args.get("new_str"),
-                    )
-                elif name == "search" and args.search:
-                    content = await asyncio.to_thread(
-                        run_search,
-                        tool_args.get("query", ""),
-                        args.serper_key,
-                        tool_args.get("num_results", 5),
-                    )
-                else:
-                    content = f"error: unknown tool {name!r}"
+    tools = [BASH_TOOL]
+    reserved = {"bash"}
+    if args.edit:
+        tools.append(EDIT_TOOL)
+        reserved.add("edit")
+    if args.search:
+        tools.append(SEARCH_TOOL)
+        reserved.add("search")
+    mcp_tools, dispatch, servers = (
+        await connect_mcp(config, reserved)
+        if config.get("mcpServers")
+        else ([], {}, {})
+    )
+    tools += mcp_tools
+    messages = (
+        [{"role": "system", "content": args.system_prompt}]
+        if args.system_prompt
+        else []
+    )
+    if initial:
+        messages.extend(initial)
+    elif args.prompt:
+        messages.append({"role": "user", "content": args.prompt})
+    while True:
+        message = await chat(client, args.model, messages, tools)
+        messages.append(message.model_dump(exclude_none=True))
+        if not message.tool_calls:
+            break
+        for call in message.tool_calls:
+            name = call.function.name
+            try:
+                tool_args = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError as e:
                 messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
+                    }
                 )
+                continue
+            # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
+            # below assume a dict, so reject anything else as a tool error rather than crashing.
+            if not isinstance(tool_args, dict):
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
+                    }
+                )
+                continue
+            if name in dispatch:
+                content = await call_mcp(servers, dispatch, name, tool_args)
+            elif name == "bash":
+                content = await asyncio.to_thread(
+                    run_bash, tool_args.get("command", "")
+                )
+            elif name == "edit" and args.edit:
+                content = await asyncio.to_thread(
+                    run_edit,
+                    tool_args.get("path"),
+                    tool_args.get("old_str"),
+                    tool_args.get("new_str"),
+                )
+            elif name == "search" and args.search:
+                content = await asyncio.to_thread(
+                    run_search,
+                    tool_args.get("query", ""),
+                    args.serper_key,
+                    tool_args.get("num_results", 5),
+                )
+            else:
+                content = f"error: unknown tool {name!r}"
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": content}
+            )
 
 
 if __name__ == "__main__":

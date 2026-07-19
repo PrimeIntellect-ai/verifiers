@@ -102,7 +102,7 @@ behavior, tools, user simulator, and scoring; only its `TaskData` is stored on t
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `taskset` | `TasksetConfig` | `TasksetConfig()` | Resolved to its concrete subclass by `--taskset.id` (see [Taskset config](#taskset-config)). `SerializeAsAny` so subclass fields survive `model_dump`. |
-| `harness` | `HarnessConfig` | `HarnessConfig(id="default")` | Resolved to its concrete subclass by `--harness.id` (or the taskset's bundled harness). See [Harness config](#harness-config). |
+| `harness` | `HarnessConfig` | `HarnessConfig(id="bash")` | Resolved to its concrete subclass by `--harness.id` (or the taskset's bundled harness). See [Harness config](#harness-config). |
 | `timeout` | `TimeoutConfig` | `TimeoutConfig()` | See [Timeout config](#timeout-config). |
 | `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). |
 | `textify` | `TextifyConfig` | `TextifyConfig()` | Interception-level image→ASCII/braille transform; disabled by default. See [Textify config](#textify-config). |
@@ -295,7 +295,7 @@ A harness class also declares capability flags (ClassVars, not user-settable):
 
 All inherit the base `HarnessConfig` fields (`id`, `runtime`, `env`, `forward_env`, `disabled_tools`).
 
-#### `DefaultHarnessConfig` — `id: "default"` (the fallback)
+#### `BashHarnessConfig` — `id: "bash"` (the fallback)
 A growing-message-list chat loop with a local `bash` tool, plus optional `edit`/`search`. A uv script (deps: `openai`, `mcp`).
 
 | Field | Type | Default | Notes |
@@ -315,7 +315,7 @@ Installs the Codex CLI into the runtime and runs `codex exec`.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"0.137.0"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
+| `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
 #### `RLMHarnessConfig` — `id: "rlm"`
 Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `HarnessConfig.env` passes any other `RLM_*` var through verbatim.
@@ -332,7 +332,7 @@ Runs the native bash-tool agent through LiteLLM.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"2.2.8"` | mini-swe-agent release to install, pinned. |
+| `version` | `str` | `"2.4.5"` | mini-swe-agent release to install, pinned. |
 
 #### `Terminus2HarnessConfig` — `id: "terminus-2"`
 Runs Harbor's tmux agent through LiteLLM.
@@ -346,7 +346,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"0.14.3"` | Kimi Code release to install, pinned. |
+| `version` | `str` | `"0.27.0"` | Kimi Code release to install, pinned. |
 
 ---
 

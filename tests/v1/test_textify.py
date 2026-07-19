@@ -357,7 +357,7 @@ async def test_opening_textify_failure_does_not_advance_user(monkeypatch) -> Non
     calls = 0
     raw: vf.Messages = [vf.UserMessage(content="opening")]
 
-    async def user(_: str) -> vf.Messages:
+    async def user(_: str, _turn: int) -> vf.Messages:
         nonlocal calls
         calls += 1
         return raw
@@ -376,9 +376,9 @@ async def test_opening_textify_failure_does_not_advance_user(monkeypatch) -> Non
     monkeypatch.setattr(server, "_textify_messages", fail)
 
     with pytest.raises(TaskError, match="textify failed"):
-        await server._opening_messages(session)
+        await server._opening_messages(session, 0)
     with pytest.raises(TaskError, match="textify failed"):
-        await server._opening_messages(session)
+        await server._opening_messages(session, 0)
 
     assert calls == 1
     assert session.opening is raw
@@ -389,7 +389,7 @@ async def test_concurrent_opening_calls_user_once() -> None:
     calls = 0
     release = asyncio.Event()
 
-    async def user(_: str) -> vf.Messages:
+    async def user(_: str, _turn: int) -> vf.Messages:
         nonlocal calls
         calls += 1
         await release.wait()
@@ -403,8 +403,8 @@ async def test_concurrent_opening_calls_user_once() -> None:
         textify=vf.TextifyConfig(),
     )
     server = InterceptionServer()
-    first = asyncio.create_task(server._opening_messages(session))
-    second = asyncio.create_task(server._opening_messages(session))
+    first = asyncio.create_task(server._opening_messages(session, 0))
+    second = asyncio.create_task(server._opening_messages(session, 0))
     await asyncio.sleep(0)
     release.set()
     one, two = await asyncio.gather(first, second)
@@ -515,7 +515,7 @@ async def test_concurrent_opening_textify_is_serialized(monkeypatch) -> None:
     first_started = asyncio.Event()
     release_first = asyncio.Event()
 
-    async def user(_: str) -> vf.Messages:
+    async def user(_: str, _turn: int) -> vf.Messages:
         nonlocal user_calls
         user_calls += 1
         return [vf.UserMessage(content="raw")]
@@ -544,9 +544,9 @@ async def test_concurrent_opening_textify_is_serialized(monkeypatch) -> None:
     )
     server = InterceptionServer()
     monkeypatch.setattr(server, "_textify_messages", textify_opening)
-    first = asyncio.create_task(server._opening_messages(session))
+    first = asyncio.create_task(server._opening_messages(session, 0))
     await first_started.wait()
-    second = asyncio.create_task(server._opening_messages(session))
+    second = asyncio.create_task(server._opening_messages(session, 0))
     await asyncio.sleep(0)
     release_first.set()
     results = await asyncio.gather(first, second, return_exceptions=True)

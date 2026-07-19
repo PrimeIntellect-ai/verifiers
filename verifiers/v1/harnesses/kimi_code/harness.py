@@ -32,7 +32,7 @@ env \
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: str = "0.14.3"
+    version: str = "0.27.0"
     """Kimi Code release to install, pinned for reproducibility."""
 
 

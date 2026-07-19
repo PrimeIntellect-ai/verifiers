@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from anthropic.types import Message as AnthropicMessage
+from anthropic.types import Usage as AnthropicUsage
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
@@ -21,6 +22,7 @@ from verifiers.v1.types import (
     ImageUrlSource,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     SystemMessage,
     TextContentPart,
@@ -242,11 +244,35 @@ class AnthropicStreamParser(StreamParser):
         return response_from_wire(self.validate_response(self.message))
 
 
+class ModdedUsage(AnthropicUsage):
+    """The SDK closes `service_tier` to a fixed Literal, but Anthropic-compatible gateways
+    report their own tiers (e.g. Prime's `provisioned`). Widen to a plain string — we don't
+    consume it — so parsing stays lenient about the label instead of dropping it."""
+
+    service_tier: str | None = None  # type: ignore[assignment]
+
+
+class ModdedAnthropicMessage(AnthropicMessage):
+    usage: ModdedUsage  # type: ignore[assignment]
+
+
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
+    sampling_fields = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "top_k",
+            "max_tokens",
+            "stop_sequences",
+            "thinking",
+            "tool_choice",
+            "output_config",
+        }
+    )
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
-    response_type = AnthropicMessage
+    response_type = ModdedAnthropicMessage
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
         return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
@@ -312,16 +338,22 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
 
-    def validate_response(self, raw: dict) -> AnthropicMessage:
-        usage = raw.get("usage")
-        tier = usage.get("service_tier") if usage else None
-        if tier not in (None, "standard", "priority", "batch"):
-            raw = {**raw, "usage": usage.copy()}
-            raw["usage"].pop("service_tier")
-        return super().validate_response(raw)
-
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
+
+    def parse_sampling(self, body: dict) -> Sampling:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        # Lift `output_config.effort` (where `apply_overrides` puts the eval's
+        # reasoning effort) onto the typed knob; keep any other output-config keys.
+        if isinstance(config := settings.get("output_config"), dict):
+            config = dict(config)
+            if config.get("effort"):
+                settings["reasoning_effort"] = config.pop("effort")
+            if config:
+                settings["output_config"] = config
+            else:
+                settings.pop("output_config")
+        return Sampling.model_validate(settings)
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
