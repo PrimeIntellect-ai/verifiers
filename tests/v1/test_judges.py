@@ -637,3 +637,17 @@ async def test_task_without_judges_scores_as_before():
     trace = make_trace()
     await JudgedTask(trace.task.data).score(trace, runtime=None)
     assert trace.rewards == {"own": 0.25}
+
+
+def test_prompt_placeholders_survive_literal_braces():
+    """A custom judge prompt may contain literal braces (a JSON-shaped instruction);
+    only the documented placeholders substitute — unknown ones stay as written."""
+    from verifiers.v1.judges.score import ScoreJudge, ScoreJudgeConfig
+
+    judge = ScoreJudge(
+        ScoreJudgeConfig(
+            name="j", prompt='Q: {question} -> reply {"score": N}; work: {response}'
+        )
+    )
+    out = judge.build_messages(question="Q1", response="R1")
+    assert out == 'Q: Q1 -> reply {"score": N}; work: R1'

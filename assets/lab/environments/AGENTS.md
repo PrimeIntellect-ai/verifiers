@@ -377,7 +377,7 @@ declares one `agent` seat (`--env.agent.harness.id codex`,
 `{"agent": await agents["agent"].run(task)}`, and the episode wraps exactly one
 unstamped trace — the wire identical to a plain eval's.
 
-The run's `[env]` block composes three orthogonal concerns:
+The run's `[env]` block is the whole run — the env is the encompassing entity, composing three separately-chosen concerns:
 
 - **`env.taskset`** — *what to solve*: the seed rows every rollout starts from, their
   data, their per-trace judgement (`--env.taskset.id`, or the positional

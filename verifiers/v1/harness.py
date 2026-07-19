@@ -68,6 +68,12 @@ class Harness(ABC, Generic[ConfigT]):
     servers). Read wherever model-directed execution changes the rules: the
     subprocess-on-host warning, the judge env's sandbox requirement."""
 
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        from verifiers.v1.task import _reject_role_scoped
+
+        _reject_role_scoped(cls, "a harness metric always scores the run it drove")
+
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 

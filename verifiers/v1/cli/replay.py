@@ -67,9 +67,18 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     task_cls = vf.task_type(config.taskset.id)
     data_cls = task_data_cls(task_cls)
     # `WireTaskData` reads any taskset's saved task without importing its Task type.
-    # Episodes flatten to their traces here: replay re-scores per trace (a re-scored
-    # multi-trace episode re-writes as single-trace episodes).
     episodes = read_episodes(source, Trace[WireTaskData, state_cls(task_cls)])
+    # Replay re-scores per trace and can't re-run the env's cross-trace `score()`,
+    # so a multi-agent run would re-write as plausible-but-wrong single-trace
+    # episodes — refuse it instead of mangling it silently.
+    multi = [e for e in episodes if len(e.traces) != 1 or any(t.role for t in e.traces)]
+    if multi:
+        raise SystemExit(
+            f"replay: {source} holds multi-agent episodes ({len(multi)} of "
+            f"{len(episodes)} carry multiple or role-stamped traces); offline "
+            "re-scoring runs per trace and would drop the env's cross-trace "
+            "score() — replay supports single-agent runs only (for now)"
+        )
     traces = [trace for episode in episodes for trace in episode.traces]
     if config.num_traces is not None:
         traces = traces[: config.num_traces]

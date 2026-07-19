@@ -149,7 +149,9 @@ async def test_hook_crash_keeps_completed_traces():
     _stub_agents(env)
     episode = await env.run_episode(_task(env), None)
     assert not episode.ok
-    assert episode.error is not None and episode.error.type == "RuntimeError"
+    # Hook failures land episode-level with the stable boundary type.
+    assert episode.error is not None and episode.error.type == "EnvError"
+    assert "hook bug" in episode.error.message
     assert len(episode.traces) == 1 and episode.traces[0].error is None
 
 
@@ -184,7 +186,7 @@ async def test_score_failure_keeps_the_views():
     _stub_agents(env)
     episode = await env.run_episode(_task(env), None)
     assert not episode.ok
-    assert episode.error is not None and episode.error.type == "RuntimeError"
+    assert episode.error is not None and episode.error.type == "EnvError"
     assert [t.role for t in episode.traces] == ["b", "a"]
 
 
@@ -315,7 +317,7 @@ async def test_decorated_signal_failure_is_an_episode_error():
     _stub_agents(env)
     episode = await env.run_episode(_task(env), None)
     assert not episode.ok
-    assert episode.error is not None and episode.error.type == "RuntimeError"
+    assert episode.error is not None and episode.error.type == "EnvError"
     assert len(episode.traces) == 1 and episode.traces[0].error is None
 
 
@@ -496,3 +498,43 @@ def test_env_config_data_keeps_the_env_shape():
     assert isinstance(rebuilt, vf.env_config_type("duet-v1"))
     assert rebuilt.a.max_turns == 3
     assert rebuilt.a.harness.id == "null"  # the fixture's pin rode the wire
+
+
+async def test_max_concurrent_gates_env_internal_fanout():
+    """The semaphore bounds agent RUNS, not episodes — an env's internal fan-out
+    (asyncio.gather inside rollout()) counts against --max-concurrent too."""
+    env = DuetEnv(_duet_config())
+    state = {"live": 0, "peak": 0}
+
+    class Gauged(StubAgent):
+        async def run(self, task, *, runtime=None, shared_tools=None, on_trace=None):
+            state["live"] += 1
+            state["peak"] = max(state["peak"], state["live"])
+            await asyncio.sleep(0.02)
+            state["live"] -= 1
+            return await super().run(
+                task, runtime=runtime, shared_tools=shared_tools, on_trace=on_trace
+            )
+
+    agents = {name: Gauged() for name in env._roles}
+    env._agents_for = lambda ctx: agents  # type: ignore[method-assign]
+    episode = await env.run_episode(_task(env), None, gate=asyncio.Semaphore(1))
+    assert episode.ok and state["peak"] == 1
+
+
+def test_role_scoped_signals_belong_to_environments():
+    """`role=` routes an Environment's cross-trace signals; on a Task or Harness it
+    would be silently unscoped — refused at class definition instead."""
+    with pytest.raises(TypeError, match="role="):
+
+        class BadTask(vf.Task):
+            @vf.reward(role="solver")
+            async def scoped(self, trace):
+                return 0.0
+
+    with pytest.raises(TypeError, match="role="):
+
+        class BadHarness(vf.Harness):
+            @vf.metric(role="solver")
+            async def scoped(self, trace):
+                return 0.0

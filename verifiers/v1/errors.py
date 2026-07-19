@@ -55,6 +55,12 @@ class ToolsetError(RolloutError):
     """A task's `Toolset` could not be built or served."""
 
 
+class EnvError(RolloutError):
+    """The environment's own hooks failed — `rollout()` or `score()` raised (or
+    returned malformed views). Episode-level: per-agent failures stay typed on
+    their traces. (Not `EnvironmentError` — that's a builtin alias of OSError.)"""
+
+
 class UserError(RolloutError):
     """A task's `User` simulator could not be served, or its `respond` raised."""
 

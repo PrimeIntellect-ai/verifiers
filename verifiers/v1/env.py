@@ -30,6 +30,7 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, _record_result, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Error, Episode, Trace, TraceTask
@@ -968,9 +969,12 @@ class Environment(ABC, Generic[ConfigT]):
         ctx: ModelContext,
         *,
         on_trace: Callable[[Trace], None] | None = None,
+        gate: asyncio.Semaphore | None = None,
     ) -> Episode:
         """One env-rollout of `task`, minted as the wire atom: run `rollout()` over the
         role agents, then `score()` over its views (bounded by `timeout.score`).
+        `gate` bounds the agent runs themselves — every run acquires it, so an env's
+        internal fan-out counts against `--max-concurrent` too.
 
         The handed-in agents are wrapped so every trace is stamped (`role`/`trainable`)
         the moment it's minted (`on_trace` observes it then — how the dashboard watches
@@ -992,6 +996,7 @@ class Environment(ABC, Generic[ConfigT]):
                 # servers — a bare model actor has nothing to mount them into,
                 # and handing them over would fail its per-run pairing check.
                 shared_tools=self._shared_tools if self._role_needs_mcp[name] else {},
+                gate=gate,
                 completed=completed,
                 on_trace=on_trace,
             )
@@ -1002,8 +1007,11 @@ class Environment(ABC, Generic[ConfigT]):
             task=TraceTask(type=type(task).__name__, data=task.data),
         )
         try:
-            views = await self.rollout(task, handed)
-            traces = _view_traces(type(self).__name__, views)
+            # The boundary types hook failures stably (`EnvError`, like the trace
+            # taxonomy); an already-typed RolloutError passes through unchanged.
+            async with boundary(EnvError, f"{type(self).__name__}.rollout()"):
+                views = await self.rollout(task, handed)
+                traces = _view_traces(type(self).__name__, views)
         except Exception as e:
             episode.errors.append(_as_error(e))
             # The hook never returned views: the completed buffer is the
@@ -1014,16 +1022,16 @@ class Environment(ABC, Generic[ConfigT]):
         # episode to the completed buffer.
         episode.traces = traces
         try:
-            async with asyncio.timeout(self.config.timeout.score) as deadline:
-                await self.score(task, views)
+            async with asyncio.timeout(self.config.timeout.score):
+                async with boundary(EnvError, f"{type(self).__name__}.score()"):
+                    await self.score(task, views)
         except Exception as e:
-            # Only the deadline's own expiry is re-worded; a TimeoutError raised
-            # INSIDE score() (an env awaiting its own timeouts) stays the real
-            # error — with no deadline set it must not hit the `:g` format below.
-            if isinstance(e, TimeoutError) and deadline.expired():
+            # A TimeoutError here can only be the deadline's own expiry — one
+            # raised inside score() became an EnvError at the boundary.
+            if isinstance(e, TimeoutError):
                 e = TimeoutError(
                     f"{type(self).__name__}.score() exceeded its "
-                    f"{self.config.timeout.score:g}s deadline (--timeout.score)"
+                    f"{self.config.timeout.score:g}s deadline (--env.timeout.score)"
                 )
             episode.errors.append(_as_error(e))
         return episode
@@ -1047,16 +1055,19 @@ class Environment(ABC, Generic[ConfigT]):
     ) -> Episode:
         """Run one planned env-rollout to its finished episode (whole-episode retries
         per `retries.rollout`; the role agents resolve the task's runtime and timeouts
-        per run — cli/toml > task > default, None = no limit). `slot` stays observable
-        while it happens; `on_complete` fires the moment the episode is final — the
-        runners' persistence hook."""
+        per run — cli/toml > task > default, None = no limit). `semaphore` gates the
+        agent RUNS, not the episode — so `--max-concurrent` bounds live rollouts even
+        when `rollout()` fans out internally. `slot` stays observable while it
+        happens; `on_complete` fires the moment the episode is final — the runners'
+        persistence hook."""
 
         async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
-            return await self.run_episode(slot.task, ctx, on_trace=slot.traces.append)
+            return await self.run_episode(
+                slot.task, ctx, on_trace=slot.traces.append, gate=semaphore
+            )
 
-        async with semaphore or contextlib.nullcontext():
-            episode = await run_episode_with_retry(attempt, self.config.retries.rollout)
+        episode = await run_episode_with_retry(attempt, self.config.retries.rollout)
         slot.traces = list(episode.traces)
         slot.episode = episode
         slot.done = True
@@ -1164,6 +1175,7 @@ class _RoleAgent:
         role: str | None,
         trainable: bool,
         shared_tools: Mapping[str, SharedToolServer],
+        gate: "asyncio.Semaphore | None",
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
     ) -> None:
@@ -1171,6 +1183,7 @@ class _RoleAgent:
         self._role = role
         self._trainable = trainable
         self._shared_tools = shared_tools
+        self._gate = gate
         self._completed = completed
         self._on_trace = on_trace
 
@@ -1193,13 +1206,14 @@ class _RoleAgent:
             if on_trace is not None:
                 on_trace(trace)
 
-        trace = await self._agent.run(
-            task,
-            runtime=runtime,
-            shared_tools=shared_tools
-            if shared_tools is not None
-            else self._shared_tools,
-            on_trace=watch,
-        )
+        async with self._gate or contextlib.nullcontext():
+            trace = await self._agent.run(
+                task,
+                runtime=runtime,
+                shared_tools=shared_tools
+                if shared_tools is not None
+                else self._shared_tools,
+                on_trace=watch,
+            )
         self._completed.append(trace)
         return trace

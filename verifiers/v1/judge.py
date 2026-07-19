@@ -196,7 +196,12 @@ class Judge(Generic[ParsedT, ConfigT]):
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
             )
-        return template.format(**fields)
+        # Substitute only this judge's documented placeholders — str.format would
+        # crash on any literal brace in a custom prompt (a JSON-shaped instruction);
+        # an unknown placeholder stays as written.
+        for key, value in fields.items():
+            template = template.replace("{" + key + "}", str(value))
+        return template
 
     async def score(
         self, task: "TaskData", trace: "Trace"
@@ -211,12 +216,12 @@ class Judge(Generic[ParsedT, ConfigT]):
         """The complete judging prompt for one finished trace — with `verdict`, the
         agent-executed dual of `score`. Where `score` makes the model call itself (the
         plugged tier: one bare call inside `Task.score`), an agent executor (the
-        bundled `judge` env) runs `render`'s prompt as its judge role's task and hands
+        bundled `agentic-judge` env) runs `render`'s prompt as its judge role's task and hands
         the agent's final reply to `verdict` — the same spec (prompt + parsing), two
         execution modes. Implement both to make a judge agent-executable."""
         raise NotImplementedError(
             f"{type(self).__name__} implements no `render`, so it can't drive a judge "
-            "agent (the `judge` env); implement `render` + `verdict`, or plug it via "
+            "agent (the `agentic-judge` env); implement `render` + `verdict`, or plug it via "
             "`taskset.task.judges` instead."
         )
 
@@ -229,7 +234,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         verdict — a judge failure must error the rollout, not score the model."""
         raise NotImplementedError(
             f"{type(self).__name__} implements no `verdict`; implement `render` + "
-            "`verdict` to make it agent-executable (the `judge` env)."
+            "`verdict` to make it agent-executable (the `agentic-judge` env)."
         )
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
