@@ -41,6 +41,7 @@ from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
+    InterceptionError,
     OverlongPromptError,
     ProviderError,
     RolloutError,
@@ -560,6 +561,9 @@ class InterceptionServer(Interception):
                         )
                         if session.trace.is_completed or secret not in self.requests:
                             stop = session.trace.stop_condition or "completed"
+                            error = InterceptionError(
+                                f"model response discarded: rollout stopped: {stop}"
+                            )
                             return web.json_response(
                                 dialect.error_body(f"rollout stopped: {stop}"),
                                 status=400,
@@ -567,6 +571,9 @@ class InterceptionServer(Interception):
                         # The snapshot check and commit contain no await, so a concurrent
                         # failure cannot be cleared by a request admitted before it.
                         if session.error is not error_snapshot:
+                            error = InterceptionError(
+                                "model response discarded: another model call failed"
+                            )
                             return web.json_response(
                                 dialect.error_body("another model call failed"),
                                 status=503,
@@ -863,11 +870,18 @@ class InterceptionServer(Interception):
                     error = e
                     return resp
                 if session.trace.is_completed or secret not in self.requests:
+                    stop = session.trace.stop_condition or "completed"
+                    error = InterceptionError(
+                        f"model response discarded: rollout stopped: {stop}"
+                    )
                     if request.transport is not None:
                         request.transport.close()
                     return resp
                 # Match the atomic admission snapshot guard in the non-streaming path.
                 if session.error is not error_snapshot:
+                    error = InterceptionError(
+                        "model response discarded: another model call failed"
+                    )
                     if request.transport is not None:
                         request.transport.close()
                     return resp
