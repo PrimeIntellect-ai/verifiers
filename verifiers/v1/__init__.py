@@ -31,6 +31,7 @@ from verifiers.v1.env import (
     pool_serve_kwargs,
 )
 from verifiers.v1.errors import (
+    EnvError,
     HarnessError,
     InterceptionError,
     ProviderError,
@@ -212,6 +213,7 @@ __all__ = [
     "reward",
     # errors
     "RolloutError",
+    "EnvError",
     "ProviderError",
     "HarnessError",
     "ToolsetError",
