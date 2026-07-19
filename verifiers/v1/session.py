@@ -109,22 +109,26 @@ class RolloutSession:
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
     last_request: bytes | None = None
-    """Digest of the most recently served request body; with `last_response`, the replay cache
-    that keeps the message graph atomic under harness-SDK retries. A retry re-sends the
+    """Digest of the most recently served request body; with `last_response` /
+    `last_response_error`, the replay cache that keeps the graph atomic under SDK retries. A retry re-sends the
     byte-identical request; when it matches, the interception server replays the recorded
     response instead of re-sampling and committing a second turn — which would fork the graph
     into a dead-end branch. Only a fully served request is cached, so a genuinely failed attempt
     still re-runs. Turns are issued sequentially (one outstanding request at a time), so a retry
     is always of the most recent request — keeping only the last one is sufficient and bounded."""
     last_response: dict | None = None
-    """The response returned for `last_request`, replayed verbatim on a retry."""
-    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
+    """The response returned for `last_request`, replayed verbatim on a clean retry."""
+    last_response_error: "RolloutError | None" = None
+    """Post-commit failure replayed for `last_request` instead of silently returning success."""
+    inflight: dict[bytes, "asyncio.Future[dict | RolloutError | None]"] = field(
+        default_factory=dict
+    )
     """Body digest -> the future of the attempt currently computing it. A retry that arrives
     while the first attempt is still in flight (a slow turn) awaits this future instead of
-    starting a second inference — the other half of retry atomicity (with `last_response`, which
-    covers a retry after the attempt finished). Because a slow turn is coalesced rather than
+    starting a second inference — the other half of retry atomicity (the last-result fields
+    cover retries after the attempt finished). Because a slow turn is coalesced rather than
     re-sampled, retries stay safe without an inflated client timeout. The future resolves to the
-    served response, or to None if the attempt produced no servable response (error/refuse)."""
+    served response, a post-commit error, or None if no servable result exists."""
 
     def render_image(self, url: str) -> str | None:
         """Render one wire image, retaining a scan-resistant recent working set."""

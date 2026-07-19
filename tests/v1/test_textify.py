@@ -14,7 +14,7 @@ from PIL import Image
 import verifiers.v1 as vf
 import verifiers.v1.utils.textify as textify
 from verifiers.v1.dialects import AnthropicDialect, ChatDialect, ResponsesDialect
-from verifiers.v1.errors import TaskError
+from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.utils.textify import _grid_shape, render_url
@@ -620,10 +620,11 @@ def test_hard_output_ceiling_counts_newlines() -> None:
 
 
 @pytest.mark.asyncio
-async def test_postcommit_failure_caches_response_before_error() -> None:
+async def test_postcommit_failure_replays_same_error() -> None:
     session = SimpleNamespace(
         last_request=None,
         last_response=None,
+        last_response_error=None,
         error=None,
         trace=SimpleNamespace(id="trace"),
     )
@@ -631,16 +632,19 @@ async def test_postcommit_failure_caches_response_before_error() -> None:
     error = TaskError("user image textify failed")
     server = InterceptionServer()
 
-    future: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
+    future: asyncio.Future[dict | RolloutError | None] = (
+        asyncio.get_running_loop().create_future()
+    )
     result = server._fail_after_commit(
         session, ChatDialect(), b"request-digest", response, error, future
     )
 
     assert result.status == 502
-    assert await future == {"id": "served"}
+    assert await future is error
     assert session.last_request == b"request-digest"
     assert session.last_response == {"id": "served"}
+    assert session.last_response_error is error
     assert session.error is error
-    replay = server._replay_response(session, session.last_response)
-    assert replay.status == 200
-    assert session.error is None
+    replay = server._replay_error(session, ChatDialect(), session.last_response_error)
+    assert replay.status == 502
+    assert session.error is error

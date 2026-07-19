@@ -337,22 +337,45 @@ class InterceptionServer(Interception):
 
     @staticmethod
     def _replay_response(session: RolloutSession, completion: dict) -> web.Response:
-        """Return a committed response and clear the post-commit failure that prompted retry."""
+        """Return a committed response and clear any previous request failure."""
         session.error = None
         return _completion_response(completion)
+
+    def _replay_error(
+        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+    ) -> web.Response:
+        """Replay a cached post-commit failure consistently across SDK retries."""
+        session.error = error
+        return self._error_response(session, dialect, error)
 
     @staticmethod
     def _remember_response(
         session: RolloutSession,
         req_hash: bytes,
         response: Response,
-        fut: "asyncio.Future[dict | None] | None" = None,
+        fut: "asyncio.Future[dict | RolloutError | None] | None" = None,
     ) -> None:
         """Cache a committed response and release any coalesced retry."""
         session.last_request = req_hash
         session.last_response = response.raw
+        session.last_response_error = None
         if fut is not None and not fut.done():
             fut.set_result(response.raw)
+
+    @staticmethod
+    def _remember_postcommit_error(
+        session: RolloutSession,
+        req_hash: bytes,
+        response: Response,
+        error: RolloutError,
+        fut: "asyncio.Future[dict | RolloutError | None]",
+    ) -> None:
+        """Cache a committed response's later failure and release coalesced retries."""
+        session.last_request = req_hash
+        session.last_response = response.raw
+        session.last_response_error = error
+        if not fut.done():
+            fut.set_result(error)
 
     def _fail_after_commit(
         self,
@@ -361,11 +384,11 @@ class InterceptionServer(Interception):
         req_hash: bytes,
         response: Response,
         error: RolloutError,
-        fut: "asyncio.Future[dict | None]",
+        fut: "asyncio.Future[dict | RolloutError | None]",
     ) -> web.Response:
-        """Cache a committed turn before reporting later simulator/textify failure."""
+        """Cache a committed turn's later failure and report it consistently."""
         session.error = error
-        self._remember_response(session, req_hash, response, fut)
+        self._remember_postcommit_error(session, req_hash, response, error, fut)
         return self._error_response(session, dialect, error)
 
     async def handle_request(
@@ -391,15 +414,20 @@ class InterceptionServer(Interception):
         #   1. the first attempt already finished -> replay the recorded response;
         #   2. the first attempt is still computing (a slow turn) -> await it and return its
         #      result, so a slow turn is safe without an inflated client timeout.
-        # A growing conversation never repeats a body, so these only ever match a real retry; a
-        # failed attempt caches nothing and re-runs normally.
-        if session.last_request == req_hash and session.last_response is not None:
+        # A growing conversation never repeats a body, so these only ever match a real retry.
+        # Pre-commit failures cache nothing; post-commit failures replay the same error.
+        if session.last_request == req_hash:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return self._replay_response(session, session.last_response)
+            if session.last_response_error is not None:
+                return self._replay_error(session, dialect, session.last_response_error)
+            if session.last_response is not None:
+                return self._replay_response(session, session.last_response)
 
-        async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
+        async def coalesced(
+            inflight: "asyncio.Future[dict | RolloutError | None]",
+        ) -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
-            # response (it errored/refused), so let the SDK retry afresh.
+            # result (it errored/refused before commit), so let the SDK retry afresh.
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
@@ -408,6 +436,8 @@ class InterceptionServer(Interception):
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
+            if isinstance(completion, RolloutError):
+                return self._replay_error(session, dialect, completion)
             return self._replay_response(session, completion)
 
         if (inflight := session.inflight.get(req_hash)) is not None:
@@ -453,7 +483,9 @@ class InterceptionServer(Interception):
         # await between them, so two concurrent identical requests can never both become owner.
         if (inflight := session.inflight.get(req_hash)) is not None:
             return await coalesced(inflight)
-        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
+        fut: asyncio.Future[dict | RolloutError | None] = (
+            asyncio.get_running_loop().create_future()
+        )
         session.inflight[req_hash] = fut
 
         def serve(response: Response) -> web.Response:
