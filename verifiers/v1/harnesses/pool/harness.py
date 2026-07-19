@@ -117,9 +117,10 @@ class PoolHarness(Harness[PoolHarnessConfig]):
             "--prompt-file",
             prompt_path,
         ]
-        # Keep Pool's global config, logs, and trajectories inside the rollout workspace.
+        # Keep Pool's home, config, logs, and trajectories inside the rollout workspace.
         isolate = (
-            'export XDG_CONFIG_HOME="$PWD/.vf-pool/config" '
+            'export HOME="$PWD/.vf-pool/home" '
+            'XDG_CONFIG_HOME="$PWD/.vf-pool/config" '
             'XDG_STATE_HOME="$PWD/.vf-pool/state"; exec "$@"'
         )
         result = await runtime.run_program(["sh", "-c", isolate, "pool", *argv], env)
