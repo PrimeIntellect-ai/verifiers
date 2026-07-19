@@ -18,6 +18,7 @@ from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.intercept import InterceptRecord
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -364,6 +365,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every provider exchange behind the sampled turns, in order: raw wire request/response
     plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
+    interceptions: list[InterceptRecord] = Field(default_factory=list)
+    """Every action a task's `@intercept` handlers took on a model exchange, in order
+    (see `verifiers.v1.intercept`): blocks, rewrites, and terminations."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Weighted contributions from task rewards, group rewards, and judges."""
@@ -543,6 +547,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
             )
         self.rewards[name] = contribution
+
+    def record_interception(self, record: InterceptRecord) -> None:
+        self.interceptions.append(record)
 
     def stamp(self, run: RunInfo | None = None, **info: Any) -> None:
         """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the

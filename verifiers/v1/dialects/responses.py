@@ -271,9 +271,11 @@ class ResponsesStreamParser(StreamParser):
         events = self.terminal_events or self.events
         for event in iter_sse_reverse(b"".join(events)):
             if event.get("type") in FINAL_EVENTS:
-                return response_from_wire(
-                    OpenAIResponse.model_validate(event["response"])
-                )
+                raw = event["response"]
+                response = response_from_wire(OpenAIResponse.model_validate(raw))
+                # The reassembled native object, so interception can mutate and re-serve it.
+                response.raw = raw
+                return response
         raise ValueError("Responses stream ended without a terminal event")
 
 
@@ -371,6 +373,14 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
 
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
+
+    def stream_events(self, raw: dict) -> list[bytes]:
+        # The terminal event carrying the full object, then the DONE sentinel.
+        completed = {"type": "response.completed", "response": raw}
+        return [
+            f"data: {json.dumps(completed)}\n\n".encode(),
+            b"data: [DONE]\n\n",
+        ]
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()

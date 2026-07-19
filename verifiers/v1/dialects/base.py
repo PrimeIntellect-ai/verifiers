@@ -199,6 +199,14 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         the only field mutation the proxy makes to the native JSON object. Model overlays;
         sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
 
+    def stream_events(self, raw: dict) -> list[bytes]:
+        """Serialize a full native response object as a minimal valid SSE stream in this
+        format — how the interception server replays an intercepted-and-mutated response to
+        a streaming client (an untouched response replays its original chunks verbatim)."""
+        raise NotImplementedError(
+            f"stream synthesis is not supported over the {type(self).__name__} dialect"
+        )
+
     def extend(
         self, body: ReqT, completion: dict | None, user_messages: Messages
     ) -> ReqT:

@@ -9,16 +9,38 @@ turns.
 """
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.decorators import invoke
+from verifiers.v1.intercept import (
+    Direction,
+    InterceptExchange,
+    InterceptRecord,
+    Terminate,
+    _response_tool_call_items,
+    _snippet,
+    drop_response_tool_calls,
+)
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import (
+    AssistantMessage,
+    Messages,
+    SystemMessage,
+    ToolMessage,
+    UserMessage,
+    content_text,
+)
+
+MESSAGE_TYPES = (SystemMessage, UserMessage, AssistantMessage, ToolMessage)
+"""What an `@intercept` handler returns to block an exchange, answering with its text."""
 
 if TYPE_CHECKING:
+    from verifiers.v1.dialects import Dialect
     from verifiers.v1.errors import RolloutError
     from verifiers.v1.mcp import Respond
 
@@ -67,6 +89,10 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    intercepts: list[Callable[..., Awaitable[Any]]] = field(default_factory=list)
+    """The task's `@intercept` handlers (see `verifiers.v1.intercept`), run over every
+    model exchange — the request body inbound, the response outbound — by the interception
+    server via `run_intercepts`. Empty means exchanges pass through untouched."""
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -115,4 +141,93 @@ class RolloutSession:
                 self.trace.stop(stop.__name__)
                 logger.debug("stop %r fired: id=%s", stop.__name__, self.trace.id)
                 return stop.__name__
+        return None
+
+    async def run_intercepts(
+        self, direction: Direction, raw: dict, dialect: "Dialect"
+    ) -> Terminate | None:
+        """The task's `@intercept` handlers, run over one wire exchange in priority order.
+        `raw` is the native request body (inbound) or response object (outbound), mutated in
+        place. Handlers get name-injected `task`/`trace`/`exchange` like scorers. Every action
+        lands on `trace.interceptions`: an in-place rewrite (auto-detected by digest when a
+        handler mutates `raw` but returns None and records nothing itself), a response-side
+        block (the handler returned a
+        `Message`; the tool calls are dropped here and the model gets its text as the answer),
+        and any `Terminate` — which a request-side `Message` becomes. Returns the
+        first `Terminate` (short-circuiting the rest): it stops the trace and records its reward
+        when it carries one. Handler errors propagate to the server's boundary, like `@stop`s."""
+        if not self.intercepts:
+            return None
+        exchange = InterceptExchange(direction, raw, self.trace, dialect)
+        available = {
+            "task": self.trace.task.data,
+            "trace": self.trace,
+            "exchange": exchange,
+        }
+        for handler in self.intercepts:
+            before = exchange.digest()
+            marks = len(self.trace.interceptions)
+            action = invoke(handler, available)
+            if inspect.isawaitable(action):
+                action = await action
+            record: InterceptRecord | None = None
+            if action is None:
+                # A mutation the handler (or a helper it called) already recorded speaks
+                # for itself; an unrecorded one is auto-logged as a rewrite.
+                if (
+                    exchange.digest() != before
+                    and len(self.trace.interceptions) == marks
+                ):
+                    record = InterceptRecord(
+                        direction=direction,
+                        handler=handler.__name__,
+                        action="rewrite",
+                        reason=handler.__name__,
+                    )
+            if isinstance(action, MESSAGE_TYPES):
+                text = content_text(action.content)
+                if direction == "request":
+                    # Nothing to block inbound — a refused turn is the request-side block.
+                    action = Terminate(reason=text)
+                else:
+                    snippet = _snippet(_response_tool_call_items(raw))
+                    dropped = drop_response_tool_calls(raw, text)
+                    record = InterceptRecord(
+                        direction=direction,
+                        handler=handler.__name__,
+                        action="block",
+                        target=", ".join(name for name in dropped if name),
+                        reason=text,
+                        before=snippet,
+                    )
+            if isinstance(action, Terminate):
+                self.trace.record_interception(
+                    InterceptRecord(
+                        direction=direction,
+                        handler=handler.__name__,
+                        action="terminate",
+                        reason=action.reason,
+                        before=_snippet(raw),
+                    )
+                )
+                if action.reward is not None:
+                    self.trace.record_reward(
+                        f"intercept/{handler.__name__}", action.reward, 1.0
+                    )
+                self.trace.stop(f"intercept/{handler.__name__}")
+                logger.debug(
+                    "intercept terminate: id=%s handler=%s",
+                    self.trace.id,
+                    handler.__name__,
+                )
+                return action
+            if record is not None:
+                self.trace.record_interception(record)
+                logger.debug(
+                    "intercept %s: id=%s handler=%s target=%s",
+                    record.action,
+                    self.trace.id,
+                    handler.__name__,
+                    record.target,
+                )
         return None

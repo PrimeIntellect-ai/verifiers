@@ -18,10 +18,14 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
+verifiers = false
+prime-pydantic-config = false
+tasksets = false
 prime-tunnel = false
 prime-sandboxes = false
-prime-pydantic-config = false
 renderers = false
+harnesses = false
+prime = false
 
 [[package]]
 name = "accelerate"
@@ -2245,6 +2249,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
 ]
+
+[[package]]
+name = "intercept-v1"
+version = "0.1.0"
+source = { editable = "environments/intercept_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "interegular"
@@ -6758,6 +6773,7 @@ examples = [
     { name = "deepwiki-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
+    { name = "intercept-v1" },
     { name = "openenv-wordle-v1" },
     { name = "reverse-text-v1" },
     { name = "scratchpad-v1" },
@@ -6845,6 +6861,7 @@ examples = [
     { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
+    { name = "intercept-v1", editable = "environments/intercept_v1" },
     { name = "openenv-wordle-v1", editable = "environments/openenv_wordle_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
     { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },

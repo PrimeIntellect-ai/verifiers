@@ -69,6 +69,17 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
+def intercept(func: F, priority: int = 0) -> F: ...
+@overload
+def intercept(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Mark an interception handler `(self, exchange) -> InterceptAction | None`, run on
+    every model exchange (see `verifiers.v1.intercept`)."""
+    decorator = mark("intercept", intercept_priority=priority)
+    return decorator if func is None else decorator(func)
+
+
+@overload
 def metric(func: F, priority: int = 0) -> F: ...
 @overload
 def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...

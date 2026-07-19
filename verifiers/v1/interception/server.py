@@ -94,6 +94,16 @@ def _completion_response(completion: dict | None) -> web.Response:
     return web.Response(body=body, content_type="application/json", charset="utf-8")
 
 
+def _rederive_response(dialect: Dialect, response: Response) -> Response:
+    """Re-parse a mutated `response.raw` so the typed view (message/finish/usage) matches the
+    wire object again — `raw` is the single source of truth after interception. Fields the
+    wire can't reconstruct (`raw` itself, renderer tokens) carry over."""
+    derived = dialect.parse_response(dialect.validate_response(response.raw))
+    derived.raw = response.raw
+    derived.tokens = response.tokens
+    return derived
+
+
 async def _queue_chunks(
     chunks: AsyncIterator[bytes],
     queue: asyncio.Queue[bytes | None],
@@ -354,6 +364,30 @@ class InterceptionServer(Interception):
             prompt = [*prompt, *session.opening]
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
+        # Task `@intercept` handlers see the request before it goes upstream (both stream
+        # paths branch off below). Mutations apply to the body that is sent and traced, so
+        # the typed views are re-derived from it afterwards. The replay digest above was
+        # computed on the original incoming bytes, so a harness retry still replays (and
+        # never re-runs the handlers).
+        if session.intercepts:
+            try:
+                terminate = await session.run_intercepts("request", body, dialect)
+            except RolloutError as e:
+                return self._fail(session, dialect, e)
+            except Exception as e:
+                return self._fail(
+                    session,
+                    dialect,
+                    TaskError(f"@intercept failed: {type(e).__name__}: {e}"),
+                )
+            if terminate is not None:
+                # Refuse like `refused()` does: no upstream call, no commit — the harness's
+                # model call errors out, which Harness.run treats as a clean halt.
+                return web.json_response(
+                    dialect.error_body(f"rollout stopped: {terminate.reason}"),
+                    status=400,
+                )
+            prompt, tools = dialect.parse_request(body)
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt, tools)
         headers = request.headers.copy()
@@ -433,6 +467,40 @@ class InterceptionServer(Interception):
                             session.trace.id,
                             len(call_response.message.tool_calls or []),
                         )
+                        if session.intercepts:
+                            # Response-side interception, before the turn commits: `raw` is
+                            # the source of truth (mutated in place), the typed view is
+                            # re-derived from it so both stay in sync.
+                            marks = len(session.trace.interceptions)
+                            try:
+                                terminate = await session.run_intercepts(
+                                    "response", call_response.raw, dialect
+                                )
+                            except RolloutError as e:
+                                error = e
+                                return self._fail(session, dialect, e)
+                            except Exception as e:
+                                error = e
+                                return self._fail(
+                                    session,
+                                    dialect,
+                                    TaskError(
+                                        f"@intercept failed: {type(e).__name__}: {e}"
+                                    ),
+                                )
+                            if terminate is not None:
+                                # No commit: refuse like the `refused()` path — the exchange
+                                # stays visible via `record_call` and the InterceptRecord.
+                                return web.json_response(
+                                    dialect.error_body(
+                                        f"rollout stopped: {terminate.reason}"
+                                    ),
+                                    status=400,
+                                )
+                            if len(session.trace.interceptions) > marks:
+                                call_response = _rederive_response(
+                                    dialect, call_response
+                                )
                         # One node per new message; branches fall out of walking the
                         # graph (see Trace.branches / verifiers.v1.graph).
                         node = turn.commit(call_response, tools)
@@ -604,6 +672,65 @@ class InterceptionServer(Interception):
             parser = dialect.stream_parser()
             feed_event = parser.feed
             on_done = parser.on_done
+            if session.intercepts:
+                # With interceptions registered the response may change before the harness
+                # sees it: buffer the whole stream (no live relay), intercept it, then
+                # replay — the original chunks verbatim when untouched, a re-synthesized
+                # minimal stream when mutated.
+                buffered: list[bytes] = []
+                parser_error: Exception | None = None
+                try:
+                    async for chunk in reply.chunks:
+                        buffered.append(chunk)
+                        if parser_error is None:
+                            try:
+                                if on_done is not None and is_sse_done_event(chunk):
+                                    on_done()
+                                feed_event(chunk)
+                            except Exception as e:
+                                parser_error = e
+                finally:
+                    await reply.close()
+                if parser_error is not None:
+                    raise parser_error
+                response = parser.finish()
+                marks = len(session.trace.interceptions)
+                try:
+                    terminate = await session.run_intercepts(
+                        "response", response.raw, dialect
+                    )
+                except RolloutError as e:
+                    error = e
+                    return self._fail(session, dialect, e)
+                except Exception as e:
+                    error = e
+                    return self._fail(
+                        session,
+                        dialect,
+                        TaskError(f"@intercept failed: {type(e).__name__}: {e}"),
+                    )
+                if terminate is not None:
+                    # Nothing is flushed; the refusal halts the harness like the
+                    # non-streaming path, and the exchange stays on `record_call`.
+                    return web.json_response(
+                        dialect.error_body(f"rollout stopped: {terminate.reason}"),
+                        status=400,
+                    )
+                events = buffered
+                if len(session.trace.interceptions) > marks:
+                    response = _rederive_response(dialect, response)
+                    events = dialect.stream_events(response.raw)
+                node = turn.commit(response, tools)
+                logger.debug("intercept stream turn: id=%s", session.trace.id)
+                try:
+                    await resp.prepare(request)
+                    for event in events:
+                        await resp.write(event)
+                    await resp.write_eof()
+                except ConnectionResetError as e:
+                    # The harness went away mid-replay; the exchange still happened.
+                    error = e
+                return resp
             # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
             queue: asyncio.Queue[bytes | None] = asyncio.Queue(
                 maxsize=_STREAM_QUEUE_MAXSIZE

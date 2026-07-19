@@ -4,6 +4,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1 import decorators
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -34,6 +35,22 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.intercept import (
+    InterceptAction,
+    InterceptExchange,
+    InterceptRecord,
+    Terminate,
+)
+from verifiers.v1.intercepts import (
+    TOOL_SYNONYMS,
+    ToolCallJudge,
+    ToolCallJudgeConfig,
+    judge_tools,
+    match_tool,
+    match_tool_calls,
+    normalize_tool_name,
+    strip_provider_tools,
+)
 from verifiers.v1.judge import (
     Judge,
     JudgeConfig,
@@ -141,6 +158,10 @@ from verifiers.v1.types import (
     UserMessage,
 )
 
+# Importing the `verifiers.v1.intercept` submodule also sets this package's `intercept`
+# attribute to the module (import machinery); the public `vf.intercept` is the decorator.
+intercept = decorators.intercept
+
 __all__ = [
     # types
     "ID",
@@ -195,6 +216,21 @@ __all__ = [
     "metric",
     "reward",
     "group_reward",
+    "intercept",
+    # interception
+    "InterceptAction",
+    "Terminate",
+    "InterceptRecord",
+    "InterceptExchange",
+    # prebuilt intercepts
+    "TOOL_SYNONYMS",
+    "normalize_tool_name",
+    "match_tool",
+    "match_tool_calls",
+    "strip_provider_tools",
+    "ToolCallJudge",
+    "ToolCallJudgeConfig",
+    "judge_tools",
     # errors
     "RolloutError",
     "ProviderError",

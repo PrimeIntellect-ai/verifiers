@@ -6,6 +6,7 @@ and responses (`parse_response`). Reasoning extraction mirrors the v0 chat clien
 read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning_details`).
 """
 
+import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
@@ -286,7 +287,10 @@ class ChatStreamParser(StreamParser):
             ],
             "usage": self.usage,
         }
-        return response_from_wire(ModdedChatCompletion.model_validate(completion))
+        response = response_from_wire(ModdedChatCompletion.model_validate(completion))
+        # The reassembled native object, so interception can mutate and re-serve it.
+        response.raw = completion
+        return response
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
@@ -342,6 +346,26 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
+
+    def stream_events(self, raw: dict) -> list[bytes]:
+        # One chunk whose delta is the whole message, then the DONE sentinel.
+        choice = (raw.get("choices") or [{}])[0]
+        chunk = {
+            "id": raw.get("id", "vf-intercept"),
+            "object": "chat.completion.chunk",
+            "created": raw.get("created", int(time.time())),
+            "model": raw.get("model", ""),
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": choice.get("message")
+                    or {"role": "assistant", "content": None},
+                    "finish_reason": choice.get("finish_reason"),
+                }
+            ],
+            "usage": raw.get("usage"),
+        }
+        return [f"data: {json.dumps(chunk)}\n\n".encode(), b"data: [DONE]\n\n"]
 
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()
