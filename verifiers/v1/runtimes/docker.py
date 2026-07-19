@@ -63,6 +63,12 @@ class DockerConfig(BaseConfig):
     Enforcing a non-empty block list uses the same cut + proxy, with a default-allow
     policy (broad access minus the block list)."""
 
+    @property
+    def network_isolated(self) -> bool:
+        """True when the runtime narrows networking after setup: network_access=False,
+        or a block list to enforce."""
+        return not self.network_access or bool(self.block)
+
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
     pass
@@ -289,7 +295,7 @@ class DockerRuntime(Runtime):
 
     @property
     def network_isolated(self) -> bool:
-        return not self.config.network_access or bool(self.config.block)
+        return self.config.network_isolated
 
     async def prepare_execution(self, routes: dict[str, str]) -> dict[str, str]:
         """With restricted networking (`network_access=False`, or a `block` list): cut
@@ -330,8 +336,10 @@ class DockerRuntime(Runtime):
             await docker_checked("network", "disconnect", "bridge", self._container)
         else:
             await self._pin_host_route()
-        await self._probe(routes["model"])
+        # Cut from here: proxy env applies to the probe too, so a tunneled (external)
+        # model route is probed the way the harness will reach it — via the proxy.
         self._cut = True
+        await self._probe(routes["model"])
         return routes
 
     def _proxy_env(self) -> dict[str, str]:
@@ -366,7 +374,10 @@ class DockerRuntime(Runtime):
             "except Exception:\n"
             '    sys.exit(1)" "$1"; '
             "elif command -v wget >/dev/null 2>&1; then "
-            'out=$(wget -q -O /dev/null -T 3 "$1" 2>&1) && exit 0; '
+            'out=$(wget -q -O /dev/null -T 3 "$1" 2>&1); rc=$?; '
+            # GNU wget: exit 8 = server sent an error response = reachable (its
+            # quiet mode prints nothing); busybox prints the HTTP/ line even with -q.
+            "[ $rc -eq 0 ] || [ $rc -eq 8 ] && exit 0; "
             'echo "$out" | grep -q "HTTP/"; '
             "else exit 0; "  # no probe tool in the image — proceed unprobed
             "fi"

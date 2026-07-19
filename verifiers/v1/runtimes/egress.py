@@ -27,12 +27,13 @@ def host_matcher(
     """A predicate over target hosts: block patterns win; then either default-allow
     (broad access minus the block list) or default-deny (only the allow list).
     Patterns are fnmatch wildcards on the lowercased host; "*.example.com" also
-    matches the apex "example.com"."""
-    allows = [p.lower() for p in allow]
-    blocks = [p.lower() for p in block]
+    matches the apex "example.com". Trailing dots (FQDN form) are stripped on both
+    sides so "example.com." can't slip past a "example.com" block."""
+    allows = [p.lower().rstrip(".") for p in allow]
+    blocks = [p.lower().rstrip(".") for p in block]
 
     def matches(host: str) -> bool:
-        h = host.lower()
+        h = host.lower().rstrip(".")
         if any(_match(h, p) for p in blocks):
             return False
         return default_allow or any(_match(h, p) for p in allows)

@@ -398,7 +398,7 @@ class Environment:
         if (
             sys.platform == "linux"
             and isinstance(runtime, DockerConfig)
-            and not runtime.network_access
+            and runtime.network_isolated
         ):
             return await ensure_offline_network()
         return None
@@ -438,6 +438,6 @@ class Environment:
             harness_is_local=harness_is_local,
             bind_host=bind_host,
             harness_isolated=isinstance(runtime, DockerConfig)
-            and not runtime.network_access,
+            and runtime.network_isolated,
         ) as shared:
             yield shared
