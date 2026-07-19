@@ -395,7 +395,11 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        req_hash = await _request_digest(raw)
+        # The same JSON can be valid in more than one wire protocol. Namespace retry keys so
+        # one dialect can never coalesce with or replay another dialect's native response.
+        req_hash = _body_digest(
+            dialect.upstream_path.encode() + b"\0" + await _request_digest(raw)
+        )
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
