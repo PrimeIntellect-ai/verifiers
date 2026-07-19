@@ -82,7 +82,6 @@ _HASH_INLINE_MAX = 1024**2  # 1 MiB
 class _StreamReplay:
     """One validated native SSE response retained for exact SDK retries."""
 
-    request: bytes
     content_type: str
     events: tempfile.SpooledTemporaryFile[bytes]
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -153,8 +152,7 @@ class InterceptionServer(Interception):
         self.stream_requests: dict[
             str, dict[bytes, asyncio.Future[_StreamReplay | None]]
         ] = {}
-        self.stream_replays: dict[str, _StreamReplay] = {}
-        self.replay_cleanup: set[asyncio.Task[None]] = set()
+        self.stream_replays: dict[str, dict[bytes, _StreamReplay]] = {}
         self.config = config or InterceptionServerConfig()
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
@@ -176,6 +174,7 @@ class InterceptionServer(Interception):
         self.sessions[secret] = session
         self.requests[secret] = set()
         self.stream_requests[secret] = {}
+        self.stream_replays[secret] = {}
         return secret
 
     async def cancel(self, secret: str) -> None:
@@ -188,31 +187,9 @@ class InterceptionServer(Interception):
     async def release(self, secret: str) -> None:
         await self.cancel(secret)
         self.stream_requests.pop(secret, None)
-        replay = self.stream_replays.pop(secret, None)
-        if replay is not None:
+        for replay in self.stream_replays.pop(secret, {}).values():
             await replay.close()
         self.sessions.pop(secret, None)
-
-    def _retire_replay(self, secret: str, replay: _StreamReplay) -> None:
-        """Close an obsolete spool after handlers that could have captured it finish."""
-        current = asyncio.current_task()
-        readers = tuple(
-            request
-            for request in self.requests.get(secret, ())
-            if request is not current
-        )
-
-        async def close() -> None:
-            await asyncio.gather(*readers, return_exceptions=True)
-            await replay.close()
-
-        cleanup = asyncio.create_task(close())
-        self.replay_cleanup.add(cleanup)
-        cleanup.add_done_callback(self.replay_cleanup.discard)
-
-    async def stop(self) -> None:
-        await super().stop()
-        await asyncio.gather(*self.replay_cleanup, return_exceptions=True)
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
@@ -415,8 +392,8 @@ class InterceptionServer(Interception):
         # failed attempt caches nothing and re-runs normally.
         if (
             streaming
-            and (replay := self.stream_replays.get(secret)) is not None
-            and replay.request == req_hash
+            and (replays := self.stream_replays.get(secret)) is not None
+            and (replay := replays.get(req_hash)) is not None
         ):
             logger.debug("intercept stream replay: id=%s", session.trace.id)
             return await self._replay_stream(request, dialect, replay)
@@ -480,8 +457,8 @@ class InterceptionServer(Interception):
         if streaming:
             # Re-check after the simulator opening await above, then claim the request without
             # another await so two identical streams cannot both reach the provider.
-            replay = self.stream_replays.get(secret)
-            if replay is not None and replay.request == req_hash:
+            replays = self.stream_replays.get(secret)
+            if replays is not None and (replay := replays.get(req_hash)) is not None:
                 return await self._replay_stream(request, dialect, replay)
             streams = self.stream_requests.get(secret)
             if streams is None or secret not in self.requests:
@@ -529,9 +506,6 @@ class InterceptionServer(Interception):
             session.last_response = response.raw
             if not fut.done():
                 fut.set_result(response.raw)
-            replay = self.stream_replays.pop(secret, None)
-            if replay is not None:
-                self._retire_replay(secret, replay)
             return _completion_response(response.raw)
 
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -907,15 +881,12 @@ class InterceptionServer(Interception):
                 session.error = None
                 session.last_request = req_hash
                 session.last_response = None
-                replay = _StreamReplay(req_hash, content_type, events)
-                old = self.stream_replays.get(secret)
-                self.stream_replays[secret] = replay
+                replay = _StreamReplay(content_type, events)
+                self.stream_replays[secret][req_hash] = replay
                 cached = True  # the per-session retry cache owns the spool now
                 if not attempt.done():
                     attempt.set_result(replay)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
-                if old is not None:
-                    self._retire_replay(secret, old)
                 with contextlib.suppress(ConnectionError):
                     await replay.write(resp, boundary)
                     await resp.write_eof()
