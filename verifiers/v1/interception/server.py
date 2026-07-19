@@ -417,7 +417,8 @@ class InterceptionServer(Interception):
             logger.warning("ambiguous interception retry: id=%s", session.trace.id)
             return web.json_response(
                 dialect.error_body(
-                    "ambiguous retry: parallel identical requests require an idempotency key"
+                    "ambiguous retry: parallel identical requests require "
+                    "distinct idempotency keys"
                 ),
                 status=400,
             )
@@ -483,17 +484,30 @@ class InterceptionServer(Interception):
         prompt, tools = dialect.parse_request(body)
         fut: asyncio.Future[dict | None] | None = None
         if not streaming:
-            # No reusable attempt matched, so this request starts a new operation. Replace only a
-            # completed window for this digest: unrelated requests may still retry while parallel
-            # work continues. Claim before the simulator can await so a retry finds this attempt.
+            # No reusable attempt matched, so this request starts a new operation. Keep a previous
+            # attempt with the same unkeyed digest: once two operations share it, no later retry can
+            # identify its owner safely. Explicit keys produce distinct digests and avoid this.
             attempts = session.inflight.get(req_hash)
-            if attempts and all(attempt.done() for attempt in attempts):
-                session.inflight.pop(req_hash)
-            fut = asyncio.get_running_loop().create_future()
-            # Preserve every parallel operation so an unkeyed retry can be rejected as ambiguous
-            # instead of being redirected to another sample. An explicit key makes each operation
-            # a distinct digest and therefore leaves one unambiguous attempt in its list.
-            session.inflight.setdefault(req_hash, []).append(fut)
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            if attempts is None:
+                session.inflight[req_hash] = [fut]
+            elif len(attempts) == 1:
+                attempts.append(fut)
+
+            def compact_inflight() -> None:
+                attempts = session.inflight.get(req_hash)
+                if (
+                    attempts is None
+                    or fut not in attempts
+                    or len(attempts) < 2
+                    or not all(attempt.done() for attempt in attempts)
+                ):
+                    return
+                marker: asyncio.Future[dict | None] = loop.create_future()
+                marker.set_result(None)
+                session.inflight[req_hash] = [marker, marker]
+
         # Cache the opening so retries do not advance the simulator twice.
         if (
             session.user is not None
@@ -515,6 +529,7 @@ class InterceptionServer(Interception):
                     ):
                         session.inflight.pop(req_hash)
                     fut.set_result(None)
+                    compact_inflight()
                 raise
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
@@ -537,12 +552,33 @@ class InterceptionServer(Interception):
                 if len(attempts) > 1:
                     return ambiguous_retry()
                 return await self._replay_stream(request, dialect, attempts[0])
-            attempts = streams.get(req_hash)
-            if attempts and all(attempt.done() for attempt in attempts):
-                streams.pop(req_hash)
-            pending = asyncio.get_running_loop().create_future()
-            streams.setdefault(req_hash, []).append(pending)
+            loop = asyncio.get_running_loop()
+            pending = loop.create_future()
             stale_replay = replays.pop(req_hash, None) if replays is not None else None
+            attempts = streams.get(req_hash)
+            if attempts is None:
+                if stale_replay is None:
+                    streams[req_hash] = [pending]
+                else:
+                    marker: asyncio.Future[_StreamReplay | None] = loop.create_future()
+                    marker.set_result(None)
+                    streams[req_hash] = [marker, pending]
+            elif len(attempts) == 1:
+                attempts.append(pending)
+
+            def compact_stream_attempts() -> None:
+                attempts = streams.get(req_hash)
+                if (
+                    attempts is None
+                    or pending not in attempts
+                    or len(attempts) < 2
+                    or not all(attempt.done() for attempt in attempts)
+                ):
+                    return
+                marker: asyncio.Future[_StreamReplay | None] = loop.create_future()
+                marker.set_result(None)
+                streams[req_hash] = [marker, marker]
+
             try:
                 if stale_replay is not None:
                     await stale_replay.close()
@@ -569,6 +605,7 @@ class InterceptionServer(Interception):
                     streams.pop(req_hash, None)
                 if not pending.done():
                     pending.set_result(None)
+                compact_stream_attempts()
         assert fut is not None
         headers = request.headers.copy()
 
@@ -579,6 +616,7 @@ class InterceptionServer(Interception):
             # completion) that the server serializes back to the program.
             if not fut.done():
                 fut.set_result(response.raw)
+                compact_inflight()
             return _completion_response(response.raw)
 
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -756,13 +794,14 @@ class InterceptionServer(Interception):
                 headers.popall("x-idempotency-key", None)
         finally:
             # Retain successful responses for later retries. A failed sole attempt is removed so
-            # a retry can run; an ambiguous group keeps its failure marker until a fresh operation
-            # closes the window, so no retry can silently select a different parallel sample.
+            # a retry can run; an ambiguous digest keeps a bounded marker until slot release, so no
+            # later retry can silently select a different same-body operation.
             if not fut.done():
                 attempts = session.inflight.get(req_hash)
                 if attempts is not None and len(attempts) == 1 and attempts[0] is fut:
                     session.inflight.pop(req_hash, None)
                 fut.set_result(None)
+                compact_inflight()
 
     async def _stream(
         self,

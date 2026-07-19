@@ -87,8 +87,8 @@ class RolloutSession:
         default_factory=dict
     )
     """Request digest -> attempts in its current retry window. One attempt can be replayed; more
-    than one means an unkeyed parallel request is ambiguous and cannot be retried safely. A new
-    operation replaces the completed window for its digest; server release clears all windows."""
+    than one is a bounded marker: repeated unkeyed operations made the digest permanently
+    ambiguous. Explicit idempotency keys keep operations distinct; server release clears all."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
