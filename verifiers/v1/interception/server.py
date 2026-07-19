@@ -30,6 +30,7 @@ import time
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Literal
 
 from aiohttp import web
@@ -75,6 +76,29 @@ _KEEPALIVE_INTERVAL_SECONDS = 3
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
 _HASH_INLINE_MAX = 1024**2  # 1 MiB
+
+
+@dataclass
+class _StreamReplay:
+    """One validated native SSE response retained for exact SDK retries."""
+
+    request: bytes
+    content_type: str
+    events: tempfile.SpooledTemporaryFile[bytes]
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def write(self, response: web.StreamResponse, start: int = 0) -> None:
+        # A retry can arrive while the first client is still receiving the terminal bytes.
+        # Serialize readers over the shared spool; cached retries start from byte zero while
+        # the owner resumes at the withheld terminal event after committing.
+        async with self.lock:
+            self.events.seek(start)
+            while event := self.events.read(64 * 1024):
+                await response.write(event)
+
+    async def close(self) -> None:
+        async with self.lock:
+            self.events.close()
 
 
 def _body_digest(raw: bytes) -> bytes:
@@ -126,6 +150,10 @@ class InterceptionServer(Interception):
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
         self.requests: dict[str, set[asyncio.Task]] = {}
+        self.stream_requests: dict[
+            str, dict[bytes, asyncio.Future[_StreamReplay | None]]
+        ] = {}
+        self.stream_replays: dict[str, _StreamReplay] = {}
         self.config = config or InterceptionServerConfig()
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
@@ -146,6 +174,7 @@ class InterceptionServer(Interception):
         secret = secrets.token_urlsafe(16)
         self.sessions[secret] = session
         self.requests[secret] = set()
+        self.stream_requests[secret] = {}
         return secret
 
     async def cancel(self, secret: str) -> None:
@@ -157,6 +186,10 @@ class InterceptionServer(Interception):
 
     async def release(self, secret: str) -> None:
         await self.cancel(secret)
+        self.stream_requests.pop(secret, None)
+        replay = self.stream_replays.pop(secret, None)
+        if replay is not None:
+            await replay.close()
         self.sessions.pop(secret, None)
 
     @asynccontextmanager
@@ -299,10 +332,49 @@ class InterceptionServer(Interception):
             )
         )
 
+    async def _replay_stream(
+        self,
+        request: web.Request,
+        pending: _StreamReplay | asyncio.Future[_StreamReplay | None],
+    ) -> web.StreamResponse:
+        """Serve a completed stream cache, or wait on the owner of an identical request."""
+        content_type = (
+            pending.content_type
+            if isinstance(pending, _StreamReplay)
+            else "text/event-stream"
+        )
+        resp = web.StreamResponse(
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
+        resp.content_type = content_type
+        try:
+            await resp.prepare(request)
+            if isinstance(pending, asyncio.Future):
+                while True:
+                    try:
+                        replay = await asyncio.wait_for(
+                            asyncio.shield(pending), _KEEPALIVE_INTERVAL_SECONDS
+                        )
+                        break
+                    except TimeoutError:
+                        await resp.write(b": keepalive\n\n")
+            else:
+                replay = pending
+            if replay is None:
+                if request.transport is not None:
+                    request.transport.close()
+                return resp
+            await replay.write(resp)
+            await resp.write_eof()
+        except ConnectionError:
+            pass
+        return resp
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
-        session = self.sessions.get(dialect.secret(request.headers))
+        secret = dialect.secret(request.headers)
+        session = self.sessions.get(secret)
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
@@ -316,6 +388,7 @@ class InterceptionServer(Interception):
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
+        streaming = dialect.streaming(body)
         # Graph atomicity under retries. The harness SDK retries a transient failure by
         # re-sending the byte-identical request; sampling it again would commit a second turn and
         # fork the graph into a dead-end branch. Two cases, both resolved without re-sampling:
@@ -324,6 +397,20 @@ class InterceptionServer(Interception):
         #      result, so a slow turn is safe without an inflated client timeout.
         # A growing conversation never repeats a body, so these only ever match a real retry; a
         # failed attempt caches nothing and re-runs normally.
+        if (
+            streaming
+            and (replay := self.stream_replays.get(secret)) is not None
+            and replay.request == req_hash
+        ):
+            logger.debug("intercept stream replay: id=%s", session.trace.id)
+            return await self._replay_stream(request, replay)
+        if (
+            streaming
+            and (streams := self.stream_requests.get(secret)) is not None
+            and (pending := streams.get(req_hash)) is not None
+        ):
+            logger.debug("intercept stream coalesce: id=%s", session.trace.id)
+            return await self._replay_stream(request, pending)
         if session.last_request == req_hash and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
@@ -352,7 +439,7 @@ class InterceptionServer(Interception):
             "intercept %s: id=%s stream=%s",
             request.path,
             session.trace.id,
-            dialect.streaming(body),
+            streaming,
         )
         # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
         # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
@@ -374,8 +461,38 @@ class InterceptionServer(Interception):
             prompt = [*prompt, *session.opening]
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
-        if dialect.streaming(body):
-            return await self._stream(request, session, dialect, body, prompt, tools)
+        if streaming:
+            # Re-check after the simulator opening await above, then claim the request without
+            # another await so two identical streams cannot both reach the provider.
+            replay = self.stream_replays.get(secret)
+            if replay is not None and replay.request == req_hash:
+                return await self._replay_stream(request, replay)
+            streams = self.stream_requests.get(secret)
+            if streams is None or secret not in self.requests:
+                return web.json_response(
+                    dialect.error_body("rollout stopped"), status=400
+                )
+            if (pending := streams.get(req_hash)) is not None:
+                return await self._replay_stream(request, pending)
+            pending = asyncio.get_running_loop().create_future()
+            streams[req_hash] = pending
+            try:
+                return await self._stream(
+                    request,
+                    session,
+                    dialect,
+                    body,
+                    prompt,
+                    tools,
+                    secret=secret,
+                    req_hash=req_hash,
+                    attempt=pending,
+                )
+            finally:
+                if streams.get(req_hash) is pending:
+                    streams.pop(req_hash, None)
+                if not pending.done():
+                    pending.set_result(None)
         headers = request.headers.copy()
         # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above) rather
         # than starting a second inference. Re-check first: an identical request may have claimed
@@ -386,7 +503,7 @@ class InterceptionServer(Interception):
         fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
         session.inflight[req_hash] = fut
 
-        def serve(response: Response) -> web.Response:
+        async def serve(response: Response) -> web.Response:
             # Record the served turn and hand it to any coalesced retry, so a retried
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
@@ -395,6 +512,9 @@ class InterceptionServer(Interception):
             session.last_response = response.raw
             if not fut.done():
                 fut.set_result(response.raw)
+            replay = self.stream_replays.pop(secret, None)
+            if replay is not None:
+                await asyncio.shield(replay.close())
             return _completion_response(response.raw)
 
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -424,9 +544,8 @@ class InterceptionServer(Interception):
                             dialect.error_body(f"rollout stopped: {refused}"),
                             status=400,
                         )
-                    return serve(response)
+                    return await serve(response)
                 turn = graph.prepare_turn(session.trace, prompt)
-                session.error = None
                 upstream_request: dict | None = None
                 call_response: Response | None = None
                 node: int | None = None
@@ -453,7 +572,7 @@ class InterceptionServer(Interception):
                             session.trace.id,
                             len(call_response.message.tool_calls or []),
                         )
-                        if session.trace.is_completed:
+                        if session.trace.is_completed or secret not in self.requests:
                             stop = session.trace.stop_condition or "completed"
                             return web.json_response(
                                 dialect.error_body(f"rollout stopped: {stop}"),
@@ -462,6 +581,7 @@ class InterceptionServer(Interception):
                         # One node per new message; branches fall out of walking the
                         # graph (see Trace.branches / verifiers.v1.graph).
                         node = turn.commit(call_response, tools)
+                        session.error = None
                         response = call_response
                     except OverlongPromptError as e:
                         # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
@@ -475,7 +595,7 @@ class InterceptionServer(Interception):
                                 dialect.error_body("rollout stopped: context_length"),
                                 status=400,
                             )
-                        return serve(response)
+                        return await serve(response)
                     except RolloutError as e:
                         # Stash the real cause; the rollout re-raises it after the harness returns.
                         # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -523,7 +643,7 @@ class InterceptionServer(Interception):
                 # Hand back to the program when the model wants a tool (the program runs it) or
                 # when there's no user simulator to keep the conversation going.
                 if response.message.tool_calls or session.user is None:
-                    return serve(response)
+                    return await serve(response)
                 prompt = [*prompt, response.message]
                 try:
                     user_messages = await session.user(
@@ -565,6 +685,10 @@ class InterceptionServer(Interception):
         body: dict,
         prompt: Messages,
         tools: list[Tool] | None = None,
+        *,
+        secret: str,
+        req_hash: bytes,
+        attempt: asyncio.Future[_StreamReplay | None],
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: buffer and validate the provider stream, commit it to
         the trace, then replay its native events to the program. Single-shot — a streamed turn
@@ -575,13 +699,14 @@ class InterceptionServer(Interception):
             return self._fail(session, dialect, e)
         except Exception as e:
             return self._fail(
-                session, dialect, TaskError(f"@stop failed: {type(e).__name__}: {e}")
+                session,
+                dialect,
+                TaskError(f"@stop failed: {type(e).__name__}: {e}"),
             )
         if refused is not None:
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
-        session.error = None
         upstream_request: dict | None = None
         reply = None
         response: Response | None = None
@@ -607,7 +732,8 @@ class InterceptionServer(Interception):
                 session.trace.stop("context_length")
                 logger.debug("prompt too long: id=%s", session.trace.id)
                 return web.json_response(
-                    dialect.error_body("rollout stopped: context_length"), status=400
+                    dialect.error_body("rollout stopped: context_length"),
+                    status=400,
                 )
             except RolloutError as e:
                 error = e
@@ -619,26 +745,33 @@ class InterceptionServer(Interception):
                     e,
                 )
                 return web.json_response(
-                    dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
+                    dialect.error_body(str(e)),
+                    status=getattr(e, "status_code", 502),
                 )
             except Exception as e:  # surface to the program as an API error
                 error = e
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
+
             parser = dialect.stream_parser()
             resp = web.StreamResponse(
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                }
             )
-            resp.content_type = reply.content_type.split(";")[0].strip()
-            with tempfile.SpooledTemporaryFile(
-                max_size=_STREAM_SPOOL_MEMORY_BYTES
-            ) as events:
+            content_type = reply.content_type.split(";")[0].strip()
+            resp.content_type = content_type
+            events = tempfile.SpooledTemporaryFile(max_size=_STREAM_SPOOL_MEMORY_BYTES)
+            cached = False
+            try:
                 size = 0
-                pending: asyncio.Future[bytes] | None = None
+                terminal: int | None = None
+                chunk: asyncio.Future[bytes] | None = None
                 try:
                     await resp.prepare(request)
                     iterator = aiter(reply.chunks)
-                    pending = asyncio.ensure_future(anext(iterator))
+                    chunk = asyncio.ensure_future(anext(iterator))
                     loop = asyncio.get_running_loop()
                     next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                     while True:
@@ -647,27 +780,32 @@ class InterceptionServer(Interception):
                             next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                             continue
                         timeout = next_keepalive - loop.time()
-                        done, _ = await asyncio.wait((pending,), timeout=timeout)
+                        done, _ = await asyncio.wait((chunk,), timeout=timeout)
                         if not done:
                             await resp.write(b": keepalive\n\n")
                             next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                             continue
                         try:
-                            event = pending.result()
+                            event = chunk.result()
                         except StopAsyncIteration:
                             break
-                        pending = asyncio.ensure_future(anext(iterator))
+                        chunk = asyncio.ensure_future(anext(iterator))
                         size += len(event)
                         if size > _MAX_STREAM_RESPONSE_BYTES:
                             raise ValueError(
                                 f"stream exceeded {_MAX_STREAM_RESPONSE_BYTES} bytes"
                             )
+                        if terminal is None and dialect.is_terminal_event(event):
+                            terminal = events.tell()
                         events.write(event)
                         if parser.on_done is not None and is_sse_done_event(event):
                             parser.on_done()
                         parser.feed(event)
                     response = parser.finish()
-                except ConnectionResetError as e:
+                    # Probe the downstream once more after buffering. A client that left
+                    # during a fast provider response must not produce a committed turn.
+                    await resp.write(b": keepalive\n\n")
+                except ConnectionError as e:
                     error = e
                     return resp
                 except Exception as e:
@@ -686,23 +824,48 @@ class InterceptionServer(Interception):
                         request.transport.close()
                     return resp
                 finally:
-                    if pending is not None:
-                        pending.cancel()
-                        await asyncio.gather(pending, return_exceptions=True)
+                    if chunk is not None:
+                        chunk.cancel()
+                        await asyncio.gather(chunk, return_exceptions=True)
                     await reply.close()
 
-                if session.trace.is_completed:
+                # The provider response is now fully valid. Deliver everything before its
+                # terminal event, but withhold the completion boundary until the trace commit.
+                boundary = size if terminal is None else terminal
+                events.seek(0)
+                remaining = boundary
+                try:
+                    while remaining:
+                        event = events.read(min(remaining, 64 * 1024))
+                        await resp.write(event)
+                        remaining -= len(event)
+                except ConnectionError as e:
+                    error = e
+                    return resp
+                if session.trace.is_completed or secret not in self.requests:
                     if request.transport is not None:
                         request.transport.close()
                     return resp
                 node = turn.commit(response, tools)
+                session.error = None
+                session.last_request = req_hash
+                session.last_response = None
+                replay = _StreamReplay(req_hash, content_type, events)
+                old = self.stream_replays.get(secret)
+                self.stream_replays[secret] = replay
+                cached = True  # the per-session retry cache owns the spool now
+                if not attempt.done():
+                    attempt.set_result(replay)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
-                events.seek(0)
-                with contextlib.suppress(ConnectionResetError):
-                    while event := events.read(64 * 1024):
-                        await resp.write(event)
+                if old is not None:
+                    await asyncio.shield(old.close())
+                with contextlib.suppress(ConnectionError):
+                    await replay.write(resp, boundary)
                     await resp.write_eof()
                 return resp
+            finally:
+                if not cached:
+                    events.close()
         except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit
             # error, a cancellation) ends a real exchange; couple it to the record unless

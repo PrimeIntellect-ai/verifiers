@@ -41,6 +41,7 @@ STOP_REASONS = {
     "stop_sequence": "stop",
 }
 THINKING = ("thinking", "redacted_thinking")
+_TERMINAL_MARKERS = (b'"type":"message_stop"', b'"type": "message_stop"')
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -273,6 +274,9 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
     response_type = ModdedAnthropicMessage
+
+    def is_terminal_event(self, chunk: bytes) -> bool:
+        return any(marker in chunk for marker in _TERMINAL_MARKERS)
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
         return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
