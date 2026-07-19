@@ -26,9 +26,9 @@ RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
     encoding="utf-8"
 )
 
-# Appended to the prompt when `structured_output` is off, so the reply is JSON we can parse. Each
-# criterion carries a one-sentence `reason` written *before* the verdict (chain-of-thought), so the
-# verdict follows from it and the reasoning is auditable in `trace.info["judge"]`.
+# Appended when `structured_output` is off, so the reply is parseable JSON. The
+# `reason` comes *before* the verdict so the verdict follows from it and the
+# reasoning is auditable in `trace.info["judge"]`.
 JSON_SUFFIX = (
     "\n\nRespond with ONLY a JSON object and nothing else, in exactly this shape:\n"
     '{"verdicts": [{"name": "<criterion name>", "reason": "<one sentence citing specific '
@@ -44,10 +44,9 @@ def normalize_choice(choice: str, choices: list[str]) -> float:
 
 
 def first_verdicts_object(text: str) -> dict | None:
-    """The first balanced JSON object in `text` that carries a `verdicts` key. Scanning for the
-    key (not just the first `{`) skips prose and, crucially, an echoed format example — the one
-    in `JSON_SUFFIX` fails to parse (its trailing `...` isn't JSON) and is passed over rather
-    than mistaken for the answer. Returns `None` if no such object is found."""
+    """The first balanced JSON object in `text` carrying a `verdicts` key, else None.
+    Scanning for the key (not just the first `{`) skips prose and an echoed format
+    example — `JSON_SUFFIX`'s fails to parse (trailing `...`) and is passed over."""
     decoder = json.JSONDecoder()
     idx = text.find("{")
     while idx != -1:
@@ -93,25 +92,19 @@ class RubricJudgeConfig(JudgeConfig):
     """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
     text (`TaskData.prompt_text`)."""
     answer_field: str = ""
-    """Optional task field holding a reference answer (e.g. a gold patch) to show the judge, like
-    the reference judge. Empty (default) shows none — `{reference}` renders blank. A list-valued
-    field is joined one item per line. Needs `{reference}` in the prompt (the built-in `rubric.txt`
-    has it)."""
+    """Optional task field holding a reference answer to show the judge; empty
+    renders `{reference}` blank. A list-valued field is joined one item per line."""
     view: JudgeView = "full_trace"
-    """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the whole
-    transcript — rubric criteria typically grade the process (tool use, citations,
-    intermediate steps), not just the final answer."""
+    """How much of the rollout fills `{response}`. Defaults to the whole transcript —
+    rubric criteria typically grade the process, not just the final answer."""
     max_criteria: int | None = None
-    """How many criteria to grade per judge call. `None` (default) grades all criteria in one
-    call. `1` sends one call per criterion (n independent judges); `k` batches them k-at-a-time.
-    Batches are graded concurrently and merged. Smaller batches trade more calls for focus/
-    robustness. Must be >= 1."""
+    """Criteria per judge call (>= 1): `None` grades all in one call, `k` batches
+    k-at-a-time, graded concurrently and merged — more calls for more focus."""
     structured_output: bool = False
-    """Grade via JSON-schema structured output (`response_format`) when `True`; grade via plain-text
-    output parsed as JSON when `False` (the default). Plain text is far more reliable on endpoints
-    whose structured decoding is flaky (e.g. GLM-5.2 and other non-OpenAI models on some providers
-    return empty completions for structured calls, especially over long transcripts); OpenAI models
-    handle either. Transient HTTP failures are already retried by the OpenAI client."""
+    """Grade via JSON-schema structured output when `True`; via plain-text output
+    parsed as JSON when `False` (default). Plain text is far more reliable on
+    endpoints whose structured decoding is flaky (some non-OpenAI providers return
+    empty completions for structured calls over long transcripts)."""
 
 
 class CriterionVerdict(StrictBaseModel):
@@ -180,10 +173,8 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 )
             if isinstance(answer, (list, tuple)):
                 answer = "\n".join(str(item) for item in answer)
-            # A clearly-announced section (leading blank separates it from the Task block; the
-            # template's newline before Response closes it). Absent when `answer_field` is unset.
-            # Fence longer than any backtick run in the answer, so a patch/markdown containing ```
-            # can't close it early and spill into the prompt as instructions.
+            # Fence longer than any backtick run in the answer, so a patch containing
+            # ``` can't close it early and spill into the prompt as instructions.
             fence = "`" * (
                 max((len(m) for m in re.findall(r"`+", answer)), default=2) + 1
             )
@@ -202,8 +193,8 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
     def _scores(
         self, verdicts: list[CriterionVerdict], batch: list[Criterion]
     ) -> dict[str, float]:
-        # Exactly one verdict per criterion in the batch, matched by name — anything else is a
-        # judge failure and must error the rollout, not score the model (see `judge_verdict`).
+        # Exactly one verdict per criterion, matched by name — anything else is a
+        # judge failure and must error the rollout, not score the model.
         by_criterion = {c.name: c for c in batch}
         if sorted(v.name for v in verdicts) != sorted(by_criterion):
             raise ValueError(
@@ -249,9 +240,9 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         return sum(c.weight * by_name[c.name] for c in self.criteria) / total
 
     def render(self, task: TaskData, trace: Trace) -> str:
-        """The whole rubric as one judging prompt (agent execution is one
-        conversation, so `max_criteria` batching does not apply), with the plain-text
-        JSON verdict contract appended — an agent run has no structured output."""
+        """The whole rubric as one judging prompt — agent execution is one
+        conversation, so `max_criteria` batching doesn't apply and the plain-text
+        JSON contract is appended (an agent run has no structured output)."""
         return (
             cast(str, self.build_messages(**self._fields(task, trace, self.criteria)))
             + JSON_SUFFIX
@@ -271,7 +262,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             if k is None
             else [criteria[i : i + k] for i in range(0, len(criteria), k)]
         )
-        # Fan out one call per batch; if any fails, cancel the siblings so a judge failure
+        # One call per batch; on any failure cancel the siblings so a judge failure
         # doesn't keep billing the remaining batches.
         tasks = [
             asyncio.ensure_future(self.grade_batch(task, trace, batch))

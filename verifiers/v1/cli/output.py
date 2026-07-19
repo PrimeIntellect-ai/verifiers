@@ -1,15 +1,10 @@
 """On-disk output: traces.jsonl (one rollout episode per line) + config.toml.
 
-A `Episode` is the full data dump for one rollout — its trace(s) nested, written
-verbatim, consumed by the platform (visualization) and prime-rl (training). config.toml
-is the run's resolved EvalConfig, written in the same format the CLI reads
-(`@ config.toml`), so a run is re-runnable from its own output. Aggregates (avg reward,
-etc.) are cheap to recompute from results, so they aren't stored.
-
-The runner writes `config.toml` once up front (`save_config`) and then appends each
-episode to `traces.jsonl` as its rollout completes (`append_episode`), so a long run's
-results are durable as they land rather than only at the end. Files written before the
-episode atom (one bare trace per line) are still readable: `read_episodes` sniffs the
+An `Episode` is the full data dump for one rollout, consumed by the platform and
+prime-rl. config.toml is the run's resolved config in the format the CLI reads
+(`@ config.toml`), so a run is re-runnable from its own output. Episodes append as
+they complete, so results are durable mid-run. Files written before the episode
+atom (one bare trace per line) are still readable: `read_episodes` sniffs the
 line shape.
 """
 
@@ -40,12 +35,10 @@ def output_path(config: EvalConfig) -> Path:
     taskset = config.env.taskset
     env = taskset.name if taskset is not None else "no-taskset"
     if taskset is not None and taskset.id and config.env.id:
-        # The env axis is part of the run's identity (the same compounding as
-        # `EnvConfig.env_id`): a `best-of-n+gsm8k-v1` run must not share a parent
-        # dir with a plain `gsm8k-v1` one.
+        # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k-v1` run must
+        # not share a parent dir with a plain `gsm8k-v1` one.
         env = f"{env_name(config.env.id)}+{env}"
-    # The harness leg of the name: every seat's resolved harness, distinct, in
-    # role order — `default` for one plain seat, `default+direct` for a judge run.
+    # Every seat's resolved harness, distinct, in role order.
     harness = "+".join(
         dict.fromkeys(h.name for h in config.env.seat_harnesses().values())
     )
@@ -89,11 +82,9 @@ def sniff_episode(row: dict) -> bool:
 
 def read_episodes(results_dir: Path, trace_type: type) -> list[Episode]:
     """Load a run's saved rollouts from `traces.jsonl` with traces typed as
-    `trace_type` — the inverse of `write_episode`. A pre-episode line (one bare trace)
-    is wrapped as a single-trace episode, so both file generations read uniformly.
-    Used by `replay` to re-score finished rollouts (pass the task's typed
-    `Trace[...]`, or `Trace[WireTaskData, ...]` to read any taskset's file without
-    importing it)."""
+    `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
+    importing it). A pre-episode line (one bare trace) is wrapped as a single-trace
+    episode, so both file generations read uniformly."""
     trace_adapter = TypeAdapter(trace_type)
     episodes: list[Episode] = []
     with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:

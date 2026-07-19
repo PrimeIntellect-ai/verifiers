@@ -27,19 +27,12 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     client = resolve_client(config.client)
     tasks = env.taskset.select(config.num_tasks, config.shuffle)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
-    # `num_rollouts` independent env-rollouts per task; the shared semaphore bounds how
-    # many are in flight at once.
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     out = output_path(config)
-    # Write config.toml up front, then persist each episode as it completes (so the results are
-    # durable mid-run, not only at the end). One lock serializes worker-thread appends from
-    # concurrent rollouts while keeping large trace serialization off the event loop.
     owed: dict[str, int] | None = None
-    # On resume, the kept (good) on-disk rollouts rejoin the run as finished episodes: displayed,
-    # returned, pushed, and printed alongside this session's, with only the owed rollouts re-run
-    # — so the resumed run is indistinguishable from one that was never interrupted.
+    # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
     finished: list[Episode] = []
     if config.resume is not None:
         finished, owed = resume.load(
@@ -73,10 +66,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             trace.stamp(EvalRunInfo(id=config.uuid))
         await append_episode(out, episode, write_lock)
 
-    # Shared tool servers (if any) come up once here and their URLs flow into every rollout
-    # (non-shared ones start per rollout); the interception comes up here too, so
-    # concurrent rollouts share its servers + tunnels rather than one each. Plan slots
-    # inside `serving` so the env's agents borrow those resources when the runs build them.
+    # Serving resources (shared tool servers, interception) come up once for the
+    # run; plan slots inside so the env's agents borrow them.
     async with env.serving():
         planned = [
             slot
@@ -132,16 +123,14 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         if legacy
         else {"config_data": env_config_data(config.env)}  # picklable across the spawn
     )
-    # The pool broker + workers are spawned (fresh interpreters, no logging) — hand them
-    # the same loguru setup the main process uses (stderr + the run's log file) so their
-    # rollout logs come back and land in the output dir.
+    # Spawned processes inherit no logging — hand them the main process's setup so
+    # their rollout logs land in the output dir.
     level = "DEBUG" if config.verbose else "INFO"
     log_file = str(output_path(config) / "eval.log")
     mpctx = mp.get_context("spawn")
     address_queue: mp.Queue = mpctx.Queue()
-    # Death pipe: serve_env (and, transitively, its workers/tunnels/sandboxes) self-terminates
-    # if this main process dies abruptly. We keep parent_conn; its close — even on our SIGKILL —
-    # signals death to the child's watch (see _arm_teardown). Mirrors the broker -> worker pipe.
+    # Death pipe: serve_env self-terminates if this process dies abruptly — we keep
+    # parent_conn, whose close (even on our SIGKILL) signals the child's watch.
     parent_conn, child_conn = mpctx.Pipe()
     proc = mpctx.Process(
         target=serve_env,
@@ -163,8 +152,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
-        # Only a legacy (v0) env can require group scoring — v1 envs score
-        # sibling-dependent signals inside their own rollout (`Environment.score`).
+        # Only a legacy (v0) env group-scores; a v1 env scores siblings in its own
+        # rollout.
         group_scored = info.requires_group_scoring
         if info.num_tasks is None:  # infinite taskset - the run must be bounded
             if config.num_tasks is None:
@@ -184,8 +173,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         finished: list[Trace] = []
         if config.resume is not None:
             # (legacy only) a group is served and scored together, so a partially-kept
-            # task redoes as a WHOLE group (`run_group` below always serves the full n)
-            # — whole_task drops its kept rows instead of double-counting them.
+            # task redoes as a whole group — whole_task drops its kept rows.
             episodes, owed = resume.load(
                 out, idxs, config.num_rollouts, whole_task=group_scored
             )
@@ -213,9 +201,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         logger.info("results: %s", out)
         request_concurrency = config.max_concurrent
         if request_concurrency and group_scored:
-            # (legacy only) max_concurrent is a rollout resource bound, not a request-
-            # throughput target. A group is indivisible, so one oversized group must
-            # still be allowed to run.
+            # (legacy only) max_concurrent bounds rollouts, not requests; a group is
+            # indivisible, so one oversized group must still be allowed to run.
             request_concurrency = max(1, request_concurrency // config.num_rollouts)
         semaphore = (
             asyncio.Semaphore(request_concurrency) if request_concurrency else None
@@ -249,10 +236,9 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             await append_episode(out, episode, write_lock)
             return list(episode.traces)
 
-        # A group-scored legacy task must run its rollouts together (cross-rollout
-        # scoring) → one `run_group` request per task (one worker); otherwise rollouts
-        # are independent → one `run_rollout` request each, which the broker
-        # round-robins (least-busy) across workers — mirrors the prime-rl dispatcher.
+        # A group-scored legacy task runs its rollouts together (one `run_group`
+        # request, one worker); otherwise each rollout is its own `run_rollout`
+        # request, dispatched least-busy across workers.
         units = (
             [run_group_unit(i) for i in idxs]
             if group_scored

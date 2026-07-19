@@ -38,17 +38,16 @@ class EnvServer:
         self.address = address
         self.taskset_id = config.taskset.id if config.taskset is not None else ""
         self.env = load_environment(config)
-        # A finite taskset is materialized up front (its count is served via `info`); an
-        # infinite one is pulled off its generator on demand (see `_task`), so
-        # `num_tasks=None` on the wire ⟺ the taskset is infinite.
+        # A finite taskset materializes up front; an infinite one is pulled off its
+        # generator on demand, so `num_tasks=None` on the wire means infinite.
         self._task_iter = iter(self.env.taskset.load())
         self._tasks: list = []
         self.num_tasks: int | None = None
         if not type(self.env.taskset).INFINITE:
             self._tasks = list(self._task_iter)
             self.num_tasks = len(self._tasks)
-        # v1 envs never group-score: sibling-dependent signals run inside the env's own
-        # rollout (`Environment.score`). Only the legacy (v0) bridge sets this.
+        # v1 envs never group-score (siblings score inside the env's own rollout);
+        # only the legacy (v0) bridge sets this.
         self.requires_group_scoring = False
         self._clients: dict[
             tuple[str, str], Client
@@ -68,9 +67,8 @@ class EnvServer:
     @classmethod
     def run_server(cls, address_queue=None, **kwargs) -> None:
         """Run a spawned server and report its concrete address when requested."""
-        # This worker loads the taskset (and any HF datasets it pulls in) and is killed at
-        # teardown; pin tqdm to a threading lock first so it never leaks a multiprocessing
-        # semaphore (resource_tracker warning at shutdown).
+        # Pin tqdm to a threading lock first, so the taskset load never leaks a
+        # multiprocessing semaphore (resource_tracker warning at shutdown).
         use_threading_tqdm_lock()
         server = cls(**kwargs)
         if address_queue is not None:
@@ -84,12 +82,11 @@ class EnvServer:
             pass
 
     def _task(self, idx: int):
-        """The task at `idx`; an infinite taskset is generated (and cached) up to `idx`
+        """The task at `idx`; an infinite taskset generates (and caches) up to `idx`
         on demand. Generation must be deterministic — every pool worker runs its own
-        `load()`, so idx-addressing relies on all of them producing the same sequence.
-        Lazy generation is capped at `MAX_LAZY_TASKS`: an idx that far ahead is a
-        runaway driver, and generating (and caching) toward it would hang the worker
-        and exhaust memory instead of failing the one request."""
+        `load()`, so idx-addressing relies on all producing the same sequence. The
+        `MAX_LAZY_TASKS` cap fails a runaway driver's request instead of hanging the
+        worker generating toward it."""
         while len(self._tasks) <= idx:
             if idx >= MAX_LAZY_TASKS:
                 raise IndexError(
@@ -118,10 +115,8 @@ class EnvServer:
         )
 
     def serving(self):
-        """Context for the server's eval-level serving resources (shared tool servers +
-        interception), entered for the server's lifetime so they're reused across
-        requests; rollouts run inside it inherit them (see `Environment.serving`). The
-        legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
+        """The env's serving resources, entered for the server's lifetime so they're
+        reused across requests. The legacy v0 bridge overrides this (no v1 serving)."""
         return self.env.serving()
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
@@ -133,8 +128,7 @@ class EnvServer:
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         # The route survives for the legacy (v0) bridge (`LegacyEnvServer` overrides
-        # this); a v1 env has no group scoring — its `info` says so, and a dispatcher
-        # that calls anyway gets a loud error instead of a silent single-rollout group.
+        # this); a dispatcher calling it on a v1 env gets a loud error.
         raise RuntimeError(
             "run_group is a legacy (v0) route; v1 envs score sibling-dependent "
             "signals inside their own rollout — request run_rollout instead"

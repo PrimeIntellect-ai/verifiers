@@ -324,16 +324,13 @@ class AgentInfo(StrictBaseModel):
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):
-    """The task as recorded on the trace: the row (`data`, the wire half — fully typed,
-    flows into scoring) plus the Task class name that produced the rollout (`type`) —
-    provenance, so a bare trace is self-describing: a `from_trace` implementer or an
-    offline re-scorer can tell which behavior class made it without the run's config
-    (replay warns when it disagrees with the taskset's declared type). Only data and a
-    name ride the wire — behavior still re-attaches by construction."""
+    """The task as recorded on the trace: the row (`data`, fully typed, flows into
+    scoring) plus the Task class name that produced the rollout (`type`) — so a bare
+    trace is self-describing without the run's config. Only data and a name ride
+    the wire; behavior re-attaches by construction."""
 
     type: str
-    """The Task class name (`type(task).__name__`), resolution stays anchored to the
-    taskset id like everything else."""
+    """The Task class name (`type(task).__name__`)."""
     data: DataT
     """The (immutable) row being solved."""
 
@@ -372,9 +369,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     info: dict[str, Any] = Field(default_factory=dict)
     """Persistent JSON scratch space for task metadata that is not a reward or metric."""
     role: str | None = None
-    """Which env role produced this trace (`None` for the single-agent default, where
-    there's only one). Stamped by the env layer; first-class so training can filter
-    and baseline per role without digging through `info`."""
+    """Which env role produced this trace (`None` for the single-agent default).
+    Stamped by the env layer; first-class so training can filter and baseline per
+    role."""
     trainable: bool = True
     """Whether this trace's tokens are training data for the run's policy. An env
     marks fixed-model roles (a frozen judge, a pinned user sim) untrainable."""
@@ -603,17 +600,14 @@ WireTrace = Trace[WireTaskData]
 
 class Episode(StrictBaseModel, Generic[DataT, StateT]):
     """One run of the env — the global view, each trace one agent's local view. The
-    atom of `traces.jsonl` and of the serve protocol: a single-agent episode carries
-    one trace, a multi-agent env's the traces of its views — they succeed, resume,
-    and score as a unit. `errors` are failures not attributable to any one trace
-    (the env's `rollout`/`score` hooks, plus prior attempts' when retried); per-trace
-    failures stay on the traces.
+    atom of `traces.jsonl` and of the serve protocol: an episode's traces succeed,
+    resume, and score as a unit. `errors` are failures not attributable to any one
+    trace (the env's `rollout`/`score` hooks, plus prior attempts' when retried);
+    per-trace failures stay on the traces.
 
-    The type parameters serve the wire loaders, not authoring: `WireEpisode =
-    Episode[WireTaskData, State]` reads any taskset's episodes without importing the
-    taskset (unknown row fields kept in `model_extra`). An authored episode is
-    typically heterogeneous — a taskset-typed solver trace next to a plain minted
-    verdict trace — and uses bare `Episode`."""
+    The type parameters serve the wire loaders, not authoring: `WireEpisode` reads
+    any taskset's episodes without importing the taskset. An authored episode is
+    typically heterogeneous and uses bare `Episode`."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     env: str = ""

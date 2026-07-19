@@ -1,13 +1,10 @@
 """Shared CLI resolution: select the environment (and its taskset) by id.
 
-The eval/serve/gepa entrypoints parse one config whose `env` field is the selected
-environment's own config class. We read the ids from argv *before* the typed parse
-(`--env.id`, `--env.taskset.id`, the positional taskset shorthand), resolve them to
-the env's config type, and narrow the base config's `env` field — so the single
-`cli()` parse stays typed and `-h` renders the real flags (`--env.<role>.model`,
-`--env.taskset.<knob>`). Ids can also come from a `@ file.toml`: validation narrows
-from the parsed data (`resolve_env_field`), so we only pre-narrow what the CLI
-states explicitly — never to a type a config file could then contradict.
+The ids are read from argv *before* the typed parse and the base config's `env`
+field is narrowed to the selected env's config class, so the single `cli()` parse
+stays typed and `-h` renders the real flags. Ids can also come from a `@ file.toml`:
+validation narrows from the parsed data (`resolve_env_field`), so only what the CLI
+states explicitly is pre-narrowed — never to a type a config file could contradict.
 """
 
 import verifiers.v1 as vf
@@ -45,12 +42,10 @@ def extract_id(argv: list[str], field: str, default: str = "") -> str:
 
 
 def narrow_config(base: type, argv: list[str]) -> type:
-    """`base` (a config owning an `env` field) with `env` narrowed to the config
-    class of the env the CLI names (`--env.id`, else the taskset's own env, else the
-    single-agent env) — including its `taskset` sub-field — so the single `cli()`
-    parse stays typed and `-h` renders role fields and taskset knobs. Ids a config
-    file may set are left to the validator (never pre-narrowed to a type the file
-    could then contradict); an explicit CLI `--env.id` always narrows (the id is
+    """`base` with its `env` field narrowed to the config class of the env the CLI
+    names (`--env.id`, else the taskset's own env, else the single-agent env),
+    including its `taskset` sub-field. Ids a config file may set are left to the
+    validator; an explicit CLI `--env.id` always narrows (the id is
     authoritative)."""
     taskset_id = extract_id(argv, "env.taskset")
     env_id = extract_id(argv, "env")
@@ -58,8 +53,7 @@ def narrow_config(base: type, argv: list[str]) -> type:
         return base
     env_type = vf.env_config_type(taskset_id, env_id)
     if taskset_id:
-        # Nest the narrowing: the env config's `taskset` field gets the taskset's
-        # own config type, so `--env.taskset.<knob>` parses typed and renders.
+        # Nested narrowing: `--env.taskset.<knob>` parses typed and renders in -h.
         taskset_type = vf.taskset_config_type(taskset_id)
         env_type = type(
             env_type.__name__,

@@ -1,21 +1,14 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable arrow.
 
-An `Agent` bundles WHO does the work — the harness (the program), the model leg
-(model + client + sampling, grouped as the `ModelContext` on `agent.ctx`), and a
-runtime policy (where a run's box comes from by default). `agent.run(task)` executes
-one rollout and returns its `Trace`. Everything else is a parameter, not a concept:
-placement (`runtime=` borrows a live box; `provision(task)` hands you one), judgement
-(the task carries it — a plain base `Task` runs unscored), chaining (plain functions
-minting the next `TaskData` from earlier traces).
+An `Agent` bundles the harness (the program), the model leg (`agent.ctx`), and a
+runtime policy (where a run's box comes from). `agent.run(task)` executes one
+rollout and returns its `Trace`; `runtime=` borrows a live box, `provision(task)`
+hands you one.
 
-Interception follows the runtime story: inject a live `Interception` at construction
-(borrowed — its owner keeps the lifecycle) to share servers and tunnels across agents.
-Without one, an entered agent (`async with`) owns an elastic pool so concurrent runs
-share servers; un-entered, each run brings up its own per-rollout server — fine for
-scripts.
-
-The execution machinery is the standard rollout engine (`RolloutRun`); the Agent only
-decides what goes into the rollout.
+Interception follows the runtime story: inject a live `Interception` at
+construction to share servers and tunnels across agents; an entered agent
+(`async with`) owns an elastic pool; un-entered, each run brings up its own
+per-rollout server.
 """
 
 import logging
@@ -51,11 +44,10 @@ logger = logging.getLogger(__name__)
 
 def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
     """A borrowed box is never re-provisioned, so a task's placement fields can't be
-    honored. Parity with the provisioning path where it refuses: a task `image` on a
-    subprocess box raises (`resolve_runtime_config` raises the same on a subprocess
-    policy — a lifetime/wiring bug in the borrowing program, so it goes to the caller,
-    not the trace). A container box whose image differs only warns: placing a run into
-    an existing world is the point of borrowing (e.g. a judge in a solver's box)."""
+    honored. A task `image` on a subprocess box raises (a wiring bug in the
+    borrowing program — it goes to the caller, not the trace); a container box whose
+    image differs only warns, since placing a run into an existing world is the
+    point of borrowing."""
     if task.data.image is None:
         return
     if isinstance(runtime.config, SubprocessConfig):
@@ -79,20 +71,17 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
 class Agent:
     """A harness + model + runtime policy, runnable on any task.
 
-    `harness` is a concrete `Harness` object; harnesses are stateless, so one
-    instance can back any number of agents (`load_harness(config)` resolves ids).
-    `model`/`client`/`sampling` are the model leg, bound at construction (`sampling`
-    omitted means the provider's defaults); the client is yours to build and share —
-    agents on the same endpoint should share one `Client` (one connection pool).
+    Harnesses are stateless, so one instance can back any number of agents.
+    `model`/`client`/`sampling` are the model leg, bound at construction; agents on
+    the same endpoint should share one `Client` (one connection pool).
 
     `runtime` is a *policy* (a `RuntimeConfig`, default the harness config's own):
-    each `run` provisions a fresh box from it, resolved per task. To place a run into
-    an existing box instead, pass a live `Runtime` to `run(runtime=...)` — borrowed
-    boxes are never started or torn down by the run.
-
-    `interception` is the same story for the model boundary: a live, already-entered
-    `Interception` to borrow — this agent only acquires slots. Without it, an entered
-    agent owns an elastic pool; un-entered, each run brings up its own server."""
+    each `run` provisions a fresh box from it, resolved per task. Pass a live
+    `Runtime` to `run(runtime=...)` to place a run into an existing box instead —
+    borrowed boxes are never started or torn down by the run. `interception` is the
+    same story for the model boundary: a live one is borrowed; without it, an
+    entered agent owns an elastic pool and an un-entered one brings up a per-run
+    server."""
 
     def __init__(
         self,
@@ -144,13 +133,12 @@ class Agent:
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping
     ) -> Interception | None:
-        """Which interception this run rides. An injected one always — its owner sized
-        its reach over its consumers, like an eval injecting into every rollout. The
-        owned pool only when provably reachable from all of this run's consumers: always
-        when it tunnels (a tunnel URL works from anywhere), else for a local run with
-        no tool servers in play (any such server may sit in its own remote runtime and
-        must reach `/state`). Otherwise `None` — the rollout brings up a per-run
-        server sized to the task."""
+        """Which interception this run rides. An injected one always — its owner
+        sized its reach. The owned pool only when provably reachable from all of
+        this run's consumers: always when it tunnels, else for a local run with no
+        tool servers in play (any such server may sit in a remote runtime and must
+        reach `/state`). Otherwise `None` — the rollout brings up a per-run server
+        sized to the task."""
         if self.interception is not None:
             return self.interception
         if self._pool is None:
@@ -172,15 +160,11 @@ class Agent:
         """Run this agent on `task` once and return the trace: the program runs on
         the task's prompt until it exits.
 
-        The task carries its own judgement (its hooks + `@reward`/`@metric` run as in
-        any eval); a plain base `Task` makes the run unscored. `runtime` places the run
-        into a live box (borrowed — not started or torn down here) instead of
-        provisioning a fresh one from the agent's runtime policy. `shared_tools` are
-        live `SharedToolServer`s to wire into this run (borrowed from their owner —
-        an eval's `serving()`, or a program via `serve_shared` — and counted in the
-        pairing check). `on_trace` observes the run's trace the moment it's minted
-        (before any I/O) — how a caller watches the run live (the eval dashboard
-        reads stage, tokens, and turns off it)."""
+        The task carries its own judgement; a plain base `Task` makes the run
+        unscored. `runtime` places the run into a live borrowed box instead of
+        provisioning one from the agent's policy. `shared_tools` are live servers
+        borrowed from their owner, counted in the pairing check. `on_trace` observes
+        the run's trace the moment it's minted, before any I/O."""
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         run = RolloutRun(task=task, on_trace=on_trace, **params)
         try:
@@ -212,8 +196,7 @@ class Agent:
         validate_pairing(
             self.harness, type(task), runtime_config, shared_tools=shared_tools
         )
-        # Timeout precedence as in an eval's env-rollouts, with the agent standing in
-        # for cli/toml: agent-level wins, else the task's, else no limit.
+        # Timeout precedence: agent-level wins, else the task's, else no limit.
         harness_timeout = (
             self.timeout.rollout
             if self.timeout.rollout is not None
@@ -250,8 +233,8 @@ class Agent:
     def _stamp_agent(
         self, trace: Trace, runtime_config: RuntimeConfig, *, borrowed: bool
     ) -> None:
-        # Who produced this trace — so a program's traces stay attributable after the
-        # Agent objects are gone. Resolved per run: a borrowed box wins over the policy.
+        # Keeps traces attributable after the Agent objects are gone; a borrowed
+        # box wins over the policy.
         trace.info["agent"] = {
             "harness": self.harness.config.id,
             "model": self.ctx.model,
@@ -264,10 +247,9 @@ class Agent:
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
-        """Provision (and on exit tear down) a box from this agent's runtime policy —
-        resolved for `task` when given (image / workdir / resources). Place runs into it
-        via `run(..., runtime=box)`: the program that provisions a box owns it, so several
-        runs (by this or other agents) can share one world."""
+        """Provision (and on exit tear down) a box from this agent's runtime policy,
+        resolved for `task` when given. Place runs into it via `run(..., runtime=box)`:
+        the provisioning program owns the box, so several runs can share one world."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
@@ -275,9 +257,8 @@ class Agent:
         )
         runtime = make_runtime(config)
         try:
-            # start inside the try: a failed start may already hold a remote sandbox,
-            # so it must reach `stop()` (safe on a partially-started runtime) like in
-            # `RolloutRun.open`.
+            # start() inside the try: a failed start may already hold a remote
+            # sandbox, so it must reach stop() (safe on a partially-started runtime).
             await runtime.start()
             yield runtime
         finally:

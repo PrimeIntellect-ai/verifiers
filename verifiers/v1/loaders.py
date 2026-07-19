@@ -116,14 +116,10 @@ def import_environment(env_id: str) -> ModuleType:
 
 
 def environment_class(taskset_id: str, env_id: str = "") -> type[Environment]:
-    """The `Environment` — the control flow between agents — for a run. An explicit
-    `env_id` (`--env.id`) names it directly: a bundled env (`verifiers.v1.envs`), a
-    local package, or a Hub id — and a failure to resolve it raises (an explicit
-    pairing must not silently fall back). Otherwise the taskset's own story: its
-    package's `Environment` subclass when it exports one via `__all__` (a recipe env
-    ships with its taskset, the same plugin idiom as a bundled harness), else
-    `SingleAgentEnv` — one solver seat on the flat run flags, so every plain taskset
-    resolves to today's behavior."""
+    """The `Environment` class for a run. An explicit `env_id` names it directly,
+    and a failure to resolve raises — an explicit pairing must not silently fall
+    back. Otherwise the taskset's own: its package's exported `Environment`
+    subclass, else `SingleAgentEnv`."""
     if env_id:
         return _plugin_class(import_environment(env_id), Environment, "environment")
     if not taskset_id:
@@ -136,10 +132,8 @@ def environment_class(taskset_id: str, env_id: str = "") -> type[Environment]:
 
 
 def load_environment(config: EnvConfig) -> Environment:
-    """Construct the env for `config`: the `--env.id`-selected `Environment` when set,
-    else the taskset's exported subclass when there is one, else `SingleAgentEnv`.
-    Every env construction site (eval, serve, gepa) goes through here so subclass
-    envs load everywhere."""
+    """Construct the env for `config`. Every construction site (eval, serve, gepa)
+    goes through here so subclass envs load everywhere."""
     taskset_id = config.taskset.id if config.taskset is not None else ""
     return environment_class(taskset_id, config.id)(config)
 
@@ -178,10 +172,9 @@ def judge_config_type(judge_id: str) -> type[JudgeConfig]:
 
 
 def env_config_type(taskset_id: str, env_id: str = "") -> type[EnvConfig]:
-    """Resolve the env's config specialization (`Environment[YourConfig]`) through its
-    MRO — keyed by the selected env id when set, else the taskset's own env —
-    `SingleAgentEnvConfig` for a plain taskset. The run's `env` field narrows to
-    this, which is what gives `--env.<role>.model` CLI/TOML addressing."""
+    """Resolve the env's config specialization (`Environment[YourConfig]`) through
+    its MRO — `SingleAgentEnvConfig` for a plain taskset. The run's `env` field
+    narrows to this, which is what gives `--env.<role>.model` addressing."""
     return (
         generic_type(
             environment_class(taskset_id, env_id), EnvConfig, origin=Environment
@@ -191,11 +184,9 @@ def env_config_type(taskset_id: str, env_id: str = "") -> type[EnvConfig]:
 
 
 def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
-    """Narrow raw env-config data to the concrete env class's config type — by the
-    env `id` when set, else the taskset's exported env, else `SingleAgentEnvConfig` —
-    and validate. The one entry every consumer takes (CLI parse, TOML, the
-    env-server wire), so `--env.judge.model`-style fields always validate against
-    the real config class."""
+    """Narrow raw env-config data to the concrete env class's config type and
+    validate. The one entry every consumer takes (CLI, TOML, the env-server wire),
+    so role fields always validate against the real config class."""
     if isinstance(data, EnvConfig):
         taskset_id = data.taskset.id if data.taskset is not None else ""
         cls = env_config_type(taskset_id, data.id)
@@ -216,7 +207,6 @@ def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
 
 
 def task_type(taskset_id: str) -> type[Task]:
-    """The taskset's `Task` subclass from its `Taskset[TaskT, ConfigT]` generic — no
-    data is loaded, so replay can cheaply recover the task data type. Falls back to
-    the base `Task` when no subclass is given."""
+    """The taskset's `Task` subclass from its generic parameters — no data is
+    loaded, so replay can cheaply recover the task type. Falls back to `Task`."""
     return generic_type(taskset_class(taskset_id), Task, origin=Taskset) or Task

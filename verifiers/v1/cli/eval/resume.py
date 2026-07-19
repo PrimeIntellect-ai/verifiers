@@ -1,12 +1,9 @@
 """Resume an interrupted eval: reload its finished rollouts and run only the rest.
 
-A run writes `config.toml` + `traces.jsonl` into its output dir. `--resume <dir>` reloads
-that config verbatim (so it takes no other flags) and writes back into the same dir. `load`
-brings the good saved rollouts back into memory and re-runs only what's still owed: the
-*missing* rollouts (never written — the run was interrupted) and the *errored* ones (written
-with an error; dropped and redone). The loaded traces rejoin the run everywhere — counted,
-displayed, pushed, and printed alongside this session's — so a resumed run picks up exactly
-where the interrupted one stopped.
+`--resume <dir>` reloads the run's saved config verbatim (so it takes no other
+flags) and writes back into the same dir. `load` keeps the good saved rollouts and
+re-runs what's owed: missing rollouts (never written) and errored ones (dropped and
+redone).
 """
 
 import json
@@ -59,22 +56,17 @@ def load(
     *,
     whole_task: bool = False,
 ) -> tuple[list[Episode], dict[int, int]]:
-    """Load the good saved rollouts back into memory as finished episodes and diff them
-    against the run's target (`num_rollouts` per selected task): returns (the kept
-    episodes, rollouts owed per task idx). A rollout is kept or redone as a unit — the
-    episode — so a multi-trace rollout interrupted mid-write is simply owed again.
-    `complete` is the environment's verdict on a parsed episode (`Environment.complete`)
-    — an env that deliberately tolerates errored participants keeps the rollouts it
-    accepted; without it (the server path, whose env lives in the workers) the default
-    verdict is `episode.ok`: no errors anywhere, so an errored rollout is dropped and
-    re-run. `whole_task` redoes a partially-kept task as a unit — the legacy v0
-    group-scored path, where a group is served and scored together, so a partial
-    group's kept rows are dropped and the full group owed again (`run_group` always
-    serves the full n). Rewrites `traces.jsonl` to just the kept rows — verbatim,
-    via a temp file + atomic rename, so an interrupted resume can't corrupt the prior
-    good results — and the resumed rollouts then append. Pre-episode files (one bare
-    trace per line) load the same way, each trace as a single-trace episode.
-    `WireEpisode`/`WireTrace` read any taskset's file without importing it."""
+    """Load the good saved rollouts as finished episodes and diff them against the
+    run's target: returns (kept episodes, rollouts owed per task idx). A rollout is
+    kept or redone as a unit — the episode — so a multi-trace rollout interrupted
+    mid-write is simply owed again. `complete` is the environment's keep-verdict
+    (`Environment.complete`); without it (the server path) the default is
+    `episode.ok`, so an errored rollout is dropped and re-run. `whole_task` redoes
+    a partially-kept task as a unit — the legacy group-scored path, where
+    `run_group` always serves the full n. Rewrites `traces.jsonl` to just the kept
+    rows via a temp file + atomic rename, so an interrupted resume can't corrupt
+    the prior results; the resumed rollouts then append. Pre-episode files (one
+    bare trace per line) load each trace as a single-trace episode."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
 
@@ -129,8 +121,7 @@ def load(
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
-    """The message shown (and then exit 0 - the run is already complete) when every selected
-    rollout already completed without error."""
+    """Shown (before exit 0) when every selected rollout already completed."""
     return (
         f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} rollouts "
         f"already completed without error"

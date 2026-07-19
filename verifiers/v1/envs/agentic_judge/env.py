@@ -1,23 +1,15 @@
 """agentic-judge: a solver plays the task, a code-executing judge verifies it in a sandbox.
 
 Agent-as-judge as a reusable env (`--env.id agentic-judge` over any taskset). The
-judge's verdict task mirrors the solver task's world (same image/workdir/resources — a
-FRESH box, in its original state; the solver's runtime is gone by judge time), with the
-graded transcript uploaded (`/tmp/transcript.md` rendered, `/tmp/transcript.json` the
-raw record) so the judge can reconstruct and test the work empirically — always in its
-own sandbox, never on the host.
+judge's verdict task mirrors the solver task's world — same image/workdir/resources,
+in a FRESH box in its original state (the solver's runtime is gone by judge time) —
+with the graded transcript uploaded, so the judge reconstructs and tests the work
+empirically, always in its own sandbox, never on the host.
 
-The verdict spec is a judge plugin (`--env.spec.id score|rubric|reference|org/name`,
-the same registry as an `env.taskset.task.judges` entry): the prompt+parse a plugged
-judge runs as one bare call is here executed as a real agent run, and `spec.verdict()`
-lands on the SOLVER's trace exactly as the plugged tier records it. The spec's
-`model`/`client`/`sampling` are ignored — the judge agent makes the calls; route it
-with `--env.judge.*` (role-stamped, untrainable by default).
-
-The judge seat is unpinned by default (the taskset's default harness) but must land in
-a container — a subprocess-resolving judge is refused at construction (pin
-`--env.judge.harness.runtime.type docker|prime`), as is a tool-less one (`null`): a
-verdict that needs no execution is a plugged judge, not an agent.
+The verdict spec is a judge plugin (`--env.spec.id`, the same registry as an
+`env.taskset.task.judges` entry): the prompt+parse a plugged judge runs as one bare
+call is here executed as a real agent run, and `spec.verdict()` lands on the
+SOLVER's trace exactly as the plugged tier records it.
 """
 
 import json
@@ -58,10 +50,9 @@ def _noted(prompt: str | vf.Messages, note: str) -> str | vf.Messages:
 
 
 class JudgeTask(vf.Task):
-    """An agentic judge's verdict task: the solver task's world mirrored onto the
-    minted row, with the graded transcript uploaded before the judge starts.
-    `NEEDS_CONTAINER` keeps `Agent.run`'s per-task backstop aligned with the role's
-    declared container need — judge-written code never runs on the host."""
+    """The judge's verdict task: the solver task's world mirrored onto the minted
+    row, transcript uploaded before the judge starts. `NEEDS_CONTAINER` keeps
+    `Agent.run`'s per-task backstop aligned with the role's declared need."""
 
     NEEDS_CONTAINER = True
 
@@ -77,14 +68,13 @@ class JudgeTask(vf.Task):
 class AgenticJudgeEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
     judge: vf.AgentConfig = vf.AgentConfig(trainable=False)
-    """The judge seat. Unpinned, it runs the taskset's default harness (the same
-    program the solver defaults to) in a mirror of the solver's world — its runtime
-    must be a container: `--env.judge.harness.runtime.type docker|prime`."""
+    """The judge seat. Its runtime must be a container:
+    `--env.judge.harness.runtime.type docker|prime`."""
     spec: SerializeAsAny[JudgeConfig] = ScoreJudgeConfig(name="judge")
-    """The verdict spec — a judge plugin's config, resolved by `--env.spec.id` exactly
-    like an `env.taskset.task.judges` entry. Its `name`/`weight` set the reward key and
-    weight on the solver's trace; a partial override (`--env.spec.view full_trace`)
-    tunes the default spec, an explicit `--env.spec.id` swaps it."""
+    """The verdict spec — a judge plugin's config; its `name`/`weight` set the
+    reward key and weight on the solver's trace. The spec's own model/client/
+    sampling are ignored: the judge agent makes the calls (route via
+    `--env.judge.*`)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -112,8 +102,7 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
         self._spec = load_judge(self.config.spec)
 
     def _judge_harness(self) -> Harness:
-        """The judge seat's resolved harness: its own pinned one, else the taskset's
-        default."""
+        """The judge seat's resolved harness: its pin, else the taskset's default."""
         from verifiers.v1.loaders import load_harness
 
         return load_harness(self._seat_harness(self.config.judge))
@@ -128,10 +117,8 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
             )
 
     def roles(self):
-        # The judge investigates with real execution — never on the host: its role
-        # needs a container (fail-fast at construction; a judge resolving to the
-        # subprocess runtime is refused, with the flag to set). The harness-kind
-        # check runs first.
+        # The judge executes real code, never on the host: refuse a subprocess-
+        # resolving judge at construction. The harness-kind check runs first.
         self._check_judge_harness(self._judge_harness())
         return {
             "solver": vf.Role(self.config.solver),
@@ -141,9 +128,8 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
     async def rollout(self, task, agents):
         solution = await agents["solver"].run(task)
         prompt = self._spec.render(task.data, solution)
-        # The judge gets the solver task's world: a fresh box of the same image
-        # (original state — the solver's edits live only in the solver's box), the
-        # transcript uploaded, the prompt told where things stand.
+        # A fresh box of the solver task's image, original state (the solver's
+        # edits live only in its own box), transcript uploaded.
         judge_task = JudgeTask(
             vf.TaskData(
                 idx=task.data.idx,
@@ -161,8 +147,8 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
         return {"solver": solution, "judge": verdict}
 
     async def score(self, task, views):
-        """Parse the judge agent's reply through the spec and record it like the
-        plugged tier would — a malformed verdict raises, failing the env-rollout
+        """Parse the judge's reply through the spec and record it like the plugged
+        tier would — a malformed verdict raises, failing the env-rollout
         (retryable) rather than scoring the solver 0."""
         solution, verdict = views["solver"], views["judge"]
         result = self._spec.verdict(task.data, solution, verdict.last_reply or "")

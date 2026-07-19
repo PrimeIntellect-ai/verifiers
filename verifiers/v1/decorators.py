@@ -79,9 +79,8 @@ def metric(
 ) -> F | Callable[[F], F]:
     """Mark a metric `(self, trace) -> float` (recorded, not summed). On an
     `Environment` it's a cross-agent signal: run once per episode trace with the
-    finished sibling set in reach (`trace` = the target it records onto, `traces` =
-    all of them, `task` = the env-rollout's task); `role=` narrows the targets to
-    one role's traces (env-only — a task has no roles)."""
+    finished sibling set in reach (`trace` = the target, `traces` = all of them);
+    `role=` narrows the targets (env-only — a task has no roles)."""
     decorator = mark("metric", metric_priority=priority, _vf_role=role)
     return decorator if func is None else decorator(func)
 

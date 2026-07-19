@@ -1,40 +1,25 @@
 """Task data, configuration, behavior, and scoring.
 
 `TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
-row IS — the base fields (prompt, image, timeouts, judges) plus your typed,
-task-specific fields (the reference answer, ground truths, ...). It is what rides on
-`trace.task.data`, what `traces.jsonl` stores, and what tool/user servers receive over the
-`/task` channel. Subclass it per dataset.
+row IS — the base fields plus your typed, task-specific fields. It rides on
+`trace.task.data`, is what `traces.jsonl` stores, and what tool/user servers receive
+over the `/task` channel. Subclass it per dataset.
 
-`Task` is the behavior half: a plain class owning runtime prep (`setup`/`finalize`),
-server declarations (`tools`/`user`), well-formedness (`validate`), and judgement
-(`@reward`/`@metric` methods, run by `score`). It wraps
-a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
-
-    task = MyTask(data)                        # config defaults to the declared type's
-    task = MyTask(data, config=MyTaskConfig()) # or is injected, like Taskset/Harness/Judge
-    task = MyTask.from_trace(trace)            # opt-in: derived from a finished rollout
-
-Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]` (all three
-default) — hooks and signals read the row off `self.data` and the knobs off
-`self.config`. Because behavior lives on the task class, verification never branches
-on a type field; a taskset yields one task type (its `load` constructs it), and
-instances differ per row through their data.
-
-The task is the per-trace judgement authority: `score` (called by the rollout engine,
-in the trace's live runtime) runs `@metric`/`@reward` — plus the plugged judges
-resolved from `config.judges` (see `verifiers.v1.judge`) — over one trace. Judgement
-that compares sibling traces of one env-rollout lives on `Environment.score`.
+`Task` is the behavior half: runtime prep (`setup`/`finalize`), server declarations
+(`tools`/`user`), well-formedness (`validate`), and per-trace judgement
+(`@reward`/`@metric` methods plus the plugged judges from `config.judges`, run by
+`score`). Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]`
+(all three default); judgement that compares sibling traces lives on
+`Environment.score` instead.
 
 A Task instance is shared across its rollouts (`-r n` runs hold the same instance),
-so hooks and scoring methods must not stash per-rollout state on `self` — that lives
-on the trace (`trace.state`, typed via the `Task[..., MyState, ...]` param).
+so hooks must not stash per-rollout state on `self` — that lives on the trace
+(`trace.state`).
 
-On the wire only the data (plus the producing class's name, `trace.task.type`)
-travels: a saved `trace.task.data` reads back as `WireTaskData`
-(extra fields preserved) without importing the taskset; a consumer that re-scores
-(e.g. `replay`) rebuilds the declared `TaskData` type and wraps it in the declared
-`Task` — one task type per taskset.
+On the wire only the data travels (plus the producing class's name,
+`trace.task.type`): a saved row reads back as `WireTaskData` without importing the
+taskset; a re-scoring consumer (`replay`) rebuilds the declared `TaskData` type and
+wraps it in the declared `Task` — one task type per taskset.
 """
 
 from __future__ import annotations
@@ -145,11 +130,9 @@ class TaskConfig(BaseConfig):
 
 
 class TaskData(StrictBaseModel):
-    """The task's wire half: one row's pure data, a frozen pydantic model. Subclass per
-    dataset to add typed, task-specific fields (the reference answer, ground truths,
-    per-row metadata) next to the base fields below. This is what `trace.task.data` holds,
-    what `traces.jsonl` stores, and what tool/user servers receive over the `/task`
-    channel — behavior lives on `Task`, which wraps this (`self.data`)."""
+    """The task's wire half: one row's pure data, a frozen pydantic model. Subclass
+    per dataset to add typed task-specific fields next to the base fields; behavior
+    lives on `Task`, which wraps this (`self.data`)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -200,16 +183,12 @@ def task_config_cls(cls: type) -> type[TaskConfig]:
 def resolve_server_config(
     owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
 ) -> BaseConfig:
-    """The config a declared server class is built with, resolved off `config`'s fields:
-    the field whose value is exactly the server's declared config type
-    (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
-    isinstance-matches it, else a default-constructed one. Two matching fields raise —
-    the `server_config` methods (`Task` / `Taskset`) are the override points for explicit
-    pairing. `owner` names the declaring class in errors. The isinstance fallback runs
-    only when the owner declares a `sole` server class: with several, a subclass-typed
-    field could silently pair with the WRONG server (e.g. a base-config server matching a
-    sibling's narrowed field), so multi-server owners need exact type matches or a
-    `server_config` override."""
+    """The config a declared server class is built with, resolved off `config`'s
+    fields: exact type match, else — only for a `sole` declared server — the unique
+    isinstance match, else a default-constructed one. Two matching fields raise; the
+    `server_config` methods are the explicit-pairing override. The isinstance
+    fallback is `sole`-gated because with several servers a subclass-typed field
+    could silently pair with the wrong one."""
     cfg_cls = server_cls._config_cls()
     values = {name: getattr(config, name) for name in type(config).model_fields}
     matched = [name for name, v in values.items() if type(v) is cfg_cls]
@@ -241,9 +220,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
     user: ClassVar[type[User] | None] = None
 
     def __init_subclass__(cls, **kwargs) -> None:
-        """`role=` narrows an `Environment`'s cross-trace signals; a task signal
-        always scores its own trace, so a role-scoped one here is an authoring
-        error — refuse at definition rather than silently ignoring the scope."""
+        """A task signal always scores its own trace, so `role=` (an Environment
+        concept) is refused at definition rather than silently ignored."""
         super().__init_subclass__(**kwargs)
         _reject_role_scoped(cls, "a Task signal always scores its own trace")
 
@@ -257,11 +235,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return [load_judge(config) for config in self.config.judges]
 
     def server_config(self, server_cls: type) -> BaseConfig:
-        """The config a declared server class (`tools` / `user`) is built with, resolved
-        off `self.config` (see `resolve_server_config`: exact type match, else — for a
-        sole declared server — unique isinstance match, else default-constructed).
-        Override to pair explicitly (the escape hatch for exotic setups, e.g. two servers
-        sharing one config type)."""
+        """The config a declared server class (`tools` / `user`) is built with (see
+        `resolve_server_config`). Override to pair explicitly."""
         declared = set(type(self).tools) | ({type(self).user} - {None})
         return resolve_server_config(
             type(self).__name__, self.config, server_cls, sole=len(declared) == 1

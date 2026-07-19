@@ -1,28 +1,21 @@
 """The taskset: a thin loader that yields typed tasks.
 
-A `Taskset` is the data half of an environment: config in, tasks out. `load()` — the one
-subclass hook — builds each row's `TaskData` and wraps it in the task type with the
-config's task-facing subtree:
+A `Taskset` is the data half of an environment: config in, tasks out. `load()` — the
+one subclass hook — builds each row's `TaskData` and wraps it in the task type with
+the config's task-facing subtree:
 
     def load(self) -> Iterable[MyTask]:
         return [MyTask(MyData(idx=i, ...), self.config.task) for i in ...]
 
-`load` may also be a generator — yielding each task as it's built, possibly forever (a
-procedural taskset; declare `INFINITE = True`). Runs materialize the tasks they need
-through `select`, which pulls only that many off a generator; the env server instead
-pulls `load` on demand, task by task.
+`load` may also be a generator, possibly infinite (declare `INFINITE = True`); runs
+materialize what they need through `select`, the env server pulls task by task.
 
-Load-time knobs (dataset, split, seed) live on the taskset config; the task-facing knobs
-under its `task` subtree (`TasksetConfig.task`, a `TaskConfig`, everything under
-`--env.taskset.task.*`); a worker-scoped shared tool server is declared on `tools` with its knobs
-at the taskset level (`--env.taskset.tools.*`). All per-task behavior — runtime prep, tools,
-user simulation, `@reward`/`@metric` scoring — lives on the `Task` (see
-`verifiers.v1.task`).
+Load-time knobs live on the taskset config, task-facing knobs under its `task`
+subtree, shared tool servers on `tools`. All per-task behavior lives on the `Task`.
 
-The class stays generic over its task and config types (`Taskset[TaskT, TasksetConfigT]`)
-so the loaders can read them: `taskset_config_type` narrows `--env.taskset.*` CLI/toml flags
-to the real config, and `task_type` types the wire trace — one task type per taskset, so
-replay can rebuild every saved row as the declared type's data and re-wrap it.
+The class stays generic (`Taskset[TaskT, TasksetConfigT]`) so the loaders can read
+the types: `taskset_config_type` narrows `--env.taskset.*` flags, `task_type` types
+the wire trace — one task type per taskset, so replay can rebuild saved rows.
 """
 
 from __future__ import annotations
@@ -64,9 +57,8 @@ TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetC
 
 class Taskset(Generic[TaskT, TasksetConfigT]):
     INFINITE: ClassVar[bool] = False
-    """Whether `load` yields tasks forever (a procedural generator). Infinity is inherent
-    to the taskset, not a config knob: consumers bound a run with `select(num_tasks)`
-    (`-n` on the CLI), and shuffle is impossible."""
+    """Whether `load` yields tasks forever. Inherent to the taskset, not a config
+    knob: runs bound themselves with `select(num_tasks)`, and shuffle is impossible."""
 
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
     """Tool server classes shared by one environment worker's rollouts."""
@@ -80,12 +72,10 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
     def select(
         self, num_tasks: int | None = None, shuffle: bool = False
     ) -> list[TaskT]:
-        """Materialize the tasks a run needs: the first `num_tasks` off `load` (all of
-        them when `None`), pulled lazily — a generator `load` only builds what the run
-        takes. `shuffle` samples the subset from the whole taskset instead (the shared
-        fixed-seed shuffle, `verifiers.v1.utils.sampling`), which materializes everything
-        first; on an `INFINITE` taskset it's a no-op (warned) — the first `num_tasks`
-        generated tasks are already an arbitrary sample."""
+        """Materialize the first `num_tasks` off `load` (all when `None`), pulled
+        lazily. `shuffle` samples from the whole taskset instead (fixed-seed), which
+        materializes everything first; on an `INFINITE` taskset it's a warned no-op —
+        the first `num_tasks` generated are already an arbitrary sample."""
         if type(self).INFINITE:
             if num_tasks is None:
                 raise ValueError(

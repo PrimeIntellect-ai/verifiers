@@ -23,9 +23,9 @@ class ReplayConfig(BaseConfig):
     )
     """How many saved traces to re-score (None = all)."""
     num_rescores: int = Field(1, validation_alias=AliasChoices("num_rescores", "r"))
-    """Re-score each selected trace this many times — e.g. to measure judge variance across
-    repeated gradings of the same trace. Named distinctly from eval's `num_rollouts` so the
-    replayed run's own `num_rollouts` (in the base `config.toml`) is ignored, not inherited."""
+    """Re-score each selected trace this many times (e.g. to measure judge variance).
+    Named distinctly from eval's `num_rollouts` so the source run's value is
+    ignored, not inherited."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )

@@ -1,13 +1,10 @@
 """Whole-rollout retries (per-call model/runtime retries are owned by the SDKs, not us).
 
-Transient model-call faults are retried by the harness's own SDK (the interception server is a
-faithful proxy — it relays the provider's status), and transient runtime faults by each runtime
-SDK (prime/modal); the framework adds targeted retries only where there's no SDK underneath (e.g.
-`open_tunnel`, via the shared `retrying()` policy). `RetryConfig` (on `EnvConfig.retries`) keeps one
-knob: whole-rollout retries. `run_episode_with_retry` reruns an entire env-rollout — the episode is
-the retry atom, never one participant of a multi-agent interaction — when it ends with a retryable
-error (matched by exception type name against include/exclude), accumulating each failed attempt's
-errors onto the returned episode when the final attempt fails too; off by default.
+Transient model-call and runtime faults are retried by the harness/runtime SDKs; the
+framework adds targeted retries only where no SDK sits underneath (`retrying()`).
+`run_episode_with_retry` reruns an entire env-rollout — the episode is the retry
+atom, never one participant of a multi-agent interaction — when it ends with a
+retryable error (matched by exception type name); off by default.
 """
 
 from __future__ import annotations
@@ -41,11 +38,10 @@ def retrying(
     retries: int,
     label: str | None = None,
 ) -> AsyncRetrying:
-    """The shared retry policy (tenacity): retry on `on` (minus `give_up`) up to `retries` times with
-    exponential backoff + jitter, logging each retry. For the framework's own targeted retries where
-    no SDK retries underneath (e.g. `open_tunnel`). `label` names the operation in the log; omitted,
-    it falls back to the retried callable's name (set by the `retrying(fn, ...)` call form; the
-    `async for attempt in retrying(...)` form should pass `label`)."""
+    """The shared retry policy: retry on `on` (minus `give_up`) up to `retries`
+    times with exponential backoff + jitter, logging each retry. `label` names the
+    operation in the log; omitted, it falls back to the retried callable's name, so
+    the `async for attempt in retrying(...)` form should pass it."""
 
     def _log(state: RetryCallState) -> None:
         exc = state.outcome.exception()
@@ -68,14 +64,12 @@ def retrying(
 
 
 class RolloutRetryConfig(BaseConfig):
-    """Retry a whole rollout when it ends with a captured error (parity with v0's
-    rollout-level retries). Matching is by the error's exception type name, so
-    `include`/`exclude` name exception classes (e.g. ``ProviderError``, ``SandboxError``)."""
+    """Retry a whole rollout when it ends with a captured error. `include`/`exclude`
+    name exception classes (e.g. ``ProviderError``, ``SandboxError``)."""
 
     max_retries: int = Field(0, ge=0)
-    """Whole-rollout retries beyond the first attempt (0 = no retry, the default, N = up to N
-    retries). Off by default — the harness/runtime SDKs already retry transient per-call faults;
-    rerunning a whole trajectory is opt-in (set this, plus `include`/`exclude`)."""
+    """Whole-rollout retries beyond the first attempt. Off by default — the SDKs
+    already retry transient per-call faults; rerunning a whole trajectory is opt-in."""
     include: list[str] = []
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
     exclude: list[str] = []
@@ -83,9 +77,8 @@ class RolloutRetryConfig(BaseConfig):
 
 
 class RetryConfig(BaseConfig):
-    """A rollout's retries. Per-call model/runtime retries are owned by the harness/runtime SDKs;
-    the framework keeps only whole-`rollout` retries (rerun the whole trajectory on a captured
-    retryable error)."""
+    """A rollout's retries — only whole-`rollout` ones; per-call retries are the
+    harness/runtime SDKs'."""
 
     rollout: RolloutRetryConfig = RolloutRetryConfig()
     """Retries of the whole rollout, on a captured retryable error."""
@@ -105,9 +98,8 @@ def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
 
 def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
     """Whether a finished env-rollout should be retried: its episode-level error, or
-    any of its traces' errors, is retryable. Retries are episode-atomic — the whole
-    rollout reruns, never one participant of a multi-agent interaction (a half-played
-    sibling context isn't reproducible)."""
+    any trace's error, is retryable. Episode-atomic — a half-played sibling context
+    isn't reproducible."""
     return _retryable(episode.error, retry) or any(
         _retryable(t.error, retry) for t in episode.traces
     )
@@ -117,11 +109,10 @@ async def run_episode_with_retry(
     run: Callable[[], Awaitable[Episode]],
     retry: RolloutRetryConfig,
 ) -> Episode:
-    """Run one env-rollout (`run` — each call must mint a fresh episode), retrying it
-    while it ends with a retryable error, episode-level or on any trace
-    (`episode_should_retry`). Each retry-causing attempt's errors are collected onto
-    the returned episode's `errors` when the final attempt fails too, so the episode
-    shows the full history; a final good attempt returns clean."""
+    """Run one env-rollout (`run` must mint a fresh episode per call), retrying while
+    it ends with a retryable error. When the final attempt fails too, the earlier
+    attempts' errors are prepended so the episode shows the full history; a final
+    good attempt returns clean."""
     if retry.max_retries < 1:
         return await run()
 

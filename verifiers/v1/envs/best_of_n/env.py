@@ -1,11 +1,9 @@
 """best-of-n: n independent attempts at the task, scored against each other.
 
-The sibling-selection wrapper (`--env.id best-of-n` over any taskset): one "solver"
-role attempts the task `--env.n` times; each attempt is judged by the task's own
-rewards as usual, then two decorated cross-agent metrics compare the finished
-siblings — `best` marks the argmax-reward attempt (rejection sampling / RFT
-selection reads it), `pass_at_n` records whether any sibling reached
-`--env.threshold` (the pass@k signal, identical on every sibling of the rollout).
+One "solver" role attempts the task `--env.n` times (`--env.id best-of-n` over any
+taskset); each attempt is judged by the task's own rewards as usual, then two
+cross-agent metrics compare the finished siblings: `best` marks the argmax-reward
+attempt, `pass_at_n` whether any sibling reached `--env.threshold`.
 """
 
 import asyncio
@@ -32,15 +30,13 @@ class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
 
     @vf.metric
     async def best(self, trace, traces):
-        """The sibling comparison: marks the argmax-reward attempt (ties share —
-        degenerate all-equal rollouts mark every sibling). Like every decorated env
-        signal it runs once per target trace, and the return value is recorded on
-        that trace's `metrics` under the method's name: `trace.metrics["best"]`."""
+        """Marks the argmax-reward attempt; ties share (a degenerate all-equal
+        rollout marks every sibling)."""
         return float(trace.reward == max(t.reward for t in traces))
 
     @vf.metric
     async def pass_at_n(self, trace, traces):
-        """Whether any sibling reached the threshold — a rollout-level fact, so the
-        same value is recorded as `pass_at_n` on every sibling's `metrics` (flat
-        consumers see it without reconstructing the group)."""
+        """Whether any sibling reached the threshold — a rollout-level fact,
+        recorded identically on every sibling so flat consumers see it without
+        reconstructing the group."""
         return float(max(t.reward for t in traces) >= self.config.threshold)

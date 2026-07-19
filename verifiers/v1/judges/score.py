@@ -1,10 +1,4 @@
-"""Built-in single-verdict judge: one 0-10 grade of the whole attempt.
-
-The simplest judge spec — and the `judge` env's default. Usable both ways every
-judge is: plugged via `taskset.task.judges` (one bare call inside `Task.score`) or
-agent-executed via the `judge` env (`render` becomes the judge role's task,
-`verdict` parses its final reply).
-"""
+"""Built-in single-verdict judge: one 0-10 grade of the whole attempt."""
 
 import re
 
@@ -57,11 +51,9 @@ class ScoreJudge(Judge[float, ScoreJudgeConfig]):
         )
 
     def verdict(self, task: TaskData, trace: Trace, reply: str) -> float:
-        """The last `SCORE: <n>` in the reply, normalized to [0, 1] (models often
-        restate the format before the real verdict). An off-contract verdict raises
-        — no verdict at all, and equally a number outside 0-10 (a judge grading on
-        its own scale, e.g. `SCORE: 95`, must not clamp to full marks): a judge that
-        can't follow the output contract is a judge failure, never a score."""
+        """The last `SCORE: <n>` in the reply (models often restate the format
+        first), normalized to [0, 1]. No verdict, or one outside 0-10 (`SCORE: 95`
+        must not clamp to full marks), raises — a judge failure, never a score."""
         matches = re.findall(r"SCORE:\s*(\d+(?:\.\d+)?)", reply or "")
         if not matches:
             raise ValueError(f"judge returned no 'SCORE: <0-10>' verdict: {reply!r}")

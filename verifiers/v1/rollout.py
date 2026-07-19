@@ -1,19 +1,10 @@
 """A rollout: one trajectory — run a harness program on a task and score its trace.
 
-`RolloutRun` is the engine, a staged lifecycle held open across its stages: `open()`
-boots the world (runtime, task + harness setup, interception slot, tool and user
-servers), `step()` runs the harness program to its exit, and `close()` finalizes,
-scores, and tears the world down — each stage under its own timeout
-(`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`). It makes
-and starts the runtime (unless handed a live one to borrow — then its creator owns
-start and teardown). Cross-trace judgement runs afterwards (`Environment.score`,
-over the finished sibling traces alone), so a runtime is never kept up past its own
-rollout.
-
-`Agent.run` is its only driver: an agent decides what goes into a rollout, this
-module runs it. A task-declared user simulator (`Task.user`) rides the session
-inside the model boundary — the interception server injects its replies between
-model turns (see `verifiers.v1.mcp.user`).
+`RolloutRun` is the engine, a staged lifecycle: `open()` boots the world, `step()`
+runs the harness program to its exit, `close()` finalizes, scores, and tears the
+world down — each stage under its own timeout. `Agent.run` is its only driver. A
+task-declared user simulator (`Task.user`) rides the session inside the model
+boundary (see `verifiers.v1.mcp.user`).
 """
 
 import asyncio
@@ -90,12 +81,9 @@ class RolloutRun:
     are captured onto the trace (a bad rollout is data, not a crash): `open` and
     `step` report continuability as a bool, and `close` always returns the trace.
 
-    `runtime` is a
-    live box to run in instead of provisioning one; its creator owns teardown: a
-    borrowed runtime is neither started nor stopped here. `on_trace` observes the
-    run's trace the moment it's minted (before any I/O) — how a caller watches the
-    run live (stage from the trace's timing spans, tokens and turns as the session
-    records them; see `env.RunSlot`)."""
+    `runtime` is a live box to run in instead of provisioning one; a borrowed
+    runtime is neither started nor stopped here. `on_trace` observes the run's
+    trace the moment it's minted, before any I/O."""
 
     def __init__(
         self,
@@ -126,13 +114,11 @@ class RolloutRun:
         self._interception = interception
         self.runtime = runtime
         self._owns_runtime = runtime is None
-        # The trace carries the DATA (the wire half); behavior stays on the task.
         self.trace: Trace = Trace(
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
             verifiers=VersionInfo(version=__version__, commit=verifiers_commit()),
-            # The seat's resolved identity (role overrides included) — policy
-            # metadata a training consumer reads off the trace.
+            # The seat's resolved identity, role overrides included.
             agent=AgentInfo(
                 model=ctx.model,
                 sampling=ctx.sampling,
@@ -168,8 +154,8 @@ class RolloutRun:
         remaining stages skipped)."""
         if not self._owns_runtime and self.runtime is not None and self.runtime.stopped:
             # The owner tore the borrowed box down mid-run — a lifetime bug in the
-            # borrowing program, not a property of this rollout's world: raise to
-            # the caller instead of capturing a misattributed error onto the trace.
+            # borrowing program: raise to the caller instead of capturing a
+            # misattributed error onto the trace.
             raise ValueError(
                 f"borrowed runtime {self.runtime.name!r} was torn down by its owner "
                 "mid-run; keep the provisioning context open until every run "
@@ -188,11 +174,10 @@ class RolloutRun:
         self._opened = True
         self.trace.timing.boot.start = time.time()
         if self._owns_runtime:
-            # Named after the rollout for traceability.
             self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
         elif self.runtime.stopped:
-            # A lifetime bug in the borrowing program, not a property of this
-            # rollout's world: raise to the caller instead of capturing onto the trace.
+            # A lifetime bug in the borrowing program: raise to the caller instead
+            # of capturing onto the trace.
             raise ValueError(
                 f"borrowed runtime {self.runtime.name!r} was already torn "
                 "down by its owner; keep the provisioning context open for every run "
@@ -232,10 +217,10 @@ class RolloutRun:
             async with boundary(ToolsetError, "building tool servers"):
                 tool_servers = self.task.tool_servers()
             user = self.task.user_server()
-            # `base_url` is the interception server's reachable URL for this rollout. The
-            # harness reaches the model at `{base_url}/v1`; tool/user servers reach this
-            # rollout's `/state` + `/task` at `base_url` — it's universally reachable
-            # (the interception is exposed whenever any consumer is remote).
+            # `base_url` is the interception server's URL for this rollout: the
+            # harness reaches the model at `{base_url}/v1`, tool/user servers reach
+            # `/state` + `/task` there. Reachable from every consumer (the server
+            # is exposed whenever any consumer is remote).
             base_url, secret = await self._stack.enter_async_context(
                 _serve_interception(
                     self._interception,
@@ -281,11 +266,9 @@ class RolloutRun:
         return True
 
     async def step(self) -> bool:
-        """Run the harness program to completion — one launch on the task's prompt
-        (a task-declared user simulator extends the run turn-by-turn inside the
-        model boundary, transparently to the harness). Returns whether the run is
-        still continuable — a stop (limit, `@stop`, or the program finishing
-        cleanly), a timeout, or a failure all end it."""
+        """Run the harness program to completion — one launch on the task's prompt.
+        Returns whether the run is still continuable — a stop, a timeout, or a
+        failure all end it."""
         if not self._opened or self._closed or not self.ok:
             return False
         trace = self.trace
@@ -331,9 +314,9 @@ class RolloutRun:
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`
-        and per-rollout scoring (skipped when the run already failed — but a
-        stopped run is a complete one and scores its partial trajectory), then
-        runtime teardown. Idempotent; always returns the trace."""
+        and per-rollout scoring (skipped when the run already failed — but a stopped
+        run is complete and scores its partial trajectory), then runtime teardown.
+        Idempotent; always returns the trace."""
         if self._closed:
             return self.trace
         self._closed = True
