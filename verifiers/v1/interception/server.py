@@ -154,6 +154,7 @@ class InterceptionServer(Interception):
             str, dict[bytes, asyncio.Future[_StreamReplay | None]]
         ] = {}
         self.stream_replays: dict[str, _StreamReplay] = {}
+        self.replay_cleanup: set[asyncio.Task[None]] = set()
         self.config = config or InterceptionServerConfig()
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
@@ -191,6 +192,16 @@ class InterceptionServer(Interception):
         if replay is not None:
             await replay.close()
         self.sessions.pop(secret, None)
+
+    def _retire_replay(self, replay: _StreamReplay) -> None:
+        """Close an obsolete spool once any slow client currently reading it is done."""
+        cleanup = asyncio.create_task(replay.close())
+        self.replay_cleanup.add(cleanup)
+        cleanup.add_done_callback(self.replay_cleanup.discard)
+
+    async def stop(self) -> None:
+        await super().stop()
+        await asyncio.gather(*self.replay_cleanup, return_exceptions=True)
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
@@ -514,7 +525,7 @@ class InterceptionServer(Interception):
                 fut.set_result(response.raw)
             replay = self.stream_replays.pop(secret, None)
             if replay is not None:
-                await asyncio.shield(replay.close())
+                self._retire_replay(replay)
             return _completion_response(response.raw)
 
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -858,7 +869,7 @@ class InterceptionServer(Interception):
                     attempt.set_result(replay)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
                 if old is not None:
-                    await asyncio.shield(old.close())
+                    self._retire_replay(old)
                 with contextlib.suppress(ConnectionError):
                     await replay.write(resp, boundary)
                     await resp.write_eof()
