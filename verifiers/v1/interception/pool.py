@@ -138,6 +138,6 @@ class ElasticInterceptionPool(Interception):
             server = await self._server()
             secret = server.register(session)
         try:
-            yield Slot(server.base_url, secret, lambda: server.release(secret))
+            yield Slot(server.base_url, secret, lambda: server.cancel(secret))
         finally:
             await server.release(secret)

@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import secrets
+import tempfile
 import time
 import traceback
 from collections.abc import AsyncIterator
@@ -65,6 +66,10 @@ logger = logging.getLogger(__name__)
 # and the harness gets a 413. Allow large bodies; the upstream provider and the model's
 # context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
+# Atomic stream delivery needs replay storage: keep the common case in memory, spill larger
+# completions to disk, and reject a broken/unbounded provider before it can exhaust the host.
+_STREAM_SPOOL_MEMORY_BYTES = 1024**2
+_MAX_STREAM_RESPONSE_BYTES = 64 * 1024**2
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -142,19 +147,22 @@ class InterceptionServer(Interception):
         self.requests[secret] = set()
         return secret
 
-    async def release(self, secret: str) -> None:
-        """Close a slot to new requests, then cancel every handler it already accepted."""
-        self.sessions.pop(secret, None)
+    async def cancel(self, secret: str) -> None:
+        """Close model admission, then cancel every handler the slot already accepted."""
         requests = tuple(self.requests.pop(secret, set()))
         for request in requests:
             request.cancel()
         await asyncio.gather(*requests, return_exceptions=True)
 
+    async def release(self, secret: str) -> None:
+        await self.cancel(secret)
+        self.sessions.pop(secret, None)
+
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
         secret = self.register(session)
         try:
-            yield Slot(self.base_url, secret, lambda: self.release(secret))
+            yield Slot(self.base_url, secret, lambda: self.cancel(secret))
         finally:
             await self.release(secret)
 
@@ -163,8 +171,13 @@ class InterceptionServer(Interception):
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
-            requests = self.requests.get(dialect.secret(request.headers))
+            secret = dialect.secret(request.headers)
+            requests = self.requests.get(secret)
             if requests is None:
+                if secret in self.sessions:
+                    return web.json_response(
+                        dialect.error_body("rollout stopped"), status=400
+                    )
                 return await self.handle_request(request, dialect)
             task = asyncio.current_task()
             assert task is not None
@@ -612,49 +625,58 @@ class InterceptionServer(Interception):
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
             parser = dialect.stream_parser()
-            events: list[bytes] = []
-            try:
-                async for event in reply.chunks:
-                    events.append(event)
-                    if parser.on_done is not None and is_sse_done_event(event):
-                        parser.on_done()
-                    parser.feed(event)
-                response = parser.finish()
-            except Exception as e:
-                session.error = model_error(
-                    f"malformed upstream response: {type(e).__name__}: {e}",
-                    status_code=502,
-                )
-                error = session.error
-                logger.warning(
-                    "model call failed: id=%s %s: %s",
-                    session.trace.id,
-                    type(session.error).__name__,
-                    session.error,
-                )
-                return web.json_response(
-                    dialect.error_body(str(session.error)), status=502
-                )
-            finally:
-                await reply.close()
+            with tempfile.SpooledTemporaryFile(
+                max_size=_STREAM_SPOOL_MEMORY_BYTES
+            ) as events:
+                size = 0
+                try:
+                    async for event in reply.chunks:
+                        size += len(event)
+                        if size > _MAX_STREAM_RESPONSE_BYTES:
+                            raise ValueError(
+                                f"stream exceeded {_MAX_STREAM_RESPONSE_BYTES} bytes"
+                            )
+                        events.write(event)
+                        if parser.on_done is not None and is_sse_done_event(event):
+                            parser.on_done()
+                        parser.feed(event)
+                    response = parser.finish()
+                except Exception as e:
+                    session.error = model_error(
+                        f"malformed upstream response: {type(e).__name__}: {e}",
+                        status_code=502,
+                    )
+                    error = session.error
+                    logger.warning(
+                        "model call failed: id=%s %s: %s",
+                        session.trace.id,
+                        type(session.error).__name__,
+                        session.error,
+                    )
+                    return web.json_response(
+                        dialect.error_body(str(session.error)), status=502
+                    )
+                finally:
+                    await reply.close()
 
-            if session.trace.is_completed:
-                stop = session.trace.stop_condition or "completed"
-                return web.json_response(
-                    dialect.error_body(f"rollout stopped: {stop}"), status=400
+                if session.trace.is_completed:
+                    stop = session.trace.stop_condition or "completed"
+                    return web.json_response(
+                        dialect.error_body(f"rollout stopped: {stop}"), status=400
+                    )
+                node = turn.commit(response, tools)
+                logger.debug("intercept stream turn: id=%s", session.trace.id)
+                resp = web.StreamResponse(
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
                 )
-            node = turn.commit(response, tools)
-            logger.debug("intercept stream turn: id=%s", session.trace.id)
-            resp = web.StreamResponse(
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-            )
-            resp.content_type = reply.content_type.split(";")[0].strip()
-            with contextlib.suppress(ConnectionResetError):
-                await resp.prepare(request)
-                for event in events:
-                    await resp.write(event)
-                await resp.write_eof()
-            return resp
+                resp.content_type = reply.content_type.split(";")[0].strip()
+                events.seek(0)
+                with contextlib.suppress(ConnectionResetError):
+                    await resp.prepare(request)
+                    while event := events.read(64 * 1024):
+                        await resp.write(event)
+                    await resp.write_eof()
+                return resp
         except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit
             # error, a cancellation) ends a real exchange; couple it to the record unless
