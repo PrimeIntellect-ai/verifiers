@@ -81,8 +81,8 @@ class RolloutSession:
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
-    Cleared when a model turn commits, so a successful retry clears it without a failed or
-    cancelled retry erasing the original failure."""
+    Cleared when a model turn commits or ends in a clean truncation, so an accepted retry clears
+    it without a failed or cancelled retry erasing the original failure."""
     last_request: bytes | None = None
     """Digest of the most recently served request body; with `last_response`, the replay cache
     that keeps the message graph atomic under harness-SDK retries. A retry re-sends the

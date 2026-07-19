@@ -611,6 +611,7 @@ class InterceptionServer(Interception):
                         # the harness (same shape as `refused` above).
                         error = e
                         session.trace.stop("context_length")
+                        session.error = None
                         logger.debug("prompt too long: id=%s", session.trace.id)
                         if response is None:
                             return web.json_response(
@@ -752,6 +753,7 @@ class InterceptionServer(Interception):
             except OverlongPromptError as e:
                 error = e
                 session.trace.stop("context_length")
+                session.error = None
                 logger.debug("prompt too long: id=%s", session.trace.id)
                 return web.json_response(
                     dialect.error_body("rollout stopped: context_length"),
