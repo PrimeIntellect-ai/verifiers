@@ -483,12 +483,12 @@ class InterceptionServer(Interception):
         prompt, tools = dialect.parse_request(body)
         fut: asyncio.Future[dict | None] | None = None
         if not streaming:
-            # No reusable attempt matched, so this request starts a new operation. Close completed
-            # retry windows while preserving pending requests, then claim before the simulator can
-            # await so a real transport retry always finds this attempt.
-            for digest, attempts in tuple(session.inflight.items()):
-                if all(attempt.done() for attempt in attempts):
-                    session.inflight.pop(digest)
+            # No reusable attempt matched, so this request starts a new operation. Replace only a
+            # completed window for this digest: unrelated requests may still retry while parallel
+            # work continues. Claim before the simulator can await so a retry finds this attempt.
+            attempts = session.inflight.get(req_hash)
+            if attempts and all(attempt.done() for attempt in attempts):
+                session.inflight.pop(req_hash)
             fut = asyncio.get_running_loop().create_future()
             # Preserve every parallel operation so an unkeyed retry can be rejected as ambiguous
             # instead of being redirected to another sample. An explicit key makes each operation
@@ -537,17 +537,15 @@ class InterceptionServer(Interception):
                 if len(attempts) > 1:
                     return ambiguous_retry()
                 return await self._replay_stream(request, dialect, attempts[0])
-            for digest, attempts in tuple(streams.items()):
-                if all(attempt.done() for attempt in attempts):
-                    streams.pop(digest)
+            attempts = streams.get(req_hash)
+            if attempts and all(attempt.done() for attempt in attempts):
+                streams.pop(req_hash)
             pending = asyncio.get_running_loop().create_future()
             streams.setdefault(req_hash, []).append(pending)
-            stale_replays = tuple(replays.values()) if replays is not None else ()
-            if replays is not None:
-                replays.clear()
+            stale_replay = replays.pop(req_hash, None) if replays is not None else None
             try:
-                for stale in stale_replays:
-                    await stale.close()
+                if stale_replay is not None:
+                    await stale_replay.close()
                 return await self._stream(
                     request,
                     session,
