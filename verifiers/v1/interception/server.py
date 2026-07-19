@@ -65,8 +65,6 @@ logger = logging.getLogger(__name__)
 # and the harness gets a 413. Allow large bodies; the upstream provider and the model's
 # context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
-_KEEPALIVE_INTERVAL_SECONDS = 3
-_STREAM_QUEUE_MAXSIZE = 16
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -95,20 +93,6 @@ def _completion_response(completion: dict | None) -> web.Response:
     return web.Response(body=body, content_type="application/json", charset="utf-8")
 
 
-async def _queue_chunks(
-    chunks: AsyncIterator[bytes],
-    queue: asyncio.Queue[bytes | None],
-    ready: asyncio.Event,
-) -> None:
-    try:
-        async for chunk in chunks:
-            await queue.put(chunk)
-            ready.set()
-    finally:
-        await queue.put(None)
-        ready.set()
-
-
 class InterceptionServerConfig(BaseInterceptionConfig):
     """A single interception server shared by every rollout, reached (when any consumer is
     remote) via its `tunnel` — the shape that supports a bring-your-own endpoint
@@ -135,6 +119,7 @@ class InterceptionServer(Interception):
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
+        self.requests: dict[str, set[asyncio.Task]] = {}
         self.config = config or InterceptionServerConfig()
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
@@ -154,34 +139,40 @@ class InterceptionServer(Interception):
         return it."""
         secret = secrets.token_urlsafe(16)
         self.sessions[secret] = session
+        self.requests[secret] = set()
         return secret
 
-    def unregister(self, secret: str) -> None:
+    async def release(self, secret: str) -> None:
+        """Close a slot to new requests, then cancel every handler it already accepted."""
         self.sessions.pop(secret, None)
+        requests = tuple(self.requests.pop(secret, set()))
+        for request in requests:
+            request.cancel()
+        await asyncio.gather(*requests, return_exceptions=True)
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
         secret = self.register(session)
         try:
-            yield self.base_url, secret
+            yield Slot(self.base_url, secret, lambda: self.release(secret))
         finally:
-            self.unregister(secret)
+            await self.release(secret)
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
-            session = self.sessions.get(dialect.secret(request.headers))
-            if session is None:
+            requests = self.requests.get(dialect.secret(request.headers))
+            if requests is None:
                 return await self.handle_request(request, dialect)
             task = asyncio.current_task()
             assert task is not None
-            session.active_requests.add(task)
+            requests.add(task)
             try:
                 return await self.handle_request(request, dialect)
             finally:
-                session.active_requests.discard(task)
+                requests.discard(task)
 
         return handler
 
@@ -301,12 +292,6 @@ class InterceptionServer(Interception):
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
-        if session.error_latched:
-            assert session.error is not None
-            return web.json_response(
-                dialect.error_body(str(session.error)),
-                status=getattr(session.error, "status_code", 502),
-            )
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -454,6 +439,12 @@ class InterceptionServer(Interception):
                             session.trace.id,
                             len(call_response.message.tool_calls or []),
                         )
+                        if session.trace.is_completed:
+                            stop = session.trace.stop_condition or "completed"
+                            return web.json_response(
+                                dialect.error_body(f"rollout stopped: {stop}"),
+                                status=400,
+                            )
                         # One node per new message; branches fall out of walking the
                         # graph (see Trace.branches / verifiers.v1.graph).
                         node = turn.commit(call_response, tools)
@@ -561,9 +552,9 @@ class InterceptionServer(Interception):
         prompt: Messages,
         tools: list[Tool] | None = None,
     ) -> web.StreamResponse:
-        """A streamed (SSE) model turn: relay the provider's stream through to the program,
-        incrementally assembling the response to record on the trace. Single-shot — a streamed
-        turn never drives a user simulator (the only client that streams is the eval relay)."""
+        """A streamed (SSE) model turn: buffer and validate the provider stream, commit it to
+        the trace, then replay its native events to the program. Single-shot — a streamed turn
+        never drives a user simulator (the only client that streams is the eval relay)."""
         try:
             refused = await session.refused()
         except RolloutError as e:
@@ -620,101 +611,49 @@ class InterceptionServer(Interception):
                 error = e
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
-            resp = web.StreamResponse(
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-            )
-            resp.content_type = reply.content_type.split(";")[0].strip()
-            # Parse complete events as they relay, avoiding a full-stream byte copy.
             parser = dialect.stream_parser()
-            feed_event = parser.feed
-            on_done = parser.on_done
-            # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
-            queue: asyncio.Queue[bytes | None] = asyncio.Queue(
-                maxsize=_STREAM_QUEUE_MAXSIZE
-            )
-            ready = asyncio.Event()
-            producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
-            parser_error: Exception | None = None
-            # SSE events from the turn-ending one onward (the terminal event and any trailing
-            # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
-            # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
-            # with the turn still unrecorded.
-            deferred: list[bytes] = []
+            events: list[bytes] = []
             try:
-                await resp.prepare(request)
-                while True:
-                    try:
-                        async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
-                            await ready.wait()
-                    except TimeoutError:
-                        await resp.write(b": keepalive\n\n")
-                        continue
-                    chunk = queue.get_nowait()
-                    if queue.empty():
-                        ready.clear()
-                    if chunk is None:
-                        await producer
-                        break
-                    if deferred or dialect.is_terminal_event(chunk):
-                        if parser_error is None:
-                            try:
-                                if on_done is not None and is_sse_done_event(chunk):
-                                    on_done()
-                                feed_event(chunk)
-                            except Exception as e:
-                                parser_error = e
-                        # forwarded after the turn is committed, below
-                        deferred.append(chunk)
-                        continue
-                    await resp.write(chunk)
-                    if parser_error is None:
-                        try:
-                            feed_event(chunk)
-                        except Exception as e:
-                            parser_error = e
-            except ConnectionResetError as e:
-                # The harness went away mid-stream; the provider exchange still happened.
-                error = e
-                return resp
-            finally:
-                producer.cancel()
-                # Let a canceled producer enqueue EOF while unwinding.
-                if queue.full():
-                    queue.get_nowait()
-                await asyncio.gather(producer, return_exceptions=True)
-                await reply.close()
-
-            try:
-                if parser_error is not None:
-                    raise parser_error
+                async for event in reply.chunks:
+                    events.append(event)
+                    if parser.on_done is not None and is_sse_done_event(event):
+                        parser.on_done()
+                    parser.feed(event)
                 response = parser.finish()
             except Exception as e:
                 session.error = model_error(
                     f"malformed upstream response: {type(e).__name__}: {e}",
                     status_code=502,
                 )
-                session.error_latched = True
                 error = session.error
-                # A missing graph turn invalidates every other request already using this session.
-                current = asyncio.current_task()
-                for task in session.active_requests:
-                    if task is not current:
-                        task.cancel()
                 logger.warning(
                     "model call failed: id=%s %s: %s",
                     session.trace.id,
                     type(session.error).__name__,
                     session.error,
                 )
-            else:
-                node = turn.commit(response, tools)
-                logger.debug("intercept stream turn: id=%s", session.trace.id)
+                return web.json_response(
+                    dialect.error_body(str(session.error)), status=502
+                )
             finally:
-                # Release terminal events only after the turn is committed or its failure captured.
-                with contextlib.suppress(ConnectionResetError):
-                    for event in deferred:
-                        await resp.write(event)
-                    await resp.write_eof()
+                await reply.close()
+
+            if session.trace.is_completed:
+                stop = session.trace.stop_condition or "completed"
+                return web.json_response(
+                    dialect.error_body(f"rollout stopped: {stop}"), status=400
+                )
+            node = turn.commit(response, tools)
+            logger.debug("intercept stream turn: id=%s", session.trace.id)
+            resp = web.StreamResponse(
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+            )
+            resp.content_type = reply.content_type.split(";")[0].strip()
+            with contextlib.suppress(ConnectionResetError):
+                await resp.prepare(request)
+                for event in events:
+                    await resp.write(event)
+                await resp.write_eof()
             return resp
         except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit

@@ -165,7 +165,8 @@ class Rollout:
             # interception is exposed whenever any consumer is remote).
             async with self._serve_interception(
                 runtime, session, [*tool_servers, *([user] if user else [])]
-            ) as (base_url, secret):
+            ) as slot:
+                base_url, secret = slot.base_url, slot.secret
                 endpoint = f"{runtime.host_url(base_url)}/v1"
                 async with (
                     serve_tools(
@@ -203,10 +204,7 @@ class Rollout:
                         )
                     except TimeoutError:
                         trace.stop("harness_timeout")
-                        requests = tuple(session.active_requests)
-                        for request in requests:
-                            request.cancel()
-                        await asyncio.gather(*requests, return_exceptions=True)
+                        await slot.cancel()
                     except RolloutError as e:
                         if session.error is not None:
                             raise session.error from e

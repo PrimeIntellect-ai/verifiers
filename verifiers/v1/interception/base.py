@@ -11,7 +11,9 @@ shared: whoever entered it owns the lifecycle; borrowers only `acquire`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 
 from pydantic_config import BaseConfig
@@ -26,12 +28,18 @@ class BaseInterceptionConfig(BaseConfig):
     `multiplex`)."""
 
 
-# (base_url, secret): the interception server's reachable base URL for this rollout, and the
-# bearer the harness/tool/user servers authenticate with. The harness reaches the model at
-# `{base_url}/v1`; tool/user servers reach this rollout's shared state at `{base_url}/state`
-# + `/task`. `base_url` is universally reachable — the interception is exposed (tunnel)
-# whenever any consumer is remote.
-Slot = tuple[str, str]
+@dataclass(frozen=True)
+class Slot:
+    """One rollout's interception registration.
+
+    `base_url` is universally reachable and `secret` authenticates the harness/tool/user
+    servers. `cancel` closes admission before cancelling model handlers, so a rollout timeout
+    cannot race a newly accepted request.
+    """
+
+    base_url: str
+    secret: str
+    cancel: Callable[[], Awaitable[None]]
 
 
 class Interception(ABC):
