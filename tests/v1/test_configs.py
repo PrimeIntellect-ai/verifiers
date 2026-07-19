@@ -56,27 +56,19 @@ def test_replay_lifts_the_saved_eval_taskset():
 
 
 async def test_replay_refuses_multi_agent_runs(tmp_path):
-    """Offline re-scoring runs per trace and can't re-run the env's cross-trace
-    score() — a saved multi-agent run is refused, not silently flattened."""
-    import asyncio
-
+    """Multi-agent runs don't support replay: offline re-scoring runs per trace and
+    can't re-run the env's cross-trace score(). The saved config names the env, so
+    the refusal is up front — before any episode is read."""
     import pytest
 
-    import verifiers.v1 as vf
-    from verifiers.v1.cli.output import append_episode, save_config
+    from verifiers.v1.cli.output import save_config
     from verifiers.v1.cli.replay import run_replay
     from verifiers.v1.configs.replay import ReplayConfig
-    from verifiers.v1.trace import Episode, Trace, TraceTask
 
-    task = TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi"))
-    episode = Episode(env="echo-v1", task=task)
-    for role in ("a", "b"):
-        trace = Trace(task=task)
-        trace.role = role
-        episode.traces.append(trace)
     source = tmp_path / "run"
-    save_config(EvalConfig(env={"taskset": {"id": "echo-v1"}}), source)
-    await append_episode(source, episode, asyncio.Lock())
+    save_config(
+        EvalConfig(env={"id": "best-of-n", "taskset": {"id": "echo-v1"}}), source
+    )
     config = ReplayConfig.model_validate({"taskset": {"id": "echo-v1"}, "rich": False})
     with pytest.raises(SystemExit, match="multi-agent"):
         await run_replay(config, source, tmp_path / "out")
@@ -84,7 +76,7 @@ async def test_replay_refuses_multi_agent_runs(tmp_path):
 
 async def test_replay_skips_traceless_episodes(tmp_path):
     """An episode whose env hooks failed before any agent ran holds no traces —
-    replay drops it instead of refusing the whole run as multi-agent."""
+    nothing to re-score, so replay drops it and re-scores the rest."""
     import asyncio
 
     import verifiers.v1 as vf

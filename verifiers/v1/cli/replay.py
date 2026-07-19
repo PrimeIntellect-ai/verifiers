@@ -2,9 +2,10 @@
 
 Replay clears each trace's scores and recomputes everything computable from the saved
 transcript — trace-only handlers plus the layered config's judges. Runtime-requiring
-signals (and env-level `score()`, which needs the whole episode) don't run offline, so a
-replay carries offline scores only; the source run keeps the runtime-recorded values. Its saved
-config is the base for replay-specific overrides.
+signals don't run offline, so a replay carries offline scores only; the source run keeps
+the runtime-recorded values. Its saved config is the base for replay-specific overrides.
+Multi-agent runs don't support replay: re-scoring is per trace, and the env's
+cross-trace `score()` can't run offline.
 """
 
 import asyncio
@@ -64,30 +65,24 @@ def output_dir(config: ReplayConfig) -> Path:
 
 async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trace]:
     logger.debug("replay config:\n%s", config.model_dump_json(indent=2))
+    # Multi-agent runs don't support replay: offline re-scoring runs per trace and
+    # can't re-run the env's cross-trace `score()`, so re-writing such a run would
+    # produce plausible-but-wrong single-trace episodes. Refuse up front, from the
+    # saved config — everything below may assume plain single-agent episodes.
+    saved_env = tomllib.loads((source / CONFIG_FILE).read_text()).get("env") or {}
+    env_cls = vf.environment_class(config.taskset.id, saved_env.get("id") or "")
+    if not issubclass(env_cls, vf.SingleAgentEnv):
+        raise SystemExit(
+            f"replay: {source} is a multi-agent run ({env_cls.__name__}); offline "
+            "re-scoring runs per trace and would drop the env's cross-trace "
+            "score() — multi-agent runs don't support replay"
+        )
     task_cls = vf.task_type(config.taskset.id)
     data_cls = task_data_cls(task_cls)
     # `WireTaskData` reads any taskset's saved task without importing its Task type.
+    # An episode may hold no traces (its env hooks failed before any agent ran);
+    # there's nothing to re-score, so it drops out in the flatten.
     episodes = read_episodes(source, Trace[WireTaskData, state_cls(task_cls)])
-    # Replay re-scores per trace and can't re-run the env's cross-trace `score()`,
-    # so a multi-agent run would re-write as plausible-but-wrong single-trace
-    # episodes — refuse it instead of mangling it silently. A trace-less episode
-    # is not multi-agent: its env hooks failed before any agent ran, so there's
-    # nothing to re-score and it drops out here.
-    multi = [e for e in episodes if len(e.traces) > 1 or any(t.role for t in e.traces)]
-    if multi:
-        raise SystemExit(
-            f"replay: {source} holds multi-agent episodes ({len(multi)} of "
-            f"{len(episodes)} carry multiple or role-stamped traces); offline "
-            "re-scoring runs per trace and would drop the env's cross-trace "
-            "score() — replay supports single-agent runs only (for now)"
-        )
-    empty = sum(1 for e in episodes if not e.traces)
-    if empty:
-        logger.info(
-            "replay: skipping %d episode(s) that hold no traces (their env hooks "
-            "failed before any agent ran)",
-            empty,
-        )
     traces = [trace for episode in episodes for trace in episode.traces]
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
