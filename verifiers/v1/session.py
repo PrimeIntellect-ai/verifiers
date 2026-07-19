@@ -83,10 +83,12 @@ class RolloutSession:
     error once the harness returns instead of a secondary `HarnessError`. Cleared when a model
     turn commits or ends in a clean truncation; the server separately versions model-turn
     failures so an overlapping auxiliary failure cannot invalidate a valid sampled response."""
-    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
-    """Request digest -> its pending or completed response future. Transport retries await or
-    replay the current attempt; a new operation closes completed retry windows while preserving
-    pending requests. Failed attempts are removed, and the server clears everything on release."""
+    inflight: dict[bytes, list["asyncio.Future[dict | None]"]] = field(
+        default_factory=dict
+    )
+    """Request digest -> attempts in its current retry window. One attempt can be replayed; more
+    than one means an unkeyed parallel request is ambiguous and cannot be retried safely. A new
+    operation closes completed windows, and the interception server clears everything on release."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each

@@ -152,7 +152,7 @@ class InterceptionServer(Interception):
         self.requests: dict[str, set[asyncio.Task]] = {}
         self.blocking_error_generations: dict[str, int] = {}
         self.stream_requests: dict[
-            str, dict[bytes, asyncio.Future[_StreamReplay | None]]
+            str, dict[bytes, list[asyncio.Future[_StreamReplay | None]]]
         ] = {}
         self.stream_replays: dict[str, dict[bytes, _StreamReplay]] = {}
         self.config = config or InterceptionServerConfig()
@@ -404,16 +404,27 @@ class InterceptionServer(Interception):
         # re-sending the byte-identical request; sampling it again would commit a second turn and
         # fork the graph into a dead-end branch. Stainless SDKs distinguish those retries from a
         # fresh request with this counter; explicit idempotency keys give other clients the same
-        # operation identity. A fresh identical non-stream request must still sample again.
+        # operation identity. A fresh identical request must still sample again.
         idempotency_key = request.headers.get("idempotency-key") or request.headers.get(
             "x-idempotency-key"
         )
         is_retry = request.headers.get("x-stainless-retry-count", "0") != "0"
-        replay_nonstream = is_retry or idempotency_key is not None
-        if not streaming and idempotency_key is not None:
+        replay_request = is_retry or idempotency_key is not None
+        if idempotency_key is not None:
             req_hash = _body_digest(req_hash + b"\0" + idempotency_key.encode())
+
+        def ambiguous_retry() -> web.Response:
+            logger.warning("ambiguous interception retry: id=%s", session.trace.id)
+            return web.json_response(
+                dialect.error_body(
+                    "ambiguous retry: parallel identical requests require an idempotency key"
+                ),
+                status=400,
+            )
+
         if (
             streaming
+            and replay_request
             and (replays := self.stream_replays.get(secret)) is not None
             and (replay := replays.get(req_hash)) is not None
         ):
@@ -421,11 +432,14 @@ class InterceptionServer(Interception):
             return await self._replay_stream(request, dialect, replay)
         if (
             streaming
+            and replay_request
             and (streams := self.stream_requests.get(secret)) is not None
-            and (pending := streams.get(req_hash)) is not None
+            and (attempts := streams.get(req_hash))
         ):
+            if len(attempts) > 1:
+                return ambiguous_retry()
             logger.debug("intercept stream coalesce: id=%s", session.trace.id)
-            return await self._replay_stream(request, dialect, pending)
+            return await self._replay_stream(request, dialect, attempts[0])
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
@@ -442,10 +456,12 @@ class InterceptionServer(Interception):
 
         if (
             not streaming
-            and replay_nonstream
-            and (inflight := session.inflight.get(req_hash)) is not None
+            and replay_request
+            and (attempts := session.inflight.get(req_hash))
         ):
-            return await coalesced(inflight)
+            if len(attempts) > 1:
+                return ambiguous_retry()
+            return await coalesced(attempts[0])
         if session.trace.is_completed:
             stop = session.trace.stop_condition or "completed"
             return web.json_response(
@@ -470,11 +486,14 @@ class InterceptionServer(Interception):
             # No reusable attempt matched, so this request starts a new operation. Close completed
             # retry windows while preserving pending requests, then claim before the simulator can
             # await so a real transport retry always finds this attempt.
-            for digest, completed in tuple(session.inflight.items()):
-                if completed.done():
+            for digest, attempts in tuple(session.inflight.items()):
+                if all(attempt.done() for attempt in attempts):
                     session.inflight.pop(digest)
             fut = asyncio.get_running_loop().create_future()
-            session.inflight[req_hash] = fut
+            # Preserve every parallel operation so an unkeyed retry can be rejected as ambiguous
+            # instead of being redirected to another sample. An explicit key makes each operation
+            # a distinct digest and therefore leaves one unambiguous attempt in its list.
+            session.inflight.setdefault(req_hash, []).append(fut)
         # Cache the opening so retries do not advance the simulator twice.
         if (
             session.user is not None
@@ -488,28 +507,47 @@ class InterceptionServer(Interception):
                 prompt = [*prompt, *session.opening]
             except BaseException:
                 if fut is not None:
-                    if session.inflight.get(req_hash) is fut:
+                    attempts = session.inflight.get(req_hash)
+                    if (
+                        attempts is not None
+                        and len(attempts) == 1
+                        and attempts[0] is fut
+                    ):
                         session.inflight.pop(req_hash)
                     fut.set_result(None)
                 raise
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
         if streaming:
-            # Re-check after the simulator opening await above, then claim the request without
-            # another await so two identical streams cannot both reach the provider.
+            # Re-check after the simulator opening await above. Fresh identical streams remain
+            # independent; only a retry or repeated explicit idempotency key reuses an attempt.
             replays = self.stream_replays.get(secret)
-            if replays is not None and (replay := replays.get(req_hash)) is not None:
+            if (
+                replay_request
+                and replays is not None
+                and (replay := replays.get(req_hash)) is not None
+            ):
                 return await self._replay_stream(request, dialect, replay)
             streams = self.stream_requests.get(secret)
             if streams is None or secret not in self.requests:
                 return web.json_response(
                     dialect.error_body("rollout stopped"), status=400
                 )
-            if (pending := streams.get(req_hash)) is not None:
-                return await self._replay_stream(request, dialect, pending)
+            if replay_request and (attempts := streams.get(req_hash)):
+                if len(attempts) > 1:
+                    return ambiguous_retry()
+                return await self._replay_stream(request, dialect, attempts[0])
+            for digest, attempts in tuple(streams.items()):
+                if all(attempt.done() for attempt in attempts):
+                    streams.pop(digest)
             pending = asyncio.get_running_loop().create_future()
-            streams[req_hash] = pending
+            streams.setdefault(req_hash, []).append(pending)
+            stale_replays = tuple(replays.values()) if replays is not None else ()
+            if replays is not None:
+                replays.clear()
             try:
+                for stale in stale_replays:
+                    await stale.close()
                 return await self._stream(
                     request,
                     session,
@@ -524,7 +562,12 @@ class InterceptionServer(Interception):
                     blocking_error_generation=blocking_error_generation,
                 )
             finally:
-                if streams.get(req_hash) is pending:
+                attempts = streams.get(req_hash)
+                if (
+                    attempts is not None
+                    and len(attempts) == 1
+                    and attempts[0] is pending
+                ):
                     streams.pop(req_hash, None)
                 if not pending.done():
                     pending.set_result(None)
@@ -714,10 +757,12 @@ class InterceptionServer(Interception):
                 headers.popall("idempotency-key", None)
                 headers.popall("x-idempotency-key", None)
         finally:
-            # Retain successful responses for later retries. Failed/refused attempts are removed
-            # so a fresh retry can run; None only unblocks a retry already awaiting this attempt.
+            # Retain successful responses for later retries. A failed sole attempt is removed so
+            # a retry can run; an ambiguous group keeps its failure marker until a fresh operation
+            # closes the window, so no retry can silently select a different parallel sample.
             if not fut.done():
-                if session.inflight.get(req_hash) is fut:
+                attempts = session.inflight.get(req_hash)
+                if attempts is not None and len(attempts) == 1 and attempts[0] is fut:
                     session.inflight.pop(req_hash, None)
                 fut.set_result(None)
 
@@ -933,10 +978,18 @@ class InterceptionServer(Interception):
                 node = turn.commit(response, tools)
                 session.error = None
                 replay = _StreamReplay(content_type, events)
-                self.stream_replays[secret][req_hash] = replay
-                cached = True  # the per-session retry cache owns the spool now
+                attempts = self.stream_requests[secret].get(req_hash)
+                if (
+                    attempts is not None
+                    and len(attempts) == 1
+                    and attempts[0] is attempt
+                ):
+                    self.stream_replays[secret][req_hash] = replay
+                    cached = True  # the per-session retry cache owns the spool now
                 if not attempt.done():
-                    attempt.set_result(replay)
+                    # Ambiguous operations keep a marker but not a reusable spool. The owner still
+                    # receives its local replay below; a retry must supply an idempotency key.
+                    attempt.set_result(replay if cached else None)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
                 with contextlib.suppress(ConnectionError):
                     await replay.write(resp, boundary)
