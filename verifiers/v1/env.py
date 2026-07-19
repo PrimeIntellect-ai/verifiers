@@ -155,6 +155,11 @@ class EnvConfig(BaseConfig):
     mints its tasks without a dataset; every bundled env requires one."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
+    max_concurrent: int | None = None
+    """Bounds concurrent agent runs on a SERVED env, per worker — an env's internal
+    fan-out counts, so best-of-n under many requests can't run unbounded (None = no
+    limit). The in-process eval CLI gates with its run-level `--max-concurrent`
+    instead."""
     max_turns: int | None = None
     """Max model turns per rollout (None = no limit). Framework-enforced (the
     interception server refuses turns past it), so it applies to any harness."""

@@ -49,6 +49,9 @@ class EnvServer:
         # v1 envs never group-score (siblings score inside the env's own rollout);
         # only the legacy (v0) bridge sets this.
         self.requires_group_scoring = False
+        self._gate = (
+            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+        )
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -122,7 +125,9 @@ class EnvServer:
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         (slot,) = self.env.slots(self._task(req.task_idx))
-        episode = await self.env.run_slot(slot, ctx)
+        # The gate spans requests: `--env.max-concurrent` bounds this worker's
+        # agent runs the same way the in-process eval's semaphore does.
+        episode = await self.env.run_slot(slot, ctx, self._gate)
         # Trust the env-minted episode; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(episode=episode)
 
