@@ -626,7 +626,8 @@ class InterceptionServer(Interception):
                         async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
                             await ready.wait()
                     except TimeoutError:
-                        await resp.write(b": keepalive\n\n")
+                        # Don't terminate an empty event; some SSE clients try to JSON-decode it.
+                        await resp.write(b": keepalive\n")
                         continue
                     chunk = queue.get_nowait()
                     if queue.empty():
@@ -634,6 +635,12 @@ class InterceptionServer(Interception):
                     if chunk is None:
                         await producer
                         break
+                    # We send our own keepalive above. Some clients treat a complete
+                    # comment-only event from upstream as an empty JSON payload.
+                    if not any(
+                        line.startswith(b"data:") for line in chunk.splitlines()
+                    ):
+                        continue
                     if deferred or dialect.is_terminal_event(chunk):
                         if parser_error is None:
                             try:
