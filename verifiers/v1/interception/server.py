@@ -150,6 +150,7 @@ class InterceptionServer(Interception):
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
         self.requests: dict[str, set[asyncio.Task]] = {}
+        self.blocking_error_generations: dict[str, int] = {}
         self.stream_requests: dict[
             str, dict[bytes, asyncio.Future[_StreamReplay | None]]
         ] = {}
@@ -174,6 +175,7 @@ class InterceptionServer(Interception):
         secret = secrets.token_urlsafe(16)
         self.sessions[secret] = session
         self.requests[secret] = set()
+        self.blocking_error_generations[secret] = 0
         self.stream_requests[secret] = {}
         self.stream_replays[secret] = {}
         return secret
@@ -187,6 +189,7 @@ class InterceptionServer(Interception):
 
     async def release(self, secret: str) -> None:
         await self.cancel(secret)
+        self.blocking_error_generations.pop(secret, None)
         self.stream_requests.pop(secret, None)
         for replay in self.stream_replays.pop(secret, {}).values():
             await replay.close()
@@ -269,12 +272,23 @@ class InterceptionServer(Interception):
                 self.tunnel.expose(self.port)
             )
 
+    def _set_blocking_error(
+        self, secret: str, session: RolloutSession, error: RolloutError
+    ) -> None:
+        """Store a model-turn-adjacent failure and invalidate earlier requests."""
+        self.blocking_error_generations[secret] += 1
+        session.error = error
+
     def _fail(
-        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+        self,
+        secret: str,
+        session: RolloutSession,
+        dialect: Dialect,
+        error: RolloutError,
     ) -> web.Response:
         """Stash a model-turn-adjacent failure (a `@stop` or user simulator raising) so the rollout
         re-raises it as the real cause, and report it to the harness as an HTTP error."""
-        session.error = error
+        self._set_blocking_error(secret, session, error)
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
@@ -370,6 +384,7 @@ class InterceptionServer(Interception):
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         error_snapshot = session.error
+        blocking_error_generation = self.blocking_error_generations[secret]
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -479,6 +494,7 @@ class InterceptionServer(Interception):
                     req_hash=req_hash,
                     attempt=pending,
                     error_snapshot=error_snapshot,
+                    blocking_error_generation=blocking_error_generation,
                 )
             finally:
                 if streams.get(req_hash) is pending:
@@ -516,9 +532,10 @@ class InterceptionServer(Interception):
                 try:
                     refused = await session.refused()
                 except RolloutError as e:
-                    return self._fail(session, dialect, e)
+                    return self._fail(secret, session, dialect, e)
                 except Exception as e:
                     return self._fail(
+                        secret,
                         session,
                         dialect,
                         TaskError(f"@stop failed: {type(e).__name__}: {e}"),
@@ -568,9 +585,13 @@ class InterceptionServer(Interception):
                                 dialect.error_body(f"rollout stopped: {stop}"),
                                 status=400,
                             )
-                        # The snapshot check and commit contain no await, so a concurrent
-                        # failure cannot be cleared by a request admitted before it.
-                        if session.error is not error_snapshot:
+                        # The generation check and commit contain no await, so a concurrent
+                        # model-turn failure cannot be cleared by a request admitted before it.
+                        # Aux failures remain reportable but do not invalidate a sampled turn.
+                        if (
+                            self.blocking_error_generations[secret]
+                            != blocking_error_generation
+                        ):
                             error = InterceptionError(
                                 "model response discarded: another model call failed"
                             )
@@ -603,7 +624,7 @@ class InterceptionServer(Interception):
                         # Stash the real cause; the rollout re-raises it after the harness returns.
                         # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
                         error = e
-                        session.error = e
+                        self._set_blocking_error(secret, session, e)
                         logger.warning(
                             "model call failed: id=%s %s: %s",
                             session.trace.id,
@@ -653,9 +674,10 @@ class InterceptionServer(Interception):
                         response.message.content or "", len(prompt)
                     )
                 except RolloutError as e:
-                    return self._fail(session, dialect, e)
+                    return self._fail(secret, session, dialect, e)
                 except Exception as e:
                     return self._fail(
+                        secret,
                         session,
                         dialect,
                         UserError(f"user simulator failed: {type(e).__name__}: {e}"),
@@ -692,6 +714,7 @@ class InterceptionServer(Interception):
         req_hash: bytes,
         attempt: asyncio.Future[_StreamReplay | None],
         error_snapshot: RolloutError | None,
+        blocking_error_generation: int,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: buffer and validate the provider stream, commit it to
         the trace, then replay its native events to the program. Single-shot — a streamed turn
@@ -699,9 +722,10 @@ class InterceptionServer(Interception):
         try:
             refused = await session.refused()
         except RolloutError as e:
-            return self._fail(session, dialect, e)
+            return self._fail(secret, session, dialect, e)
         except Exception as e:
             return self._fail(
+                secret,
                 session,
                 dialect,
                 TaskError(f"@stop failed: {type(e).__name__}: {e}"),
@@ -742,7 +766,7 @@ class InterceptionServer(Interception):
                 )
             except RolloutError as e:
                 error = e
-                session.error = e
+                self._set_blocking_error(secret, session, e)
                 logger.warning(
                     "model call failed: id=%s %s: %s",
                     session.trace.id,
@@ -836,16 +860,17 @@ class InterceptionServer(Interception):
                     if not await write_downstream(b": keepalive\n"):
                         return resp
                 except Exception as e:
-                    session.error = model_error(
+                    blocking_error = model_error(
                         f"malformed upstream response: {type(e).__name__}: {e}",
                         status_code=502,
                     )
-                    error = session.error
+                    self._set_blocking_error(secret, session, blocking_error)
+                    error = blocking_error
                     logger.warning(
                         "model call failed: id=%s %s: %s",
                         session.trace.id,
-                        type(session.error).__name__,
-                        session.error,
+                        type(blocking_error).__name__,
+                        blocking_error,
                     )
                     if request.transport is not None:
                         request.transport.close()
@@ -877,8 +902,8 @@ class InterceptionServer(Interception):
                     if request.transport is not None:
                         request.transport.close()
                     return resp
-                # Match the atomic admission snapshot guard in the non-streaming path.
-                if session.error is not error_snapshot:
+                # Match the atomic admission-generation guard in the non-streaming path.
+                if self.blocking_error_generations[secret] != blocking_error_generation:
                     error = InterceptionError(
                         "model response discarded: another model call failed"
                     )

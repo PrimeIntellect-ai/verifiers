@@ -78,11 +78,11 @@ class RolloutSession:
     harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
     twice and advances the simulator's queue past the opening."""
     error: "RolloutError | None" = None
-    """The latest unresolved model-call failure. The harness only sees it as an HTTP error
-    (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
-    harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
-    Cleared when a model turn commits or ends in a clean truncation, so an accepted retry clears
-    it without a failed or cancelled retry erasing the original failure."""
+    """The latest unresolved failure surfaced through interception. The harness only sees it as
+    an HTTP error (and may swallow it, or exit non-zero), so the rollout re-raises this original
+    error once the harness returns instead of a secondary `HarnessError`. Cleared when a model
+    turn commits or ends in a clean truncation; the server separately versions model-turn
+    failures so an overlapping auxiliary failure cannot invalidate a valid sampled response."""
     inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
     """Request digest -> its pending or completed response future. Concurrent retries await the
     first attempt; later retries reuse its successful result. Failed attempts are removed so a
