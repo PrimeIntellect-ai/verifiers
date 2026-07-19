@@ -125,15 +125,12 @@ class InterceptionServer(Interception):
     `requires_tunnel` (some consumer is off the host network) it mints its configured
     tunnel; on `start` it then binds where the tunnel says (`bind_host`/`bind_port`) and
     sets `base_url` — the one URL every consumer reaches it at — to the tunnel's public
-    URL. Without, every consumer is on the host network: it binds loopback, tunnel-free —
-    plus `extra_host` when a consumer on a restricted network (offline docker) reaches
-    the host only at that address (the internal network's gateway IP)."""
+    URL. Without, every consumer is on the host network: it binds loopback, tunnel-free."""
 
     def __init__(
         self,
         config: InterceptionServerConfig | None = None,
         requires_tunnel: bool = False,
-        extra_host: str | None = None,
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
@@ -141,7 +138,6 @@ class InterceptionServer(Interception):
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
-        self.extra_host = extra_host
         self.host = "127.0.0.1"
         self.port = 0
         self.base_url = ""  # set by `start`
@@ -212,10 +208,6 @@ class InterceptionServer(Interception):
         site = web.TCPSite(self.runner, self.host, bind_port)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # actual bound port
-        if self.tunnel is None and self.extra_host is not None:
-            # A consumer on a restricted network (offline docker) reaches the host only
-            # at this address (the internal network's gateway); serve the same port there.
-            await web.TCPSite(self.runner, self.extra_host, self.port).start()
         logger.info("interception up: url=http://%s:%d", self.host, self.port)
         self.stack.callback(
             logger.info, "interception down: url=http://%s:%d", self.host, self.port

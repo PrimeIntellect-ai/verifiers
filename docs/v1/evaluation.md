@@ -54,3 +54,46 @@ disabled_tools = ["shell_tool"]
 ```
 
 The names of these tools are set by the respective harness. Consult the relevant documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
+
+## Docker network policies
+
+Docker harnesses can keep trusted setup online, then restrict the agent to declared
+HTTP(S) destinations:
+
+```toml
+[harness.runtime]
+type = "docker"
+network_access = false
+allow = ["https://*.wikipedia.org"]
+block = ["https://upload.wikimedia.org"]
+```
+
+`network_access = false` is deny-by-default: the interception URL and every MCP URL are
+added automatically, then `allow` adds user destinations. `block` can narrow that user
+allowlist. With `network_access = true`, networking stays open unless `block` is
+non-empty, in which case matching destinations are denied. User block rules win over
+user allow rules; framework interception and MCP routes always remain reachable.
+
+Rules may be bare host patterns (`*.example.com`) or URL origins
+(`https://example.com:8443`). A scheme or port in a rule narrows the match; URL paths
+are ignored. `*.example.com` includes `example.com` itself.
+
+The enforcement shape follows
+[Docker Sandboxes network isolation](https://docs.docker.com/ai/sandboxes/security/isolation/):
+HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed. As in
+[Docker's policy evaluation](https://docs.docker.com/ai/sandboxes/governance/concepts/),
+user deny rules win over user allows; `network_access` selects Verifiers' default allow
+or deny posture.
+
+The restriction begins after task and harness setup and remains active through agent
+execution, finalization, and scoring. Debug actions apply it after task setup as well.
+The policy proxy runs in the Verifiers process, not a sidecar. Linux puts its listening
+socket on container loopback and removes every non-loopback route. macOS keeps one route
+to the host and limits it to the proxy port. One-shot helpers place the listener and
+apply the cut, then exit, so the harness remains the only running container. This
+prevents direct proxy bypass, peer-container access, arbitrary host access, and non-HTTP
+egress.
+
+Colocated MCP servers remain available on container loopback. The in-process proxy dials
+host-local interception and MCP endpoints directly; shared and external MCP URLs pass
+through the same policy without requiring a sidecar or public tunnel.

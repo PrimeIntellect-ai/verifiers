@@ -235,27 +235,13 @@ class Runtime(ABC):
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
 
-    async def prepare_execution(self, routes: dict[str, str]) -> dict[str, str]:
-        """Last setup step, right before the agent starts. `routes` are the URLs it
-        will use (`model` — the interception endpoint; `mcp:<name>` — tool servers).
-        Runtimes with restricted networking (docker `network_access=False`; provider
-        allow/block lists) cut or narrow the network here, reject routes that would be
-        unreachable afterwards, and return the routes to use. Default: unrestricted —
-        no-op."""
-        return routes
-
-    @property
-    def host_service_host(self) -> str | None:
-        """An extra address host services (interception, host MCP servers) must bind
-        for this runtime to reach them once its network is restricted — e.g. the
-        offline network's gateway IP. None = the usual loopback reachability suffices."""
-        return None
+    async def prepare_execution(self, routes: list[str]) -> None:
+        """Last setup step, right before the agent starts. Restricted runtimes enforce
+        their policy here while keeping the interception and MCP `routes` reachable."""
 
     @property
     def network_isolated(self) -> bool:
-        """Whether this runtime's network is narrowed to host-services-only for the
-        agent phase (see `prepare_execution`). Server placement uses it to reject
-        servers an isolated harness could never reach."""
+        """Whether the agent phase uses filtered networking (see `prepare_execution`)."""
         return False
 
     @property

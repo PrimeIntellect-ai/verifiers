@@ -1,22 +1,17 @@
-"""Local Docker runtime: host networking by default, host-only networking on demand.
+"""Local Docker runtime with optional execution-time URL filtering."""
 
-With `DockerConfig.network_access=False` the container keeps internet through setup
-(package installs, provisioning), then — right before the agent starts
-(`prepare_execution`) — loses it: on Linux it is moved onto a shared `--internal`
-network where only the gateway (the host) is reachable; on macOS the Docker VM gives
-internal networks no route to the host, so a one-shot helper pins a /32 route to the
-host and drops the default route instead. Either way, afterwards the container reaches
-host services (the interception server, host MCP servers) and nothing else."""
-
+import array
 import asyncio
 import contextlib
 import logging
 import shlex
+import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import PurePosixPath
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic_config import BaseConfig
 
@@ -27,7 +22,7 @@ from verifiers.v1.runtimes.base import (
     Runtime,
     parse_gpu,
 )
-from verifiers.v1.runtimes.egress import ensure_egress_proxy, host_matcher
+from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -49,19 +44,13 @@ class DockerConfig(BaseConfig):
     this is accepted (so a task can declare it without a warning) but not enforced."""
     network_access: bool = True
     """False = keep internet only through setup (package installs, provisioning), then
-    cut it right before the agent starts (`prepare_execution`): the container then
-    reaches host services (the interception server, host MCP servers) and nothing
-    else."""
+    allow only the interception URL, MCP URLs, and `allow` entries."""
     allow: list[str] = []
-    """Host patterns (fnmatch wildcards, e.g. "*.wikipedia.org"; matches the apex too)
-    the agent may still reach with network_access=False, via a host-side egress proxy
-    (`verifiers.v1.runtimes.egress`) the runtime injects as HTTP(S)_PROXY — the cut
-    itself always stands, so the proxy is the only way out. Filtering applies to
-    proxy-aware clients."""
+    """URL origins or host patterns the agent may reach with `network_access=False`.
+    Wildcards are supported and `*.example.com` also matches the apex."""
     block: list[str] = []
-    """Host patterns denied even with network_access=True (block wins over allow).
-    Enforcing a non-empty block list uses the same cut + proxy, with a default-allow
-    policy (broad access minus the block list)."""
+    """URL origins or host patterns denied during execution. Block rules win over
+    `allow`; framework interception and MCP routes always remain reachable."""
 
     @property
     def network_isolated(self) -> bool:
@@ -89,82 +78,17 @@ async def docker(*args: str) -> ProgramResult:
     )
 
 
-async def docker_checked(*args: str) -> ProgramResult:
-    result = await docker(*args)
-    if result.exit_code != 0:
-        raise SandboxError(f"docker {' '.join(args)} failed: {result.stderr.strip()}")
-    return result
-
-
-_OFFLINE_NETWORK = "verifiers-offline"
-"""The one internal network every offline container shares (created on first use, kept
-around afterwards; `docker network rm` it to clean up). `--internal` = no route off the
-network — except the bridge gateway, a host-side interface, which stays reachable:
-that's where host services (interception, host MCP servers) bind for offline containers.
-Inter-container communication is disabled so concurrent rollouts can't reach each other
-(the gateway is the host, not a peer — unaffected)."""
-
-
-async def ensure_offline_network() -> str:
-    """Create the shared offline network if needed and return its gateway IP — the
-    address host services bind and offline containers reach them at. A same-named
-    network is only trusted when it is internal (otherwise the "cut" would silently
-    keep containers online): recreated when it's ours and unused, refused else."""
-    inspect = await docker(
-        "network",
-        "inspect",
-        _OFFLINE_NETWORK,
-        "--format",
-        "{{.Internal}} {{len .Containers}} {{json .Labels}}",
-    )
-    if inspect.exit_code == 0:
-        internal, containers, labels = inspect.stdout.strip().split(" ", 2)
-        if internal == "true":
-            gateway = await docker(
-                "network",
-                "inspect",
-                _OFFLINE_NETWORK,
-                "--format",
-                "{{(index .IPAM.Config 0).Gateway}}",
-            )
-            if gateway.exit_code == 0 and gateway.stdout.strip():
-                return gateway.stdout.strip()
-        # Not internal (stale or foreign): recreate if it's ours and empty.
-        elif "verifiers.offline" in labels and containers == "0":
-            await docker_checked("network", "rm", _OFFLINE_NETWORK)
-        else:
-            raise SandboxError(
-                f"docker network {_OFFLINE_NETWORK!r} exists but is not internal — "
-                "restricted containers would keep internet after the cut. Remove it: "
-                f"`docker network rm {_OFFLINE_NETWORK}`"
-            )
-    create = await docker(
-        "network",
-        "create",
-        "--internal",
-        "-o",
-        "com.docker.network.bridge.enable_icc=false",
-        "--label",
-        "verifiers.offline=true",
-        _OFFLINE_NETWORK,
-    )
-    # Concurrent first uses race the create; the loser re-inspects below.
-    if create.exit_code != 0 and "already exists" not in create.stderr:
-        raise SandboxError(f"docker network create failed: {create.stderr.strip()}")
-    inspect = await docker(
-        "network",
-        "inspect",
-        _OFFLINE_NETWORK,
-        "--format",
-        "{{(index .IPAM.Config 0).Gateway}}",
-    )
-    gateway = inspect.stdout.strip()
-    if inspect.exit_code != 0 or not gateway:
-        raise SandboxError(
-            f"could not determine the {_OFFLINE_NETWORK} gateway: "
-            f"{inspect.stderr.strip()}"
-        )
-    return gateway
+_PROXY_HOST = "host.docker.internal"
+_PASS_LISTENER = r"""
+import array, socket
+control = socket.socket(socket.AF_UNIX)
+control.connect("/run/vf/control.sock")
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", 0))
+listener.listen()
+control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [listener.fileno()]))])
+"""
 
 
 class DockerRuntime(Runtime):
@@ -173,10 +97,10 @@ class DockerRuntime(Runtime):
         self.config = config
         self.info = DockerRuntimeInfo(**config.model_dump())
         self._container: str | None = None  # our `--name` (used for exec/rm)
+        self._proxy: EgressProxy | None = None
+        self._proxy_host_ip: str | None = None
         self._stopped = False
-        self._offline_gateway: str | None = None  # set on start when offline (Linux)
-        self._egress_proxy_port: int | None = None  # set on start when filtering
-        self._cut = False  # set by prepare_execution; proxy env applies after it
+        self._cut = False
 
     async def start(self) -> None:
         try:
@@ -207,33 +131,7 @@ class DockerRuntime(Runtime):
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]
         isolated = self.network_isolated
-        if isolated and sys.platform == "linux":
-            self._offline_gateway = await ensure_offline_network()
-        if isolated and (self.config.network_access or self.config.allow):
-            # Filtering is configured: the egress proxy is the only way out post-cut.
-            proxy_host = (
-                self._offline_gateway
-                if sys.platform == "linux"
-                else "host.docker.internal"
-            )
-            self._egress_proxy_port = await ensure_egress_proxy(
-                # Framework services (interception, host MCP) stay reachable even
-                # through the proxy — clients that ignore NO_PROXY (e.g. busybox
-                # wget) would otherwise get 403s. Widens nothing: the container
-                # reaches the gateway directly regardless. On macOS the proxy (a
-                # host process) can't resolve host.docker.internal — dial loopback.
-                [*self.config.allow, proxy_host],
-                self.config.block,
-                default_allow=self.config.network_access,
-                bind_host=proxy_host if sys.platform == "linux" else "127.0.0.1",
-                dial_map=(
-                    None if sys.platform == "linux" else {proxy_host: "127.0.0.1"}
-                ),
-            )
         if isolated:
-            # Isolated containers set up on the default bridge (internet), then lose
-            # it in `prepare_execution`. They never hold NET_ADMIN, so the agent
-            # inside can't restore it.
             network = [
                 "--network",
                 "bridge",
@@ -246,6 +144,8 @@ class DockerRuntime(Runtime):
                 "--sysctl",
                 "net.ipv6.conf.all.disable_ipv6=1",
             ]
+            if sys.platform != "linux":
+                network += ["--add-host", f"{_PROXY_HOST}:host-gateway"]
         else:
             network = ["--network", "host"]
         run = await docker(
@@ -267,152 +167,122 @@ class DockerRuntime(Runtime):
         self.info.id = run.stdout.strip()[
             :12
         ]  # `docker run -d` prints the container id
-        if isolated and sys.platform == "linux":
-            await docker_checked(
-                "network", "connect", _OFFLINE_NETWORK, self._container
-            )
+        if isolated:
+            # Setup is trusted and stays online; install the real policy at the cut.
+            self._proxy = EgressProxy(NetworkPolicy([], [], [], True))
+            if sys.platform == "linux":
+                await self._proxy.start(listener=await self._container_listener())
+            else:
+                host = await docker(
+                    "exec",
+                    self._container,
+                    "sh",
+                    "-c",
+                    f"awk '$2 == \"{_PROXY_HOST}\" {{ print $1; exit }}' /etc/hosts",
+                )
+                self._proxy_host_ip = host.stdout.strip()
+                if host.exit_code != 0 or not self._proxy_host_ip:
+                    raise SandboxError(
+                        f"could not resolve {_PROXY_HOST} in Docker: {host.stderr.strip()}"
+                    )
+                await self._proxy.start("127.0.0.1")
         logger.info(
             "docker: started container %s (image=%s)",
             self._container,
             self.config.image,
         )
 
+    async def _container_listener(self) -> socket.socket:
+        """Create the proxy listener inside the container netns, serviced here."""
+        with tempfile.TemporaryDirectory(prefix="vf-proxy-") as directory:
+            path = f"{directory}/control.sock"
+            with socket.socket(socket.AF_UNIX) as control:
+                control.bind(path)
+                control.listen(1)
+                helper = await docker(
+                    "run",
+                    "--rm",
+                    "--network",
+                    f"container:{self._container}",
+                    "--cap-drop",
+                    "ALL",
+                    "--cap-add",
+                    "DAC_OVERRIDE",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--mount",
+                    f"type=bind,source={directory},target=/run/vf",
+                    "python:3.11-alpine",
+                    "python3",
+                    "-c",
+                    _PASS_LISTENER,
+                )
+                if helper.exit_code != 0:
+                    raise SandboxError(
+                        f"docker proxy listener failed: {helper.stderr.strip()}"
+                    )
+                connection, _ = control.accept()
+                with connection:
+                    _, ancillary, *_ = connection.recvmsg(
+                        64, socket.CMSG_SPACE(array.array("i").itemsize)
+                    )
+        descriptor = array.array("i")
+        descriptor.frombytes(ancillary[0][2][: descriptor.itemsize])
+        listener = socket.socket(fileno=descriptor[0])
+        listener.setblocking(False)
+        return listener
+
     def host_url(self, url: str) -> str:
         host = urlsplit(url).hostname
-        # Offline on Linux: the container sits on the internal network and reaches
-        # host services at that network's gateway IP.
-        if self._offline_gateway is not None and host in ("127.0.0.1", "localhost"):
-            return url.replace(host, self._offline_gateway, 1)
-        # Docker Desktop (macOS/Windows) runs containers in a VM, so `--network host`
-        # doesn't reach the host's loopback; `host.docker.internal` does.
-        if sys.platform != "linux" and host in ("127.0.0.1", "localhost"):
+        if self.network_isolated and host == "localhost":
+            return url.replace(host, "127.0.0.1", 1)
+        if (
+            not self.network_isolated
+            and sys.platform != "linux"
+            and host in ("127.0.0.1", "localhost")
+        ):
             return url.replace(host, "host.docker.internal", 1)
         return url
-
-    @property
-    def host_service_host(self) -> str | None:
-        return self._offline_gateway
 
     @property
     def network_isolated(self) -> bool:
         return self.config.network_isolated
 
-    async def prepare_execution(self, routes: dict[str, str]) -> dict[str, str]:
-        """With restricted networking (`network_access=False`, or a `block` list): cut
-        the container's direct egress now that setup is done, refusing routes it
-        couldn't reach afterwards — anything beyond host-local services and the allow
-        list. Linux moves the container onto the internal network (gateway/host stays
-        reachable); macOS pins a host route instead (see `_pin_host_route`)."""
+    async def prepare_execution(self, routes: list[str]) -> None:
+        """Allow the declared framework routes, then leave the proxy as the only route."""
         if not self.network_isolated or self._cut:
-            return routes
-        local = {
-            "127.0.0.1",
-            "localhost",
-            "host.docker.internal",
-            self._offline_gateway,
-        } - {None}
-        allowed = host_matcher(
-            self.config.allow, self.config.block, self.config.network_access
-        )
-        for name, url in routes.items():
+            return
+        assert self._proxy is not None
+        framework: list[str] = []
+        for url in routes:
             parsed = urlsplit(url)
-            host = parsed.hostname or ""
-            if parsed.scheme not in ("http", "https") or (
-                host not in local and not allowed(host)
-            ):
-                raise SandboxError(
-                    "restricted docker reaches host-local services"
-                    + (
-                        f" and the allow list {self.config.allow}"
-                        if self.config.allow
-                        else ""
-                    )
-                    + f", but route {name!r} is {url!r}; use a colocated or "
-                    f"host-local server, allow it, or drop it"
-                )
-        if sys.platform == "linux":
-            # Internal-network only from here: no external route remains; the gateway
-            # (host services) stays reachable.
-            await docker_checked("network", "disconnect", "bridge", self._container)
-        else:
-            await self._pin_host_route()
-        # Cut from here: proxy env applies to the probe too, so a tunneled (external)
-        # model route is probed the way the harness will reach it — via the proxy.
-        self._cut = True
-        await self._probe(routes["model"])
-        return routes
-
-    def _proxy_env(self) -> dict[str, str]:
-        """The egress-proxy env for commands after the cut — setup runs get full
-        direct access; only the agent phase is filtered. Framework traffic to the
-        gateway / host bypasses the proxy via NO_PROXY."""
-        if self._egress_proxy_port is None or not self._cut:
-            return {}
-        proxy_host = self._offline_gateway or "host.docker.internal"
-        proxy = f"http://{proxy_host}:{self._egress_proxy_port}"
-        no_proxy = f"127.0.0.1,localhost,{proxy_host}"
-        return {
-            "HTTP_PROXY": proxy,
-            "HTTPS_PROXY": proxy,
-            "http_proxy": proxy,
-            "https_proxy": proxy,
-            "NO_PROXY": no_proxy,
-            "no_proxy": no_proxy,
-        }
-
-    async def _probe(self, url: str) -> None:
-        """Confirm the model route is reachable after the cut. Host firewalls that
-        default-drop container→host traffic (e.g. ufw on servers) would otherwise
-        surface as a confusing agent-side connection timeout."""
-        script = (
-            "if command -v python3 >/dev/null 2>&1; then "
-            'python3 -c "import sys, urllib.error, urllib.request\n'
-            "try:\n"
-            "    urllib.request.urlopen(sys.argv[1], timeout=3)\n"
-            "except urllib.error.HTTPError:\n"
-            "    sys.exit(0)\n"
-            "except Exception:\n"
-            '    sys.exit(1)" "$1"; '
-            "elif command -v wget >/dev/null 2>&1; then "
-            'out=$(wget -q -O /dev/null -T 3 "$1" 2>&1); rc=$?; '
-            # GNU wget: exit 8 = server sent an error response = reachable (its
-            # quiet mode prints nothing); busybox prints the HTTP/ line even with -q.
-            "[ $rc -eq 0 ] || [ $rc -eq 8 ] && exit 0; "
-            'echo "$out" | grep -q "HTTP/"; '
-            "else exit 0; "  # no probe tool in the image — proceed unprobed
-            "fi"
+            framework.append(urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
+        self._proxy.policy = NetworkPolicy(
+            self.config.allow,
+            self.config.block,
+            framework,
+            self.config.network_access,
         )
-        probe = await self.run(["sh", "-c", script, "probe", url], {})
-        if probe.exit_code != 0:
-            raise SandboxError(
-                f"offline docker: {url} is unreachable from the container after the "
-                "network cut — the host firewall likely drops container-to-host "
-                "traffic (ufw's default INPUT policy does). Allow the "
-                f"{_OFFLINE_NETWORK} subnet to reach the host, e.g. `ufw allow from "
-                "<subnet>` (see `docker network inspect verifiers-offline`)."
-            )
-
-    async def _pin_host_route(self) -> None:
-        """The macOS cut: Docker Desktop / OrbStack VMs give internal networks no route
-        to the host, so instead of switching networks we pin a /32 to the host's NAT IP
-        (via a /32 to the bridge gateway) and drop every broader route — the default
-        route AND the connected bridge subnet, so peer containers stay unreachable too
-        — plus blackhole DNS. Done from a one-shot privileged helper sharing the
-        container's netns — the container itself never holds NET_ADMIN, so the agent
-        can't undo it."""
         script = (
-            "set -e; "
-            "IP=$(getent hosts host.docker.internal | awk 'NR==1{print $1}'); "
+            "set -eu; HOST=$1; "
+            "PORT=$2; "
+            'if [ -n "$HOST" ]; then apk add --no-cache iptables >/dev/null; fi; '
             "GW=$(ip route show default | awk '/^default via/{print $3; exit}'); "
             "SUBNET=$(ip route show | awk '/scope link/{print $1; exit}'); "
-            'ip route add "$IP/32" via "$GW"; '
-            'ip route add "$GW/32" dev eth0; '
+            'if [ -n "$HOST" ]; then '
+            'if [ "$HOST" = "$GW" ]; then ip route add "$HOST/32" dev eth0; '
+            'else ip route add "$HOST/32" via "$GW"; '
+            'ip route add "$GW/32" dev eth0; fi; '
+            "fi; "
             "ip route del default; "
             'ip route del "$SUBNET" dev eth0; '
             "ip route add blackhole 127.0.0.11/32 table local; "
-            'printf %s "$IP"'
+            'if [ -n "$HOST" ]; then iptables -F OUTPUT; '
+            "iptables -A OUTPUT -o lo -j ACCEPT; "
+            'iptables -A OUTPUT -d "$HOST" -p tcp --dport "$PORT" -j ACCEPT; '
+            "iptables -A OUTPUT -j REJECT; fi"
         )
-        run = await docker(
+        cut = await docker(
             "run",
             "--rm",
             "--network",
@@ -425,20 +295,35 @@ class DockerRuntime(Runtime):
             "sh",
             "-c",
             script,
+            "cut",
+            self._proxy_host_ip or "",
+            str(self._proxy.port),
         )
-        if run.exit_code != 0:
-            raise SandboxError(f"offline network cut failed: {run.stderr.strip()}")
-        # DNS is dead after the cut; pin the name host URLs already use.
-        await docker_checked(
-            "exec",
-            self._container,
-            "sh",
-            "-c",
-            f"echo '{run.stdout.strip()} host.docker.internal' >> /etc/hosts",
-        )
+        if cut.exit_code != 0:
+            raise SandboxError(f"docker network cut failed: {cut.stderr.strip()}")
+        self._cut = True
+
+    def _proxy_env(self) -> dict[str, str]:
+        if self._proxy is None:
+            return {}
+        host = "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
+        proxy = f"http://{host}:{self._proxy.port}"
+        return {
+            "HTTP_PROXY": proxy,
+            "HTTPS_PROXY": proxy,
+            "http_proxy": proxy,
+            "https_proxy": proxy,
+            "NO_PROXY": "localhost",
+            "no_proxy": "localhost",
+        }
+
+    async def teardown(self) -> None:
+        await super().teardown()
+        if self._proxy is not None:
+            await self._proxy.stop()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        env = {**self._proxy_env(), **env}
+        env = {**(self._proxy_env() if self._cut else {}), **env}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         return await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv

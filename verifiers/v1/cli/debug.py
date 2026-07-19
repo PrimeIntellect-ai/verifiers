@@ -229,6 +229,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
         )
+        await runtime.prepare_execution([])
         trace.timing.setup.end = time.time()
 
         trace.timing.generation.start = time.time()

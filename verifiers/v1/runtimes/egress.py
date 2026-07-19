@@ -1,110 +1,110 @@
-"""Egress filtering for network-restricted runtimes: a minimal CONNECT proxy.
-
-The L3 cut (internal network on Linux, route pinning on macOS) leaves an isolated
-container no direct route off its network — except the address host services bind. An
-`EgressProxy` bound there is therefore the *only* way out, and it enforces the
-runtime's allow/block host patterns per CONNECT. One shared proxy per ruleset per
-process (created on first use, kept around, like the offline network). Clients opt in
-via the standard `HTTP(S)_PROXY` env vars the runtime injects; `NO_PROXY` covers the
-interception and host MCP addresses so framework traffic never hairpins through it.
-Filtering thus applies to proxy-aware clients; the L3 cut is the hard guarantee that
-nothing else leaves directly.
-"""
+"""In-process HTTP(S) policy proxy for network-filtered Docker runtimes."""
 
 import asyncio
 import contextlib
 import fnmatch
-import logging
-from collections.abc import Callable
-from urllib.parse import urlsplit
-
-logger = logging.getLogger(__name__)
+import socket
+from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 
-def host_matcher(
-    allow: list[str], block: list[str], default_allow: bool
-) -> Callable[[str], bool]:
-    """A predicate over target hosts: block patterns win; then either default-allow
-    (broad access minus the block list) or default-deny (only the allow list).
-    Patterns are fnmatch wildcards on the lowercased host; "*.example.com" also
-    matches the apex "example.com". Trailing dots (FQDN form) are stripped on both
-    sides so "example.com." can't slip past a "example.com" block."""
-    allows = [p.lower().rstrip(".") for p in allow]
-    blocks = [p.lower().rstrip(".") for p in block]
-
-    def matches(host: str) -> bool:
-        h = host.lower().rstrip(".")
-        if any(_match(h, p) for p in blocks):
-            return False
-        return default_allow or any(_match(h, p) for p in allows)
-
-    return matches
-
-
-def _match(host: str, pattern: str) -> bool:
+def _rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
+    """Match a host pattern or URL origin. URL paths are intentionally ignored."""
+    value = rule.lower().rstrip("/")
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    pattern = (parsed.hostname or "").rstrip(".")
+    if not pattern or (parsed.scheme and parsed.scheme != scheme):
+        return False
+    rule_port = parsed.port
+    if parsed.scheme and rule_port is None:
+        rule_port = 443 if parsed.scheme == "https" else 80
+    if rule_port is not None and rule_port != port:
+        return False
+    host = host.lower().rstrip(".")
     return fnmatch.fnmatchcase(host, pattern) or (
         pattern.startswith("*.") and host == pattern[2:]
     )
 
 
-class EgressProxy:
-    """A minimal forward proxy enforcing a host matcher: CONNECT for HTTPS,
-    absolute-form forwarding for plain HTTP (both filtered the same way).
-    `dial_map` rewrites target hosts before dialing — names a container uses for
-    the host (host.docker.internal) don't resolve *on* the host (loopback there)."""
+@dataclass
+class NetworkPolicy:
+    allow: list[str]
+    block: list[str]
+    routes: list[str]
+    default_allow: bool
 
-    def __init__(
-        self,
-        allow: list[str],
-        block: list[str],
-        default_allow: bool,
-        dial_map: dict[str, str] | None = None,
-    ) -> None:
-        self.match = host_matcher(allow, block, default_allow)
-        self.dial_map = {k.lower(): v for k, v in (dial_map or {}).items()}
+    def permits(self, scheme: str, host: str, port: int) -> bool:
+        # Framework routes are invariants, not user egress, so they cannot be blocked.
+        if any(_rule_matches(route, scheme, host, port) for route in self.routes):
+            return True
+        if any(_rule_matches(rule, scheme, host, port) for rule in self.block):
+            return False
+        return self.default_allow or any(
+            _rule_matches(rule, scheme, host, port) for rule in self.allow
+        )
+
+
+class EgressProxy:
+    def __init__(self, policy: NetworkPolicy) -> None:
+        self.policy = policy
         self.server: asyncio.Server | None = None
         self.port = 0
 
-    async def start(self, bind_host: str) -> int:
-        self.server = await asyncio.start_server(self._handle, bind_host, 0)
+    async def start(
+        self, bind_host: str | None = None, *, listener: socket.socket | None = None
+    ) -> None:
+        if listener is None:
+            self.server = await asyncio.start_server(self._handle, bind_host, 0)
+        else:
+            self.server = await asyncio.start_server(self._handle, sock=listener)
         self.port = self.server.sockets[0].getsockname()[1]
-        return self.port
+
+    async def stop(self) -> None:
+        if self.server is None:
+            return
+        self.server.close()
+        await self.server.wait_closed()
+        self.server = None
 
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
-            method, target, _ = (
-                head.split(b"\r\n", 1)[0].decode("latin-1").split(" ", 2)
-            )
+            request, headers = head.split(b"\r\n", 1)
+            method, target, version = request.decode("latin-1").split(" ", 2)
             if method == "CONNECT":
-                host, sep, port = target.rpartition(":")
-                if not sep:
-                    host, port = target, "443"
-                port = int(port)
-            else:  # plain HTTP in absolute-form (origins accept it as-is)
+                parsed = urlsplit(f"//{target}")
+                scheme = "https"
+                host, port = parsed.hostname or "", parsed.port or 443
+            else:
                 parsed = urlsplit(target)
-                host, port = parsed.hostname or "", parsed.port or 80
-            if not self.match(host):
+                scheme = parsed.scheme.lower()
+                host = parsed.hostname or ""
+                port = parsed.port or (443 if scheme == "https" else 80)
+            if scheme not in ("http", "https") or not self.policy.permits(
+                scheme, host, port
+            ):
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
                 return
-            upstream_reader, upstream_writer = await asyncio.open_connection(
-                self.dial_map.get(host.lower(), host), port
-            )
+            upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
             if method == "CONNECT":
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()
             else:
-                upstream_writer.write(head)
+                path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+                upstream_writer.write(
+                    f"{method} {path} {version}\r\n".encode("latin-1") + headers
+                )
                 await upstream_writer.drain()
             await _relay(reader, writer, upstream_reader, upstream_writer)
         except Exception:
-            pass
-        finally:
             with contextlib.suppress(Exception):
-                writer.close()
+                writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                await writer.drain()
+        finally:
+            writer.close()
 
 
 async def _relay(
@@ -118,45 +118,14 @@ async def _relay(
             while chunk := await reader.read(1 << 16):
                 writer.write(chunk)
                 await writer.drain()
-        except Exception:
-            pass
         finally:
-            with contextlib.suppress(Exception):
-                writer.close()
+            writer.close()
 
-    left = asyncio.create_task(pipe(client_reader, upstream_writer))
-    right = asyncio.create_task(pipe(upstream_reader, client_writer))
-    await asyncio.wait({left, right}, return_when=asyncio.FIRST_COMPLETED)
-    left.cancel()
-    right.cancel()
-    await asyncio.gather(left, right, return_exceptions=True)
-
-
-_proxies: dict[tuple, EgressProxy] = {}
-
-
-async def ensure_egress_proxy(
-    allow: list[str],
-    block: list[str],
-    *,
-    default_allow: bool,
-    bind_host: str,
-    dial_map: dict[str, str] | None = None,
-) -> int:
-    """The shared proxy for one ruleset (created on first use, kept around), bound
-    where isolated containers can reach it; returns its port."""
-    key = (tuple(allow), tuple(block), default_allow, bind_host)
-    proxy = _proxies.get(key)
-    if proxy is None:
-        proxy = EgressProxy(allow, block, default_allow, dial_map)
-        await proxy.start(bind_host)
-        _proxies[key] = proxy
-        logger.info(
-            "egress proxy up: bind=%s:%d default_allow=%s allow=%s block=%s",
-            bind_host,
-            proxy.port,
-            default_allow,
-            allow,
-            block,
-        )
-    return proxy.port
+    tasks = {
+        asyncio.create_task(pipe(client_reader, upstream_writer)),
+        asyncio.create_task(pipe(upstream_reader, client_writer)),
+    }
+    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)

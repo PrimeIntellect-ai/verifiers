@@ -96,9 +96,7 @@ class Rollout:
             [server.config for server in servers],
             self.shared_tools.values(),
         )
-        server = InterceptionServer(
-            requires_tunnel=tunneled, extra_host=runtime.host_service_host
-        )
+        server = InterceptionServer(requires_tunnel=tunneled)
         async with server:
             async with server.acquire(session) as slot:
                 yield slot
@@ -192,18 +190,7 @@ class Rollout:
                         )
                     # Setup (installs, tool/user servers) is done: a restricted runtime
                     # now narrows the network to what the agent will use.
-                    routes = await runtime.prepare_execution(
-                        {
-                            "model": endpoint,
-                            **{f"mcp:{name}": url for name, url in urls.items()},
-                        }
-                    )
-                    endpoint = routes["model"]
-                    urls = {
-                        name.removeprefix("mcp:"): url
-                        for name, url in routes.items()
-                        if name != "model"
-                    }
+                    await runtime.prepare_execution([endpoint, *urls.values()])
                     now = time.time()
                     trace.timing.setup.end = now
                     trace.timing.generation.start = now

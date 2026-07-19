@@ -322,7 +322,8 @@ host inheritance removes names containing `API_KEY`; explicit values passed in t
 mapping are merged afterward and inherited by child processes.
 
 ### `DockerConfig` — `type: "docker"`
-Local Docker container sharing the host network (`--network host`).
+Local Docker container. Unfiltered runtimes share the host network; a network policy
+uses an isolated bridge during agent execution.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -332,9 +333,9 @@ Local Docker container sharing the host network (`--network host`).
 | `memory` | `float \| None` | `None` | Hard memory limit in GB (`docker --memory`). None = unlimited. |
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"2"` (`docker --gpus` uses the count; needs the nvidia toolkit). |
 | `disk` | `float \| None` | `None` | Advisory disk request in GB. Docker has no portable per-container size limit, so accepted but **not enforced**. |
-| `network_access` | `bool` | `True` | `False` = internet through setup only, then cut before the agent starts: the container then reaches only host services (interception, host MCP servers). Linux: the container is moved onto a shared `--internal` network and reaches the host at its gateway IP. macOS (Docker Desktop/OrbStack): a one-shot helper pins a route to the host and drops the rest. Tool/user servers must be colocated or host-local (subprocess); external MCP URLs are refused. Linux hosts with a firewall that drops container-to-host traffic (e.g. ufw's default INPUT policy) must allow the `verifiers-offline` subnet (`ufw allow from <subnet>`); a post-cut probe reports this loudly if missed. |
-| `allow` | `list[str]` | `[]` | Host patterns (fnmatch wildcards, e.g. `"*.wikipedia.org"`; matches the apex too) the agent may still reach with `network_access=False`, via a host-side CONNECT egress proxy injected as `HTTP(S)_PROXY`. The cut always stands — the proxy is the only way out; filtering applies to proxy-aware clients. |
-| `block` | `list[str]` | `[]` | Host patterns denied even with `network_access=True` (block wins over allow). A non-empty block list enforces the same cut + proxy, with a default-allow policy (broad access minus the block list). |
+| `network_access` | `bool` | `True` | `False` = internet through setup only, then allow just the interception URL, all MCP URLs, and `allow` entries. The policy remains active through finalization and scoring. |
+| `allow` | `list[str]` | `[]` | URL origins or host patterns added when `network_access=False`, e.g. `"https://*.wikipedia.org"`. Wildcards are supported; `*.example.com` also matches the apex. URL paths are ignored. |
+| `block` | `list[str]` | `[]` | URL origins or host patterns denied during execution. Block wins over user `allow`; interception and MCP routes always remain reachable. A non-empty list activates filtering when `network_access=True`. |
 
 ### `PrimeConfig` — `type: "prime"`
 Remote Prime sandbox; reached via native port exposure.
