@@ -70,6 +70,7 @@ _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 # completions to disk, and reject a broken/unbounded provider before it can exhaust the host.
 _STREAM_SPOOL_MEMORY_BYTES = 1024**2
 _MAX_STREAM_RESPONSE_BYTES = 64 * 1024**2
+_KEEPALIVE_INTERVAL_SECONDS = 3
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -625,12 +626,37 @@ class InterceptionServer(Interception):
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
             parser = dialect.stream_parser()
+            resp = web.StreamResponse(
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+            )
+            resp.content_type = reply.content_type.split(";")[0].strip()
             with tempfile.SpooledTemporaryFile(
                 max_size=_STREAM_SPOOL_MEMORY_BYTES
             ) as events:
                 size = 0
+                pending: asyncio.Future[bytes] | None = None
                 try:
-                    async for event in reply.chunks:
+                    await resp.prepare(request)
+                    iterator = aiter(reply.chunks)
+                    pending = asyncio.ensure_future(anext(iterator))
+                    loop = asyncio.get_running_loop()
+                    next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
+                    while True:
+                        if loop.time() >= next_keepalive:
+                            await resp.write(b": keepalive\n\n")
+                            next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
+                            continue
+                        timeout = next_keepalive - loop.time()
+                        done, _ = await asyncio.wait((pending,), timeout=timeout)
+                        if not done:
+                            await resp.write(b": keepalive\n\n")
+                            next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
+                            continue
+                        try:
+                            event = pending.result()
+                        except StopAsyncIteration:
+                            break
+                        pending = asyncio.ensure_future(anext(iterator))
                         size += len(event)
                         if size > _MAX_STREAM_RESPONSE_BYTES:
                             raise ValueError(
@@ -641,6 +667,9 @@ class InterceptionServer(Interception):
                             parser.on_done()
                         parser.feed(event)
                     response = parser.finish()
+                except ConnectionResetError as e:
+                    error = e
+                    return resp
                 except Exception as e:
                     session.error = model_error(
                         f"malformed upstream response: {type(e).__name__}: {e}",
@@ -653,26 +682,23 @@ class InterceptionServer(Interception):
                         type(session.error).__name__,
                         session.error,
                     )
-                    return web.json_response(
-                        dialect.error_body(str(session.error)), status=502
-                    )
+                    if request.transport is not None:
+                        request.transport.close()
+                    return resp
                 finally:
+                    if pending is not None:
+                        pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
                     await reply.close()
 
                 if session.trace.is_completed:
-                    stop = session.trace.stop_condition or "completed"
-                    return web.json_response(
-                        dialect.error_body(f"rollout stopped: {stop}"), status=400
-                    )
+                    if request.transport is not None:
+                        request.transport.close()
+                    return resp
                 node = turn.commit(response, tools)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
-                resp = web.StreamResponse(
-                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-                )
-                resp.content_type = reply.content_type.split(";")[0].strip()
                 events.seek(0)
                 with contextlib.suppress(ConnectionResetError):
-                    await resp.prepare(request)
                     while event := events.read(64 * 1024):
                         await resp.write(event)
                     await resp.write_eof()
