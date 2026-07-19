@@ -816,14 +816,14 @@ class InterceptionServer(Interception):
                     next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                     while True:
                         if loop.time() >= next_keepalive:
-                            if not await write_downstream(b": keepalive\n\n"):
+                            if not await write_downstream(b": keepalive\n"):
                                 return resp
                             next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                             continue
                         timeout = next_keepalive - loop.time()
                         done, _ = await asyncio.wait((chunk,), timeout=timeout)
                         if not done:
-                            if not await write_downstream(b": keepalive\n\n"):
+                            if not await write_downstream(b": keepalive\n"):
                                 return resp
                             next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                             continue
@@ -832,6 +832,14 @@ class InterceptionServer(Interception):
                         except StopAsyncIteration:
                             break
                         chunk = asyncio.ensure_future(anext(iterator))
+                        # Avoid terminating an empty event: some SSE clients try to
+                        # JSON-decode complete comment-only events.
+                        if not any(
+                            line.startswith(b"data:") for line in event.splitlines()
+                        ):
+                            if not await write_downstream(b": keepalive\n"):
+                                return resp
+                            continue
                         size += len(event)
                         if size > _MAX_STREAM_RESPONSE_BYTES:
                             raise ValueError(
@@ -846,7 +854,7 @@ class InterceptionServer(Interception):
                     response = parser.finish()
                     # Probe the downstream once more after buffering. A client that left
                     # during a fast provider response must not produce a committed turn.
-                    if not await write_downstream(b": keepalive\n\n"):
+                    if not await write_downstream(b": keepalive\n"):
                         return resp
                 except Exception as e:
                     session.error = model_error(
