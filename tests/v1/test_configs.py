@@ -74,13 +74,32 @@ async def test_replay_refuses_multi_agent_runs(tmp_path):
         await run_replay(config, source, tmp_path / "out")
 
 
+async def test_replay_guard_reads_the_saved_taskset(tmp_path):
+    """The multi-agent verdict comes from the SOURCE run's saved config — a
+    replay-layer taskset override must not reclassify a multi-agent run (duet-v1
+    exports its own multi-agent env) as replayable."""
+    import pytest
+
+    from verifiers.v1.cli.output import save_config
+    from verifiers.v1.cli.replay import run_replay
+    from verifiers.v1.configs.replay import ReplayConfig
+
+    source = tmp_path / "run"
+    save_config(EvalConfig(env={"taskset": {"id": "duet-v1"}}), source)
+    config = ReplayConfig.model_validate({"taskset": {"id": "echo-v1"}, "rich": False})
+    with pytest.raises(SystemExit, match="multi-agent"):
+        await run_replay(config, source, tmp_path / "out")
+
+
 async def test_replay_skips_traceless_episodes(tmp_path):
     """An episode whose env hooks failed before any agent ran holds no traces —
-    nothing to re-score, so replay drops it and re-scores the rest."""
+    nothing to re-score, so replay drops it and re-scores the rest, keeping each
+    kept trace's source env identity on the replay output."""
     import asyncio
+    import json
 
     import verifiers.v1 as vf
-    from verifiers.v1.cli.output import append_episode, save_config
+    from verifiers.v1.cli.output import TRACES_FILE, append_episode, save_config
     from verifiers.v1.cli.replay import run_replay
     from verifiers.v1.configs.replay import ReplayConfig
     from verifiers.v1.trace import Episode, Trace, TraceTask
@@ -95,5 +114,8 @@ async def test_replay_skips_traceless_episodes(tmp_path):
     await append_episode(source, failed, lock)
     await append_episode(source, scored, lock)
     config = ReplayConfig.model_validate({"taskset": {"id": "echo-v1"}, "rich": False})
-    traces = await run_replay(config, source, tmp_path / "out")
+    out = tmp_path / "out"
+    traces = await run_replay(config, source, out)
     assert len(traces) == 1
+    (line,) = (out / TRACES_FILE).read_text().splitlines()
+    assert json.loads(line)["env"] == "echo-v1"
