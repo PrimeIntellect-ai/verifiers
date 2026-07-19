@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from pydantic import Field
 from pydantic_config import BaseConfig
@@ -18,14 +20,18 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
 )
 from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, Messages
+
+if TYPE_CHECKING:
+    # Annotation-only: trace.py embeds HarnessConfig (AgentInfo), so the runtime
+    # import goes trace -> harness, not the other way around.
+    from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
 
 class HarnessConfig(BaseConfig):
-    id: ID = "default"
+    id: ID = "bash"
     """Local package or Hub `org/name[@version]`, set through `--harness.id`."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Runtime for the harness program; tool servers choose their placement separately."""

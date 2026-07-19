@@ -87,7 +87,7 @@ export default async function isolatedMcp(pi) {{
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: str = "0.80.6"
+    version: str = "0.80.10"
     """Pi release to install, pinned for reproducibility."""
 
 

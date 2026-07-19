@@ -15,15 +15,16 @@ Every matrix value carries a pytest mark, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto                                # the whole matrix (needs modal setup)
     uv run pytest tests/v1 -n auto -m "not prime and not modal"  # the CI matrix (host + docker only)
     uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
-    uv run pytest tests/v1 -n auto -m default                     # only the default harness
+    uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
-harnesses `null` / `default` / `rlm` / `kimi_code` / `codex`. A mark is applied per axis, so it
-selects every case touching that value on ANY axis; for one exact combination use `-k` on the test
-id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real remote
-sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs `-m "not prime and not modal"`.
+harnesses `null` / `bash` / `rlm` / `kimi_code` / `codex` / `claude_code`. A mark is applied per
+axis, so it selects every case touching that value on ANY axis; for one exact combination use `-k`
+on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real
+remote sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs
+`-m "not prime and not modal"`.
 """
 
 import os
@@ -103,18 +104,19 @@ def tool_runtime(request) -> dict:
     return {"runtime": {"type": request.param}}
 
 
-# Harnesses, composed with the runtime fixtures, each carrying its harness mark (`-m default`, ...).
-# Built-ins are bundled in the `harnesses` package; the agent CLIs (`rlm` / `kimi-code` / `codex`)
-# install their dependencies at rollout. `compact` (an example harness) and `terminus-2` (drives
-# the host tmux) are excluded. `test_agentic` skips `null` (a chat loop with no shell);
-# `test_single_turn` skips `codex` (a coding agent, unreliable on a no-op echo).
+# Harnesses, composed with the runtime fixtures, each carrying its harness mark (`-m bash`, ...).
+# Built-ins are bundled in the `harnesses` package; the agent CLIs (`rlm` / `kimi-code` / `codex` /
+# `claude-code`) install their dependencies at rollout. `compact` (an example harness) and
+# `terminus-2` (drives the host tmux) are excluded. `test_agentic` skips `null` (a chat loop with no
+# shell); `test_single_turn` skips the coding agents, which are unreliable on a no-op echo.
 @pytest.fixture(
     params=[
         pytest.param("null", marks=pytest.mark.null, id="null"),
-        pytest.param("default", marks=pytest.mark.default, id="default"),
+        pytest.param("bash", marks=pytest.mark.bash, id="bash"),
         pytest.param("rlm", marks=pytest.mark.rlm, id="rlm"),
         pytest.param("kimi-code", marks=pytest.mark.kimi_code, id="kimi-code"),
         pytest.param("codex", marks=pytest.mark.codex, id="codex"),
+        pytest.param("claude-code", marks=pytest.mark.claude_code, id="claude-code"),
     ]
 )
 def harness(request) -> str:

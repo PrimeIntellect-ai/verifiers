@@ -36,7 +36,7 @@ chmod +x {bin}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: str = "0.137.0"
+    version: str = "0.144.5"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""

@@ -7,6 +7,16 @@ from verifiers.v1.tasksets.lean import (
     LeanTask,
     LeanTaskset,
 )
+from verifiers.v1.tasksets.openenv import (
+    OpenEnvConfig,
+    OpenEnvData,
+    OpenEnvState,
+    OpenEnvTask,
+    OpenEnvTaskConfig,
+    OpenEnvTaskset,
+    OpenEnvUser,
+    OpenEnvUserConfig,
+)
 
 __all__ = [
     "HarborConfig",
@@ -15,4 +25,12 @@ __all__ = [
     "LeanDatasetConfig",
     "LeanTask",
     "LeanTaskset",
+    "OpenEnvConfig",
+    "OpenEnvData",
+    "OpenEnvState",
+    "OpenEnvTask",
+    "OpenEnvTaskConfig",
+    "OpenEnvTaskset",
+    "OpenEnvUser",
+    "OpenEnvUserConfig",
 ]

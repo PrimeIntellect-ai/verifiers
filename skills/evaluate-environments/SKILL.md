@@ -113,7 +113,7 @@ id = "my-task-v1"
 split = "test"
 
 [harness]
-id = "default"
+id = "bash"
 runtime = { type = "subprocess" }
 
 [sampling]
@@ -165,6 +165,7 @@ For each representative sample inspect:
 - named `rewards`, aggregate `reward`, and `metrics`;
 - persisted `info` artifacts;
 - `error`/`errors` and boundary type;
+- per-call `calls` records (model, sampling, finish reason, usage, timing, error) linked to the graph;
 - usage and stage timing;
 - token/mask/logprob fields when using the training client.
 

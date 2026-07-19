@@ -6,8 +6,8 @@ import pytest
 @pytest.mark.e2e
 async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     """Single-turn (echo a short phrase back)."""
-    if harness == "codex":
-        pytest.skip("codex is a coding agent, not reliable on a no-op echo chat task")
+    if harness in {"codex", "claude-code"}:
+        pytest.skip("coding agents are not reliable on a no-op echo chat task")
     (trace,) = await run_v1(
         "echo-v1",
         harness=harness,
@@ -18,6 +18,12 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns == 1
     assert trace.reward == 1.0
+    # Every sampled turn has one per-call record, linked to its assistant node.
+    sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
+    assert [c.node for c in trace.calls if c.error is None] == sampled
+    for call in trace.calls:
+        assert call.model and call.sampling is not None
+        assert call.time.duration > 0
 
 
 @pytest.mark.e2e

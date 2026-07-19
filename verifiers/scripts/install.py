@@ -17,9 +17,9 @@ Usage:
 
 Examples:
     vf-install primeintellect/gsm8k        # Install from Hub
-    vf-install gsm8k                       # Install from ./environments/gsm8k
-    vf-install gsm8k -p /path/to/envs      # Install from custom local path
-    vf-install gsm8k -r                    # Install from GitHub repo
+    vf-install gsm8k-v1                    # Install from ./environments/gsm8k_v1
+    vf-install gsm8k-v1 -p /path/to/envs   # Install from custom local path
+    vf-install gsm8k-v1 -r                 # Install from GitHub repo
 """
 
 
@@ -30,9 +30,9 @@ def main():
         epilog="""
 Examples:
   vf-install primeintellect/gsm8k        Install from Environments Hub
-  vf-install gsm8k                       Install from ./environments/gsm8k
-  vf-install gsm8k -p /path/to/envs      Install from custom local path
-  vf-install gsm8k -r                    Install from GitHub repo
+  vf-install gsm8k-v1                    Install from ./environments/gsm8k_v1
+  vf-install gsm8k-v1 -p /path/to/envs   Install from custom local path
+  vf-install gsm8k-v1 -r                 Install from GitHub repo
         """,
     )
     parser.add_argument(

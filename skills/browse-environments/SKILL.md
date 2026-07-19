@@ -67,5 +67,5 @@ Return:
 1. Ranked shortlist with one-line rationale.
 2. A compact comparison of each taskset's tasks, rewards, and overall goal.
 3. Exact `prime eval run` commands to run each taskset.
-4. For each taskset, state which harnesses might be supported: a custom one, CLI-based harnesses such as Codex, or the default harness.
+4. For each taskset, state which harnesses might be supported: a custom one, CLI-based harnesses such as Codex, or the `bash` harness.
 5. Recommended starting tasksets and why.

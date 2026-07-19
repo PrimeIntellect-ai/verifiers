@@ -12,15 +12,15 @@ Create native v1 tasksets that are installable and runnable with verifiers.
 To start, ALWAYS use the CLI to create a package with the correct files:
 
 ```bash
-prime env init my-task-v1
+uv run init my-task-v1
 ```
 
 Add only the components the contract needs:
 
 ```bash
-prime env init my-task-v1 -T      # task toolset
-prime env init my-task-v1 -U      # user simulator
-prime env init my-agent-v1 -H     # custom reusable harness
+uv run init my-task-v1 -T      # task toolset
+uv run init my-task-v1 -U      # user simulator
+uv run init my-agent-v1 -H     # custom reusable harness
 ```
 
 Often, the user does not want nor need a custom reusable harness, as verifiers offer a lot of built-in ones.
@@ -50,7 +50,7 @@ Ask the user about unresolved semantic choices instead of inventing them. Presen
 
 ## Native package contract
 
-A package exports one `vf.Taskset` subclass and optionally one `vf.Harness` subclass through `__all__`. This happens automatically when you bootstrap a new taskset using `prime env init`.
+A package exports one `vf.Taskset` subclass and optionally one `vf.Harness` subclass through `__all__`. This happens automatically when you bootstrap a new taskset using `uv run init`.
 
 Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader
 resolves classes and their config types from `__all__` and generic bases.
@@ -189,7 +189,7 @@ Choose placement from the tool's lifetime and filesystem needs:
 
 Use a `vf.User` when the taskset, not the harness, drives the conversation.
 
-The selected harness must support user simulation, which a lot of the built-in, especially the CLI-based ones, don't. The built-in default harness does support user sim.
+The selected harness must support user simulation, which a lot of the built-in, especially the CLI-based ones, don't. The built-in `bash` harness does support user sim.
 
 ## Custom harnesses
 
