@@ -258,6 +258,12 @@ class RolloutRun:
         except Exception as e:
             self.fail(e)
             return False
+        except BaseException:
+            # A cancellation mid-setup kills the driver's await with it, so no
+            # caller reaches close() — free the started runtime and entered
+            # servers here rather than relying on the driver's own guard.
+            await self.abort()
+            raise
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.generation.start = now

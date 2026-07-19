@@ -100,3 +100,35 @@ async def test_cancelled_run_frees_the_owned_runtime(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await run
     assert boxes and boxes[0].stopped  # the owned box was torn down on the way out
+
+
+async def test_cancelled_open_cleans_up_by_itself(monkeypatch):
+    """`open()` frees what it acquired on any BaseException, without relying on
+    its driver's guard — a future direct caller of open() must not be able to
+    re-introduce the leak by forgetting one."""
+    from verifiers.v1.rollout import RolloutRun
+
+    started = asyncio.Event()
+
+    class HangingSetup(vf.Task):
+        async def setup(self, trace, runtime):
+            started.set()
+            await asyncio.sleep(60)
+
+    boxes = []
+    real = verifiers.v1.rollout.make_runtime
+
+    def spy(config, **kwargs):
+        boxes.append(box := real(config, **kwargs))
+        return box
+
+    monkeypatch.setattr(verifiers.v1.rollout, "make_runtime", spy)
+    agent = _agent()
+    task = HangingSetup(vf.TaskData(idx=0, prompt="hi"))
+    run = RolloutRun(task=task, **agent._rollout_params(task, None, {}))
+    opening = asyncio.create_task(run.open())
+    await asyncio.wait_for(started.wait(), 10)
+    opening.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await opening
+    assert boxes and boxes[0].stopped  # open() itself tore the owned box down
