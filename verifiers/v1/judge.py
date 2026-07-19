@@ -196,12 +196,15 @@ class Judge(Generic[ParsedT, ConfigT]):
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
             )
-        # Substitute only this judge's documented placeholders — str.format would
-        # crash on any literal brace in a custom prompt (a JSON-shaped instruction);
-        # an unknown placeholder stays as written.
-        for key, value in fields.items():
-            template = template.replace("{" + key + "}", str(value))
-        return template
+        # Substitute only this judge's documented placeholders, in one pass over the
+        # original template — str.format would crash on any literal brace in a custom
+        # prompt (a JSON-shaped instruction), and sequential replaces would re-scan
+        # substituted values (a question containing a literal "{answer}" must not
+        # pull in the answer). An unknown placeholder stays as written.
+        if not fields:
+            return template
+        pattern = re.compile(r"\{(" + "|".join(map(re.escape, fields)) + r")\}")
+        return pattern.sub(lambda m: str(fields[m.group(1)]), template)
 
     async def score(
         self, task: "TaskData", trace: "Trace"

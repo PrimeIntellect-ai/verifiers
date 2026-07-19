@@ -651,3 +651,13 @@ def test_prompt_placeholders_survive_literal_braces():
     )
     out = judge.build_messages(question="Q1", response="R1")
     assert out == 'Q: Q1 -> reply {"score": N}; work: R1'
+
+
+def test_field_values_are_data_not_templates():
+    """A substituted value must land verbatim: a question containing a literal
+    "{answer}" placeholder must not pull in the answer field."""
+    from verifiers.v1.judges.score import ScoreJudge, ScoreJudgeConfig
+
+    judge = ScoreJudge(ScoreJudgeConfig(name="j", prompt="Q: {question} A: {answer}"))
+    out = judge.build_messages(question="quote {answer} verbatim", answer="42")
+    assert out == "Q: quote {answer} verbatim A: 42"

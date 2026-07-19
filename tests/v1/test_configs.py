@@ -80,3 +80,28 @@ async def test_replay_refuses_multi_agent_runs(tmp_path):
     config = ReplayConfig.model_validate({"taskset": {"id": "echo-v1"}, "rich": False})
     with pytest.raises(SystemExit, match="multi-agent"):
         await run_replay(config, source, tmp_path / "out")
+
+
+async def test_replay_skips_traceless_episodes(tmp_path):
+    """An episode whose env hooks failed before any agent ran holds no traces —
+    replay drops it instead of refusing the whole run as multi-agent."""
+    import asyncio
+
+    import verifiers.v1 as vf
+    from verifiers.v1.cli.output import append_episode, save_config
+    from verifiers.v1.cli.replay import run_replay
+    from verifiers.v1.configs.replay import ReplayConfig
+    from verifiers.v1.trace import Episode, Trace, TraceTask
+
+    task = TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi"))
+    failed = Episode(env="echo-v1", task=task)
+    scored = Episode(env="echo-v1", task=task)
+    scored.traces.append(Trace(task=task))
+    source = tmp_path / "run"
+    save_config(EvalConfig(env={"taskset": {"id": "echo-v1"}}), source)
+    lock = asyncio.Lock()
+    await append_episode(source, failed, lock)
+    await append_episode(source, scored, lock)
+    config = ReplayConfig.model_validate({"taskset": {"id": "echo-v1"}, "rich": False})
+    traces = await run_replay(config, source, tmp_path / "out")
+    assert len(traces) == 1
