@@ -333,7 +333,7 @@ async def serve(
         )
         if colocated and harness_runtime is not None and runtime.network_isolated:
             base = base.replace("127.0.0.1", "localhost", 1)
-        elif not for_host and harness_runtime is not None:
+        elif not colocated and not for_host and harness_runtime is not None:
             base = harness_runtime.host_url(base)
         yield f"{base.rstrip('/')}/mcp"
 

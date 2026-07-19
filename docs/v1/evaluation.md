@@ -76,7 +76,9 @@ user allow rules; framework interception and MCP routes always remain reachable.
 
 Rules may be bare host patterns (`*.example.com`) or URL origins
 (`https://example.com:8443`). A scheme or port in a rule narrows the match; URL paths
-are ignored. `*.example.com` includes `example.com` itself.
+are ignored. `*.example.com` includes `example.com` itself. HTTPS proxy tunnels use
+port 443 by default; an `allow` entry with an explicit HTTPS origin authorizes another
+port.
 
 The enforcement shape follows
 [Docker Sandboxes network isolation](https://docs.docker.com/ai/sandboxes/security/isolation/):

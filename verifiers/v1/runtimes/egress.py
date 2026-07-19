@@ -33,7 +33,19 @@ class NetworkPolicy:
     routes: list[str]
     default_allow: bool
 
-    def permits(self, scheme: str, host: str, port: int) -> bool:
+    def permits(
+        self, scheme: str, host: str, port: int, *, connect: bool = False
+    ) -> bool:
+        if (
+            connect
+            and port != 443
+            and not any(
+                urlsplit(rule.lower()).scheme == "https"
+                and _rule_matches(rule, scheme, host, port)
+                for rule in [*self.routes, *self.allow]
+            )
+        ):
+            return False
         # Framework routes are invariants, not user egress, so they cannot be blocked.
         if any(_rule_matches(route, scheme, host, port) for route in self.routes):
             return True
@@ -83,7 +95,7 @@ class EgressProxy:
                 host = parsed.hostname or ""
                 port = parsed.port or (443 if scheme == "https" else 80)
             if scheme not in ("http", "https") or not self.policy.permits(
-                scheme, host, port
+                scheme, host, port, connect=method == "CONNECT"
             ):
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()

@@ -234,6 +234,7 @@ class DockerRuntime(Runtime):
 
     def host_url(self, url: str) -> str:
         host = urlsplit(url).hostname
+        # 127.0.0.1 stays proxied: the Verifiers process dials its own host loopback.
         if self.network_isolated and host == "localhost":
             return url.replace(host, "127.0.0.1", 1)
         if (
@@ -332,6 +333,7 @@ class DockerRuntime(Runtime):
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
+        # Detached servers survive the cut, so they need the initially permissive proxy.
         env = {**self._proxy_env(), **env}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         inner = f"{' '.join(shlex.quote(a) for a in argv)} > {shlex.quote(log)} 2>&1"
