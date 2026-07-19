@@ -279,15 +279,6 @@ Installs the Codex CLI into the runtime and runs `codex exec`.
 |---|---|---|---|
 | `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
-#### `PoolHarnessConfig` — `id: "pool"`
-Installs the Pool CLI and runs `pool exec` against interception. Supports task MCP servers and
-system and user text prompts, but not image prompts or user simulators. `disabled_tools` takes
-Pool tool names such as `shell`, `read`, and `edit`.
-
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `version` | `str` | `"1.0.11"` | Pool release to install; pinned. |
-
 #### `RLMHarnessConfig` — `id: "rlm"`
 Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `HarnessConfig.env` passes any other `RLM_*` var through verbatim.
 
