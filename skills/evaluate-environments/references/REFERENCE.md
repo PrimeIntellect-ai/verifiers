@@ -380,6 +380,9 @@ config with the row's `TaskData`:
   class's default. Any non-default runtime-config workdir wins.
 - Non-`None` `TaskData.resources` values similarly fill supported runtime fields only while those
   fields remain at their defaults. Any non-default runtime-config resource value wins.
+- `TaskData.network_access = false` requires the framework-aware Docker URL policy, merges
+  `TaskData.network_allow` with the runtime's `allow`, and leaves runtime `block` rules in place.
+  A task that permits public access never widens a stricter evaluator policy.
 - A resource field unsupported by the chosen runtime is ignored; evaluation warns once per
   runtime/field combination. Docker and Modal accept `disk` so portable task data validates, but
   neither enforces a disk limit.
@@ -437,6 +440,8 @@ value in the run's `TimeoutConfig` wins; otherwise the corresponding row value i
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
+| `network_access` | `bool` | `True` | Whether the task permits public access. `False` requires Docker's framework-aware execution policy; evaluator restrictions still take precedence. |
+| `network_allow` | `list[str]` | `[]` | Destinations added to Docker's `allow` list when `network_access=False`. |
 | `timeout` | `TaskTimeout` | `TaskTimeout()` | Per-stage timeout requests described above. |
 | `resources` | `TaskResources` | `TaskResources()` | Portable runtime resource requests described above. |
 

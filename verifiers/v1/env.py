@@ -23,6 +23,7 @@ from verifiers.v1.session import RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
+    DockerConfig,
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
@@ -180,10 +181,10 @@ def resolve_runtime_config(
     base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
 ) -> RuntimeConfig:
     """Resolve a task's runtime config from a `base`: inject the task's `image` (a task with
-    an image must run in a container — refuse subprocess), and apply its `workdir` and
-    requested `resources` to the fields the runtime supports. Precedence is cli/toml > task >
-    default; a resource the runtime doesn't support warns once (deduped via `warned`). Shared
-    by `Environment.runtime_for` (rollouts) and the `validate` entrypoint."""
+    an image must run in a container — refuse subprocess), network policy, `workdir`, and
+    requested `resources` to fields supported by the runtime. Precedence is cli/toml > task >
+    default except that restrictions compose; an unsupported resource warns once (deduped via
+    `warned`). Shared by `Environment.runtime_for` (rollouts) and `validate`."""
     config = base
     updates: dict = {}
     if task.data.image is not None:
@@ -200,6 +201,16 @@ def resolve_runtime_config(
         and getattr(config, "workdir") == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
+    if not task.data.network_access:
+        if not isinstance(config, DockerConfig):
+            raise ValueError(
+                f"task {task.data.idx!r} requires filtered networking, but the "
+                f"{config.type} runtime does not support framework-aware URL policies"
+            )
+        updates["network_access"] = False
+        updates["allow"] = list(
+            dict.fromkeys([*task.data.network_allow, *config.allow])
+        )
     for field, value in task.data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(field)
         if spec is None:

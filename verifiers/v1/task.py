@@ -153,6 +153,11 @@ class TaskData(StrictBaseModel):
     system_prompt: str | None = None
     image: str | None = None
     workdir: str | None = None
+    network_access: bool = True
+    """Whether this task permits public network access. False requires a runtime with
+    framework-aware filtering; the evaluator may still add explicit allowed destinations."""
+    network_allow: list[str] = []
+    """Destinations added to the runtime allowlist when network_access is false."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 
