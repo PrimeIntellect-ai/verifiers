@@ -54,3 +54,16 @@ disabled_tools = ["shell_tool"]
 ```
 
 The names of these tools are set by the respective harness. Consult the relevant documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
+
+## Pool CLI
+
+Use the built-in Pool harness to run `pool exec` against the evaluation model and task MCP servers:
+
+```toml
+[harness]
+id = "pool"
+version = "1.0.11"
+disabled_tools = ["shell", "read", "edit"]
+```
+
+`disabled_tools` takes Pool tool names. The harness supports system and user text prompts, but not image prompts or user simulators.
