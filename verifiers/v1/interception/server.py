@@ -193,9 +193,20 @@ class InterceptionServer(Interception):
             await replay.close()
         self.sessions.pop(secret, None)
 
-    def _retire_replay(self, replay: _StreamReplay) -> None:
-        """Close an obsolete spool once any slow client currently reading it is done."""
-        cleanup = asyncio.create_task(replay.close())
+    def _retire_replay(self, secret: str, replay: _StreamReplay) -> None:
+        """Close an obsolete spool after handlers that could have captured it finish."""
+        current = asyncio.current_task()
+        readers = tuple(
+            request
+            for request in self.requests.get(secret, ())
+            if request is not current
+        )
+
+        async def close() -> None:
+            await asyncio.gather(*readers, return_exceptions=True)
+            await replay.close()
+
+        cleanup = asyncio.create_task(close())
         self.replay_cleanup.add(cleanup)
         cleanup.add_done_callback(self.replay_cleanup.discard)
 
@@ -525,7 +536,7 @@ class InterceptionServer(Interception):
                 fut.set_result(response.raw)
             replay = self.stream_replays.pop(secret, None)
             if replay is not None:
-                self._retire_replay(replay)
+                self._retire_replay(secret, replay)
             return _completion_response(response.raw)
 
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -869,7 +880,7 @@ class InterceptionServer(Interception):
                     attempt.set_result(replay)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
                 if old is not None:
-                    self._retire_replay(old)
+                    self._retire_replay(secret, old)
                 with contextlib.suppress(ConnectionError):
                     await replay.write(resp, boundary)
                     await resp.write_eof()

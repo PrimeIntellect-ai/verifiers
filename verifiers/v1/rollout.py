@@ -204,8 +204,6 @@ class Rollout:
                         )
                     except TimeoutError:
                         await slot.cancel()
-                        if session.error is not None:
-                            raise session.error
                         trace.stop("harness_timeout")
                     except RolloutError as e:
                         if session.error is not None:
