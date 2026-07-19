@@ -122,4 +122,8 @@ class PoolHarness(Harness[PoolHarnessConfig]):
             'export XDG_CONFIG_HOME="$PWD/.vf-pool/config" '
             'XDG_STATE_HOME="$PWD/.vf-pool/state"; exec "$@"'
         )
-        return await runtime.run_program(["sh", "-c", isolate, "pool", *argv], env)
+        result = await runtime.run_program(["sh", "-c", isolate, "pool", *argv], env)
+        # Exit 4 means the agent declined the task, not that the harness failed.
+        if result.exit_code == 4:
+            return ProgramResult(0, result.stdout, result.stderr)
+        return result

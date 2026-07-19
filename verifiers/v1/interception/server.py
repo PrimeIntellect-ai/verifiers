@@ -640,6 +640,7 @@ class InterceptionServer(Interception):
                     if not any(
                         line.startswith(b"data:") for line in chunk.splitlines()
                     ):
+                        await resp.write(b": keepalive\n")
                         continue
                     if deferred or dialect.is_terminal_event(chunk):
                         if parser_error is None:
