@@ -394,9 +394,9 @@ def test_role_limits_fall_back_per_field():
 
 
 def test_role_harness_config_narrows_by_id():
-    spec = vf.AgentConfig(harness={"id": "default"})
+    spec = vf.AgentConfig(harness={"id": "bash"})
     assert type(spec.harness) is not vf.HarnessConfig  # resolved to the concrete type
-    assert spec.harness.id == "default"
+    assert spec.harness.id == "bash"
 
 
 def test_seat_harness_is_a_pin_or_the_taskset_default():
@@ -407,7 +407,7 @@ def test_seat_harness_is_a_pin_or_the_taskset_default():
     env = vf.SingleAgentEnv(_env_config(agent={"harness": {"id": "null"}}))
     assert env._harnesses["agent"].config.id == "null"
     duet = DuetEnv(_duet_config())
-    assert duet._harnesses["a"].config.id == "default"  # the taskset's default
+    assert duet._harnesses["a"].config.id == "bash"  # the taskset's default
     assert duet._harnesses["a"] is duet._harnesses["b"]  # one object per config
 
 
@@ -430,13 +430,13 @@ def test_role_harness_override_switches_the_type():
     into the new type's (extra-forbidden) validation."""
 
     class Pinned(vf.EnvConfig):
-        solver: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="default"))
+        solver: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="bash"))
 
     params = Pinned.model_validate({"solver": {"harness": {"id": "null"}}})
     assert params.solver.harness is not None and params.solver.harness.id == "null"
     # A non-switching partial override still tunes the pinned harness in place.
     tuned = Pinned.model_validate({"solver": {"harness": {"edit": False}}})
-    assert tuned.solver.harness is not None and tuned.solver.harness.id == "default"
+    assert tuned.solver.harness is not None and tuned.solver.harness.id == "bash"
     assert tuned.solver.harness.edit is False
 
 

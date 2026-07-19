@@ -20,6 +20,12 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.reward == 1.0
     # The seat's resolved identity rides the trace (policy metadata for trainers).
     assert trace.agent is not None and trace.agent.sampling.temperature == 0
+    # Every sampled turn has one per-call record, linked to its assistant node.
+    sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
+    assert [c.node for c in trace.calls if c.error is None] == sampled
+    for call in trace.calls:
+        assert call.model and call.sampling is not None
+        assert call.time.duration > 0
 
 
 @pytest.mark.e2e

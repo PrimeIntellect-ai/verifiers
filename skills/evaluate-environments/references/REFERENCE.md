@@ -25,7 +25,7 @@ EvalConfig                          (the run)
 
 There is no run-level harness: each seat pins its own (`--env.agent.harness.*` on the
 single-agent env), an unpinned seat runs the taskset's default harness (its bundled
-one, else `default`), and a seat's declared pin is the env author's default. The
+one, else `bash`), and a seat's declared pin is the env author's default. The
 retired flat axes error with a pointer: `--taskset.*` → `--env.taskset.*`,
 `--harness.*` → `--env.<role>.harness.*`.
 
@@ -136,7 +136,7 @@ author's per-seat default; partial overrides deep-merge onto it (an `id` switch 
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `harness` | `HarnessConfig \| None` | `None` | The seat's program + runtime policy; resolved to its concrete subclass by `--env.<role>.harness.id`. `None` = the taskset's default harness (its bundled one, else `default`). See [Harness config](#harness-config). |
+| `harness` | `HarnessConfig \| None` | `None` | The seat's program + runtime policy; resolved to its concrete subclass by `--env.<role>.harness.id`. `None` = the taskset's default harness (its bundled one, else `bash`). See [Harness config](#harness-config). |
 | `model` | `str \| None` | `None` | Pin a model for this seat (None = the run's `--model`). |
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
 | `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
@@ -257,12 +257,12 @@ that subclass. These are run-wide knobs, not per-row data; the row itself belong
 
 ## Harness config
 
-`verifiers/v1/harness.py` — `HarnessConfig(BaseConfig)`. The base; **subclass per harness to add run knobs**. A harness belongs to a seat: the concrete subclass is resolved by the seat's `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env); an unpinned seat runs the taskset's bundled harness, else `default`. Mirrors `TasksetConfig`.
+`verifiers/v1/harness.py` — `HarnessConfig(BaseConfig)`. The base; **subclass per harness to add run knobs**. A harness belongs to a seat: the concrete subclass is resolved by the seat's `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env); an unpinned seat runs the taskset's bundled harness, else `bash`. Mirrors `TasksetConfig`.
 
 ### Base `HarnessConfig`
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `id` | `ID` | `"default"` | The harness id, which selects it. Set via `--env.<role>.harness.id`. |
+| `id` | `ID` | `"bash"` | The harness id, which selects it. Set via `--env.<role>.harness.id`. |
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--env.<role>.harness.runtime.type docker\|prime\|modal`. |
 | `env` | `dict[str, str]` | `{}` | Additional env vars for the harness program. Harness-owned endpoint/auth/model vars take precedence. |
 | `forward_env` | `list[str]` | `[]` | Names of env vars to forward from `os.environ` into the harness program's runtime (for secrets not in checked-in config). Absent names are skipped; explicit `env` wins. |
@@ -277,7 +277,7 @@ A harness class also declares capability flags (ClassVars, not user-settable):
 
 All inherit the base `HarnessConfig` fields (`id`, `runtime`, `env`, `forward_env`, `disabled_tools`).
 
-#### `DefaultHarnessConfig` — `id: "default"` (the fallback)
+#### `BashHarnessConfig` — `id: "bash"` (the fallback)
 A growing-message-list chat loop with a local `bash` tool, plus optional `edit`/`search`. A uv script (deps: `openai`, `mcp`).
 
 | Field | Type | Default | Notes |
@@ -297,7 +297,7 @@ Installs the Codex CLI into the runtime and runs `codex exec`.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"0.137.0"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
+| `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
 #### `RLMHarnessConfig` — `id: "rlm"`
 Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `HarnessConfig.env` passes any other `RLM_*` var through verbatim.
@@ -314,7 +314,7 @@ Runs the native bash-tool agent through LiteLLM.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"2.2.8"` | mini-swe-agent release to install, pinned. |
+| `version` | `str` | `"2.4.5"` | mini-swe-agent release to install, pinned. |
 
 #### `Terminus2HarnessConfig` — `id: "terminus-2"`
 Runs Harbor's tmux agent through LiteLLM.
@@ -328,7 +328,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `version` | `str` | `"0.14.3"` | Kimi Code release to install, pinned. |
+| `version` | `str` | `"0.27.0"` | Kimi Code release to install, pinned. |
 
 ---
 

@@ -9,12 +9,12 @@ import asyncio
 import json
 
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
+from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
 
 
 async def main() -> None:
     solver = vf.Agent(
-        DefaultHarness(DefaultHarnessConfig()),
+        BashHarness(BashHarnessConfig()),
         "z-ai/glm-5.2",
         vf.resolve_client(vf.EvalClientConfig()),
     )

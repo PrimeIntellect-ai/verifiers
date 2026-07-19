@@ -35,7 +35,10 @@ from verifiers.v1 import graph
 from verifiers.v1.trace import (
     Error,
     Episode,
+    GenerationSpan,
+    ModelCall,
     TimeSpan,
+    TimeSplit,
     Timing,
     Trace,
     TraceTask,
@@ -192,7 +195,8 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
 
 def _timing(raw: Any) -> Timing:
     """Map the v0 timing record's generation/scoring durations onto a v1 ``Timing``
-    (we only have durations, so each span is encoded as start=0, end=duration)."""
+    (we only have durations, so each span is encoded as start=0, end=duration).
+    v0's per-turn ``model``/``env`` span collections carry the generation split."""
 
     def _dur(node: Any) -> float:
         if isinstance(node, dict):
@@ -205,7 +209,12 @@ def _timing(raw: Any) -> Timing:
 
     raw = raw or {}
     return Timing(
-        generation=TimeSpan(start=0.0, end=_dur(raw.get("generation"))),
+        generation=GenerationSpan(
+            start=0.0,
+            end=_dur(raw.get("generation")),
+            model=TimeSplit(duration=_dur(raw.get("model"))),
+            harness=TimeSplit(duration=_dur(raw.get("env"))),
+        ),
         scoring=TimeSpan(start=0.0, end=_dur(raw.get("scoring"))),
     )
 
@@ -273,8 +282,19 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         if not isinstance(step, dict):
             continue
         tokens = _to_v1_tokens(step.get("tokens"))
-        graph.prepare_turn(trace, _to_v1_messages(step.get("prompt"))).commit(
-            _to_v1_response(step.get("response"), model, tokens)
+        response = _to_v1_response(step.get("response"), model, tokens)
+        node = graph.prepare_turn(trace, _to_v1_messages(step.get("prompt"))).commit(
+            response
+        )
+        # The per-call record (v0 steps carry no wire settings or timing): keeps
+        # `finish_reason` and `usage` — per-call since trace v2 — available to
+        # `is_truncated` and the token accounting.
+        trace.calls.append(
+            ModelCall(
+                node=node,
+                finish_reason=response.finish_reason,
+                usage=response.usage,
+            )
         )
     return trace
 

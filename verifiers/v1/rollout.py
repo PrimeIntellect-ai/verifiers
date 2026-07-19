@@ -380,6 +380,7 @@ class RolloutRun:
             ):
                 if span.start and not span.end:
                     span.end = now
+            trace.split_generation()
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

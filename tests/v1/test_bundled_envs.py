@@ -162,7 +162,7 @@ def test_paired_env_seats_pin_their_own_harness():
             }
         )
     )
-    assert judged._harnesses["solver"].config.id == "default"  # taskset's default
+    assert judged._harnesses["solver"].config.id == "bash"  # taskset's default
     assert judged._harnesses["judge"].config.runtime.type == "docker"  # the pin
 
 

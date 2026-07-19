@@ -9,7 +9,7 @@ import verifiers.v1 as vf
 import verifiers.v1.agent
 import verifiers.v1.rollout
 from verifiers.v1.agent import _check_borrowed_placement
-from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
+from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
 from verifiers.v1.runtimes import DockerConfig, SubprocessConfig, make_runtime
 
 
@@ -17,7 +17,7 @@ def _agent() -> vf.Agent:
     # The guard under test raises before the model leg is touched, so the
     # client can be a stub.
     return vf.Agent(
-        DefaultHarness(DefaultHarnessConfig()),
+        BashHarness(BashHarnessConfig()),
         "test-model",
         None,  # type: ignore[arg-type]
     )
@@ -60,11 +60,11 @@ async def test_shared_tools_hit_the_mcp_pairing_guard():
     at init against the taskset's declared tools. Raises before any runtime or model
     I/O, so a stub server value is safe."""
 
-    class NoMcpHarness(DefaultHarness):
+    class NoMcpHarness(BashHarness):
         SUPPORTS_MCP = False
 
     agent = vf.Agent(
-        NoMcpHarness(DefaultHarnessConfig()),
+        NoMcpHarness(BashHarnessConfig()),
         "test-model",
         None,  # type: ignore[arg-type]
     )

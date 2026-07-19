@@ -44,7 +44,12 @@ class ProviderError(RolloutError):
 
 class OverlongPromptError(ProviderError):
     """The prompt exceeded the model's context window — a budget limit, ended as a clean
-    truncation rather than recorded as an error."""
+    truncation rather than recorded as an error. Defaults to a 400 (what the interception
+    server surfaces for it — deterministic, so an SDK never retries it); `model_error`
+    keeps the provider's real status when the failure carried one."""
+
+    def __init__(self, message: str = "", *, status_code: int = 400) -> None:
+        super().__init__(message, status_code=status_code)
 
 
 class HarnessError(RolloutError):
@@ -134,10 +139,18 @@ def model_error(
     becomes a plain `ProviderError`. `status_code` is the HTTP status surfaced to the harness (whose
     SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error when not given. Accepts
     an SDK error (the renderer) or the provider's raw error body (the httpx proxy)."""
+    from openai import APIStatusError
+
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
     if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):
-        return OverlongPromptError(text)
+        # Keep the provider's real status when the failure carried one; else the class
+        # default (the 400 the interception server surfaces for overlong prompts).
+        if status_code is None and isinstance(e, APIStatusError):
+            status_code = e.status_code
+        return OverlongPromptError(
+            text, **({} if status_code is None else {"status_code": status_code})
+        )
     return ProviderError(
         text,
         status_code=status_code if status_code is not None else _provider_status(e),

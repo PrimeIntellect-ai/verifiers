@@ -316,7 +316,7 @@ class DebateEnv(vf.Environment[DebateConfig]):
   `AgentConfig()` is "the policy under evaluation/training" (the serve protocol
   carries model/client/sampling per rollout request, which is what makes self-play
   trainable). Its **harness** does not: an unpinned role runs the taskset's default
-  harness (its bundled one, else `default`) — there is no run-level harness. A role
+  harness (its bundled one, else `bash`) — there is no run-level harness. A role
   pins only what makes it a different actor: its own harness or runtime
   (`--env.judge.harness.runtime.type docker`), a frozen model, an off-train
   endpoint, tighter limits, `trainable=False` — and a declared pin is the env

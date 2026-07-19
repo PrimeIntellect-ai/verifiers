@@ -1,5 +1,5 @@
 # harbor — Terminal-Bench 2, each task run in its own declared container image (needs docker).
-# The `default` harness gives the agent the bash (+ edit) tools it drives the terminal with.
+# The `bash` harness gives the agent the bash (+ edit) tools it drives the terminal with.
 #
 #   uv run eval @ configs/harbor.toml
 num_tasks = 10
@@ -9,5 +9,5 @@ id = "harbor"
 dataset = "terminal-bench/terminal-bench-2"
 
 [env.agent.harness]
-id = "default"
+id = "bash"
 runtime = { type = "docker" }

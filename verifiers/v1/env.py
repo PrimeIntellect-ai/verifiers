@@ -71,7 +71,7 @@ class AgentConfig(BaseConfig):
 
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The role's program + runtime policy (None = the taskset's default harness:
-    its bundled one when it ships one, else the built-in `default`). Pin it to give
+    its bundled one when it ships one, else the built-in `bash`). Pin it to give
     the role its own program (`vf.HarnessConfig(id="null")` for a tool-less chat
     loop) or runtime (`--env.<role>.harness.runtime.type docker`)."""
     model: str | None = None
@@ -105,7 +105,7 @@ class AgentConfig(BaseConfig):
         if isinstance(data, dict) and data.get("harness") is not None:
             from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
 
-            narrow_plugin_field(data, "harness", harness_config_type, "default")
+            narrow_plugin_field(data, "harness", harness_config_type, "bash")
         return data
 
 
@@ -300,7 +300,7 @@ def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
 
 def default_seat_harness(taskset_id: str) -> HarnessConfig:
     """What an unpinned role's `harness=None` resolves to: the taskset's bundled
-    harness when it ships one, else the built-in `default`. There is no run-level
+    harness when it ships one, else the built-in `bash`. There is no run-level
     harness, so a seat's harness is always statable from the env's config alone."""
     from verifiers.v1.loaders import default_harness_id, harness_config_type
 
@@ -510,13 +510,13 @@ def validate_pairing(
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
             f"{task_cls.__name__} exposes tool servers (MCP). Run it with a harness that "
-            f"supports MCP (e.g. --env.agent.harness.id default), or use tasks without tools."
+            f"supports MCP (e.g. --env.agent.harness.id bash), or use tasks without tools."
         )
     if not harness.SUPPORTS_USER_SIM and task_cls.user is not None:
         raise ValueError(
             f"Harness {harness.config.id!r} does not drive a user simulator, but "
             f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
-            f"supports user simulation (e.g. --env.agent.harness.id default), or use tasks "
+            f"supports user simulation (e.g. --env.agent.harness.id bash), or use tasks "
             "without one."
         )
     if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
@@ -719,7 +719,7 @@ class Environment(ABC, Generic[ConfigT]):
                     f"{type(self).__name__} role {name!r} plays tasks with MCP tool "
                     f"servers, but its harness {harness.config.id!r} does not support "
                     f"MCP. Point the role at an MCP-capable harness "
-                    f"(--env.{name}.harness.id default) — or, if the env mints this "
+                    f"(--env.{name}.harness.id bash) — or, if the env mints this "
                     "role's tasks itself, declare its needs on the roles() entry "
                     "(vf.Role(cfg, mcp=False))."
                 )
@@ -737,7 +737,7 @@ class Environment(ABC, Generic[ConfigT]):
                     f"{type(self).__name__} role {name!r} plays tasks with a user "
                     f"simulator (Task.user), but its harness {harness.config.id!r} "
                     "does not drive one; point the role at a user-capable harness "
-                    f"(--env.{name}.harness.id default)."
+                    f"(--env.{name}.harness.id bash)."
                 )
             needs_container = (
                 role.container

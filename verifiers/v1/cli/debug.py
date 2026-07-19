@@ -243,6 +243,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     except Exception as e:
         record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
     finally:
+        trace.split_generation()
         trace.info["debug"] = debug
         try:
             await runtime.stop()

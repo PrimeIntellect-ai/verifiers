@@ -17,7 +17,7 @@ model = "deepseek/deepseek-v4-flash"
 id = "reverse-text-v1"
 
 [env.agent.harness]
-id = "default"
+id = "bash"
 
 [sampling]
 temperature = 1.0

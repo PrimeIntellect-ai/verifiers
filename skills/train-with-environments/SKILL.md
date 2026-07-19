@@ -59,7 +59,7 @@ max_completion_tokens = 2048
 [[orchestrator.train.env]]
 name = "my-task-train"
 taskset = { id = "my-task-v1", split = "train" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 timeout = { rollout = 600, scoring = 120 }
 max_turns = 8
 max_total_tokens = 32768
@@ -70,7 +70,7 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "my-task-test"
 taskset = { id = "my-task-v1", split = "test" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 num_examples = 200
 group_size = 4
 ```
@@ -172,13 +172,13 @@ environments:
 name = "math"
 ratio = 3
 taskset = { id = "gsm8k-v1", split = "train" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 
 [[orchestrator.train.env]]
 name = "tools"
 ratio = 1
 taskset = { id = "wiki-search-v1" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 ```
 
 Ratios are relative. Keep environment-specific rewards interpretable; a scalar reward scale mismatch

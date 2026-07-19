@@ -11,10 +11,10 @@ that drives the model), a **model leg** (model + client + optional sampling), an
 
 ```python
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
+from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
 
 solver = vf.Agent(
-    DefaultHarness(DefaultHarnessConfig()),
+    BashHarness(BashHarnessConfig()),
     "z-ai/glm-5.2",
     vf.resolve_client(vf.EvalClientConfig()),
 )
@@ -66,7 +66,7 @@ its transcript:
 
 ```python
 sandbox = vf.PrimeConfig()
-harness = DefaultHarness(DefaultHarnessConfig())
+harness = BashHarness(BashHarnessConfig())
 client = vf.resolve_client(vf.EvalClientConfig())
 solver = vf.Agent(harness, "z-ai/glm-5.2", client, sandbox)
 judge = vf.Agent(harness, "openai/gpt-5.4-mini", client, sandbox)
