@@ -5,6 +5,7 @@ import contextlib
 import fnmatch
 import socket
 from dataclasses import dataclass
+from ipaddress import ip_address
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -49,6 +50,13 @@ class NetworkPolicy:
         # Framework routes are invariants, not user egress, so they cannot be blocked.
         if any(_rule_matches(route, scheme, host, port) for route in self.routes):
             return True
+        # The proxy dials from the host, so only framework routes may use host loopback.
+        hostname = host.lower().rstrip(".")
+        if hostname == "localhost" or hostname.endswith(".localhost"):
+            return False
+        with contextlib.suppress(ValueError):
+            if ip_address(hostname).is_loopback:
+                return False
         if any(_rule_matches(rule, scheme, host, port) for rule in self.block):
             return False
         return self.default_allow or any(

@@ -334,7 +334,7 @@ uses an isolated bridge during agent execution.
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"2"` (`docker --gpus` uses the count; needs the nvidia toolkit). |
 | `disk` | `float \| None` | `None` | Advisory disk request in GB. Docker has no portable per-container size limit, so accepted but **not enforced**. |
 | `network_access` | `bool` | `True` | `False` = internet through setup only, then allow just the interception URL, all MCP URLs, and `allow` entries. The policy remains active through finalization and scoring. |
-| `allow` | `list[str]` | `[]` | URL origins or host patterns added when `network_access=False`, e.g. `"https://*.wikipedia.org"`. Wildcards are supported; `*.example.com` also matches the apex. URL paths are ignored. An explicit HTTPS origin authorizes a nonstandard CONNECT port. |
+| `allow` | `list[str]` | `[]` | URL origins or host patterns added when `network_access=False`, e.g. `"https://*.wikipedia.org"`. Wildcards are supported; `*.example.com` also matches the apex. URL paths are ignored. An explicit HTTPS origin authorizes a nonstandard CONNECT port. Host loopback is reserved for framework routes. |
 | `block` | `list[str]` | `[]` | URL origins or host patterns denied during execution. Block wins over user `allow`; interception and MCP routes always remain reachable. A non-empty list activates filtering when `network_access=True`. |
 
 ### `PrimeConfig` — `type: "prime"`

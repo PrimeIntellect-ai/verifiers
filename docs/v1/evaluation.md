@@ -73,6 +73,9 @@ added automatically, then `allow` adds user destinations. `block` can narrow tha
 allowlist. With `network_access = true`, networking stays open unless `block` is
 non-empty, in which case matching destinations are denied. User block rules win over
 user allow rules; framework interception and MCP routes always remain reachable.
+Host-loopback destinations are reserved for those framework routes, so neither the
+default-allow posture nor a user `allow` rule exposes unrelated services on the
+Verifiers host.
 
 Rules may be bare host patterns (`*.example.com`) or URL origins
 (`https://example.com:8443`). A scheme or port in a rule narrows the match; URL paths
