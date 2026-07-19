@@ -784,6 +784,16 @@ class InterceptionServer(Interception):
             )
             content_type = reply.content_type.split(";")[0].strip()
             resp.content_type = content_type
+
+            async def write_downstream(event: bytes) -> bool:
+                nonlocal error
+                try:
+                    await resp.write(event)
+                except ConnectionError as e:
+                    error = e
+                    return False
+                return True
+
             events = tempfile.SpooledTemporaryFile(max_size=_STREAM_SPOOL_MEMORY_BYTES)
             cached = False
             try:
@@ -791,20 +801,26 @@ class InterceptionServer(Interception):
                 terminal: int | None = None
                 chunk: asyncio.Future[bytes] | None = None
                 try:
-                    await resp.prepare(request)
+                    try:
+                        await resp.prepare(request)
+                    except ConnectionError as e:
+                        error = e
+                        return resp
                     iterator = aiter(reply.chunks)
                     chunk = asyncio.ensure_future(anext(iterator))
                     loop = asyncio.get_running_loop()
                     next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                     while True:
                         if loop.time() >= next_keepalive:
-                            await resp.write(b": keepalive\n\n")
+                            if not await write_downstream(b": keepalive\n\n"):
+                                return resp
                             next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                             continue
                         timeout = next_keepalive - loop.time()
                         done, _ = await asyncio.wait((chunk,), timeout=timeout)
                         if not done:
-                            await resp.write(b": keepalive\n\n")
+                            if not await write_downstream(b": keepalive\n\n"):
+                                return resp
                             next_keepalive = loop.time() + _KEEPALIVE_INTERVAL_SECONDS
                             continue
                         try:
@@ -826,15 +842,18 @@ class InterceptionServer(Interception):
                     response = parser.finish()
                     # Probe the downstream once more after buffering. A client that left
                     # during a fast provider response must not produce a committed turn.
-                    await resp.write(b": keepalive\n\n")
-                except ConnectionError as e:
-                    error = e
-                    return resp
+                    if not await write_downstream(b": keepalive\n\n"):
+                        return resp
                 except Exception as e:
                     session.error = model_error(
                         f"malformed upstream response: {type(e).__name__}: {e}",
                         status_code=502,
                     )
+                    # Already-admitted siblings must not commit and clear this failure.
+                    current = asyncio.current_task()
+                    for sibling in tuple(self.requests.get(secret, ())):
+                        if sibling is not current:
+                            sibling.cancel()
                     error = session.error
                     logger.warning(
                         "model call failed: id=%s %s: %s",
