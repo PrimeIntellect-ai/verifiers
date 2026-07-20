@@ -83,7 +83,7 @@ class GEPAConfig(BaseConfig):
     )
     """Where to write results (config.toml + the streamed traces.jsonl, alongside GEPA's own
     candidates.json / run_log.json). None = a fresh per-run dir under
-    `outputs/<taskset>--<model>--<harness>/<uuid>` (via `output_path`)."""
+    `outputs/<env>--<model>--<harness>/<uuid>` (via `output_path`)."""
     save_results: bool = True
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     dry_run: bool = Field(False, exclude=True)

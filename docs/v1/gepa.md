@@ -35,7 +35,7 @@ Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA,
 
 ## Output
 
-Results go under `outputs/<taskset>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is printed when the run finishes.
+Results go under `outputs/<env>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is printed when the run finishes.
 
 ## Limitations
 
