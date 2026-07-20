@@ -168,11 +168,22 @@ class EnvServer:
         ) as e:  # a failed request is data, not a crash — report and keep serving
             logger.warning("request failed: %s", e, exc_info=True)
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
-        data = msgpack.packb(
-            response.model_dump(mode="python"),
-            default=msgpack_encoder,
-            use_bin_type=True,
-        )
+        try:
+            data = msgpack.packb(
+                response.model_dump(mode="python"),
+                default=msgpack_encoder,
+                use_bin_type=True,
+            )
+        except (
+            Exception
+        ) as e:  # an unencodable response is data too — the reply must go out
+            logger.warning("response serialization failed: %s", e, exc_info=True)
+            response = BaseResponse(
+                success=False,
+                error=f"response serialization failed: {type(e).__name__}: {e} — "
+                "keep episode/trace values msgpack-encodable",
+            )
+            data = msgpack.packb(response.model_dump(mode="python"), use_bin_type=True)
         try:
             # Let ZMQ retain the packed response instead of copying large traces.
             await self.frontend.send_multipart(

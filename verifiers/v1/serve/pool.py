@@ -9,8 +9,10 @@ identity is held in `pending` and the reply routed back by `request_id`.
 
 Scaling is elastic but upscale-only: a new worker spawns when in-flight requests
 reach 90% of `workers * multiplex`. Workers monitor a death pipe so an orphan
-self-exits if the broker dies. TODO: downscale idle workers, per-worker
-restart-on-death.
+self-exits if the broker dies. A worker that dies fails its in-flight requests
+back to their clients and leaves dispatch; when every worker is dead the pool
+shuts down (clients error instead of hanging). TODO: downscale idle workers,
+per-worker restart-on-death.
 """
 
 import asyncio
@@ -29,11 +31,18 @@ import zmq.asyncio
 
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
+from verifiers.v1.serve.types import BaseResponse, HealthResponse, RunGroupRequest
 
 logger = logging.getLogger(__name__)
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
+
+
+def _error(message: str) -> bytes:
+    return msgpack.packb(
+        BaseResponse(success=False, error=message).model_dump(mode="json"),
+        use_bin_type=True,
+    )
 
 
 def _arm_teardown(death_pipe=None) -> None:
@@ -125,6 +134,7 @@ class EnvServerPool:
                 "pipe": parent_conn,
                 "active": 0,
                 "index": i,
+                "dead": False,
             }
         )
         if self._poller is not None:
@@ -168,18 +178,34 @@ class EnvServerPool:
         try:
             in_flight = 0
             while True:
-                events = dict(await self._poller.poll())
+                # Bounded poll so worker liveness is checked even when idle.
+                events = dict(await self._poller.poll(timeout=1000))
+                in_flight -= await self._reap_dead_workers(pending)
+                if all(w["dead"] for w in self.workers):
+                    logger.error(
+                        "EnvServerPool: all %d worker(s) died; shutting down",
+                        len(self.workers),
+                    )
+                    # Give requests racing toward the dead pool a beat to land,
+                    # then refuse them, so their clients error instead of hanging.
+                    await asyncio.sleep(0.5)
+                    await self._refuse_queued_requests()
+                    raise RuntimeError(
+                        "all env workers died — check the worker logs for the cause"
+                    )
                 if self.frontend in events:
-                    (
-                        client_id,
-                        request_id,
-                        method,
-                        payload,
-                    ) = await self.frontend.recv_multipart()
-                    if method == b"health":
-                        await self.frontend.send_multipart(
-                            [client_id, request_id, _HEALTH]
+                    frames = await self.frontend.recv_multipart()
+                    if len(frames) != 4:
+                        logger.warning(
+                            "invalid message: expected 4 frames, got %d", len(frames)
                         )
+                        continue
+                    client_id, request_id, method, payload = frames
+                    if method == b"health":
+                        with contextlib.suppress(zmq.ZMQError):
+                            await self.frontend.send_multipart(
+                                [client_id, request_id, _HEALTH]
+                            )
                     else:
                         # Pool capacity is measured in rollouts; one group request carries n.
                         rollout_slots = 1
@@ -189,7 +215,10 @@ class EnvServerPool:
                                     msgpack.unpackb(payload, raw=False)
                                 )
                                 rollout_slots = max(1, request.n)
-                        worker = min(self.workers, key=lambda w: w["active"])
+                        worker = min(
+                            (w for w in self.workers if not w["dead"]),
+                            key=lambda w: w["active"],
+                        )
                         worker["active"] += rollout_slots
                         pending[request_id] = {
                             "client_id": client_id,
@@ -205,7 +234,7 @@ class EnvServerPool:
                         if self.elastic:
                             self._maybe_scale_up(in_flight)
                 for w in self.workers:
-                    if w["dealer"] in events:
+                    if not w["dead"] and w["dealer"] in events:
                         request_id, data = await w["dealer"].recv_multipart(copy=False)
                         # Copy only the routing key; relay the response Frames unchanged.
                         entry = pending.pop(request_id.bytes, None)
@@ -221,6 +250,65 @@ class EnvServerPool:
             pass
         finally:
             self._shutdown()
+
+    async def _reap_dead_workers(self, pending: dict[bytes, dict]) -> int:
+        """Fail a dead worker's in-flight requests back to their clients and drop it
+        from dispatch (restart-on-death is deliberately deferred). Replies the worker
+        managed to send before dying are relayed, not failed. Returns the rollout
+        slots released."""
+        released = 0
+        for w in self.workers:
+            if w["dead"] or w["process"].is_alive():
+                continue
+            w["dead"] = True
+            while await w["dealer"].poll(timeout=0):
+                request_id, data = await w["dealer"].recv_multipart(copy=False)
+                entry = pending.pop(request_id.bytes, None)
+                if entry is None:
+                    continue
+                released += entry["rollout_slots"]
+                with contextlib.suppress(zmq.ZMQError):
+                    await self.frontend.send_multipart(
+                        [entry["client_id"], request_id, data], copy=False
+                    )
+            lost = [rid for rid, e in pending.items() if e["worker"] is w]
+            error = _error(
+                f"env worker {w['index']} died (exit code {w['process'].exitcode}) "
+                "with the request in flight — check the worker logs for the crash"
+            )
+            for request_id in lost:
+                entry = pending.pop(request_id)
+                released += entry["rollout_slots"]
+                with contextlib.suppress(zmq.ZMQError):
+                    await self.frontend.send_multipart(
+                        [entry["client_id"], request_id, error]
+                    )
+            logger.error(
+                "EnvServerPool: worker %d died (exit code %s); "
+                "failed %d in-flight request(s)",
+                w["index"],
+                w["process"].exitcode,
+                len(lost),
+            )
+            if self._poller is not None:
+                with contextlib.suppress(KeyError):
+                    self._poller.unregister(w["dealer"])
+            w["dealer"].close()
+            with contextlib.suppress(Exception):
+                w["pipe"].close()
+        return released
+
+    async def _refuse_queued_requests(self) -> None:
+        """Error-reply everything already queued on the frontend so those clients
+        fail fast; anything sent after the pool exits is unanswerable."""
+        error = _error("env server pool shut down: all workers died")
+        while await self.frontend.poll(timeout=0):
+            frames = await self.frontend.recv_multipart()
+            if len(frames) != 4:
+                continue
+            client_id, request_id, _, _ = frames
+            with contextlib.suppress(zmq.ZMQError):
+                await self.frontend.send_multipart([client_id, request_id, error])
 
     def _shutdown(self) -> None:
         for w in self.workers:

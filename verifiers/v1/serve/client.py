@@ -55,18 +55,43 @@ class EnvClient:
         self._decode_slots = asyncio.BoundedSemaphore(1)
 
     def _ensure_receiver(self) -> None:
-        if self._receiver is None:
+        if self._receiver is None or self._receiver.done():
             self._receiver = asyncio.create_task(self._receive_loop())
 
+    def _fail_pending(self, error: Exception) -> None:
+        """Resolve every in-flight future with `error` — a caller must get an
+        exception, never an untimed hang on a reply that can no longer arrive."""
+        while self._pending:
+            _, future = self._pending.popitem()
+            if not future.done():
+                future.set_exception(error)
+
     async def _receive_loop(self) -> None:
-        while True:
-            try:
-                request_id_bytes, data = await self.socket.recv_multipart()
-            except asyncio.CancelledError:
-                break
-            future = self._pending.pop(request_id_bytes.decode(), None)
-            if future is not None and not future.done():
-                future.set_result(data)
+        error: Exception | None = None
+        try:
+            while True:
+                try:
+                    request_id_bytes, data = await self.socket.recv_multipart()
+                except asyncio.CancelledError:
+                    break
+                future = self._pending.pop(request_id_bytes.decode(), None)
+                if future is not None and not future.done():
+                    future.set_result(data)
+        except Exception as e:
+            logger.error("env client receive loop failed: %s", e, exc_info=True)
+            error = ConnectionError(
+                f"env client receive loop for {self.address} failed "
+                f"({type(e).__name__}: {e}); in-flight requests are lost"
+            )
+        finally:
+            # However the loop ends, no reply can arrive anymore — resolve, don't strand.
+            self._fail_pending(
+                error
+                or ConnectionError(
+                    f"env client for {self.address} stopped receiving "
+                    "with requests still in flight"
+                )
+            )
 
     async def _request(
         self,
@@ -176,5 +201,10 @@ class EnvClient:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._receiver
             self._receiver = None
+        self._fail_pending(
+            ConnectionError(
+                f"env client for {self.address} closed with requests still in flight"
+            )
+        )
         self.socket.close()
         self.ctx.term()
