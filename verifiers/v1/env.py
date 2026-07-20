@@ -661,12 +661,12 @@ class Environment(ABC, Generic[ConfigT]):
             *discover_decorated(self, "metric"),
             *discover_decorated(self, "reward"),
         ):
-            role = getattr(fn, "_vf_role", None)
-            if role is not None and role not in self._roles:
+            agent = getattr(fn, "_vf_agent", None)
+            if agent is not None and agent not in self._roles:
                 name = getattr(fn, "__name__", repr(fn))
                 raise ValueError(
                     f"{type(self).__name__}.{name} is decorated with "
-                    f"role={role!r}, but the env's config declares roles "
+                    f"agent={agent!r}, but the env's config declares agents "
                     f"{sorted(self._roles)}"
                 )
         # Seats resolving to the same harness config share the loaded object
@@ -726,11 +726,11 @@ class Environment(ABC, Generic[ConfigT]):
     async def score(self, task: Task, traces: list[Trace]) -> None:
         """Sibling-dependent judgement over one env-rollout's finished traces
         (per-trace judgement already ran on each trace's own task). The flat list
-        is the episode, completion order; each trace's `role` stamp names its
-        seat. The default runs the env's decorated `@vf.reward`/`@vf.metric`
+        is the episode, completion order; each trace's `agent_name` stamp names
+        its seat. The default runs the env's decorated `@vf.reward`/`@vf.metric`
         methods, each invoked once per target trace and recorded there, with
         `task`, `trace` (the target), and `traces` (all of them) in reach —
-        `role=` narrows the targets, unset means every trace. Override it for
+        `agent=` narrows the targets, unset means every trace. Override it for
         imperative control; `await super().score(task, traces)` keeps the
         decorated ones. Bounded by `timeout.score`."""
         metrics = discover_decorated(self, "metric")
@@ -791,13 +791,13 @@ class Environment(ABC, Generic[ConfigT]):
 
     def _signal_targets(self, fn: Callable, traces: list[Trace]) -> list[Trace]:
         """Which traces a decorated env signal records onto: every trace unless
-        `role=` narrows it. Membership is the role stamp — except in
-        `SingleAgentEnv`'s unstamped shape, where every trace belongs to the sole
-        implicit role."""
-        role = getattr(fn, "_vf_role", None)
-        if role is None or not self._stamp_roles:
+        `agent=` narrows it. Membership is the trace's agent-name stamp — except
+        in `SingleAgentEnv`'s nameless shape, where every trace belongs to the
+        sole implicit seat."""
+        agent = getattr(fn, "_vf_agent", None)
+        if agent is None or not self._stamp_roles:
             return list(traces)
-        return [t for t in traces if t.role == role]
+        return [t for t in traces if t.agent_name == agent]
 
     def _episode_agents(
         self,

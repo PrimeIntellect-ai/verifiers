@@ -32,7 +32,7 @@ def test_record_round_trip(tmp_path):
     write_episode(tmp_path, episode)
     (loaded,) = read_episodes(tmp_path, WireTrace)
     assert loaded.id == episode.id and loaded.env == "demo-v1"
-    assert loaded.traces[0].role == "solver" and loaded.traces[0].trainable
+    assert loaded.traces[0].agent_name == "solver" and loaded.traces[0].trainable
     assert loaded.ok
 
 
@@ -107,7 +107,7 @@ def test_push_sample_carries_record_grouping():
     trace.agent.episode = "rec123"
     sample = trace_to_sample(trace, 1)
     assert sample["episode_id"] == "rec123"
-    assert sample["role"] == "judge" and sample["trainable"] is False
+    assert sample["agent"] == "judge" and sample["trainable"] is False
 
 
 def test_push_samples_share_rollout_number_per_episode():

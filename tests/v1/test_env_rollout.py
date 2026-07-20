@@ -90,7 +90,9 @@ async def test_single_agent_env_mints_single_agent_records(monkeypatch):
     assert runs["agent"] == 1
     assert len(episode.traces) == 1
     trace = episode.traces[0]
-    assert trace.role is None and trace.trainable  # the wire matches a plain eval's
+    assert (
+        trace.agent_name is None and trace.trainable
+    )  # the wire matches a plain eval's
     assert episode.task.data.idx == trace.task.data.idx
 
 
@@ -99,10 +101,10 @@ async def test_multi_role_records_stamp_roles(monkeypatch):
     _stub_engine(env, monkeypatch)
     seen_live: list[str | None] = []
     episode = await env.run_episode(
-        _task(env), _ctx(), on_trace=lambda t: seen_live.append(t.role)
+        _task(env), _ctx(), on_trace=lambda t: seen_live.append(t.agent_name)
     )
     assert episode.ok and len(episode.traces) == 2
-    assert [t.role for t in episode.traces] == ["a", "b"]
+    assert [t.agent_name for t in episode.traces] == ["a", "b"]
     assert [t.trainable for t in episode.traces] == [True, False]
     # score() saw the finished sibling set; stamps were already live at mint
     assert all(t.metrics["siblings"] == 2.0 for t in episode.traces)
@@ -162,7 +164,7 @@ async def test_score_failure_keeps_the_traces(monkeypatch):
     episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
     assert episode.error is not None and episode.error.type == "EnvError"
-    assert [t.role for t in episode.traces] == ["a", "b"]
+    assert [t.agent_name for t in episode.traces] == ["a", "b"]
 
 
 async def test_empty_rollout_is_the_env_failing(monkeypatch):
@@ -197,7 +199,7 @@ async def test_a_seat_may_fan_out(monkeypatch):
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
     assert episode.ok
-    assert [t.role for t in episode.traces] == ["a", "a", "b"]
+    assert [t.agent_name for t in episode.traces] == ["a", "a", "b"]
 
 
 async def test_decorated_signals_cross_agent(monkeypatch):
@@ -210,15 +212,15 @@ async def test_decorated_signals_cross_agent(monkeypatch):
         async def rollout(self, task, agents):
             await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
 
-        @vf.metric(role="a")
+        @vf.metric(agent="a")
         async def b_count(self, traces):
-            return float(sum(t.role == "b" for t in traces))
+            return float(sum(t.agent_name == "b" for t in traces))
 
         @vf.reward(weight=0.5)
         async def team(self, trace, traces):
             return 1.0
 
-        @vf.reward(role="a")
+        @vf.reward(agent="a")
         async def sees_metrics(self, trace):
             return trace.metrics["b_count"]  # metrics recorded before rewards run
 
@@ -234,7 +236,7 @@ async def test_decorated_signals_cross_agent(monkeypatch):
 
 def test_decorated_signal_role_must_be_declared():
     class Bad(vf.SingleAgentEnv):
-        @vf.metric(role="ghost")
+        @vf.metric(agent="ghost")
         async def lost(self, traces):
             return 0.0
 
@@ -248,14 +250,14 @@ async def test_decorated_signals_on_unstamped_single_role(monkeypatch):
     the sole implicit role."""
 
     class Solo(vf.SingleAgentEnv):
-        @vf.metric(role="agent")
+        @vf.metric(agent="agent")
         async def n(self, traces):
             return float(len(traces))
 
     env = Solo(_env_config())
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
-    assert episode.traces[0].role is None
+    assert episode.traces[0].agent_name is None
     assert episode.traces[0].metrics["n"] == 1.0
 
 
@@ -453,17 +455,17 @@ async def test_max_concurrent_gates_env_internal_fanout(monkeypatch):
 def test_role_scoped_signals_belong_to_environments():
     """`role=` routes an Environment's cross-trace signals; on a Task or Harness it
     would be silently unscoped — refused at class definition instead."""
-    with pytest.raises(TypeError, match="role="):
+    with pytest.raises(TypeError, match="agent="):
 
         class BadTask(vf.Task):
-            @vf.reward(role="solver")
+            @vf.reward(agent="solver")
             async def scoped(self, trace):
                 return 0.0
 
-    with pytest.raises(TypeError, match="role="):
+    with pytest.raises(TypeError, match="agent="):
 
         class BadHarness(vf.Harness):
-            @vf.metric(role="solver")
+            @vf.metric(agent="solver")
             async def scoped(self, trace):
                 return 0.0
 

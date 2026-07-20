@@ -294,12 +294,12 @@ class DebateEnv(vf.Environment[DebateConfig]):
 
     async def score(self, task: vf.Task, traces: list[vf.Trace]) -> None:
         """Sibling-dependent judgement over the finished traces (per-trace judgement
-        already ran on each trace's own task); each trace's `role` stamp names its
-        seat. Attach via record_reward/record_metric."""
-        by_role = {t.role: t for t in traces}
-        winner = (by_role["judge"].last_reply or "").strip().lower()
-        by_role["pro"].record_reward("won", float(winner == "pro"))
-        by_role["con"].record_reward("won", float(winner == "con"))
+        already ran on each trace's own task); each trace's `agent_name` stamp
+        names its seat. Attach via record_reward/record_metric."""
+        by_agent = {t.agent_name: t for t in traces}
+        winner = (by_agent["judge"].last_reply or "").strip().lower()
+        by_agent["pro"].record_reward("won", float(winner == "pro"))
+        by_agent["con"].record_reward("won", float(winner == "con"))
 ```
 
 - **Roles are typed fields on the env's config** (`Environment[DebateConfig]` binds
@@ -346,15 +346,15 @@ class DebateEnv(vf.Environment[DebateConfig]):
   trace in completion order. Each trace is self-contained — its `agent` info
   carries the seat name, trainability, episode id, and env id, so a flat bag of
   traces reconstitutes its episodes without a nested schema (`episode.views`
-  regroups by role). Episodes succeed, resume, and retry as a unit. An agent
+  regroups by agent name). Episodes succeed, resume, and retry as a unit. An agent
   failure is data on its trace (the hook decides what a failed participant
   means); an exception in `rollout()`/`score()` is the env-rollout failing, and
   every trace that completed before it is still captured on the episode.
 - **Cross-agent signals can be declarative.** The default `score()` runs the env's
   own decorated `@vf.reward`/`@vf.metric` methods: each is invoked once per target
   trace and records there, with the finished set in reach (`trace` — the target,
-  `traces` — every trace in the episode, `task`). `role=` narrows
-  the targets to one role's traces; unset means every trace (a shared team signal).
+  `traces` — every trace in the episode, `task`). `agent=` narrows
+  the targets to one seat's traces; unset means every trace (a shared team signal).
   The bundled best-of-n's whole judgement is two such metrics:
 
   ```python

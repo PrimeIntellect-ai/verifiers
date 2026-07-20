@@ -149,19 +149,19 @@ class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
 
     @staticmethod
     def _solve_rate(traces: list[vf.Trace]) -> float:
-        solves = [t for t in traces if t.role == "solver"]
+        solves = [t for t in traces if t.agent_name == "solver"]
         if not solves:
             return 0.0
         return sum(t.rewards.get("correct", 0.0) for t in solves) / len(solves)
 
-    @vf.reward(role="proposer")
+    @vf.reward(agent="proposer")
     async def learnability(self, trace, traces):
         """The curriculum signal: 1.0 when half the solvers crack the problem, 0
         when it's trivial or impossible for them (4p(1-p))."""
         rate = self._solve_rate(traces)
         return 4.0 * rate * (1.0 - rate)
 
-    @vf.metric(role="proposer")
+    @vf.metric(agent="proposer")
     async def solve_rate(self, trace, traces):
         return self._solve_rate(traces)
 

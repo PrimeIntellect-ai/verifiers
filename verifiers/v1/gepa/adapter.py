@@ -104,8 +104,8 @@ class GEPAAdapter:
                     "completion": trace.last_reply,
                     "reward": trace.reward,
                 }
-                if trace.role:
-                    record["role"] = trace.role
+                if trace.agent_name:
+                    record["agent"] = trace.agent_name
                 if trace.has_error:
                     record["error"] = str(trace.error)
                 if trace.stop_condition:

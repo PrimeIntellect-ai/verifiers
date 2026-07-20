@@ -53,7 +53,7 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
         "episode_id": trace.agent.episode if trace.agent is not None else None,
-        "role": trace.role,
+        "agent": trace.agent_name,
         "trainable": trace.trainable,
         "task": task,
         "prompt": [],

@@ -157,8 +157,8 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
         """Parse the judge's reply through the spec and record it like the plugged
         tier would — a malformed verdict raises, failing the env-rollout
         (retryable) rather than scoring the solver 0."""
-        by_role = {t.role: t for t in traces}
-        solution, verdict = by_role["solver"], by_role["judge"]
+        by_agent = {t.agent_name: t for t in traces}
+        solution, verdict = by_agent["solver"], by_agent["judge"]
         result = self._spec.verdict(task.data, solution, verdict.last_reply)
         _record_result(
             solution, self._spec.reward_name, result, self._spec.config.weight

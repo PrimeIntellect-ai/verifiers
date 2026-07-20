@@ -354,14 +354,14 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     # show); usage/time below still cover errored rollouts (their resources were spent regardless).
     has_clean = any(not t.has_error for t in done)
     score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
-    by_role: dict[str | None, list[Trace]] = {}
+    by_agent: dict[str | None, list[Trace]] = {}
     for trace in done:
-        by_role.setdefault(trace.role, []).append(trace)
+        by_agent.setdefault(trace.agent_name, []).append(trace)
     for label, source in score_rows:
-        if len(by_role) > 1:
+        if len(by_agent) > 1:
             segments = [
-                f"[dim]{role or '—'}:[/dim] {means}"
-                for role, traces in by_role.items()
+                f"[dim]{name or '—'}:[/dim] {means}"
+                for name, traces in by_agent.items()
                 if (means := _score_segments(traces, source)) is not None
             ]
             if segments:
@@ -551,7 +551,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
                 continue
             for t in slot.traces:
-                label = f"{base} role={t.role}" if t.role else base
+                label = f"{base} agent={t.agent_name}" if t.agent_name else base
                 if slot.done:  # fully scored — reward is final
                     state = "error" if t.has_error else "success"
                     # A trace that recorded nothing shows no reward: a judge or

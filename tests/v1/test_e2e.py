@@ -276,8 +276,8 @@ async def test_multi_agent_env(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one env-rollout, one trace per role
-    assert sorted(t.role for t in traces) == ["a", "b"]
-    (b,) = [t for t in traces if t.role == "b"]
+    assert sorted(t.agent_name for t in traces) == ["a", "b"]
+    (b,) = [t for t in traces if t.agent_name == "b"]
     assert b.trainable is False
     for trace in traces:
         assert trace.errors == []
@@ -287,8 +287,8 @@ async def test_multi_agent_env(run_v1, tmp_path):
     (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
     row = json.loads(line)
     assert row["env"] == "duet-v1"
-    assert [t["role"] for t in row["traces"]] == ["a", "b"]
-    assert [t.get("trainable") for t in row["traces"]] == [True, False]
+    assert [t["agent"]["name"] for t in row["traces"]] == ["a", "b"]
+    assert [t["agent"]["trainable"] for t in row["traces"]] == [True, False]
 
 
 @pytest.mark.e2e
@@ -303,7 +303,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one env-rollout, two attempts
-    assert all(t.role == "agent" and t.errors == [] for t in traces)
+    assert all(t.agent_name == "agent" and t.errors == [] for t in traces)
     assert any(t.metrics["best"] == 1.0 for t in traces)
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes
 
@@ -327,9 +327,9 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
         max_turns=10,
         rollout_timeout=600,
     )
-    assert sorted(t.role for t in traces) == ["judge", "solver"]
-    (solver,) = [t for t in traces if t.role == "solver"]
-    (judge,) = [t for t in traces if t.role == "judge"]
+    assert sorted(t.agent_name for t in traces) == ["judge", "solver"]
+    (solver,) = [t for t in traces if t.agent_name == "solver"]
+    (judge,) = [t for t in traces if t.agent_name == "judge"]
     assert solver.errors == [] and judge.errors == []
     assert judge.trainable is False
     assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
@@ -348,7 +348,7 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2
-    assert sorted(t.role for t in traces) == ["a", "b"]
+    assert sorted(t.agent_name for t in traces) == ["a", "b"]
     for trace in traces:
         assert trace.errors == []
         assert trace.metrics["duet"] == 1.0

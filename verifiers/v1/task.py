@@ -56,13 +56,14 @@ def _requires_runtime(fn) -> bool:
 
 
 def _reject_role_scoped(cls: type, why: str) -> None:
-    """Refuse `@vf.reward(role=...)`/`@vf.metric(role=...)` on classes whose scoring
-    never routes by role (`Task`, `Harness`) — shared by their `__init_subclass__`."""
+    """Refuse `@vf.reward(agent=...)`/`@vf.metric(agent=...)` on classes whose
+    scoring never routes by agent (`Task`, `Harness`) — shared by their
+    `__init_subclass__`."""
     for name, attr in vars(cls).items():
-        if callable(attr) and getattr(attr, "_vf_role", None) is not None:
+        if callable(attr) and getattr(attr, "_vf_agent", None) is not None:
             raise TypeError(
-                f"{cls.__name__}.{name}: role= belongs to an Environment's "
-                f"cross-trace signals; {why} — drop role="
+                f"{cls.__name__}.{name}: agent= belongs to an Environment's "
+                f"cross-trace signals; {why} — drop agent="
             )
 
 
@@ -220,7 +221,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
     user: ClassVar[type[User] | None] = None
 
     def __init_subclass__(cls, **kwargs) -> None:
-        """A task signal always scores its own trace, so `role=` (an Environment
+        """A task signal always scores its own trace, so `agent=` (an Environment
         concept) is refused at definition rather than silently ignored."""
         super().__init_subclass__(**kwargs)
         _reject_role_scoped(cls, "a Task signal always scores its own trace")

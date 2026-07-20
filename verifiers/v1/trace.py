@@ -407,7 +407,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         return bool(self.errors)
 
     @property
-    def role(self) -> str | None:
+    def agent_name(self) -> str | None:
         """The env seat that produced this trace (`agent.name`); None for the
         single-agent default and outside an env."""
         return self.agent.name if self.agent is not None else None
@@ -631,13 +631,13 @@ class Episode(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def views(self) -> dict[str, list["Trace[DataT, StateT]"]]:
-        """The episode's local views by role, reconstituted from the trace stamps
-        (completion order; a fanned-out seat is its list). `SingleAgentEnv`
+        """The episode's local views by agent name, reconstituted from the trace
+        stamps (completion order; a fanned-out seat is its list). `SingleAgentEnv`
         episodes carry no seat names and show no views — read `traces` there."""
         views: dict[str, list[Trace[DataT, StateT]]] = {}
         for trace in self.traces:
-            if trace.role is not None:
-                views.setdefault(trace.role, []).append(trace)
+            if trace.agent_name is not None:
+                views.setdefault(trace.agent_name, []).append(trace)
         return views
 
     @property

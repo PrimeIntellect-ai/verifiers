@@ -88,21 +88,22 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
-def metric(func: F, priority: int = 0, role: str | None = None) -> F: ...
+def metric(func: F, priority: int = 0, agent: str | None = None) -> F: ...
 @overload
 def metric(
-    func: None = None, priority: int = 0, role: str | None = None
+    func: None = None, priority: int = 0, agent: str | None = None
 ) -> Callable[[F], F]: ...
 def metric(
-    func: F | None = None, priority: int = 0, role: str | None = None
+    func: F | None = None, priority: int = 0, agent: str | None = None
 ) -> F | Callable[[F], F]:
     """Mark a metric `(self, trace) -> float` (recorded, not summed). On an
     `Environment` it's a cross-agent signal: run once per episode trace with the
     finished sibling set in reach (`trace` = the target, `traces` = all of them);
-    `role=` narrows the targets (env-only — a task has no roles)."""
+    `agent=` narrows the targets to one seat's traces (env-only — a task has no
+    agents)."""
 
     def decorator(f: F) -> F:
-        return mark("metric", metric_priority=priority, _vf_role=role)(
+        return mark("metric", metric_priority=priority, _vf_agent=agent)(
             _async_only("metric")(f)
         )
 
@@ -111,25 +112,25 @@ def metric(
 
 @overload
 def reward(
-    func: F, weight: float = 1.0, priority: int = 0, role: str | None = None
+    func: F, weight: float = 1.0, priority: int = 0, agent: str | None = None
 ) -> F: ...
 @overload
 def reward(
-    func: None = None, weight: float = 1.0, priority: int = 0, role: str | None = None
+    func: None = None, weight: float = 1.0, priority: int = 0, agent: str | None = None
 ) -> Callable[[F], F]: ...
 def reward(
     func: F | None = None,
     weight: float = 1.0,
     priority: int = 0,
-    role: str | None = None,
+    agent: str | None = None,
 ) -> F | Callable[[F], F]:
     """Mark a weighted per-rollout reward returning a float or keyed scores. On an
     `Environment` it's a cross-agent signal — see `metric` for the env semantics
-    (`role=` picks whose traces it records onto)."""
+    (`agent=` picks whose traces it records onto)."""
 
     def decorator(f: F) -> F:
         return mark(
-            "reward", reward_priority=priority, _vf_weight=weight, _vf_role=role
+            "reward", reward_priority=priority, _vf_weight=weight, _vf_agent=agent
         )(_async_only("reward")(f))
 
     return decorator if func is None else decorator(func)
