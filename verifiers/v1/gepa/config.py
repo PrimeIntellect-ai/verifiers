@@ -86,5 +86,6 @@ class GEPAConfig(BaseConfig):
     `outputs/<taskset>--<model>--<harness>/<uuid>` (via `output_path`)."""
     save_results: bool = True
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
-    dry_run: bool = False
-    """Resolve + validate the config and dump it, then exit."""
+    dry_run: bool = Field(False, exclude=True)
+    """Resolve + validate the config and dump it, then exit. Excluded from the
+    saved config so re-running `@ config.toml` runs for real."""

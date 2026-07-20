@@ -39,6 +39,109 @@ def test_output_path_compounds_env_id():
     assert output_path(paired).parent.name.startswith("best-of-n+echo-v1--")
 
 
+def test_conflicting_cli_taskset_ids_are_refused():
+    """Two `--env.taskset.id` occurrences naming different ids (the positional
+    shorthand counts as the first) are refused up front — the narrowing pins the
+    first while the config merge takes the last, so letting them through yields a
+    baffling wrong-config-type error."""
+    from verifiers.v1.cli.resolve import narrow_config, with_positional_taskset
+
+    argv = with_positional_taskset(["echo-v1", "--env.taskset.id", "other-v1"])
+    with pytest.raises(SystemExit, match="'echo-v1' and 'other-v1'"):
+        narrow_config(EvalConfig, argv)
+    # The same id twice is not a conflict.
+    narrow_config(
+        EvalConfig, with_positional_taskset(["echo-v1", "--env.taskset.id", "echo-v1"])
+    )
+
+
+def test_dangling_harness_id_is_refused_with_the_builtins():
+    """A dangling `--env.agent.harness.id` (no value) parses as boolean True; the
+    narrowing must answer with the field path and the built-in harness ids, not a
+    raw TypeError from deep inside the loader."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=r"harness\.id needs an id.*bash"):
+        EvalConfig.model_validate(
+            {"env": {"taskset": {"id": "echo-v1"}, "agent": {"harness": {"id": True}}}}
+        )
+
+
+def test_nested_env_errors_keep_their_flag_path():
+    """Sub-models validate inside `mode=\"before\"` narrowing validators, which
+    would surface their error locs without the `env` (and `harness`) segments —
+    the CLI would render a flag the user never typed."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as e:
+        EvalConfig.model_validate(
+            {
+                "env": {
+                    "taskset": {"id": "echo-v1"},
+                    "agent": {"harness": {"id": "bash", "runtime": {"type": "dockr"}}},
+                }
+            }
+        )
+    assert e.value.errors()[0]["loc"][:4] == ("env", "agent", "harness", "runtime")
+
+
+def test_role_guard_keys_on_the_default_instance():
+    """The definition-time role guard must use the machinery's membership test
+    (`isinstance(field.default, AgentConfig)`): `timeout: AgentConfig | None =
+    AgentConfig()` IS a role to `_declared_agent_configs`, so it must be refused
+    as shadowing; an AgentConfig annotation without a default instance is never a
+    role, so it must be refused as missing one — whatever the annotation form."""
+    import verifiers.v1 as vf
+
+    with pytest.raises(TypeError, match="shadow"):
+
+        class Shadowing(vf.EnvConfig):
+            timeout: vf.AgentConfig | None = vf.AgentConfig()
+
+    with pytest.raises(TypeError, match="default"):
+
+        class Uninstantiated(vf.EnvConfig):
+            solver: vf.AgentConfig | None = None
+
+
+def test_legacy_id_with_v1_taskset_is_refused():
+    """A legacy `--id` next to a v1 `env.taskset` used to be silently inert
+    (`is_legacy` is False, the v0 env never loads); the mix is refused with a
+    pointer at `--env.id`, the likely intent."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="--env.id"):
+        EvalConfig.model_validate(
+            {"id": "wordle", "env": {"taskset": {"id": "echo-v1"}}}
+        )
+
+
+def test_env_level_harness_key_points_at_the_seat():
+    """`--env.harness.*` (v0 muscle-memory, one level up from the seat) gets a
+    pointer home instead of a bare extra_forbidden."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=r"--env\.agent\.harness"):
+        EvalConfig.model_validate(
+            {"env": {"taskset": {"id": "echo-v1"}, "harness": {"id": "bash"}}}
+        )
+
+
+def test_server_flips_an_unset_rich_default():
+    """`--rich` defaults on but is in-process only: an unset `rich` defaults off
+    under `--server`; only an explicitly set `rich` is refused with it."""
+    from pydantic import ValidationError
+
+    served = EvalConfig.model_validate(
+        {"env": {"taskset": {"id": "echo-v1"}}, "server": True}
+    )
+    assert served.rich is False
+    with pytest.raises(ValidationError, match="--rich"):
+        EvalConfig.model_validate(
+            {"env": {"taskset": {"id": "echo-v1"}}, "server": True, "rich": True}
+        )
+
+
 def test_replay_lifts_the_saved_eval_taskset():
     """Replay layers the source run's saved config as its base. An eval run keeps
     its taskset on the [env] block — replay's root taskset must pick it up; an

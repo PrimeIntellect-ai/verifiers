@@ -13,6 +13,7 @@ from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
+    plugin_errors,
     references_config_file,
     with_positional_taskset,
 )
@@ -34,9 +35,10 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(
-            narrow_config(EvalConfig, argv)
-        )  # full option help, narrowed to the given ids
+        with plugin_errors():
+            cli(
+                narrow_config(EvalConfig, argv)
+            )  # full option help, narrowed to the given ids
         return
     resume_dir, rest = split_resume(argv)
     # re-run a previous run's missing/errored rollouts, in place
@@ -48,22 +50,29 @@ def main(argv: list[str] | None = None) -> None:
         config = load_resume_config(resume_dir)
     else:
         legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
-        # A retired flat axis (--taskset.*/--harness.*) skips the usage gate so the
-        # parse renders its pointer to the new flags instead of a bare usage line.
-        retired_axis = any(a.startswith(("--taskset.", "--harness.")) for a in argv)
+        # An env-block flag (or a retired flat axis) skips the usage gate so the
+        # typed parse renders its did-you-mean / pointer to the new flags instead
+        # of a bare usage line.
+        typed_axis = any(
+            a.startswith(("--env.", "--taskset.", "--harness.")) for a in argv
+        )
         if (
             not extract_id(argv, "env.taskset")
             and not legacy_id
             and not references_config_file(argv)
-            and not retired_axis
+            and not typed_axis
         ):
             raise SystemExit(
                 USAGE
             )  # need a taskset (positional / --env.taskset.id), a legacy --id, or a @ file.toml
 
-        config_type = narrow_config(EvalConfig, argv)
-        sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-        config = cli(config_type)
+        with plugin_errors():
+            config_type = narrow_config(EvalConfig, argv)
+            sys.argv = [
+                sys.argv[0],
+                *argv,
+            ]  # let prime-pydantic-config render help/errors
+            config = cli(config_type)
         if config.dry_run:  # resolved + validated; write it to the output dir and exit
             setup_logging("DEBUG" if config.verbose else "INFO")
             logger.info("wrote config to %s", write_config(config, output_path(config)))

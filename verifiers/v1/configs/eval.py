@@ -42,10 +42,12 @@ class EvalConfig(EnvServerConfig):
     """Max rollouts in flight at once."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
-    dry_run: bool = False
-    """Resolve + validate the config and dump it, then exit."""
+    dry_run: bool = Field(False, exclude=True)
+    """Resolve + validate the config and dump it, then exit. Excluded from the saved
+    config so re-running `@ config.toml` (or resuming/replaying the dir) actually runs."""
     rich: bool = True
-    """Show a live dashboard instead of per-rollout logs (in-process only)."""
+    """Show a live dashboard instead of per-rollout logs (in-process only; an unset
+    `rich` defaults off under `--server`)."""
     server: bool = False
     """Drive rollouts through the env-server worker pool (sized by `--pool.*`) instead of
     in-process — the path prime-rl trains through. Incompatible with `--rich`."""
@@ -66,9 +68,15 @@ class EvalConfig(EnvServerConfig):
 
     @model_validator(mode="after")
     def reject_rich_with_server(self):
+        """The dashboard reads live in-process run slots, so it can't ride the
+        worker pool: an unset `rich` defaults off under `--server`; an explicit
+        `--rich --server` is refused."""
         if self.server and self.rich:
+            if "rich" not in self.model_fields_set:
+                self.rich = False
+                return self
             raise ValueError(
                 "`--rich` (the live dashboard) runs in-process and can't be combined with "
-                "`--server`; pass `--no-rich` with `--server`."
+                "`--server`; drop `--rich`."
             )
         return self

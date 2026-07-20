@@ -32,8 +32,9 @@ class ReplayConfig(BaseConfig):
     """Max traces re-scored (judge calls) in flight at once."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
-    dry_run: bool = False
-    """Resolve + validate the config and write it to the output dir, then exit (no re-scoring)."""
+    dry_run: bool = Field(False, exclude=True)
+    """Resolve + validate the config and write it to the output dir, then exit (no
+    re-scoring). Excluded from the saved config so re-running it actually re-scores."""
     rich: bool = True
     """Show a live dashboard (one row per trace) instead of per-trace log lines."""
     output_dir: Path | None = Field(

@@ -7,9 +7,17 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Annotated, ClassVar, Generic, Literal, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    ClassVar,
+    Generic,
+    Literal,
+    TypeVar,
+    get_args,
+)
 
-from pydantic import Field, SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, ValidationError, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -115,6 +123,29 @@ class Role:
     """Whether this role's tasks need a container runtime (None = the taskset's)."""
 
 
+def _mentions_agent_config(annotation) -> bool:
+    """Whether `annotation` names an `AgentConfig` — directly or inside
+    Optional/union/Annotated/container forms — i.e. anything an author plausibly
+    meant as a role declaration."""
+    if isinstance(annotation, type):
+        return issubclass(annotation, AgentConfig)
+    return any(_mentions_agent_config(arg) for arg in get_args(annotation))
+
+
+def prefix_validation_error(e: ValidationError, prefix: tuple) -> ValidationError:
+    """`e` with `prefix` prepended to every error's loc. A sub-model validated
+    inside a `mode="before"` validator surfaces its errors at the validator's own
+    loc, so without re-raising prefixed the CLI renders a flag path missing the
+    segments the user actually typed."""
+    return ValidationError.from_exception_data(
+        e.title,
+        [
+            {**err, "loc": prefix + tuple(err["loc"])}
+            for err in e.errors(include_url=False)
+        ],
+    )
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """`override` onto `base`, recursing into dicts, so a partial nested override
     keeps the untouched keys of the declared default. An override that switches a
@@ -201,6 +232,24 @@ class EnvConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
+    def _refuse_env_level_harness(cls, data):
+        """Point an env-level `harness` key (the v0 muscle-memory spelling) at the
+        seat that owns it, instead of a bare `extra_forbidden`. A subclass that
+        declares a role named `harness` keeps the key."""
+        if (
+            isinstance(data, dict)
+            and "harness" in data
+            and "harness" not in cls.model_fields
+        ):
+            raise ValueError(
+                "a harness belongs to a seat: --env.agent.harness.* on the "
+                "single-agent env, --env.<role>.harness.* on a multi-agent role "
+                "(TOML: [env.agent.harness])"
+            )
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
     def _resolve_taskset(cls, data):
         """Narrow `taskset` to its concrete config type by `id`, so taskset-specific
         fields validate typed. Lazy import for the same reason as
@@ -232,20 +281,20 @@ class EnvConfig(BaseConfig):
     def __pydantic_init_subclass__(cls, **kwargs):
         """A role field must carry a default *instance* (the deep-merge and the
         default `roles()` read it) and must not shadow a base field; refuse both at
-        class definition rather than silently dropping the role."""
+        class definition rather than silently dropping the role. Membership is the
+        role machinery's (`_merge_role_defaults`/`_declared_agent_configs`): the
+        default instance, not the annotation form, is what makes a field a role."""
         super().__pydantic_init_subclass__(**kwargs)
         for name, info in cls.model_fields.items():
-            annotation = info.annotation
-            if not (
-                isinstance(annotation, type) and issubclass(annotation, AgentConfig)
-            ):
+            is_role = isinstance(info.default, AgentConfig)
+            if not is_role and not _mentions_agent_config(info.annotation):
                 continue
-            if name in EnvConfig.model_fields:
+            if is_role and name in EnvConfig.model_fields:
                 raise TypeError(
                     f"{cls.__name__}.{name}: a role can't shadow the base EnvConfig "
                     f"field {name!r}; pick another role name"
                 )
-            if not isinstance(info.default, AgentConfig):
+            if not is_role:
                 raise TypeError(
                     f"{cls.__name__}.{name}: declare the role with a default "
                     f"instance (`{name}: vf.AgentConfig = vf.AgentConfig(...)`), "
@@ -341,15 +390,21 @@ def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> 
     raw = data.get("env")
     if raw is None:
         return data
-    if narrowed is not None:
-        if not isinstance(raw, narrowed):
-            data["env"] = narrowed.model_validate(
-                raw.model_dump() if isinstance(raw, BaseConfig) else raw
-            )
-        return data
-    from verifiers.v1.loaders import resolve_env_config
+    try:
+        if narrowed is not None:
+            if not isinstance(raw, narrowed):
+                data["env"] = narrowed.model_validate(
+                    raw.model_dump() if isinstance(raw, BaseConfig) else raw
+                )
+            return data
+        from verifiers.v1.loaders import resolve_env_config
 
-    data["env"] = resolve_env_config(raw)
+        data["env"] = resolve_env_config(raw)
+    except ValidationError as e:
+        # Validating here (inside the owner's mode="before" validator) would
+        # surface the errors without their `env` segment — the CLI would render
+        # `--agent.model` for the `--env.agent.model` the user typed.
+        raise prefix_validation_error(e, ("env",)) from None
     return data
 
 
@@ -405,6 +460,19 @@ class EnvServerConfig(BaseConfig):
         """The run's identifier: the v1 env's (`EnvConfig.env_id`), else the legacy
         v0 env id."""
         return self.env.env_id or self.id or ""
+
+    @model_validator(mode="after")
+    def _refuse_legacy_id_with_taskset(self):
+        """A legacy `id` next to a v1 `env.taskset` would be silently inert
+        (`is_legacy` is False and the v0 env never loads); refuse the mix."""
+        if self.id is not None and self.env.taskset is not None and self.env.taskset.id:
+            raise ValueError(
+                f"--id {self.id!r} is the legacy (v0) env id and can't combine with "
+                f"the v1 taskset {self.env.taskset.id!r}. Pairing an env with a "
+                f"taskset is --env.id {self.id!r} (TOML: id under [env]); to run the "
+                "v0 env instead, drop the taskset."
+            )
+        return self
 
     # --- end legacy -----------------------------------------------------------
 

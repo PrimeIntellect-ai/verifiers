@@ -19,6 +19,7 @@ from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
+    plugin_errors,
     references_config_file,
     with_positional_taskset,
 )
@@ -37,28 +38,30 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(
-            narrow_config(GEPAConfig, argv)
-        )  # full option help, narrowed to the given ids
+        with plugin_errors():
+            cli(
+                narrow_config(GEPAConfig, argv)
+            )  # full option help, narrowed to the given ids
         return
     if any(a == "--id" or a.startswith("--id=") for a in argv):  # v0 env id
         raise SystemExit(
             "gepa optimizes native v1 tasksets; run a legacy (v0) environment through "
             "`vf-gepa` instead of `gepa`."
         )
-    retired_axis = any(a.startswith(("--taskset.", "--harness.")) for a in argv)
+    typed_axis = any(a.startswith(("--env.", "--taskset.", "--harness.")) for a in argv)
     if (
         not extract_id(argv, "env.taskset")
         and not references_config_file(argv)
-        and not retired_axis
+        and not typed_axis
     ):
         raise SystemExit(
             USAGE
         )  # need a taskset (positional / --env.taskset.id) or a @ file.toml
 
-    config_type = narrow_config(GEPAConfig, argv)
-    sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-    config = cli(config_type)
+    with plugin_errors():
+        config_type = narrow_config(GEPAConfig, argv)
+        sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
+        config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         logger.info("wrote config to %s", write_config(config, output_path(config)))

@@ -2,18 +2,33 @@
 
 import importlib
 import importlib.util
+import pkgutil
 from types import ModuleType
 from typing import Callable
 
+from pydantic import ValidationError
 from pydantic_config import BaseConfig
 
-from verifiers.v1.env import EnvConfig, Environment, SingleAgentEnv
+from verifiers.v1.env import (
+    EnvConfig,
+    Environment,
+    SingleAgentEnv,
+    prefix_validation_error,
+)
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls
 from verifiers.v1.utils.install import ensure_installed
 from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+
+
+def builtin_harness_ids() -> list[str]:
+    """The harness ids that ship with verifiers (the `verifiers.v1.harnesses`
+    subpackages)."""
+    import verifiers.v1.harnesses as harnesses
+
+    return sorted(m.name for m in pkgutil.iter_modules(harnesses.__path__))
 
 
 def narrow_plugin_field(
@@ -27,8 +42,26 @@ def narrow_plugin_field(
         raw = raw.model_dump()
     raw = dict(raw or {})
     ident = raw.get("id") or default_id
-    if ident:
+    if not ident:
+        return
+    if not isinstance(ident, str):
+        # A dangling `--<field>.id` (no value) parses as boolean True.
+        hint = (
+            f"; the built-in harnesses are: {', '.join(builtin_harness_ids())}"
+            if field == "harness"
+            else ""
+        )
+        raise ValueError(
+            f"{field}.id needs an id, and none was given (got {ident!r}); "
+            f"pass the id right after the flag{hint}"
+        )
+    try:
         data[field] = resolve(ident).model_validate({**raw, "id": ident})
+    except ValidationError as e:
+        # Validated here, inside the owner's mode="before" validator, the errors
+        # would surface without their `<field>` segment — the CLI would render a
+        # flag path missing what the user typed.
+        raise prefix_validation_error(e, (field,)) from None
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
@@ -38,11 +71,22 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     try:
         return importlib.import_module(target)
     except ModuleNotFoundError as e:
+        if kind == "harness" and plugin_id == "default":
+            raise ModuleNotFoundError(
+                "the `default` harness was renamed to `bash`: "
+                "--env.agent.harness.id bash (or your env's role name)"
+            ) from e
+        hint = (
+            f" The built-in harnesses are: {', '.join(builtin_harness_ids())}."
+            if kind == "harness"
+            else ""
+        )
+        article = "An" if kind[0] in "aeiou" else "A"
         raise ModuleNotFoundError(
-            f"{kind} {plugin_id!r} not found (tried to import {target!r}). A {kind} is a "
+            f"{kind} {plugin_id!r} not found (tried to import {target!r}). {article} {kind} is a "
             f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
             f"ones ship with verifiers in the `{group}` package, installed from "
-            f"the Environments Hub (`org/name`), or authored yourself."
+            f"the Environments Hub (`org/name`), or authored yourself.{hint}"
         ) from e
 
 

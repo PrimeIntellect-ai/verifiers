@@ -18,6 +18,7 @@ import verifiers.v1 as vf
 from verifiers.v1.cli.output import append_trace, save_config
 from verifiers.v1.cli.resolve import (
     extract_id,
+    plugin_errors,
     references_config_file,
     with_positional_taskset,
 )
@@ -309,14 +310,16 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(_narrow(argv))
+        with plugin_errors():
+            cli(_narrow(argv))
         return
     if not extract_id(argv, "taskset") and not references_config_file(argv):
         raise SystemExit(USAGE)
 
-    config_type = _narrow(argv)
-    sys.argv = [sys.argv[0], *argv]
-    config = cli(config_type)
+    with plugin_errors():
+        config_type = _narrow(argv)
+        sys.argv = [sys.argv[0], *argv]
+        config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
     # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`;
     # a second is swallowed so it can't orphan containers/sandboxes mid-cleanup.
