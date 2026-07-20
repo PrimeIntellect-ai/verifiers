@@ -112,18 +112,21 @@ def _verifiers_root() -> Path:
     return root
 
 
-async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
+async def _install_in_sandbox(server: ServerBase, runtime: Runtime, root: str) -> str:
     source_dir = _source_dir(type(server))
     if source_dir is None:
         raise ToolsetError(
             f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
             "a local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
-    root = "/tmp/vf-src"
+    source_root = f"{root}/src"
     vf, env = _verifiers_root(), Path(source_dir)
-    await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS))
-    await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
-    venv = "/tmp/vf-venv"
+    await runtime.run(["mkdir", "-p", source_root], {})
+    await runtime.write(
+        f"{source_root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS)
+    )
+    await runtime.write(f"{source_root}/{env.name}.tar.gz", _tar_source(env))
+    venv = f"{root}/venv"
     # The upload carries no .git, so hatch-vcs falls back to version 0.0.0 — an env
     # package's `verifiers>=...` floor would then resolve PyPI verifiers OVER the local
     # build, silently running the server against a released (older) API. Pretend the
@@ -132,12 +135,12 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     extras = ",".join(type(server).EXTRAS)
     setup = (
         f"{_ENSURE_UV}; set -e; "
-        f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
+        f'for t in {source_root}/*.tar.gz; do tar -xzf "$t" -C {source_root}; done && '
         f"uv venv {venv} && "
         f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
-        f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
+        f"uv pip install --python {venv} {source_root}/{shlex.quote(vf.name)} && "
         f"uv pip install --python {venv} "
-        f"{shlex.quote(f'{root}/{env.name}' + (f'[{extras}]' if extras else ''))}"
+        f"{shlex.quote(f'{source_root}/{env.name}' + (f'[{extras}]' if extras else ''))}"
     )
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
@@ -196,15 +199,15 @@ async def serve_in_runtime(
     if runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
-    port_file = None
+    root = f"/tmp/vf-mcp-{uuid.uuid4().hex}"
+    port_file = f"{root}/port"
     if fixed is not None:
         env["MCP_PORT"] = str(fixed)
     else:
-        port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
         env["MCP_PORT_FILE"] = port_file
     python = sys.executable
     if runtime.type != "subprocess":
-        python = await _install_in_sandbox(server, runtime)
+        python = await _install_in_sandbox(server, runtime, root)
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.
@@ -213,7 +216,7 @@ async def serve_in_runtime(
             "-c",
             f'export PATH="$HOME/.local/bin:$PATH"; exec {shlex.join(command)}',
         ]
-    log = f"vf_tool_{server.server_name}.log"
+    log = f"{root}/server.log"
     await runtime.run_background(command, env, log)
     if fixed is not None:
         port = fixed
