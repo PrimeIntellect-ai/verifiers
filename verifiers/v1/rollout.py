@@ -32,9 +32,33 @@ from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
+
+
+async def gather_scoring(*awaitables):
+    """Run scoring handlers concurrently and drain every sibling after failure."""
+    if len(awaitables) == 1 and isinstance(awaitables[0], (list, tuple)):
+        awaitables = tuple(awaitables[0])
+    tasks = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    if not tasks:
+        return []
+    try:
+        return await asyncio.gather(*(asyncio.shield(task) for task in tasks))
+    except BaseException as error:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        try:
+            await run_shielded(asyncio.gather(*tasks, return_exceptions=True))
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            if isinstance(error, asyncio.CancelledError):
+                raise
+        raise
 
 
 class Phase(StrEnum):
@@ -226,7 +250,7 @@ class Rollout:
             async with boundary(TaskError, "scoring"):
                 # Group rewards run later, after the runtime is gone.
                 await asyncio.wait_for(
-                    asyncio.gather(
+                    gather_scoring(
                         self.task.score(trace, runtime),
                         self.harness.score(trace, runtime),
                     ),
