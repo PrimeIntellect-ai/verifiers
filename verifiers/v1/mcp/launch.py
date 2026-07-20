@@ -201,6 +201,7 @@ async def serve_in_runtime(
     fixed = runtime.published_port if exposed else None
     root = f"/tmp/vf-mcp-{uuid.uuid4().hex}"
     port_file = f"{root}/port"
+    await runtime.run(["mkdir", "-p", root], {})
     if fixed is not None:
         env["MCP_PORT"] = str(fixed)
     else:
