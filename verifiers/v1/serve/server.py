@@ -163,16 +163,21 @@ class EnvServer:
                 response = BaseResponse(
                     success=False, error=f"unknown method {route!r}"
                 )
+            data = msgpack.packb(
+                response.model_dump(mode="python"),
+                default=msgpack_encoder,
+                use_bin_type=True,
+            )
         except (
             Exception
         ) as e:  # a failed request is data, not a crash — report and keep serving
             logger.warning("request failed: %s", e, exc_info=True)
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
-        data = msgpack.packb(
-            response.model_dump(mode="python"),
-            default=msgpack_encoder,
-            use_bin_type=True,
-        )
+            data = msgpack.packb(
+                response.model_dump(mode="python"),
+                default=msgpack_encoder,
+                use_bin_type=True,
+            )
         try:
             # Let ZMQ retain the packed response instead of copying large traces.
             await self.frontend.send_multipart(
