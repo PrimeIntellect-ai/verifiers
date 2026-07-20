@@ -66,6 +66,9 @@ class Rollout:
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime_config
+        self.scoring_runtime_config = task.scoring_runtime_config(
+            harness.config.runtime
+        )
         self.setup_timeout = setup_timeout
         self.harness_timeout = harness_timeout
         self.finalize_timeout = finalize_timeout
@@ -224,14 +227,22 @@ class Rollout:
             self.phase = Phase.SCORING
             trace.timing.scoring.start = now
             async with boundary(TaskError, "scoring"):
-                # Group rewards run later, after the runtime is gone.
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        self.task.score(trace, runtime),
-                        self.harness.score(trace, runtime),
-                    ),
-                    self.scoring_timeout,
-                )
+                # Group rewards run later, after the runtime is gone. A task with an
+                # isolated scorer must let the harness inspect the agent runtime first;
+                # its score method then owns the transition to the separate runtime.
+                async with asyncio.timeout(self.scoring_timeout):
+                    if self.scoring_runtime_config is None:
+                        await asyncio.gather(
+                            self.task.score(trace, runtime),
+                            self.harness.score(trace, runtime),
+                        )
+                    else:
+                        await self.harness.score(trace, runtime)
+                        await self.task.score(
+                            trace,
+                            runtime,
+                            scoring_runtime_config=self.scoring_runtime_config,
+                        )
             trace.timing.scoring.end = time.time()
         except RolloutError as e:
             trace.capture_error(e)

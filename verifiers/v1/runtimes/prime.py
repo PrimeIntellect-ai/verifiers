@@ -8,6 +8,7 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 
 import asyncio
 import contextlib
+import io
 import logging
 import math
 import shlex
@@ -15,6 +16,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 
+import httpx
 from pydantic import model_validator
 from pydantic_config import BaseConfig
 
@@ -32,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_RETRY_STATUSES = {408, 500, 502, 503, 504, 524}
+DOWNLOAD_RETRY_ERRORS = (
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+    httpx.PoolTimeout,
+    httpx.ReadError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+)
 
 
 class PrimeConfig(BaseConfig):
@@ -237,6 +249,62 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
+    async def read_bounded(self, path: str, max_bytes: int) -> bytes:
+        self._validate_read_limit(max_bytes)
+        target = (
+            path
+            if path.startswith("/")
+            else f"{self.config.workdir.rstrip('/')}/{path}"
+        )
+        try:
+            # The SDK's download_file buffers response.content. Use its gateway
+            # connection directly so an untrusted file is capped while streaming.
+            for attempt in range(DOWNLOAD_ATTEMPTS):
+                auth = await self._client._auth_cache.get_or_refresh(self.info.id)
+                url = (
+                    f"{auth['gateway_url'].rstrip('/')}/"
+                    f"{auth['user_ns']}/{auth['job_id']}/download"
+                )
+                headers = {"Authorization": f"Bearer {auth['token']}"}
+                params = {"path": target, "sandbox_id": self.info.id}
+                buffer = io.BytesIO()
+                try:
+                    client = self._client._get_gateway_client()
+                    async with client.stream(
+                        "GET", url, headers=headers, params=params, timeout=300
+                    ) as response:
+                        response.raise_for_status()
+                        async for chunk in response.aiter_bytes(1024 * 1024):
+                            if buffer.tell() + len(chunk) > max_bytes:
+                                raise SandboxError(
+                                    f"read {path!r}: exceeds the {max_bytes} byte limit"
+                                )
+                            buffer.write(chunk)
+                    return buffer.getvalue()
+                except httpx.HTTPStatusError as error:
+                    status = error.response.status_code
+                    if status == 401 and attempt < DOWNLOAD_ATTEMPTS - 1:
+                        await self._client.clear_auth_cache()
+                        continue
+                    if status == 409:
+                        if await self._client._should_retry_409(
+                            self.info.id, error, attempt
+                        ):
+                            continue
+                    if (
+                        status not in DOWNLOAD_RETRY_STATUSES
+                        or attempt == DOWNLOAD_ATTEMPTS - 1
+                    ):
+                        raise
+                except DOWNLOAD_RETRY_ERRORS:
+                    if attempt == DOWNLOAD_ATTEMPTS - 1:
+                        raise
+                await asyncio.sleep(2**attempt)
+        except SandboxError:
+            raise
+        except Exception as e:
+            raise SandboxError(f"read {path!r}: {e}") from e
+
     async def write(self, path: str, data: bytes) -> None:
         # Upload via the gateway (multipart) — never inline the bytes on the command line
         # (a large file, e.g. a task tarball, overflows the exec command-length limit and
@@ -258,6 +326,24 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def stop_confirmed(self) -> None:
+        """Delete the sandbox or preserve cleanup state and raise."""
+        client = self._client
+        if client is None:
+            if self.info.id is None:
+                return
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without its live client"
+            )
+        if self.info.id is None:
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without a provider ID"
+            )
+        await client.delete(self.info.id)
+        self._client = None
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
