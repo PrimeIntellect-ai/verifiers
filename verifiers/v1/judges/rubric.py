@@ -281,13 +281,18 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             choices = by_criterion[v.name].choices
             # An off-menu answer is a judge failure, not a zero score.
             verdict = next(
-                (
-                    choice
-                    for choice in choices
-                    if choice.casefold() == v.verdict.casefold()
-                ),
+                (choice for choice in choices if choice == v.verdict),
                 None,
             )
+            if verdict is None:
+                verdict = next(
+                    (
+                        choice
+                        for choice in choices
+                        if choice.casefold() == v.verdict.casefold()
+                    ),
+                    None,
+                )
             if verdict is None:
                 raise ValueError(
                     f"judge answered {v.verdict!r} for '{v.name}', expected one of {choices}"
