@@ -67,7 +67,7 @@ class JudgeTask(vf.Task):
 
 class AgenticJudgeEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
-    judge: vf.AgentConfig = vf.AgentConfig(trainable=False)
+    judge: vf.AgentConfig = vf.AgentConfig()
     """The judge seat. Its runtime must be a container:
     `--env.judge.harness.runtime.type docker|prime`."""
     spec: SerializeAsAny[JudgeConfig] = ScoreJudgeConfig(name="judge")
@@ -99,6 +99,7 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
         super().__init__(config)
         from verifiers.v1.loaders import load_judge
 
+        self._check_judge_harness(self._harnesses["judge"])
         self._spec = load_judge(self.config.spec)
         # The spec drives the judge agent's task: refuse a render-less one at
         # construction, not after burning a full solver run.
@@ -110,13 +111,9 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
                 "(--env.taskset.task.judges), not this env."
             )
 
-    def _judge_harness(self) -> Harness:
-        """The judge seat's resolved harness: its pin, else the taskset's default."""
-        from verifiers.v1.loaders import load_harness
-
-        return load_harness(self._seat_harness(self.config.judge))
-
     def _check_judge_harness(self, harness: Harness) -> None:
+        """The judge executes real code, never on the host — refuse an impossible
+        judge seat at construction, not after burning a full solver run."""
         if not harness.EXECUTES_CODE:
             raise ValueError(
                 "agentic-judge plays a code-executing judge in its own sandbox, but "
@@ -124,15 +121,17 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
+        if isinstance(harness.config.runtime, vf.SubprocessConfig):
+            raise ValueError(
+                "agentic-judge plays its judge in a container (JudgeTask mirrors "
+                "the solver task's image), but the judge seat resolves to the "
+                "subprocess runtime; use --env.judge.harness.runtime.type docker "
+                "or prime."
+            )
 
-    def roles(self):
-        # The judge executes real code, never on the host: refuse a subprocess-
-        # resolving judge at construction. The harness-kind check runs first.
-        self._check_judge_harness(self._judge_harness())
-        return {
-            "solver": vf.Role(self.config.solver),
-            "judge": vf.Role(self.config.judge, mcp=False, container=True),
-        }
+    def brief(self, agents):
+        # The judge grades the policy; its tokens are never training data.
+        agents["judge"].trainable = False
 
     async def rollout(self, task, agents):
         solution = await agents["solver"].run(task)

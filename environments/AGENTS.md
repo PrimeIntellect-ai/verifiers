@@ -255,13 +255,13 @@ every run gets a concrete subclass: plain tasksets resolve to the bundled
 its own (via `__all__`, alongside its [`Taskset`](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/tasksets.md) — the same plugin
 idiom as a bundled harness). An env declares its config as an `EnvConfig` subclass —
 each role an `AgentConfig` field, plus its own knobs — writes `rollout()`, and
-optionally overrides `roles()` and `score()`:
+optionally overrides `brief()` and `score()`:
 
 ```python
 class DebateConfig(vf.EnvConfig):
     pro: vf.AgentConfig = vf.AgentConfig()
     con: vf.AgentConfig = vf.AgentConfig()
-    judge: vf.AgentConfig = vf.AgentConfig(model="openai/gpt-5-mini", trainable=False)
+    judge: vf.AgentConfig = vf.AgentConfig(model="openai/gpt-5-mini")
 
 
 def judge_task(task: vf.Task, pro: vf.Trace, con: vf.Trace) -> vf.Task:
@@ -275,14 +275,10 @@ def judge_task(task: vf.Task, pro: vf.Trace, con: vf.Trace) -> vf.Task:
 
 
 class DebateEnv(vf.Environment[DebateConfig]):
-    def roles(self) -> dict[str, vf.Role]:
-        """The topology: who plays which role, and what each needs. The debaters
-        play the dataset; the judge grades an env-minted verdict task."""
-        return {
-            "pro": vf.Role(self.config.pro),
-            "con": vf.Role(self.config.con),
-            "judge": vf.Role(self.config.judge, mcp=False, container=False),
-        }
+    def brief(self, agents: Mapping[str, vf.Agent]) -> None:
+        """Per-agent standing the env hardcodes: the judge grades the debate,
+        so its tokens are never training data."""
+        agents["judge"].trainable = False
 
     async def rollout(
         self, task: vf.Task, agents: Mapping[str, vf.Agent]
@@ -318,28 +314,32 @@ class DebateEnv(vf.Environment[DebateConfig]):
   harness (its bundled one, else `bash`) — there is no run-level harness. A role
   pins only what makes it a different actor: its own harness or runtime
   (`--env.judge.harness.runtime.type docker`), a frozen model, an off-train
-  endpoint, tighter limits, `trainable=False` — and a declared pin is the env
-  author's per-seat default.
-- **The 1:1 mapping is the default.** With no `roles()` override, every declared
-  `AgentConfig` field plays the dataset under its field name — an env whose roles
-  all need exactly what the taskset provides (self-play, fan-out like the bundled
-  best-of-n) never writes `roles()` at all. `DebateEnv` overrides it for one
-  reason only: the judge's needs differ.
-- **A role declares what it needs from the taskset's world.** `vf.Role(cfg)`
-  plays the dataset: the taskset's needs apply (declared tools mean the role's
-  harness must support MCP; `NEEDS_CONTAINER` means no subprocess runtime), and the
-  role is handed the taskset's shared tool servers. A role whose tasks the env
-  mints itself says so — `vf.Role(cfg, mcp=False, container=False)` for a bare
-  model actor like a judge or a simulated user — and then pairs with *any* taskset.
-  Keeping the declaration honest with `rollout()` is the env author's job;
-  `Agent.run` still validates every concrete task it's given, as the backstop.
+  endpoint, tighter limits — and a declared pin is the env author's per-seat
+  default.
+- **The declared fields ARE the roles.** Every `AgentConfig` field plays under its
+  field name; the config is the only naming site, so there is no separate role
+  declaration to drift from what `rollout()` actually does.
+- **Task x agent fit validates on ground truth, per run.** Tasks require (declared
+  `tools`, `NEEDS_CONTAINER`), harnesses support — and `Agent.run` checks the pair
+  on every task it's actually given, before any work. An env-minted task carries
+  its own needs, which is why a bare verdict task pairs the judge with *any*
+  taskset; the taskset's shared tool servers ride only its own tasks (a run may
+  pass `shared_tools=` to override). `SingleAgentEnv` still refuses an impossible
+  pairing at construction: its one seat definitionally plays the taskset, so the
+  mismatch is knowable before any rollout.
+- **`brief()` is env truth, not config.** Whether a seat trains is decided by the
+  env's design — a judge that grades the policy must never be trainable, no matter
+  what a run config says — so it is set in place on the initialized agents
+  (default: everyone trains) rather than exposed as a per-agent knob. An env that
+  legitimately wants the flip exposes its *own* switch: the proposer-solver
+  example's `--env.train_solver false` is a config field its `brief()` consults.
 - **The base builds the agents** — one per role, inside the eval's serving resources
   (shared interception pool, shared tool servers, per-endpoint clients) — and hands
   them into `rollout()`. The hook never constructs agents.
 - **One env-rollout is one `Episode`** on the wire (`traces.jsonl`, the serve
   protocol): the task, a rollout-level `errors` list, and the views' traces, each
-  stamped with its `role` and `trainable` (the view names are the author's own —
-  they don't ride the wire). Episodes succeed, resume, and retry as a unit. An
+  stamped with its `role` and `trainable` (`episode.views` reconstitutes the named
+  views from the stamps). Episodes succeed, resume, and retry as a unit. An
   agent failure is data on its trace (the hook decides what a failed participant
   means); an exception in `rollout()`/`score()` is the env-rollout failing, and
   every trace that completed before it is still captured on the episode.

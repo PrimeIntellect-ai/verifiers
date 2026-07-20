@@ -15,15 +15,16 @@ from echo_v1 import EchoTaskset, lenient_match
 
 
 class DuetEnvConfig(vf.EnvConfig):
-    # Both seats pin the lean `null` chat loop; "b" plays a fixed, untrainable
-    # participant.
+    # Both seats pin the lean `null` chat loop.
     a: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
-    b: vf.AgentConfig = vf.AgentConfig(
-        harness=vf.HarnessConfig(id="null"), trainable=False
-    )
+    b: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
 
 
 class DuetEnv(vf.Environment[DuetEnvConfig]):
+    def brief(self, agents):
+        # "b" plays a fixed, untrainable participant.
+        agents["b"].trainable = False
+
     async def rollout(self, task, agents):
         a, b = await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
         return {"a": a, "b": b}

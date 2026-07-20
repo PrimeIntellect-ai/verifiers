@@ -16,9 +16,10 @@ in a real sandbox and keep the solvers on a cheap tool-less chat loop —
       --env.proposer.harness.id codex --env.proposer.harness.runtime.type prime \
       --env.solver.harness.id null
 
-Train-side, the seats flip independently per run (`--env.solver.trainable false`
+Train-side, the seats flip independently per run (`--env.train_solver false`
 trains only on proposer rollouts; both default trainable, late-bound to the run's
-model).
+model). The flip is this env's own config — trainability is env truth, not a
+per-agent knob.
 """
 
 import asyncio
@@ -120,16 +121,20 @@ class ProposerSolverEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
     n: int = Field(4, ge=1)
     """Independent solver runs per proposed problem."""
+    train_proposer: bool = True
+    """Whether proposer rollouts are training data (`--env.train_proposer false`
+    trains only on solver rollouts)."""
+    train_solver: bool = True
+    """Whether solver rollouts are training data (`--env.train_solver false`
+    trains only on proposer rollouts)."""
 
 
 class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
-    def roles(self):
-        # The proposer plays the dataset seeds; the solvers play env-minted plain
-        # problems — bare model actors, so any taskset needs don't apply to them.
-        return {
-            "proposer": vf.Role(self.config.proposer),
-            "solver": vf.Role(self.config.solver, mcp=False, container=False),
-        }
+    def brief(self, agents):
+        # Both seats CAN train (same underlying policy); which one does this run
+        # is this env's explicit choice to expose.
+        agents["proposer"].trainable = self.config.train_proposer
+        agents["solver"].trainable = self.config.train_solver
 
     async def rollout(self, task, agents):
         proposed = await agents["proposer"].run(task)

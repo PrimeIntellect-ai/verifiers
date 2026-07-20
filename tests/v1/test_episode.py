@@ -36,6 +36,20 @@ def test_record_round_trip(tmp_path):
     assert loaded.ok
 
 
+def test_views_reconstitute_roles_from_stamps():
+    """`views` groups traces by role stamp in mint order (a fanned-out seat is its
+    list); unstamped traces (the single-agent shape) show no views."""
+    solves = [_trace(0, role="solver"), _trace(0, role="solver")]
+    episode = Episode(
+        env="demo-v1",
+        task=_trace(0).task,
+        traces=[_trace(0, role="proposer"), *solves],
+    )
+    assert list(episode.views) == ["proposer", "solver"]
+    assert episode.views["solver"] == solves
+    assert Episode.of(_trace(1), env="demo-v1").views == {}
+
+
 def test_pre_record_lines_sniff_and_load(tmp_path):
     # A file written before the episode atom: one bare trace per line.
     trace = _trace(1)

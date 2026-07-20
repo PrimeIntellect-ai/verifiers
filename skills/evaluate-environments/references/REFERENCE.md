@@ -141,7 +141,11 @@ author's per-seat default; partial overrides deep-merge onto it (an `id` switch 
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
 | `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
 | `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-seat caps (None = the env's). |
-| `trainable` | `bool` | `True` | Stamped on every trace this seat produces: whether its tokens are training data for the run's policy. |
+
+Trainability is not a config field: it is env truth, set in place by the env's
+`brief(agents)` hook (default: every seat trains) and stamped on each trace. An env
+that wants the flip run-configurable exposes its own switch (e.g. proposer-solver's
+`--env.train_solver false`).
 
 ### Legacy (v0) backwards-compat fields
 

@@ -25,6 +25,7 @@ class StubAgent:
     def __init__(self, error: Exception | None = None) -> None:
         self.runs = 0
         self.error = error
+        self.trainable = True  # the env-owned standing `brief()` adjusts
 
     async def run(
         self, task: vf.Task, *, runtime=None, shared_tools=None, on_trace=None
@@ -41,13 +42,14 @@ class StubAgent:
 
 def _stub_agents(env: vf.Environment) -> dict[str, StubAgent]:
     agents = {name: StubAgent() for name in env._roles}
+    env.brief(agents)  # the real _agents_for briefs after building
     env._agents_for = lambda ctx: agents  # type: ignore[method-assign]
     return agents
 
 
 class DuetConfig(vf.EnvConfig):
     a: vf.AgentConfig = vf.AgentConfig()
-    b: vf.AgentConfig = vf.AgentConfig(trainable=False)
+    b: vf.AgentConfig = vf.AgentConfig()
 
 
 def _duet_config(**kwargs) -> "DuetConfig":
@@ -55,6 +57,9 @@ def _duet_config(**kwargs) -> "DuetConfig":
 
 
 class DuetEnv(vf.Environment[DuetConfig]):
+    def brief(self, agents):
+        agents["b"].trainable = False
+
     async def rollout(self, task, agents):
         a, b = await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
         return {"a": a, "b": b}
@@ -80,15 +85,13 @@ async def test_single_agent_env_mints_single_agent_records():
     assert episode.task.data.idx == trace.task.data.idx
 
 
-def test_default_roles_are_the_declared_agent_fields():
-    """The default roles() is the 1:1 mapping: every AgentConfig field on the env's
-    config becomes a dataset-playing role of the same name — an env whose roles all
-    play the dataset never writes roles(). Every env stamps its traces' roles except
+def test_roles_are_the_declared_agent_fields():
+    """Roles are the AgentConfig fields on the env's config — the field name is the
+    role, the only naming site. Every env stamps its traces' roles except
     `SingleAgentEnv`, whose wire stays identical to a plain eval's."""
     env = DuetEnv(_duet_config())
     assert list(env._roles) == ["a", "b"]  # declaration order
-    assert all(r.mcp is None and r.container is None for r in env._roles.values())
-    assert env._roles["b"].agent.trainable is False  # the declared default instance
+    assert all(isinstance(c, vf.AgentConfig) for c in env._roles.values())
     assert env._stamp_roles
     assert not vf.SingleAgentEnv(_env_config())._stamp_roles
 
@@ -323,14 +326,11 @@ async def test_decorated_signal_failure_is_an_episode_error():
 
 def test_roles_must_be_nonempty():
     class Empty(vf.Environment):
-        def roles(self):
-            return {}
-
         async def rollout(self, task, agents):
             return {}
 
-    with pytest.raises(ValueError, match="returned no roles"):
-        Empty(_env_config())
+    with pytest.raises(ValueError, match="declares no roles"):
+        Empty(vf.EnvConfig(taskset={"id": "echo-v1"}))
 
 
 def test_slots_need_a_rollout():
@@ -446,14 +446,14 @@ def test_role_pins_survive_partial_overrides():
     under the provided keys, and only an explicit override replaces a pin."""
 
     class Pinned(vf.EnvConfig):
-        user: vf.AgentConfig = vf.AgentConfig(model="frozen", trainable=False)
+        user: vf.AgentConfig = vf.AgentConfig(model="frozen", max_turns=3)
 
     params = Pinned.model_validate({"user": {"sampling": {"temperature": 0.7}}})
-    assert params.user.model == "frozen" and params.user.trainable is False
+    assert params.user.model == "frozen" and params.user.max_turns == 3
     assert params.user.sampling is not None
     assert params.user.sampling.temperature == 0.7
     explicit = Pinned.model_validate({"user": {"model": "other"}})
-    assert explicit.user.model == "other" and explicit.user.trainable is False
+    assert explicit.user.model == "other" and explicit.user.max_turns == 3
 
 
 def test_env_subclass_loads_and_config_narrows():
@@ -469,7 +469,8 @@ def test_env_subclass_loads_and_config_narrows():
     )
     assert isinstance(cfg, config_cls)
     assert cfg.b.model == "frozen"
-    assert cfg.b.trainable is False  # the pin survives the partial override
+    assert cfg.b.harness is not None
+    assert cfg.b.harness.id == "null"  # the pin survives the partial override
     env = vf.load_environment(cfg)
     assert type(env).__name__ == "DuetEnv" and list(env._roles) == ["a", "b"]
     # a run config narrows its `env` field the same way
@@ -481,7 +482,7 @@ def test_env_subclass_loads_and_config_narrows():
 
 def test_env_requires_its_declared_config():
     """Constructing an env whose config wasn't narrowed to its config class fails
-    loudly instead of breaking later in `roles()`."""
+    loudly instead of breaking later in role discovery."""
     with pytest.raises(TypeError, match="declares Environment\\[DuetConfig\\]"):
         DuetEnv(_env_config())
 

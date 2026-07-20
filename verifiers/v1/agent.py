@@ -109,6 +109,10 @@ class Agent:
         self.interception = interception
         self.limits = RolloutLimits() if limits is None else limits
         self.timeout = TimeoutConfig() if timeout is None else timeout
+        # Env-owned standing, not config: `Environment.brief` marks fixed seats
+        # (a frozen judge) untrainable and the role wrapper stamps traces from
+        # here. Inert in bespoke scripts — nothing outside an env reads it.
+        self.trainable: bool = True
         self._entered = False
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()

@@ -9,6 +9,7 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNEnvConfig
 from verifiers.v1.envs.agentic_judge import AgenticJudgeEnvConfig
+from verifiers.v1.envs.agentic_judge.env import JudgeTask
 from verifiers.v1.judges.rubric import RubricJudgeConfig
 from verifiers.v1.judges.score import ScoreJudge
 from verifiers.v1.trace import Trace, TraceTask
@@ -45,14 +46,16 @@ def test_load_environment_honors_env_id():
     config = EvalConfig(env={"id": "best-of-n", "taskset": {"id": "echo-v1"}, "n": 3})
     env = vf.load_environment(config.env)
     assert isinstance(env, BestOfNEnv)
-    assert set(env.roles()) == {"solver"}
+    assert set(env._roles) == {"solver"}
 
 
-def test_minted_task_roles_pair_with_tool_tasksets():
-    """A role whose tasks the env mints itself declares its own needs: the agentic
-    judge env loads over a tool-declaring taskset — the judge's `mcp=False` waives
-    the taskset's MCP need — while the SOLVER role still validates against the
-    dataset."""
+def test_shared_tools_ride_only_the_tasksets_own_tasks():
+    """Task x agent needs validate per run, on the task each agent actually
+    receives: the agentic judge env loads over a tool-declaring taskset with no
+    upfront refusal — its minted `JudgeTask` carries its own needs — and the
+    taskset's shared servers are handed to a run iff its task is the taskset's."""
+    from verifiers.v1.env import _RoleAgent
+
     env = vf.load_environment(
         vf.resolve_env_config(
             {
@@ -62,28 +65,41 @@ def test_minted_task_roles_pair_with_tool_tasksets():
             }
         )
     )
-    assert env._role_needs_mcp["judge"] is False
-    assert env._role_needs_mcp["solver"]
-    # The dataset-playing role keeps failing loudly: a tool taskset on a harness
-    # that can't mount MCP is still an impossible pairing.
-    with pytest.raises(ValueError, match="role 'solver' plays tasks with MCP"):
+    shared = {"echo": object()}
+    handed = _RoleAgent(
+        object(),  # _shared_for never touches the wrapped agent
+        role="judge",
+        shared_tools=shared,
+        task_cls=env._task_cls,
+        gate=None,
+        completed=[],
+        on_trace=None,
+    )
+    dataset_task = env.taskset.load()[0]
+    minted = JudgeTask(vf.TaskData(idx=0, prompt="verify"), files={})
+    assert handed._shared_for(dataset_task) is shared
+    assert handed._shared_for(minted) == {}
+    # The single-agent case keeps the upfront refusal: its one seat definitionally
+    # plays the taskset, so an MCP-less harness over a tool taskset fails at
+    # construction, before any work.
+    with pytest.raises(ValueError, match="does not support MCP"):
         vf.load_environment(
             vf.resolve_env_config(
                 {
-                    "id": "best-of-n",
                     "taskset": {"id": "echo-tool-v1"},
-                    "solver": {"harness": {"id": "terminus-2"}},
+                    "agent": {"harness": {"id": "terminus-2"}},
                 }
             )
         )
 
 
 def test_agentic_judge_is_sandboxed():
-    """The agentic judge is never played on the host: its role's container need is
-    STATIC (no mode-switching) — a judge resolving to the subprocess runtime refuses
-    at construction, and the fix is the judge seat's own runtime pin. A tool-less
-    judge harness belongs on `judge`."""
-    with pytest.raises(ValueError, match="role 'judge' plays tasks that need a"):
+    """The agentic judge is never played on the host: a judge seat resolving to the
+    subprocess runtime refuses at construction (the env's own check — `JudgeTask`'s
+    `NEEDS_CONTAINER` is the per-run backstop), and the fix is the judge seat's own
+    runtime pin. A tool-less judge harness belongs on the plugged tier. The judge
+    plays frozen: `brief()` opts it out of training."""
+    with pytest.raises(ValueError, match="subprocess runtime"):
         vf.load_environment(
             vf.resolve_env_config({"id": "agentic-judge", "taskset": {"id": "echo-v1"}})
         )
@@ -96,15 +112,21 @@ def test_agentic_judge_is_sandboxed():
             }
         )
     )
-    judge = env._roles["judge"]
-    assert judge.container is True
     assert env._harnesses["judge"].config.runtime.type == "docker"
     assert env._harnesses["solver"].config.runtime.type == "subprocess"  # unpinned
     # The env-server config round-trip resolves to the same shape.
     rebuilt = vf.load_environment(
         vf.resolve_env_config(env.config.model_dump(mode="json"))
     )
-    assert rebuilt._roles["judge"].container is True
+    assert rebuilt._harnesses["judge"].config.runtime.type == "docker"
+
+    # brief() is the judge's standing, not config: the judge seat is untrainable.
+    class _Seat:
+        trainable = True
+
+    seats = {"solver": _Seat(), "judge": _Seat()}
+    env.brief(seats)
+    assert seats["judge"].trainable is False and seats["solver"].trainable
     # A tool-less judge harness is refused: a verdict that needs no execution is
     # a plugged judge (env.taskset.task.judges), not an agent.
     with pytest.raises(ValueError, match="plugged judge"):
@@ -119,22 +141,19 @@ def test_agentic_judge_is_sandboxed():
         )
 
 
-def test_roles_are_always_roles():
-    """`SingleAgentEnv`'s seat is one dataset-playing `agent` role; a roles()
-    override handing back a bare AgentConfig gets a wrap-it error."""
+def test_roles_are_the_declared_config_fields():
+    """`SingleAgentEnv`'s seat is one dataset-playing `agent` role; an env handed a
+    config declaring no AgentConfig fields has no roles and refuses at
+    construction."""
     env = vf.SingleAgentEnv(_bundled_config())
-    (name,), (role,) = env._roles.keys(), env._roles.values()
-    assert name == "agent" and role.mcp is None and role.container is None
+    assert set(env._roles) == {"agent"}
 
     class Bare(vf.Environment):
-        def roles(self):
-            return {"solo": vf.AgentConfig()}
-
         async def rollout(self, task, agents):
             return {}
 
-    with pytest.raises(TypeError, match="wrap it: vf.Role"):
-        Bare(_bundled_config())
+    with pytest.raises(ValueError, match="declares no roles"):
+        Bare(vf.EnvConfig(taskset={"id": "echo-v1"}))
 
 
 def _bundled_config() -> vf.SingleAgentEnvConfig:

@@ -90,9 +90,6 @@ class AgentConfig(BaseConfig):
     """Max output tokens per rollout for this role (None = the env's)."""
     max_total_tokens: int | None = None
     """Max total tokens per rollout for this role (None = the env's)."""
-    trainable: bool = True
-    """Stamped on every trace this role produces: whether its tokens are training data
-    for the run's policy (set False for fixed-model roles)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -106,21 +103,6 @@ class AgentConfig(BaseConfig):
 
             narrow_plugin_field(data, "harness", harness_config_type, "bash")
         return data
-
-
-@dataclass(frozen=True)
-class Role:
-    """One `roles()` entry: who plays the role, plus what its runs need from the
-    taskset's world (None = inherit the taskset's own). An env that mints a role's
-    tasks itself declares the real needs instead — `vf.Role(cfg, mcp=False,
-    container=False)` for a bare model actor — so pairing validates what the role
-    actually runs. Only MCP-needing roles get the taskset's shared tool servers."""
-
-    agent: AgentConfig
-    mcp: bool | None = None
-    """Whether this role's tasks expose MCP tool servers (None = the taskset's)."""
-    container: bool | None = None
-    """Whether this role's tasks need a container runtime (None = the taskset's)."""
 
 
 def _mentions_agent_config(annotation) -> bool:
@@ -280,7 +262,7 @@ class EnvConfig(BaseConfig):
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs):
         """A role field must carry a default *instance* (the deep-merge and the
-        default `roles()` read it) and must not shadow a base field; refuse both at
+        role machinery read it) and must not shadow a base field; refuse both at
         class definition rather than silently dropping the role. Membership is the
         role machinery's (`_merge_role_defaults`/`_declared_agent_configs`): the
         default instance, not the annotation form, is what makes a field a role."""
@@ -300,7 +282,7 @@ class EnvConfig(BaseConfig):
                     f"instance (`{name}: vf.AgentConfig = vf.AgentConfig(...)`), "
                     "not default_factory or a bare annotation — the declared "
                     "instance is the role's author default (CLI overrides "
-                    "deep-merge onto it, and the default roles() plays it)"
+                    "deep-merge onto it, and the seat plays under the field's name)"
                 )
 
 
@@ -314,8 +296,8 @@ class SingleAgentEnvConfig(EnvConfig):
 
 def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
     """The `AgentConfig` fields declared on an env's config, in declaration order —
-    the 1:1 config->role mapping the default `roles()` plays. Membership test (a
-    default instance) matches `_merge_role_defaults`."""
+    the env's roles, each seat keyed by its field name (the only naming site).
+    Membership test (a default instance) matches `_merge_role_defaults`."""
     return {
         name: getattr(config, name)
         for name, field in type(config).model_fields.items()
@@ -665,10 +647,13 @@ class Environment(ABC, Generic[ConfigT]):
       - `rollout(task, agents)` — how the agents interact on one task, returning
         the episode's named local views.
 
-    Optional overrides: `roles()` (only when a role's needs differ from the
-    taskset's), `score(task, views)` (sibling-dependent judgement), and
-    `setup()`/`teardown()` (env-owned shared resources). The base owns everything
-    else: agent construction, episodes, retries, persistence/resume, serving."""
+    Optional overrides: `brief(agents)` (per-agent standing the env hardcodes —
+    a frozen judge opts out of training), `score(task, views)` (sibling-dependent
+    judgement), and `setup()`/`teardown()` (env-owned shared resources). The base
+    owns everything else: agent construction, episodes, retries, persistence/
+    resume, serving. Task x agent fit is validated per run, on the task the agent
+    actually receives — an env-minted task carries its own needs (`tools`,
+    `NEEDS_CONTAINER`), so there is nothing to declare here."""
 
     _stamp_roles: ClassVar[bool] = True
     """Whether traces are stamped with their role name at mint. True for every env
@@ -698,21 +683,14 @@ class Environment(ABC, Generic[ConfigT]):
         self.taskset = load_taskset(config.taskset)
         self._default_harness = default_seat_harness(config.taskset.id)
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
-        self._roles: dict[str, Role] = dict(self.roles())
-        for name, role in self._roles.items():
-            if not isinstance(role, Role):
-                raise TypeError(
-                    f"{type(self).__name__}.roles() maps {name!r} to "
-                    f"{type(role).__name__}; wrap it: vf.Role(config) plays the "
-                    "dataset, vf.Role(config, mcp=False, container=False) is a "
-                    "bare model actor whose tasks the env mints itself"
-                )
+        self._task_cls: type[Task] = task_cls
+        self._roles: dict[str, AgentConfig] = _declared_agent_configs(self.config)
         if not self._roles:
             raise ValueError(
-                f"{type(self).__name__}.roles() returned no roles; declare each seat "
-                "as an AgentConfig field on the env's config (the default roles() "
-                "plays them), or override roles(). The single-agent case is "
-                "SingleAgentEnv."
+                f"{type(self).__name__} declares no roles; declare each seat as an "
+                "AgentConfig field on the env's config "
+                "(`solver: vf.AgentConfig = vf.AgentConfig()`) — the field name is "
+                "the role. The single-agent case is SingleAgentEnv."
             )
         for fn in (
             *discover_decorated(self, "metric"),
@@ -723,62 +701,21 @@ class Environment(ABC, Generic[ConfigT]):
                 name = getattr(fn, "__name__", repr(fn))
                 raise ValueError(
                     f"{type(self).__name__}.{name} is decorated with "
-                    f"role={role!r}, but roles() declares {sorted(self._roles)}"
+                    f"role={role!r}, but the env's config declares roles "
+                    f"{sorted(self._roles)}"
                 )
         # Seats resolving to the same harness config share the loaded object
         # (harnesses are stateless values).
         loaded: dict[str, Harness] = {}
         self._harnesses: dict[str, Harness] = {}
-        for name, role in self._roles.items():
-            cfg = self._seat_harness(role.agent)
+        for name, spec in self._roles.items():
+            cfg = self._seat_harness(spec)
             key = cfg.model_dump_json()
             if key not in loaded:
                 loaded[key] = load_harness(cfg)
             self._harnesses[name] = loaded[key]
-        taskset_mcp = bool(task_cls.tools or type(self.taskset).tools)
-        self._role_needs_mcp: dict[str, bool] = {
-            name: role.mcp if role.mcp is not None else taskset_mcp
-            for name, role in self._roles.items()
-        }
         warned: set[str] = set()
         for name, harness in self._harnesses.items():
-            role = self._roles[name]
-            if self._role_needs_mcp[name] and not harness.SUPPORTS_MCP:
-                raise ValueError(
-                    f"{type(self).__name__} role {name!r} plays tasks with MCP tool "
-                    f"servers, but its harness {harness.config.id!r} does not support "
-                    f"MCP. Point the role at an MCP-capable harness "
-                    f"(--env.{name}.harness.id bash) — or, if the env mints this "
-                    "role's tasks itself, declare its needs on the roles() entry "
-                    "(vf.Role(cfg, mcp=False))."
-                )
-            # Only a dataset-playing role (no declared needs) inherits the
-            # taskset's user simulator; env-minted tasks carry none.
-            plays_dataset = role.mcp is None and role.container is None
-            if (
-                plays_dataset
-                and task_cls.user is not None
-                and not harness.SUPPORTS_USER_SIM
-            ):
-                raise ValueError(
-                    f"{type(self).__name__} role {name!r} plays tasks with a user "
-                    f"simulator (Task.user), but its harness {harness.config.id!r} "
-                    "does not drive one; point the role at a user-capable harness "
-                    f"(--env.{name}.harness.id bash)."
-                )
-            needs_container = (
-                role.container
-                if role.container is not None
-                else task_cls.NEEDS_CONTAINER
-            )
-            if needs_container and isinstance(harness.config.runtime, SubprocessConfig):
-                raise ValueError(
-                    f"{type(self).__name__} role {name!r} plays tasks that need a "
-                    "container runtime, but its harness resolves to subprocess; use "
-                    f"--env.{name}.harness.runtime.type docker or prime — or, if the "
-                    "env mints this role's tasks itself, declare its needs on the "
-                    "roles() entry (vf.Role(cfg, container=False))."
-                )
             # Warn once per distinct harness; tool-less chat loops are exempt.
             if (
                 harness.EXECUTES_CODE
@@ -810,18 +747,13 @@ class Environment(ABC, Generic[ConfigT]):
 
     # --- the multi-agent surface (override these) ------------------------------
 
-    def roles(self) -> Mapping[str, Role]:
-        """Which agent plays which role. Called once, at construction. The default
-        is the 1:1 mapping — every `AgentConfig` field on the env's config becomes a
-        dataset-playing role of the same name — so an env whose roles all play the
-        dataset never writes this. Override it when a role's needs differ from the
-        taskset's because the env mints its tasks itself: `vf.Role(cfg, mcp=False,
-        container=False)` for a bare model actor, `container=True` when the minted
-        tasks need a box."""
-        return {
-            name: Role(config)
-            for name, config in _declared_agent_configs(self.config).items()
-        }
+    def brief(self, agents: Mapping[str, "Agent"]) -> None:
+        """Brief the initialized agents before any rollout — the in-place spot for
+        per-agent standing the env hardcodes rather than exposes as config. Today
+        that is `trainable` (every agent defaults True; a fixed seat opts out:
+        `agents["judge"].trainable = False`). Runs whenever the env's agents are
+        (re)built for a run context, so keep it idempotent. Single-agent envs
+        never write this."""
 
     @abstractmethod
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> Views:
@@ -915,17 +847,18 @@ class Environment(ABC, Generic[ConfigT]):
 
         if self._agents is None or self._agents_ctx != ctx:
             self._agents = {}
-            for name, role in self._roles.items():
-                role_ctx = self._role_ctx(role.agent, ctx)
+            for name, spec in self._roles.items():
+                role_ctx = self._role_ctx(spec, ctx)
                 self._agents[name] = Agent(
                     self._harnesses[name],
                     role_ctx.model,
                     role_ctx.client,
                     sampling=role_ctx.sampling,
                     interception=self._interception,
-                    limits=self._role_limits(role.agent),
+                    limits=self._role_limits(spec),
                     timeout=self.config.timeout,
                 )
+            self.brief(self._agents)
             self._agents_ctx = ctx
         return self._agents
 
@@ -993,10 +926,8 @@ class Environment(ABC, Generic[ConfigT]):
             name: _RoleAgent(
                 agents[name],
                 role=name if self._stamp_roles else None,
-                trainable=self._roles[name].agent.trainable,
-                # A bare model actor gets no shared servers — handing them over
-                # would fail its per-run pairing check.
-                shared_tools=self._shared_tools if self._role_needs_mcp[name] else {},
+                shared_tools=self._shared_tools,
+                task_cls=self._task_cls,
                 gate=gate,
                 completed=completed,
                 on_trace=on_trace,
@@ -1146,6 +1077,20 @@ class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
 
     _stamp_roles = False
 
+    def __init__(self, config: SingleAgentEnvConfig) -> None:
+        super().__init__(config)
+        # The one seat definitionally plays the seed taskset, so an impossible
+        # pairing is knowable from class facts alone — refuse at construction,
+        # before any work (multi-agent envs validate per run instead, on the
+        # task each agent actually receives).
+        harness = self._harnesses["agent"]
+        validate_pairing(
+            harness,
+            self._task_cls,
+            harness.config.runtime,
+            shared_tools=type(self.taskset).tools,
+        )
+
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> Views:
         return {"agent": await agents["agent"].run(task)}
 
@@ -1153,31 +1098,36 @@ class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
 class _RoleAgent:
     """A role's `Agent` as handed to `Environment.rollout`: stamps every trace
     (`role`/`trainable`) at mint and captures it in `completed` when its run
-    finishes — the crash-safe episode source if the hook then raises. Runs ride the
-    role's share of the taskset's tool servers unless the hook passes its own.
-    Everything else delegates to the wrapped agent."""
+    finishes — the crash-safe episode source if the hook then raises. The taskset's
+    shared tool servers ride only its own tasks — an env-minted task carries its
+    own needs, and handing shared servers to its run would wrongly put MCP in play
+    (pass `shared_tools=` explicitly to override either way). Everything else
+    delegates to the wrapped agent."""
 
     def __init__(
         self,
         agent: "Agent",
         *,
         role: str | None,
-        trainable: bool,
         shared_tools: Mapping[str, SharedToolServer],
+        task_cls: type[Task],
         gate: "asyncio.Semaphore | None",
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
     ) -> None:
         self._agent = agent
         self._role = role
-        self._trainable = trainable
         self._shared_tools = shared_tools
+        self._task_cls = task_cls
         self._gate = gate
         self._completed = completed
         self._on_trace = on_trace
 
     def __getattr__(self, name: str):
         return getattr(self._agent, name)
+
+    def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
+        return self._shared_tools if isinstance(task, self._task_cls) else {}
 
     async def run(
         self,
@@ -1189,7 +1139,7 @@ class _RoleAgent:
     ) -> Trace:
         def watch(trace: Trace) -> None:
             trace.role = self._role
-            trace.trainable = self._trainable
+            trace.trainable = self._agent.trainable
             if self._on_trace is not None:
                 self._on_trace(trace)
             if on_trace is not None:
@@ -1201,7 +1151,7 @@ class _RoleAgent:
                 runtime=runtime,
                 shared_tools=shared_tools
                 if shared_tools is not None
-                else self._shared_tools,
+                else self._shared_for(task),
                 on_trace=watch,
             )
         self._completed.append(trace)
