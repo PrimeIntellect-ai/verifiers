@@ -12,7 +12,7 @@ from verifiers.v1.envs.agentic_judge import AgenticJudgeEnvConfig
 from verifiers.v1.envs.agentic_judge.env import JudgeTask
 from verifiers.v1.judges.rubric import RubricJudgeConfig
 from verifiers.v1.judges.score import ScoreJudge
-from verifiers.v1.trace import Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 
 
 def test_env_id_resolves_bundled():
@@ -66,7 +66,7 @@ def test_shared_tools_ride_only_the_tasksets_own_tasks():
     shared = {"echo": object()}
     env._shared_tools = shared  # what serving() would install
     ctx = vf.ModelContext(model="stub", client=object())  # duck client — no runs here
-    judge = env._episode_agents(ctx, None, [], None)["judge"]
+    judge = env._episode_agents(ctx, "ep", None, [], None)["judge"]
     dataset_task = env.taskset.load()[0]
     minted = JudgeTask(vf.TaskData(idx=0, prompt="verify"), files={})
     assert judge.trainable is False  # brief() ran on the fresh set
@@ -274,7 +274,8 @@ def test_rubric_spec_agent_execution_round_trip(tmp_path):
 
 def _reply_trace(reply: str, role: str | None = None) -> Trace:
     trace = Trace(
-        task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")), role=role
+        task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        agent=AgentInfo(model="test", name=role) if role is not None else None,
     )
     graph.prepare_turn(trace, [vf.UserMessage(content="q")]).commit(
         vf.Response(

@@ -307,7 +307,9 @@ class VersionInfo(StrictBaseModel):
 
 
 class AgentInfo(StrictBaseModel):
-    """The agent that produced this trace's sampled turns."""
+    """The agent that produced this trace's sampled turns — its resolved identity
+    plus its standing in the episode, so a bare trace carries everything needed to
+    reconstruct a multi-agent episode (flat, trace-native ingestion)."""
 
     model: str
     """The model identifier requested from the client."""
@@ -316,6 +318,18 @@ class AgentInfo(StrictBaseModel):
     harness: HarnessConfig | None = None
     """The driving harness's config. Typed as the base config, so a custom harness's
     extra fields don't serialize — records round-trip without importing the harness."""
+    name: str | None = None
+    """The env seat this agent played — the config field name (`solver`, `judge`).
+    None outside an env and for `SingleAgentEnv`'s sole implicit seat; first-class
+    so training can filter and baseline per role."""
+    trainable: bool = True
+    """Whether this trace's tokens are training data for the run's policy. An env's
+    `brief()` marks fixed-model seats (a frozen judge, a pinned user sim) untrainable."""
+    episode: str | None = None
+    """The `Episode.id` this trace belongs to, stamped at mint (None outside an env)."""
+    env: str | None = None
+    """The env that ran the episode (`EnvConfig.env_id`, e.g.
+    `agentic-judge+gsm8k-v1`), stamped at mint (None outside an env)."""
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):
@@ -363,13 +377,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """Unweighted metrics from tasks, harnesses, and judges."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Persistent JSON scratch space for task metadata that is not a reward or metric."""
-    role: str | None = None
-    """Which env role produced this trace (`None` for the single-agent default).
-    Stamped by the env layer; first-class so training can filter and baseline per
-    role."""
-    trainable: bool = True
-    """Whether this trace's tokens are training data for the run's policy. An env
-    marks fixed-model roles (a frozen judge, a pinned user sim) untrainable."""
     state: StateT = Field(default_factory=State, exclude=True)
     """Transient state shared with servers and scoring; excluded from every dump."""
 
@@ -398,6 +405,17 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     @property
     def has_error(self) -> bool:
         return bool(self.errors)
+
+    @property
+    def role(self) -> str | None:
+        """The env seat that produced this trace (`agent.name`); None for the
+        single-agent default and outside an env."""
+        return self.agent.name if self.agent is not None else None
+
+    @property
+    def trainable(self) -> bool:
+        """Whether this trace's tokens train the run's policy (`agent.trainable`)."""
+        return self.agent.trainable if self.agent is not None else True
 
     def _last_assistant(self) -> MessageNode | None:
         """Most recent model-produced node, ignoring prompt-supplied assistant messages."""

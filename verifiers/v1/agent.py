@@ -285,10 +285,10 @@ class _EpisodeAgent(Agent):
     """One role's `Agent` for one env-rollout. An `Environment` builds these fresh
     per episode (an Agent is a cheap bundle of references — the expensive resources
     are env-owned and borrowed), so the episode's own capture lives right here with
-    no state shared across concurrent episodes: every trace gets `role`/`trainable`
-    written the moment it's created, finished traces land in `completed` (the
-    crash-safe episode source if the hook then raises), and each run takes the
-    eval's concurrency gate. The taskset's shared tool servers ride only its own
+    no state shared across concurrent episodes: every trace's `agent` info gets its
+    episode standing (seat name, trainable, episode id, env id) written the moment
+    it's created, finished traces land in `completed` (the episode's trace list),
+    and each run takes the eval's concurrency gate. The taskset's shared tool servers ride only its own
     tasks — an env-minted task carries its own needs, and handing shared servers
     to its run would wrongly put MCP in play (pass `shared_tools=` explicitly to
     override either way)."""
@@ -305,6 +305,8 @@ class _EpisodeAgent(Agent):
         timeout: TimeoutConfig,
         name: str,
         role: str | None,
+        episode: str,
+        env: str,
         shared_tools: Mapping[str, SharedToolServer],
         task_cls: type[Task],
         gate: asyncio.Semaphore | None,
@@ -325,6 +327,8 @@ class _EpisodeAgent(Agent):
         self._warned_resources = warned_resources
         self._name = name
         self._role = role
+        self._episode = episode
+        self._env = env
         self._shared_tools = shared_tools
         self._task_cls = task_cls
         self._gate = gate
@@ -343,8 +347,12 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         def watch(trace: Trace) -> None:
-            trace.role = self._role
-            trace.trainable = self.trainable
+            # The trace's episode standing, self-contained on its agent info.
+            if trace.agent is not None:
+                trace.agent.name = self._role
+                trace.agent.trainable = self.trainable
+                trace.agent.episode = self._episode
+                trace.agent.env = self._env
             if self._on_trace is not None:
                 self._on_trace(trace)
             if on_trace is not None:

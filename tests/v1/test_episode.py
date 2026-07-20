@@ -12,13 +12,13 @@ from verifiers.v1.cli.output import (
     write_episode,
 )
 from verifiers.v1.push import trace_to_sample
-from verifiers.v1.trace import Episode, Trace, TraceTask, WireTrace
+from verifiers.v1.trace import AgentInfo, Episode, Trace, TraceTask, WireTrace
 
 
 def _trace(idx: int = 0, role: str | None = None, error: bool = False) -> Trace:
     trace = Trace(
         task=TraceTask(type="Task", data=vf.TaskData(idx=idx, prompt="hi")),
-        role=role,
+        agent=AgentInfo(model="stub", name=role) if role is not None else None,
     )
     if error:
         trace.capture_error(ValueError("boom"))
@@ -100,9 +100,12 @@ def test_resume_reads_pre_record_files(tmp_path):
 
 
 def test_push_sample_carries_record_grouping():
+    """The sample's grouping columns come off the trace itself — it carries its
+    own episode standing on `agent`."""
     trace = _trace(5, role="judge")
-    trace.trainable = False
-    sample = trace_to_sample(trace, 1, episode_id="rec123")
+    trace.agent.trainable = False
+    trace.agent.episode = "rec123"
+    sample = trace_to_sample(trace, 1)
     assert sample["episode_id"] == "rec123"
     assert sample["role"] == "judge" and sample["trainable"] is False
 
@@ -111,20 +114,19 @@ def test_push_samples_share_rollout_number_per_episode():
     """Siblings/seats of one episode are the same attempt at the task: they share
     its rollout_number instead of counting 1..n (which clashed with
     rollouts_per_example when -r was 1)."""
-    from verifiers.v1.push import _build_samples, _EpisodeIndex
+    from verifiers.v1.push import _build_samples
 
     a1, a2 = _trace(0, role="solver"), _trace(0, role="solver")  # episode A: fan-out
     b1, b2 = _trace(0, role="solver"), _trace(0, role="judge")  # episode B: judged
-    index = _EpisodeIndex(
-        trace_ids={a1.id: "A", a2.id: "A", b1.id: "B", b2.id: "B"},
-        ok={"A": True, "B": True},
-        idx={"A": 0, "B": 0},
-    )
-    samples = _build_samples([a1, a2, b1, b2], index)
+    for trace, episode_id in ((a1, "A"), (a2, "A"), (b1, "B"), (b2, "B")):
+        trace.agent.episode = episode_id
+    samples = _build_samples([a1, a2, b1, b2])
     assert [s["rollout_number"] for s in samples] == [1, 1, 2, 2]
-    # Unindexed traces (a pre-episode file) keep counting one attempt each.
-    bare = _EpisodeIndex(trace_ids={}, ok={}, idx={})
-    assert [s["rollout_number"] for s in _build_samples([a1, a2], bare)] == [1, 2]
+    # Unstamped traces (a pre-episode file) keep counting one attempt each.
+    assert [s["rollout_number"] for s in _build_samples([_trace(0), _trace(0)])] == [
+        1,
+        2,
+    ]
 
 
 def test_push_error_rate_counts_episodes():
@@ -135,14 +137,13 @@ def test_push_error_rate_counts_episodes():
 
     clean = _trace(0)
     index = _EpisodeIndex(
-        trace_ids={clean.id: "A"},
         # A: clean trace, score() failed; B: zero-trace rollout() failure; C: ok.
         ok={"A": False, "B": False, "C": True},
         idx={"A": 0, "B": 1, "C": 2},
     )
     assert _run_metrics([clean], index)["avg_error"] == 2 / 3
     # Without the file, the per-trace fallback (the old rule).
-    bare = _EpisodeIndex(trace_ids={}, ok={}, idx={})
+    bare = _EpisodeIndex(ok={}, idx={})
     assert _run_metrics([clean], bare)["avg_error"] == 0.0
 
 
@@ -167,7 +168,6 @@ def test_episode_index_sees_zero_trace_failures(tmp_path, monkeypatch):
     index = _episode_index(EvalConfig())
     assert index.ok == {good.id: True, hook_failed.id: False, trace_failed.id: False}
     assert index.idx == {good.id: 0, hook_failed.id: 1, trace_failed.id: 2}
-    assert index.trace_ids[good.traces[0].id] == good.id
 
 
 def test_append_trace_wraps_a_record(tmp_path):

@@ -34,16 +34,14 @@ class PushState:
     error: str | None = None
 
 
-def trace_to_sample(
-    trace: Trace, rollout_number: int = 1, episode_id: str | None = None
-) -> dict[str, Any]:
+def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
     """One trace -> the platform's sample dict (the v0 eval-sample format).
 
-    The hub table stays flat — one row per trace, stamped with the shared
-    `episode_id` (plus `role`/`trainable`) so a multi-trace rollout's grouping is
-    reconstructable without a nested schema. No prompt/completion split
-    (meaningless mid-branch): `completion` is the final branch's messages,
-    `trajectory` one message list per branch."""
+    The hub table stays flat — one row per trace, and the trace itself carries its
+    episode standing (`agent.episode`/`agent.name`/`agent.trainable`), so a
+    multi-trace rollout's grouping is reconstructable without a nested schema. No
+    prompt/completion split (meaningless mid-branch): `completion` is the final
+    branch's messages, `trajectory` one message list per branch."""
 
     def dump(messages):
         return [m.model_dump(mode="json", exclude_none=True) for m in messages]
@@ -54,7 +52,7 @@ def trace_to_sample(
         "sample_id": trace.id,
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
-        "episode_id": episode_id,
+        "episode_id": trace.agent.episode if trace.agent is not None else None,
         "role": trace.role,
         "trainable": trace.trainable,
         "task": task,
@@ -120,8 +118,6 @@ class _EpisodeIndex:
     failures, which the in-memory trace list can't see. Empty when the file
     doesn't exist; pre-episode lines aren't indexed."""
 
-    trace_ids: dict[str, str]
-    """trace id -> episode id."""
     ok: dict[str, bool]
     """episode id -> `Episode.ok` (no episode-level error, no trace errors)."""
     idx: dict[str, int]
@@ -131,7 +127,7 @@ class _EpisodeIndex:
 def _episode_index(config: EvalConfig) -> _EpisodeIndex:
     from verifiers.v1.cli.output import TRACES_FILE, output_path, sniff_episode
 
-    index = _EpisodeIndex(trace_ids={}, ok={}, idx={})
+    index = _EpisodeIndex(ok={}, idx={})
     path = output_path(config) / TRACES_FILE
     if not path.exists():
         return index
@@ -143,8 +139,6 @@ def _episode_index(config: EvalConfig) -> _EpisodeIndex:
             if not sniff_episode(row):
                 continue
             traces = row.get("traces") or []
-            for trace_row in traces:
-                index.trace_ids[trace_row["id"]] = row["id"]
             index.ok[row["id"]] = not row.get("errors") and not any(
                 t.get("errors") for t in traces
             )
@@ -180,22 +174,23 @@ def _run_metrics(traces: list[Trace], index: _EpisodeIndex) -> dict[str, Any]:
     }
 
 
-def _build_samples(traces: list[Trace], index: _EpisodeIndex) -> list[dict[str, Any]]:
+def _build_samples(traces: list[Trace]) -> list[dict[str, Any]]:
     """One platform sample per trace, with one `rollout_number` per EPISODE: a
     multi-agent rollout's seats are the same attempt at the task, not attempts
-    1..n. Traces the file doesn't know count as an attempt each."""
+    1..n. The grouping is each trace's own episode stamp (`agent.episode`); an
+    unstamped trace counts as an attempt of its own."""
     counts: dict[int, int] = {}
     episode_numbers: dict[str, int] = {}
     samples = []
     for trace in traces:
-        episode_id = index.trace_ids.get(trace.id)
+        episode_id = trace.agent.episode if trace.agent is not None else None
         number = episode_numbers.get(episode_id) if episode_id else None
         if number is None:
             idx = trace.task.data.idx
             counts[idx] = number = counts.get(idx, 0) + 1
             if episode_id:
                 episode_numbers[episode_id] = number
-        samples.append(trace_to_sample(trace, number, episode_id=episode_id))
+        samples.append(trace_to_sample(trace, number))
     return samples
 
 
@@ -226,7 +221,7 @@ def push_traces(
         config.env.taskset.id if config.env.taskset is not None else ""
     ) or config.id
     metrics = _run_metrics(traces, index)
-    samples = _build_samples(traces, index)
+    samples = _build_samples(traces)
     # Distinct tasks over the file's episodes when available: a task whose every
     # env-rollout failed before minting a trace still counts as attempted.
     num_examples = (

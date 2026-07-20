@@ -842,6 +842,7 @@ class Environment(ABC, Generic[ConfigT]):
     def _episode_agents(
         self,
         ctx: ModelContext,
+        episode_id: str,
         gate: "asyncio.Semaphore | None",
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
@@ -865,6 +866,8 @@ class Environment(ABC, Generic[ConfigT]):
                 timeout=self.config.timeout,
                 name=name,
                 role=name if self._stamp_roles else None,
+                episode=episode_id,
+                env=self.config.env_id,
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
                 gate=gate,
@@ -934,12 +937,12 @@ class Environment(ABC, Generic[ConfigT]):
         subset. Once `rollout()` returns, its views decide membership, kept even
         when `score()` then fails. A hook exception lands on the episode's
         `errors`, never on a trace."""
-        completed: list[Trace] = []
-        agents = self._episode_agents(ctx, gate, completed, on_trace)
         episode: Episode = Episode(
             env=self.config.env_id,
             task=TraceTask(type=type(task).__name__, data=task.data),
         )
+        completed: list[Trace] = []
+        agents = self._episode_agents(ctx, episode.id, gate, completed, on_trace)
         try:
             async with boundary(EnvError, f"{type(self).__name__}.rollout()"):
                 views = await self.rollout(task, agents)

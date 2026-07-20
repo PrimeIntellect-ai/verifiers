@@ -9,7 +9,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Agent
-from verifiers.v1.trace import Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 
 
 def _env_config(**kwargs) -> vf.SingleAgentEnvConfig:
@@ -39,7 +39,12 @@ def _stub_engine(
 
     async def fake_run(self, task, *, runtime=None, shared_tools=None, on_trace=None):
         runs[self._name] += 1
-        trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
+        # Mirrors the real engine: RolloutRun mints the trace with its AgentInfo
+        # already attached, then fires on_trace (where the episode stamps land).
+        trace = Trace(
+            task=TraceTask(type=type(task).__name__, data=task.data),
+            agent=AgentInfo(model=self.ctx.model),
+        )
         if on_trace is not None:
             on_trace(trace)
         error = errs.get(self._name)
@@ -353,7 +358,7 @@ def test_role_pins_fall_back_per_field():
         PinnedConfig(taskset={"id": "echo-v1"}, max_turns=7, max_output_tokens=100)
     )
     ctx = vf.ModelContext(model="run-model", client=object())  # duck client
-    agents = env._episode_agents(ctx, None, [], None)
+    agents = env._episode_agents(ctx, "ep", None, [], None)
     assert agents["a"].ctx.model == "run-model"  # nothing pinned → the run's
     assert agents["a"].ctx.client is ctx.client
     assert agents["a"].limits.max_turns == 7  # the env's caps
