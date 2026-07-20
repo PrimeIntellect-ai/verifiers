@@ -4,7 +4,7 @@ name: Publish verifiers
 # - Every push to `main` publishes a pre-release for the next release: the last
 #   `vX.Y.Z` tag with its final segment bumped, plus `.dev<N>` where N = commits
 #   since that tag (e.g. `v0.1.14` -> `0.1.15.dev<N>`). No per-commit tags created.
-# - Pushing a `vX.Y.Z` tag (or dispatching with one) publishes that exact stable
+# - Dispatching with an existing `vX.Y.Z` tag publishes that exact stable
 #   release to PyPI and creates a GitHub release.
 
 on:
@@ -17,9 +17,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
-      - '!v[0-9]*dev*'  # `.dev` tags are auto-versioning artifacts, not releases
 
 concurrency:
   group: publish-verifiers-${{ github.ref }}
@@ -73,40 +70,27 @@ jobs:
         with:
           skip-existing: true
 
-  # Stable release: a pushed `vX.Y.Z` tag or a manual dispatch with an existing tag.
+  # Stable release: a manual dispatch with an existing tag.
   build-tag:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       tag: ${{ steps.release.outputs.tag }}
     steps:
-      - name: Checkout tagged release (dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Checkout tagged release
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: refs/tags/${{ inputs.tag }}
 
-      - name: Checkout tagged release (push)
-        if: github.event_name != 'workflow_dispatch'
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
       - name: Resolve release tag
         id: release
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSHED_REF: ${{ github.ref_name }}
-          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            TAG="$INPUT_TAG"
-          else
-            TAG="$PUSHED_REF"
-          fi
+          TAG="$INPUT_TAG"
 
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Release tags must look like 'vX.Y.Z' (received '$TAG')" >&2
