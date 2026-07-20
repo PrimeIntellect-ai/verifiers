@@ -14,3 +14,7 @@ class ServeConfig(EnvServerConfig):
     """Log at debug level instead of info."""
     dry_run: bool = False
     """Resolve + validate the config and dump it, then exit."""
+    metrics_address: str = "127.0.0.1"
+    """Address for the optional Prometheus HTTP endpoint."""
+    metrics_port: int | None = Field(None, ge=1, le=65535)
+    """Port for the optional Prometheus HTTP endpoint; unset disables metrics."""

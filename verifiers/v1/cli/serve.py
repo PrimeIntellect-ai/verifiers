@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> None:
         **pool_serve_kwargs(config.pool),
         legacy=config.is_legacy,
         address=config.address,
+        metrics_address=config.metrics_address,
+        metrics_port=config.metrics_port,
         log_setup=partial(setup_logging, level),
         **server_kwargs,
     )

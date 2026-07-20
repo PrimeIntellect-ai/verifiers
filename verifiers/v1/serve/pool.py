@@ -28,6 +28,7 @@ import multiprocessing as mp
 import os
 import signal
 import threading
+import time
 import uuid
 from collections.abc import Callable
 
@@ -37,6 +38,7 @@ import zmq.asyncio
 
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
+from verifiers.v1.serve.metrics import MetricsServer, PoolMetrics
 from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
 
 logger = logging.getLogger(__name__)
@@ -88,6 +90,8 @@ class EnvServerPool:
         log_setup: Callable[[], None] | None = None,
         multiplex: int = 128,
         elastic: bool = True,
+        metrics_address: str = "127.0.0.1",
+        metrics_port: int | None = None,
     ) -> None:
         self.server_kwargs = server_kwargs
         self.max_workers = max_workers
@@ -99,6 +103,10 @@ class EnvServerPool:
         self.workers: list[dict] = []
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
+        self.metrics_address = metrics_address
+        self.metrics_port = metrics_port
+        self.metrics = PoolMetrics(max_workers)
+        self._metrics_server: MetricsServer | None = None
 
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
@@ -173,7 +181,7 @@ class EnvServerPool:
         # (`max_workers` is a concrete count when elastic is off).
         for _ in range(1 if self.elastic else (self.max_workers or 1)):
             self._spawn_worker()
-        # request_id -> {client_id, worker, rollout_slots}
+        # request_id -> {client_id, worker, rollout_slots, dispatched_at}
         pending: dict[bytes, dict] = {}
         logger.info(
             "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
@@ -185,6 +193,17 @@ class EnvServerPool:
         )
         try:
             in_flight = 0
+            self.metrics.workers = self.workers
+            if self.metrics_port is not None:
+                self._metrics_server = MetricsServer(
+                    self.metrics_address, self.metrics_port, self.metrics.render
+                )
+                await self._metrics_server.start()
+                logger.info(
+                    "EnvServerPool metrics: address=%s:%d",
+                    self._metrics_server.address,
+                    self._metrics_server.port,
+                )
             while True:
                 events = dict(await self._poller.poll())
                 if self.frontend in events:
@@ -213,8 +232,13 @@ class EnvServerPool:
                             "client_id": client_id,
                             "worker": worker,
                             "rollout_slots": rollout_slots,
+                            "dispatched_at": time.monotonic(),
                         }
                         in_flight += rollout_slots
+                        self.metrics.request_total += 1
+                        self.metrics.pending_depth = len(pending)
+                        self.metrics.active_rollouts = in_flight
+                        self.metrics.workers = self.workers
                         # forward without client_id — the DEALER identity is the worker's
                         # `client_id`; we hold the real one in `pending`.
                         await worker["dealer"].send_multipart(
@@ -229,8 +253,15 @@ class EnvServerPool:
                         entry = pending.pop(request_id.bytes, None)
                         if entry is None:
                             continue
+                        self.metrics.request_latency_seconds_count += 1
+                        self.metrics.request_latency_seconds_sum += (
+                            time.monotonic() - entry["dispatched_at"]
+                        )
                         entry["worker"]["active"] -= entry["rollout_slots"]
                         in_flight -= entry["rollout_slots"]
+                        self.metrics.pending_depth = len(pending)
+                        self.metrics.active_rollouts = in_flight
+                        self.metrics.workers = self.workers
                         with contextlib.suppress(zmq.ZMQError):
                             await self.frontend.send_multipart(
                                 [entry["client_id"], request_id, data], copy=False
@@ -238,6 +269,9 @@ class EnvServerPool:
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
+            if self._metrics_server is not None:
+                await self._metrics_server.close()
+                self._metrics_server = None
             self._shutdown()
 
     def _shutdown(self) -> None:
@@ -279,6 +313,8 @@ def serve_env(
     log_setup: Callable[[], None] | None = None,
     multiplex: int = 128,
     elastic: bool = True,
+    metrics_address: str = "127.0.0.1",
+    metrics_port: int | None = None,
     **server_kwargs,
 ) -> None:
     """Serve one env over ZMQ: a single in-process `EnvServer` when `max_workers <= 1`,
@@ -324,11 +360,18 @@ def serve_env(
                 log_setup,
                 multiplex,
                 elastic,
+                metrics_address,
+                metrics_port,
             )
             if address_queue is not None:
                 address_queue.put(pool.address)
             asyncio.run(pool.run())
         else:
+            if metrics_port is not None:
+                logger.warning(
+                    "metrics endpoint is only available for EnvServerPool; "
+                    "single-server mode is unchanged"
+                )
             from verifiers.v1.legacy import LegacyEnvServer
 
             if (
