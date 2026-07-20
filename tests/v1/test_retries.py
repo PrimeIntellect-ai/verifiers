@@ -72,3 +72,35 @@ async def test_any_captured_error_counts_for_retry():
     episode = await run_episode_with_retry(masked_then_good, retry)
     assert calls == 2
     assert episode.ok
+
+
+async def test_user_respond_attempt_is_time_bounded(monkeypatch):
+    """A wedged user-server connection (accepted, then silent) fails its attempt at
+    the configured bound instead of sitting in the transport's read timeout, so the
+    retry — on a fresh session — recovers the turn within the harness window."""
+    import asyncio
+    import contextlib
+    import json
+    from types import SimpleNamespace
+
+    from verifiers.v1.mcp import launch
+
+    attempts = 0
+
+    @contextlib.asynccontextmanager
+    async def wedged_then_good(url):
+        nonlocal attempts
+        attempts += 1
+
+        async def call_tool(name, args):
+            if attempts == 1:
+                await asyncio.Event().wait()  # the wedge: connected, never answers
+            payload = json.dumps({"messages": [{"role": "user", "content": "next"}]})
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text=payload)])
+
+        yield SimpleNamespace(call_tool=call_tool)
+
+    monkeypatch.setattr(launch, "user_session", wedged_then_good)
+    messages = await launch.user_respond("http://sim", "hi", 1, timeout=0.05)
+    assert attempts == 2
+    assert [m.content for m in messages] == ["next"]
