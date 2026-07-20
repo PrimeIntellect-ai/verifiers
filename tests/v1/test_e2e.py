@@ -2,6 +2,8 @@
 
 import pytest
 
+import verifiers.v1 as vf
+
 
 @pytest.mark.e2e
 async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
@@ -159,6 +161,83 @@ async def test_tool_response_image(run_v1, tmp_path):
     assert trace.errors == []
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+async def test_textify_prompt_and_user_images(run_v1, tmp_path):
+    """Textify replaces task and user-simulator images before the model sees them."""
+    (trace,) = await run_v1(
+        "textify-v1",
+        harness="null",
+        harness_overrides={"runtime": {"type": "subprocess"}},
+        output_dir=tmp_path,
+        max_turns=4,
+        textify=vf.TextifyConfig(enabled=True, width=8),
+    )
+    assert trace.errors == []
+    assert trace.num_turns == 2
+    assert trace.reward == 1.0
+    for message in trace.branches[-1].messages:
+        if isinstance(message.content, list):
+            assert all(part.type != "image_url" for part in message.content)
+    rendered = [
+        part.text
+        for message in trace.branches[-1].messages
+        if isinstance(message.content, list)
+        for part in message.content
+        if part.type == "text" and part.text.startswith("```image[ascii]")
+    ]
+    assert len(rendered) == 2
+
+
+@pytest.mark.e2e
+async def test_textify_tool_response_image(run_v1, tmp_path):
+    """Textify replaces an MCP image result before the next model turn."""
+    (trace,) = await run_v1(
+        "textify-tool-v1",
+        harness="null",
+        harness_overrides={"runtime": {"type": "subprocess"}},
+        model="openai/gpt-5.6-luna",
+        reasoning_effort="none",
+        output_dir=tmp_path,
+        max_turns=4,
+        textify=vf.TextifyConfig(enabled=True, width=8),
+    )
+    assert trace.errors == []
+    assert trace.num_turns >= 2
+    assert trace.reward == 1.0
+    text = [
+        part.text
+        for message in trace.tool_messages
+        if isinstance(message.content, list)
+        for part in message.content
+        if part.type == "text"
+    ]
+    assert any(value.startswith("```image[ascii]") for value in text)
+    assert all(
+        part.type != "image_url"
+        for message in trace.tool_messages
+        if isinstance(message.content, list)
+        for part in message.content
+    )
+
+
+@pytest.mark.e2e
+async def test_textify_postcommit_error_is_not_resampled(run_v1, tmp_path):
+    """SDK retries replay a user-image Textify error without another model call."""
+    (trace,) = await run_v1(
+        "textify-error-v1",
+        harness="null",
+        harness_overrides={"runtime": {"type": "subprocess"}},
+        output_dir=tmp_path,
+        max_turns=4,
+        textify=vf.TextifyConfig(enabled=True, width=8),
+    )
+    assert trace.error is not None
+    assert trace.error.type == "TaskError"
+    assert "textify failed" in trace.error.message
+    assert trace.num_turns == 1
+    assert len([call for call in trace.calls if call.error is None]) == 1
 
 
 @pytest.mark.e2e

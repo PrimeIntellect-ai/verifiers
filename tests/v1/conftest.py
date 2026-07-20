@@ -34,6 +34,7 @@ import pytest
 
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.env import Environment
+from verifiers.v1.utils.textify import TextifyConfig
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace
 
@@ -175,6 +176,7 @@ def _eval_config(
     pool: dict | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    textify: TextifyConfig | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` / `harness_overrides`
@@ -204,6 +206,7 @@ def _eval_config(
         retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
         rich=False,
         output_dir=output_dir,
+        textify=textify or TextifyConfig(),
         **({"pool": pool} if pool else {}),
         **({"model": model} if model else {}),
     )
