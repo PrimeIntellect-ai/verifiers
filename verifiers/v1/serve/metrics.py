@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 from collections.abc import Callable
 
+_REQUEST_TIMEOUT_SECONDS = 5
+
 
 def _metric_line(
     name: str, value: int | float, labels: dict[str, str] | None = None
@@ -107,7 +109,9 @@ class MetricsServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         try:
-            request_line = await reader.readline()
+            request_line = await asyncio.wait_for(
+                reader.readline(), timeout=_REQUEST_TIMEOUT_SECONDS
+            )
             method, path, *_ = request_line.decode("ascii", "replace").split()
             if method != "GET":
                 status = "405 Method Not Allowed"
@@ -127,6 +131,8 @@ class MetricsServer:
             ).encode()
             writer.write(headers + body)
             await writer.drain()
+        except asyncio.TimeoutError:
+            return
         except (ValueError, UnicodeError):
             writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
             with contextlib.suppress(Exception):
