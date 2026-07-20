@@ -19,16 +19,15 @@ from verifiers.v1.env import (
     AgentConfig,
     ElasticPoolConfig,
     EnvConfig,
-    SingleAgentEnvConfig,
     EnvServerConfig,
     Environment,
-    SingleAgentEnv,
     StaticPoolConfig,
     EnvTimeoutConfig,
     TimeoutConfig,
     default_seat_harness,
     pool_serve_kwargs,
 )
+from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
     EnvError,
     HarnessError,

@@ -17,10 +17,10 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import EvalClientConfig
 from verifiers.v1.env import (
     EnvConfig,
-    SingleAgentEnvConfig,
     _narrowed_env_annotation,
     resolve_env_field,
 )
+from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
 

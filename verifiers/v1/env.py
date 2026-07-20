@@ -289,14 +289,6 @@ class EnvConfig(BaseConfig):
                 )
 
 
-class SingleAgentEnvConfig(EnvConfig):
-    """`SingleAgentEnv`'s config: the one `agent` seat over the seed taskset."""
-
-    agent: AgentConfig = AgentConfig()
-    """The one seat — the policy under evaluation/training; pin
-    `--env.agent.harness.*` to choose its program or runtime."""
-
-
 def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
     """The `AgentConfig` fields declared on an env's config, in declaration order —
     the env's roles, each seat keyed by its field name (the only naming site).
@@ -407,6 +399,14 @@ def _narrowed_env_annotation(cls) -> "type[EnvConfig] | None":
     return None
 
 
+def _single_agent_env_config() -> EnvConfig:
+    """The default `env` block: the single-agent shape. Lazy — the concrete env
+    lives in `envs/`, which imports this module."""
+    from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
+
+    return SingleAgentEnvConfig()
+
+
 class EnvServerConfig(BaseConfig):
     """A run's environment plus how it's *served*: the `env` block and the worker-pool
     sizing. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator, so
@@ -414,7 +414,7 @@ class EnvServerConfig(BaseConfig):
 
     # SerializeAsAny: see EnvConfig.taskset — model_dump() must keep the subclass's
     # role fields and knobs.
-    env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
+    env: SerializeAsAny[EnvConfig] = Field(default_factory=_single_agent_env_config)
     """The environment — the run's `[env]` block: which env, its seed taskset, each
     seat, its knobs, and the run limits. Narrowed to the selected env's config
     class by the env id, else the taskset id."""
@@ -1023,28 +1023,3 @@ class Environment(ABC, Generic[ConfigT]):
             return
         async with serve_shared(servers, harness_is_local=self._runs_local()) as shared:
             yield shared
-
-
-class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
-    """The single-agent case — the env every plain taskset resolves to: one `agent`
-    seat playing the seed taskset (`--env.agent.*`). Its one trace per episode stays
-    unstamped, so the wire is identical to a plain eval's."""
-
-    _stamp_roles = False
-
-    def __init__(self, config: SingleAgentEnvConfig) -> None:
-        super().__init__(config)
-        # The one seat definitionally plays the seed taskset, so an impossible
-        # pairing is knowable from class facts alone — refuse at construction,
-        # before any work (multi-agent envs validate per run instead, on the
-        # task each agent actually receives).
-        harness = self._harnesses["agent"]
-        validate_pairing(
-            harness,
-            self._task_cls,
-            harness.config.runtime,
-            shared_tools=type(self.taskset).tools,
-        )
-
-    async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> None:
-        await agents["agent"].run(task)
