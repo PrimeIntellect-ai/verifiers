@@ -1,7 +1,9 @@
 """Run Claude Code against interception as an Anthropic Messages client."""
 
 import json
+import logging
 import shlex
+import uuid
 
 from pydantic import Field
 
@@ -9,10 +11,11 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.aio import run_shielded
 
+logger = logging.getLogger(__name__)
 CLAUDE_HOME = "/tmp/vf-claude-code-{version}"
 CLAUDE_BIN = f"{CLAUDE_HOME}/.local/bin/claude"
-CLAUDE_CONFIG_DIR = ".vf-claude"
 INSTALL = """
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -60,12 +63,13 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         if ctx.client.base_url == "https://api.pinference.ai/api/v1":
             # remove the /v1 from pinference
             ctx.client.base_url = ctx.client.base_url.removesuffix("/v1")
+        config_dir = f"/tmp/vf-claude-config-{uuid.uuid4().hex}"
         env = {
             **self.config.resolved_env,
             # Claude appends /v1/messages; give it the interception root, not the model endpoint.
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
-            "CLAUDE_CONFIG_DIR": CLAUDE_CONFIG_DIR,
+            "CLAUDE_CONFIG_DIR": config_dir,
             "DISABLE_AUTOUPDATER": "1",
             "IS_SANDBOX": "1",
         }
@@ -90,13 +94,19 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
                 name: {"type": "http", "url": url} for name, url in mcp_urls.items()
             }
         }
-        mcp_path = f"{CLAUDE_CONFIG_DIR}/mcp.json"
-        await runtime.write(mcp_path, json.dumps(mcp).encode())
-        argv += [
-            "--mcp-config",
-            mcp_path,
-            "--strict-mcp-config",
-            "--",
-            instruction or "",
-        ]
-        return await runtime.run_program(argv, env)
+        mcp_path = f"{config_dir}/mcp.json"
+        try:
+            await runtime.write(mcp_path, json.dumps(mcp).encode())
+            argv += [
+                "--mcp-config",
+                mcp_path,
+                "--strict-mcp-config",
+                "--",
+                instruction or "",
+            ]
+            return await runtime.run_program(argv, env)
+        finally:
+            try:
+                await run_shielded(runtime.run(["rm", "-rf", config_dir], {}))
+            except Exception:
+                logger.warning("failed to clean Claude config directory", exc_info=True)

@@ -3,17 +3,17 @@
 import json
 import logging
 import shlex
+import uuid
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
 BINARY = "/tmp/vf-kimi-code/bin/kimi"
-KIMI_HOME = ".vf-kimi-code"
-
 INSTALL = r"""
 set -e
 bin="/tmp/vf-kimi-code/bin/kimi"
@@ -65,9 +65,10 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         _, prompt = self.resolve_prompt(trace.task.data)
+        kimi_home = f"/tmp/vf-kimi-home-{uuid.uuid4().hex}"
         env = {
             **self.config.resolved_env,
-            "KIMI_CODE_HOME": KIMI_HOME,
+            "KIMI_CODE_HOME": kimi_home,
             "KIMI_MODEL_NAME": ctx.model,
             "KIMI_MODEL_API_KEY": secret,
             "KIMI_MODEL_PROVIDER_TYPE": "openai",
@@ -92,8 +93,16 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             )
             for tool in self.config.disabled_tools or []
         )
-        if permission_rules:
-            await runtime.write(f"{KIMI_HOME}/config.toml", permission_rules.encode())
-        await runtime.write(f"{KIMI_HOME}/mcp.json", json.dumps(mcp).encode())
-        # `--prompt` is Kimi Code's non-interactive print mode.
-        return await runtime.run_program([BINARY, "--prompt", prompt], env)
+        try:
+            if permission_rules:
+                await runtime.write(
+                    f"{kimi_home}/config.toml", permission_rules.encode()
+                )
+            await runtime.write(f"{kimi_home}/mcp.json", json.dumps(mcp).encode())
+            # `--prompt` is Kimi Code's non-interactive print mode.
+            return await runtime.run_program([BINARY, "--prompt", prompt], env)
+        finally:
+            try:
+                await run_shielded(runtime.run(["rm", "-rf", kimi_home], {}))
+            except Exception:
+                logger.warning("failed to clean Kimi config directory", exc_info=True)
