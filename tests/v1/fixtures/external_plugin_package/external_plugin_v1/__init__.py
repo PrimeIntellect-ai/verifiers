@@ -1,4 +1,4 @@
-"""Installed external taskset and harness fixture for loader regression tests."""
+"""Installed external taskset, harness, and judge fixture for loader regression tests."""
 
 import verifiers.v1 as vf
 
@@ -30,4 +30,13 @@ class ExternalHarness(vf.Harness[ExternalHarnessConfig]):
         return vf.ProgramResult(exit_code=0, stdout="", stderr="")
 
 
-__all__ = ["ExternalHarness", "ExternalTaskset"]
+class ExternalJudgeConfig(vf.JudgeConfig):
+    custom_judge_flag: bool = False
+
+
+class ExternalJudge(vf.Judge[float, ExternalJudgeConfig]):
+    async def score(self, task, trace):
+        return float(self.config.custom_judge_flag)
+
+
+__all__ = ["ExternalHarness", "ExternalJudge", "ExternalTaskset"]

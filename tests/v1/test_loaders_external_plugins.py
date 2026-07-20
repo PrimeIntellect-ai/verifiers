@@ -38,7 +38,18 @@ from verifiers.v1.env import Environment
 
 config = EvalConfig.model_validate(
     {
-        "taskset": {"id": "external-plugin-v1", "custom_taskset_flag": True},
+        "taskset": {
+            "id": "external-plugin-v1",
+            "custom_taskset_flag": True,
+            "task": {
+                "judges": [
+                    {
+                        "id": "external-plugin-v1",
+                        "custom_judge_flag": True,
+                    }
+                ]
+            },
+        },
         "harness": {"id": "external-plugin-v1", "custom_harness_flag": True},
     }
 )
@@ -46,12 +57,19 @@ assert type(config.taskset).__name__ == "ExternalTasksetConfig"
 assert config.taskset.custom_taskset_flag is True
 assert type(config.harness).__name__ == "ExternalHarnessConfig"
 assert config.harness.custom_harness_flag is True
+assert type(config.taskset.task.judges[0]).__name__ == "ExternalJudgeConfig"
+assert config.taskset.task.judges[0].custom_judge_flag is True
 
 environment = Environment(config)
 assert type(environment.taskset).__name__ == "ExternalTaskset"
 assert type(environment.harness).__name__ == "ExternalHarness"
 assert environment.harness.config is config.harness
-assert len(environment.taskset.select()) == 1
+tasks = environment.taskset.select()
+assert len(tasks) == 1
+judges = tasks[0].plugged_judges()
+assert len(judges) == 1
+assert type(judges[0]).__name__ == "ExternalJudge"
+assert judges[0].config is config.taskset.task.judges[0]
 """
     construct = subprocess.run(
         [sys.executable, "-I", "-c", script, str(site_packages)],

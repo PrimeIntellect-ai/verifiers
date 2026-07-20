@@ -69,6 +69,7 @@ class ModalRuntime(Runtime):
         self.config = config
         self.info = ModalRuntimeInfo(**config.model_dump())
         self._sandbox = None
+        self._confirmed_stop_id: str | None = None
 
     @property
     def published_port(self) -> int | None:
@@ -106,6 +107,7 @@ class ModalRuntime(Runtime):
                     timeout=int(self.config.timeout),
                     encrypted_ports=[SERVICE_PORT],
                 )
+            self._confirmed_stop_id = None
             self.info.id = self._sandbox.object_id
             logger.info(
                 "modal: sandbox %s up (image=%s)", self.info.id, self.config.image
@@ -187,18 +189,22 @@ class ModalRuntime(Runtime):
 
     async def stop_confirmed(self) -> None:
         """Terminate the Modal sandbox or preserve cleanup state and raise."""
+        runtime_id = self.info.id
+        if runtime_id is not None and runtime_id == self._confirmed_stop_id:
+            return
         sandbox = self._sandbox
         if sandbox is None:
-            if self.info.id is None:
+            if runtime_id is None:
                 return
             raise RuntimeError(
                 "modal sandbox termination cannot be confirmed without its live handle"
             )
-        if self.info.id is None:
+        if runtime_id is None:
             raise RuntimeError(
                 "modal sandbox termination cannot be confirmed without a provider ID"
             )
         await sandbox.terminate.aio()
+        self._confirmed_stop_id = runtime_id
         self._sandbox = None
 
     def cleanup(self) -> None:

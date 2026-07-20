@@ -44,11 +44,17 @@ def test_prime_stop_confirmed_preserves_cleanup_state_on_failure(fails):
         with pytest.raises(RuntimeError, match="delete failed"):
             asyncio.run(runtime.stop_confirmed())
         assert runtime._client is client
-    else:
-        asyncio.run(runtime.stop_confirmed())
-        assert runtime._client is None
-        assert client.closed is True
-    assert client.deleted == ["prime-runtime-id"]
+        client.error = None
+
+    asyncio.run(runtime.stop_confirmed())
+    assert runtime._client is None
+    assert client.closed is True
+    assert runtime.info.id == "prime-runtime-id"
+    expected_calls = 2 if fails else 1
+    assert client.deleted == ["prime-runtime-id"] * expected_calls
+
+    asyncio.run(runtime.stop_confirmed())
+    assert client.deleted == ["prime-runtime-id"] * expected_calls
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -62,10 +68,16 @@ def test_modal_stop_confirmed_preserves_cleanup_state_on_failure(fails):
         with pytest.raises(RuntimeError, match="terminate failed"):
             asyncio.run(runtime.stop_confirmed())
         assert runtime._sandbox is sandbox
-    else:
-        asyncio.run(runtime.stop_confirmed())
-        assert runtime._sandbox is None
-    assert terminate.calls == 1
+        terminate.error = None
+
+    asyncio.run(runtime.stop_confirmed())
+    assert runtime._sandbox is None
+    assert runtime.info.id == "modal-runtime-id"
+    expected_calls = 2 if fails else 1
+    assert terminate.calls == expected_calls
+
+    asyncio.run(runtime.stop_confirmed())
+    assert terminate.calls == expected_calls
 
 
 def test_confirmed_stop_fails_when_remote_handle_was_consumed_without_confirmation():
@@ -136,8 +148,10 @@ def test_prime_start_forwards_egress_idle_timeout_and_hard_lifetime(monkeypatch)
             labels=["generic-runtime-test"],
         )
     )
+    runtime._confirmed_stop_id = "prior-runtime-id"
     asyncio.run(runtime.start())
     assert runtime.info.id == "prime-provider-id"
+    assert runtime._confirmed_stop_id is None
     assert len(requests) == 1
     request = requests[0]
     assert request["network_access"] is False
@@ -185,8 +199,10 @@ def test_modal_start_forwards_egress_block_and_hard_lifetime(monkeypatch):
             creates_per_sec=None,
         )
     )
+    runtime._confirmed_stop_id = "prior-runtime-id"
     asyncio.run(runtime.start())
     assert runtime.info.id == "modal-provider-id"
+    assert runtime._confirmed_stop_id is None
     create = next(row for row in calls if row[0] == "create")
     kwargs = create[2]
     assert kwargs["block_network"] is True

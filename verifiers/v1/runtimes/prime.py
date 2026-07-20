@@ -98,6 +98,7 @@ class PrimeRuntime(Runtime):
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
+        self._confirmed_stop_id: str | None = None
 
     @property
     def published_port(self) -> int | None:
@@ -146,6 +147,7 @@ class PrimeRuntime(Runtime):
                         **{k: v for k, v in options.items() if v is not None},
                     )
                 )
+            self._confirmed_stop_id = None
             self.info.id = sandbox.id
             # The create response says whether the platform already has the image:
             # `pending_image_build_id` set means a first-use auto-build is running and the
@@ -268,18 +270,22 @@ class PrimeRuntime(Runtime):
 
     async def stop_confirmed(self) -> None:
         """Delete the Prime sandbox or preserve cleanup state and raise."""
+        runtime_id = self.info.id
+        if runtime_id is not None and runtime_id == self._confirmed_stop_id:
+            return
         client = self._client
         if client is None:
-            if self.info.id is None:
+            if runtime_id is None:
                 return
             raise RuntimeError(
                 "prime sandbox deletion cannot be confirmed without its live client"
             )
-        if self.info.id is None:
+        if runtime_id is None:
             raise RuntimeError(
                 "prime sandbox deletion cannot be confirmed without a provider ID"
             )
-        await client.delete(self.info.id)
+        await client.delete(runtime_id)
+        self._confirmed_stop_id = runtime_id
         self._client = None
         with contextlib.suppress(Exception):
             await client.aclose()
