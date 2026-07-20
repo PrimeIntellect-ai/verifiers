@@ -190,7 +190,9 @@ def test_reward_name_fallback():
 
 
 async def test_base_judge_score_raises():
-    with pytest.raises(NotImplementedError, match="implements no `score`"):
+    """`score` is `verdict(complete(render(...)))` — a judge without `render` has
+    no plugged tier and says so, pointing at the one contract."""
+    with pytest.raises(NotImplementedError, match="implements no `render`"):
         await vf.Judge().score(task=QAData(idx=0, prompt="q"), trace=make_trace())
 
 

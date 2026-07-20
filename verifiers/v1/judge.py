@@ -187,11 +187,17 @@ class Judge(Generic[ParsedT, ConfigT]):
     async def score(
         self, task: "TaskData", trace: "Trace"
     ) -> float | Mapping[str, float]:
-        raise NotImplementedError(
-            f"{type(self).__name__} implements no `score`, so it can't be plugged via "
-            "`taskset.task.judges`; implement `score` (see verifiers.v1.judges for examples) or "
-            "call it from a task `@reward` instead."
-        )
+        """The plugged tier of the spec: one bare call, `verdict(complete(render(...)))`.
+        Implement `render` + `verdict` and both tiers work; override `score` only
+        when one call isn't the right shape (batching, a schema'd parse)."""
+        if type(self).render is Judge.render:
+            raise NotImplementedError(
+                f"{type(self).__name__} implements no `render`, so it can't be "
+                "plugged via `taskset.task.judges`; implement `render` + `verdict` "
+                "(one spec — plugged and agent-executable), or override `score`."
+            )
+        response = await self.complete(self.render(task, trace), trace=trace)
+        return self.verdict(task, trace, response.text)
 
     def render(self, task: "TaskData", trace: "Trace") -> str | Messages:
         """The complete judging prompt for one finished trace. `score` is

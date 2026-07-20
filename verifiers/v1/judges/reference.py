@@ -90,11 +90,9 @@ class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
         )
 
     async def score(self, task: TaskData, trace: Trace) -> float:
-        fields = self._fields(task, trace)
-        if not fields["response"].strip():
+        if not self._fields(task, trace)["response"].strip():
             return 0.0  # nothing to grade — skip the (foregone) judge call
-        result = await self.evaluate(trace=trace, **fields)
-        return cast(float, result.parsed)
+        return cast(float, await super().score(task, trace))
 
 
 __all__ = ["ReferenceJudge", "ReferenceJudgeConfig"]

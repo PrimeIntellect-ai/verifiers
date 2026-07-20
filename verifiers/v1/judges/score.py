@@ -62,9 +62,5 @@ class ScoreJudge(Judge[float, ScoreJudgeConfig]):
             raise ValueError(f"judge scored off the 0-10 scale: {matches[-1]!r}")
         return value / 10
 
-    async def score(self, task: TaskData, trace: Trace) -> float:
-        response = await self.complete(self.render(task, trace), trace=trace)
-        return self.verdict(task, trace, response.text)
-
 
 __all__ = ["ScoreJudge", "ScoreJudgeConfig"]
