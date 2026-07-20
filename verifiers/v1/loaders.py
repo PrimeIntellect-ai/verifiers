@@ -1,5 +1,6 @@
 """Resolve taskset, harness, judge, and environment plugins."""
 
+import contextvars
 import importlib
 import importlib.util
 import pkgutil
@@ -31,6 +32,12 @@ def builtin_harness_ids() -> list[str]:
     return sorted(m.name for m in pkgutil.iter_modules(harnesses.__path__))
 
 
+skip_plugin_install: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "skip_plugin_install", default=False
+)
+"""Skip installing envs from the Hub during config parse (for callers that read the config but never run the env)."""
+
+
 def narrow_plugin_field(
     data: dict,
     field: str,
@@ -55,6 +62,10 @@ def narrow_plugin_field(
             f"{field}.id needs an id, and none was given (got {ident!r}); "
             f"pass the id right after the flag{hint}"
         )
+    if skip_plugin_install.get():
+        # keep the plugin id-only; don't import/install from the Hub
+        data[field] = {"id": ident}
+        return
     try:
         data[field] = resolve(ident).model_validate({**raw, "id": ident})
     except ValidationError as e:
@@ -145,7 +156,8 @@ def judge_class(judge_id: str) -> type[Judge]:
 
 
 def default_harness_id(taskset_id: str) -> str:
-    if not taskset_id:
+    # In skip mode, don't import the taskset to probe for a bundled harness.
+    if not taskset_id or skip_plugin_install.get():
         return "bash"
     try:
         module = import_taskset(taskset_id)
