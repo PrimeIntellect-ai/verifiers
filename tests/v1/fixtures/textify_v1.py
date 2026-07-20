@@ -51,9 +51,12 @@ class TextifyTask(vf.Task[TextifyData, TextifyState, TextifyTaskConfig]):
     async def images_rendered(
         self, trace: vf.Trace[TextifyData, TextifyState]
     ) -> float:
+        branches = trace.branches
+        if not branches:
+            return 0.0
         parts = [
             part
-            for message in trace.branches[-1].messages
+            for message in branches[-1].messages
             if isinstance(message.content, list)
             for part in message.content
         ]
