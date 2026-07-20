@@ -252,10 +252,9 @@ class Branch(StrictBaseModel):
 
     @property
     def num_input_tokens(self) -> int:
-        """Tokens fed to the model, counted once: the final sequence minus everything the model
-        generated (i.e. system + user + tool inputs). Not the last prompt — re-sent context is
-        not double-counted."""
-        return self.num_total_tokens - self.num_output_tokens
+        """Tokens fed in the final model call, including its full re-sent context."""
+        last = self.last_usage
+        return last.input_tokens if last is not None else 0
 
 
 _NODE_DUMP_EXCLUDE: dict = {
