@@ -74,9 +74,3 @@ Or on the CLI: `--textify.enabled true --textify.width 160`. Set
 global Otsu binarization in either ASCII or braille mode. `invert` defaults to auto, which maps the white
 backgrounds common in diagrams and documents to spaces. Each image is limited to 40,000 output
 characters by default (25 megapixels decoded), so extreme aspect ratios cannot explode a prompt.
-
-Textification is lossy — it is not equivalent to vision. It works best for large shapes and
-high-contrast diagrams; small text, labels, equations, and color are often lost. Plain HTTP
-image URLs pass through unchanged (the interception hot path does not fetch network content),
-while malformed image data URLs fail the rollout visibly. The trace records the text the model
-actually saw; the original image remains available on task data for scoring.

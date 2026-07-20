@@ -69,39 +69,15 @@ The names of these tools are set by the respective harness. Research the relevan
 
 ## Rendering images as text
 
-For a native v1 vision taskset evaluated with a text-only model, Textify can replace base64
-images at the interception server with deterministic ASCII or braille. It is disabled by
-default; ASCII is the default mode when enabled:
+For native v1 vision tasks, Textify renders base64 images as ASCII (default) or braille:
 
 ```bash
-prime eval run my-vision-v1 \
-  -m deepseek/deepseek-v4-flash \
-  --textify.enabled true \
-  --textify.width 160
+prime eval run my-vision-v1 -m my-text-model \
+  --textify.enabled true --textify.width 160
 ```
 
-Equivalent TOML:
-
-```toml
-[textify]
-enabled = true
-width = 160
-```
-
-Use `--textify.mode braille` for braille and `--textify.threshold otsu` for deterministic
-global Otsu binarization. Keep Textify disabled for vision-capable baselines, and compare
-against the same selected tasks/sampling: conversion is lossy, so a textified run is a
-different input representation rather than a drop-in vision-equivalent result.
-
-Textify works best for coarse shapes and high-contrast diagrams. Small text, labels,
-equations, color, and exact semantic identity are often lost; braille is substantially more
-token-expensive than ASCII. Plain HTTP(S) and provider file-ID images pass through unchanged
-(the interception hot path does not fetch them). The trace records the rendered text the model
-saw, while original task image data remains available for scoring. Textify is native-v1 only;
-enabling it for a legacy v0 `--id` config is rejected.
-
-See the complete [`TextifyConfig`](references/REFERENCE.md#textify-config) field table before
-tuning resolution, inversion, ramp, threshold, or output budgets.
+Use `--textify.mode braille` to change modes. Keep it disabled for vision baselines; see
+[`TextifyConfig`](references/REFERENCE.md#textify-config) for other options.
 
 ## Typed taskset overrides
 
