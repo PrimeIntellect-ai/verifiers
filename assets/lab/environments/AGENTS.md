@@ -308,7 +308,7 @@ class DebateEnv(vf.Environment[DebateConfig]):
   the framework narrows the run's `env` field to the selected env's config class by
   the env id (else the taskset id), and a partial override deep-merges with the
   declared role default (`--env.judge.sampling.temperature 0` doesn't reset the
-  judge's pinned model). An `AgentConfig`'s **model leg** defaults to the run's own —
+  judge's pinned model). An `AgentConfig`'s **model context** defaults to the run's own —
   `AgentConfig()` is "the policy under evaluation/training" (the serve protocol
   carries model/client/sampling per rollout request, which is what makes self-play
   trainable). Its **harness** does not: an unpinned role runs the taskset's default

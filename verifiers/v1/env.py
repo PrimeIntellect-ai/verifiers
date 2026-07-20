@@ -69,7 +69,7 @@ class TimeoutConfig(BaseConfig):
 
 class AgentConfig(BaseConfig):
     """One env role: who plays it. A role pins only what makes it a different actor;
-    everything unpinned falls back — the model leg to the run's own, the harness to
+    everything unpinned falls back — the model context to the run's own, the harness to
     the taskset's default."""
 
     harness: SerializeAsAny[HarnessConfig] | None = None
@@ -876,7 +876,7 @@ class Environment(ABC, Generic[ConfigT]):
         return agents
 
     def _role_ctx(self, spec: AgentConfig, ctx: ModelContext) -> ModelContext:
-        """The role's model leg: the run's `ctx` unless the role pins its own model,
+        """The role's model context: the run's `ctx` unless the role pins its own model,
         endpoint, or sampling (each falls back to the run's independently)."""
         if spec.model is None and spec.client is None and spec.sampling is None:
             return ctx

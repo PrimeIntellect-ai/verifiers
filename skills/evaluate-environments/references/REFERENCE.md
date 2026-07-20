@@ -129,7 +129,7 @@ The four `max_*` limits map onto [`RolloutLimits`](#rollout-limits) (interceptio
 ### Agent config — the seats
 
 `verifiers/v1/env.py` — `AgentConfig(BaseConfig)`. One per declared role, addressed
-`--env.<role>.*`. The **model leg** defaults to the run's own (the serve protocol carries
+`--env.<role>.*`. The **model context** defaults to the run's own (the serve protocol carries
 model/client/sampling per rollout request — what makes self-play trainable). The **harness**
 does not: an unpinned seat runs the taskset's default harness; a declared pin is the env
 author's per-seat default; partial overrides deep-merge onto it (an `id` switch replaces it).

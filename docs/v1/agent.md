@@ -1,12 +1,7 @@
----
-title: "Agent"
-description: "The reusable harness x model x runtime value: one executable arrow, placement as a parameter, chaining as plain functions"
----
-
-## The Agent
+# The Agent
 
 An `Agent` is a reusable value: a **harness** (a concrete `Harness` object — the program
-that drives the model), a **model leg** (model + client + optional sampling), and a
+that drives the model), a **model context** (model + client + optional sampling), and a
 **runtime policy** (where a run's box comes from by default). It has one executable arrow:
 
 ```python
@@ -24,7 +19,7 @@ trace = await solver.run(vf.Task(vf.TaskData(idx=0, prompt="What is 2+2?")))
 Construction is fully explicit — the harness is an object you build, and the client is
 yours to build and **share**: agents on the same endpoint should share one `Client` (one
 connection pool). prime-rl hands agents its renderer client the same way. (Internally
-the model leg groups into the `ModelContext` every rollout consumes, on `agent.ctx`.)
+these group into the `ModelContext` every rollout consumes, on `agent.ctx`.)
 
 Every run is a standard rollout — staged lifecycle, typed error attribution,
 token-true trace capture — so anything a program produces is evaluable and trainable.

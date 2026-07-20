@@ -1,6 +1,6 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable arrow.
 
-An `Agent` bundles the harness (the program), the model leg (`agent.ctx`), and a
+An `Agent` bundles the harness (the program), the model context (`agent.ctx`), and a
 runtime policy (where a run's box comes from). `agent.run(task)` executes one
 rollout and returns its `Trace`; `runtime=` borrows a live box, `provision(task)`
 hands you one.
@@ -74,7 +74,7 @@ class Agent:
     """A harness + model + runtime policy, runnable on any task.
 
     Harnesses are stateless, so one instance can back any number of agents.
-    `model`/`client`/`sampling` are the model leg, bound at construction; agents on
+    `model`/`client`/`sampling` are the model context, bound at construction; agents on
     the same endpoint should share one `Client` (one connection pool).
 
     `runtime` is a *policy* (a `RuntimeConfig`, default the harness config's own):
