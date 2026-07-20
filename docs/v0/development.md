@@ -240,7 +240,6 @@ uv sync --extra ta   # for TextArenaEnv
 uv sync --extra rg   # for ReasoningGymEnv
 uv sync --extra modal     # for the v1 Modal runtime
 uv sync --extra notebook  # for generate_sync() in Jupyter
-uv sync --extra quest     # for QUEST PDF evaluation
 uv sync --python 3.12 --extra harbor  # for the Harbor Python package and CLI
 ```
 
