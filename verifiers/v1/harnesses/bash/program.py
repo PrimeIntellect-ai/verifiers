@@ -301,6 +301,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
+    parser.add_argument("--prompt-file", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--edit", action="store_true")
@@ -312,6 +313,11 @@ def parse_args() -> argparse.Namespace:
 async def main() -> None:
     args = parse_args()
     initial = []
+    prompt = args.prompt
+    if args.prompt_file:
+        path = Path(args.prompt_file)
+        prompt = path.read_text(encoding="utf-8")
+        path.unlink()
     if args.initial_messages_file:
         path = Path(args.initial_messages_file)
         payload = path.read_bytes()
@@ -340,8 +346,8 @@ async def main() -> None:
     )
     if initial:
         messages.extend(initial)
-    elif args.prompt:
-        messages.append({"role": "user", "content": args.prompt})
+    elif prompt:
+        messages.append({"role": "user", "content": prompt})
     while True:
         message = await chat(client, args.model, messages, tools)
         messages.append(message.model_dump(exclude_none=True))

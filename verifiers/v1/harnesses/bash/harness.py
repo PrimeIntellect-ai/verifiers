@@ -104,7 +104,11 @@ class BashHarness(Harness[BashHarnessConfig]):
                 )
             )
         if isinstance(prompt, str):
-            args.append(f"--prompt={prompt}")
+            # Prompts can exceed the OS per-argument limit (typically 128 KiB on Linux),
+            # so pass them through the runtime filesystem instead of argv.
+            path = f".vf-prompt-{trace.id}.txt"
+            await runtime.write(path, prompt.encode("utf-8"))
+            args.append(f"--prompt-file={path}")
         elif prompt is not None:
             # Base64 images can exceed exec limits, so hand Messages off through a file.
             path = f".vf-initial-messages-{trace.id}.json"
