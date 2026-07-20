@@ -16,14 +16,14 @@ The top-level module must use `__all__` to export exactly one `Harness` subclass
 
 ```python
 # external_harness_v1/__init__.py
-from external_harness_v1.harness import ExternalHarness
+from external_harness_v1.harness import SuperSecretHarness
 
-__all__ = ["ExternalHarness"]
+__all__ = ["SuperSecretHarness"]
 ```
 
 `__all__` may contain config classes or other public objects, but only one exported class
 may inherit from `Harness`. Declare the config specialization on the harness, for example
-`class ExternalHarness(Harness[ExternalHarnessConfig])`. This lets the eval config loader
+`class SuperSecretHarness(Harness[SuperSecretHarnessConfig])`. This lets the eval config loader
 validate plugin-specific fields from TOML or CLI arguments before constructing the harness.
 Missing imports inside an installed plugin are reported directly rather than being treated
 as a missing plugin.

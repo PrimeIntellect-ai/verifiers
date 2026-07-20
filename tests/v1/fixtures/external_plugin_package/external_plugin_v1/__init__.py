@@ -21,11 +21,11 @@ class ExternalTaskset(vf.Taskset[ExternalTask, ExternalTasksetConfig]):
         return [ExternalTask(data, self.config.task)]
 
 
-class ExternalHarnessConfig(vf.HarnessConfig):
+class SuperSecretHarnessConfig(vf.HarnessConfig):
     custom_harness_flag: bool = False
 
 
-class ExternalHarness(vf.Harness[ExternalHarnessConfig]):
+class SuperSecretHarness(vf.Harness[SuperSecretHarnessConfig]):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls):
         return vf.ProgramResult(exit_code=0, stdout="", stderr="")
 
@@ -39,4 +39,4 @@ class ExternalJudge(vf.Judge[float, ExternalJudgeConfig]):
         return float(self.config.custom_judge_flag)
 
 
-__all__ = ["ExternalHarness", "ExternalJudge", "ExternalTaskset"]
+__all__ = ["SuperSecretHarness", "ExternalJudge", "ExternalTaskset"]

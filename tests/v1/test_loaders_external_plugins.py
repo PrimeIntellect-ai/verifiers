@@ -55,14 +55,14 @@ config = EvalConfig.model_validate(
 )
 assert type(config.taskset).__name__ == "ExternalTasksetConfig"
 assert config.taskset.custom_taskset_flag is True
-assert type(config.harness).__name__ == "ExternalHarnessConfig"
+assert type(config.harness).__name__ == "SuperSecretHarnessConfig"
 assert config.harness.custom_harness_flag is True
 assert type(config.taskset.task.judges[0]).__name__ == "ExternalJudgeConfig"
 assert config.taskset.task.judges[0].custom_judge_flag is True
 
 environment = Environment(config)
 assert type(environment.taskset).__name__ == "ExternalTaskset"
-assert type(environment.harness).__name__ == "ExternalHarness"
+assert type(environment.harness).__name__ == "SuperSecretHarness"
 assert environment.harness.config is config.harness
 tasks = environment.taskset.select()
 assert len(tasks) == 1
