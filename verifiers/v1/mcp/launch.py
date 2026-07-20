@@ -199,7 +199,13 @@ async def serve_in_runtime(
     if runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
-    root = f"/tmp/vf-mcp-{uuid.uuid4().hex}"
+    # Subprocess runtimes resolve relative paths under their cleaned workdir; sandbox runtimes
+    # tear down the whole sandbox, so an absolute temporary root is sufficient there.
+    root = (
+        f"vf-mcp-{uuid.uuid4().hex}"
+        if runtime.type == "subprocess"
+        else f"/tmp/vf-mcp-{uuid.uuid4().hex}"
+    )
     port_file = f"{root}/port"
     await runtime.run(["mkdir", "-p", root], {})
     if fixed is not None:
