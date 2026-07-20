@@ -58,9 +58,19 @@ def answer_region(text: str) -> str:
     escaped = False
     index = 0
     while index < len(text):
+        if depth > 0:
+            if text.startswith("<think>", index):
+                depth += 1
+                index += len("<think>")
+            elif text.startswith("</think>", index):
+                depth -= 1
+                index += len("</think>")
+            else:
+                index += 1
+            continue
         char = text[index]
         if string:
-            answer.append(char) if depth == 0 else None
+            answer.append(char)
             if escaped:
                 escaped = False
             elif char == "\\":
@@ -71,8 +81,7 @@ def answer_region(text: str) -> str:
             continue
         if char == '"':
             string = True
-            if depth == 0:
-                answer.append(char)
+            answer.append(char)
             index += 1
             continue
         if text.startswith("<think>", index):
@@ -80,11 +89,10 @@ def answer_region(text: str) -> str:
             index += len("<think>")
             continue
         if text.startswith("</think>", index):
-            depth = max(0, depth - 1)
+            depth = 0
             index += len("</think>")
             continue
-        if depth == 0:
-            answer.append(char)
+        answer.append(char)
         index += 1
     return "".join(answer)
 
