@@ -143,10 +143,9 @@ class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
     async def rollout(self, task, agents):
         proposed = await agents["proposer"].run(task)
         solve_task = SolveTask.from_trace(proposed)
-        solves = await asyncio.gather(
+        await asyncio.gather(
             *(agents["solver"].run(solve_task) for _ in range(self.config.n))
         )
-        return {"proposer": proposed, "solver": list(solves)}
 
     @staticmethod
     def _solve_rate(traces: list[vf.Trace]) -> float:

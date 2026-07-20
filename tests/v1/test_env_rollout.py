@@ -71,12 +71,11 @@ class DuetEnv(vf.Environment[DuetConfig]):
         agents["b"].trainable = False
 
     async def rollout(self, task, agents):
-        a, b = await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
-        return {"a": a, "b": b}
+        await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
 
-    async def score(self, task, views):
-        for trace in views.values():
-            trace.record_metric("siblings", float(len(views)))
+    async def score(self, task, traces):
+        for trace in traces:
+            trace.record_metric("siblings", float(len(traces)))
 
 
 async def test_single_agent_env_mints_single_agent_records(monkeypatch):
@@ -150,73 +149,48 @@ async def test_score_deadline_is_a_record_error(monkeypatch):
     assert len(episode.traces) == 1  # the finished traces survive the score failure
 
 
-async def test_score_failure_keeps_the_views(monkeypatch):
-    """Once rollout() returns its views, they decide episode membership — a score()
-    failure must not demote the episode to the completed buffer. The record
-    flattens in mapping order (physical, not semantic)."""
+async def test_score_failure_keeps_the_traces(monkeypatch):
+    """Every completed run is the episode's data (completion order) — a score()
+    failure lands on the episode's errors without demoting its traces."""
 
-    class Reordered(DuetEnv):
-        async def rollout(self, task, agents):
-            a = await agents["a"].run(task)
-            b = await agents["b"].run(task)
-            return {"b": b, "a": a}
-
-        async def score(self, task, views):
+    class Judged(DuetEnv):
+        async def score(self, task, traces):
             raise RuntimeError("judge crashed")
 
-    env = Reordered(_duet_config())
+    env = Judged(_duet_config())
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
     assert episode.error is not None and episode.error.type == "EnvError"
-    assert [t.role for t in episode.traces] == ["b", "a"]
+    assert [t.role for t in episode.traces] == ["a", "b"]
 
 
-async def test_score_failure_keeps_rollout_membership(monkeypatch):
-    """rollout() may deliberately return a subset (a dropped warm-up, a forfeited
-    seat); a score() failure keeps that membership, not the completed buffer."""
+async def test_empty_rollout_is_the_env_failing(monkeypatch):
+    """A rollout() that runs no agent yields no episode data — refused as the
+    env-rollout failing, on the episode's errors."""
 
-    class Subset(DuetEnv):
+    class Lazy(DuetEnv):
         async def rollout(self, task, agents):
-            await agents["a"].run(task)  # ran, but the hook drops it
-            return {"b": await agents["b"].run(task)}
+            pass
 
-        async def score(self, task, views):
-            raise RuntimeError("judge crashed")
-
-    env = Subset(_duet_config())
-    _stub_engine(env, monkeypatch)
-    episode = await env.run_episode(_task(env), _ctx())
-    assert not episode.ok
-    assert [t.role for t in episode.traces] == ["b"]
-
-
-async def test_views_must_be_a_named_bag(monkeypatch):
-    """rollout() returns a mapping of named views; any other shape is the
-    env-rollout failing, recorded on the episode."""
-
-    class Listy(vf.SingleAgentEnv):
-        async def rollout(self, task, agents):
-            return [await agents["agent"].run(task)]  # the retired list shape
-
-    env = Listy(_env_config())
+    env = Lazy(_duet_config())
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok and episode.error is not None
-    assert "local views as a mapping" in episode.error.message
+    assert "ran no agent" in episode.error.message and episode.traces == []
 
 
-async def test_a_view_may_fan_out(monkeypatch):
-    """A list-valued view is a fanned-out seat: all its traces land on the episode."""
+async def test_a_seat_may_fan_out(monkeypatch):
+    """Running a seat n times is a fanned-out seat: every completed run lands on
+    the episode, all stamped with the same role."""
 
     class Fan(DuetEnv):
         async def rollout(self, task, agents):
-            return {
-                "a": [await agents["a"].run(task) for _ in range(2)],
-                "b": await agents["b"].run(task),
-            }
+            for _ in range(2):
+                await agents["a"].run(task)
+            await agents["b"].run(task)
 
-        async def score(self, task, views):
+        async def score(self, task, traces):
             pass
 
     env = Fan(_duet_config())
@@ -234,8 +208,7 @@ async def test_decorated_signals_cross_agent(monkeypatch):
 
     class Signals(vf.Environment[DuetConfig]):
         async def rollout(self, task, agents):
-            a, b = await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
-            return {"a": a, "b": b}
+            await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
 
         @vf.metric(role="a")
         async def b_count(self, traces):
@@ -515,21 +488,6 @@ async def test_aliased_views_land_once(monkeypatch):
     episode = await env.run_episode(_task(env), _ctx())
     assert episode.ok and len(episode.traces) == 2
     assert all(t.metrics.get("n") == 1.0 for t in episode.traces)
-
-
-async def test_empty_views_fail_the_rollout(monkeypatch):
-    """A rollout() that returns no traces is the env-rollout failing, not an ok
-    empty episode that resume would keep forever."""
-
-    class Empty(vf.SingleAgentEnv):
-        async def rollout(self, task, agents):
-            return {}
-
-    env = Empty(_env_config())
-    _stub_engine(env, monkeypatch)
-    episode = await env.run_episode(_task(env), _ctx())
-    assert not episode.ok and episode.error is not None
-    assert "returned no traces" in episode.error.message
 
 
 def test_scoring_handlers_must_be_async():

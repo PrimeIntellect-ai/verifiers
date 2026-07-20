@@ -26,16 +26,15 @@ class DuetEnv(vf.Environment[DuetEnvConfig]):
         agents["b"].trainable = False
 
     async def rollout(self, task, agents):
-        a, b = await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
-        return {"a": a, "b": b}
+        await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
 
-    async def score(self, task, views):
+    async def score(self, task, traces):
         # A sibling-dependent signal: did every seat echo the phrase?
         echoed = all(
             lenient_match(task.data.answer, t.last_reply) and not t.has_error
-            for t in views.values()
+            for t in traces
         )
-        for trace in views.values():
+        for trace in traces:
             trace.record_metric("duet", float(echoed))
 
 

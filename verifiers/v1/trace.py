@@ -632,8 +632,8 @@ class Episode(StrictBaseModel, Generic[DataT, StateT]):
     @property
     def views(self) -> dict[str, list["Trace[DataT, StateT]"]]:
         """The episode's local views by role, reconstituted from the trace stamps
-        (mint order; a fanned-out seat is its list). `SingleAgentEnv` episodes are
-        deliberately unstamped and show no views — read `traces` there."""
+        (completion order; a fanned-out seat is its list). `SingleAgentEnv`
+        episodes carry no seat names and show no views — read `traces` there."""
         views: dict[str, list[Trace[DataT, StateT]]] = {}
         for trace in self.traces:
             if trace.role is not None:

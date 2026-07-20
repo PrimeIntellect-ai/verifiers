@@ -191,12 +191,12 @@ def test_best_of_n_sibling_scoring():
     )
     traces = [_scored_trace(0.4), _scored_trace(1.0)]
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
-    asyncio.run(env.score(task, {"agent": traces}))
+    asyncio.run(env.score(task, traces))
     assert [t.metrics["best"] for t in traces] == [0.0, 1.0]
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)
 
     misses = [_scored_trace(0.2), _scored_trace(0.2)]
-    asyncio.run(env.score(task, {"agent": misses}))
+    asyncio.run(env.score(task, misses))
     # Ties share `best`; nothing reached the threshold.
     assert [t.metrics["best"] for t in misses] == [1.0, 1.0]
     assert all(t.metrics["pass_at_n"] == 0.0 for t in misses)
@@ -307,7 +307,7 @@ def test_code_golf_only_passing_attempts_compete():
     right = _golf_trace(
         "```python\nprint(sum(range(101)))\n```", passed=1.0, latency=0.9
     )
-    asyncio.run(env.score(task, {"golfer": [wrong, right]}))
+    asyncio.run(env.score(task, [wrong, right]))
     assert wrong.rewards["most_concise"] == 0.0
     assert wrong.rewards["fastest"] == 0.0
     assert right.rewards["most_concise"] == 0.5  # the sole passing attempt (weighted)
@@ -317,7 +317,7 @@ def test_code_golf_only_passing_attempts_compete():
         _golf_trace("```python\nx\n```", passed=0.0, latency=0.01),
         _golf_trace("no code at all", passed=0.0, latency=0.02),
     ]
-    asyncio.run(env.score(task, {"golfer": misses}))
+    asyncio.run(env.score(task, misses))
     assert all(t.rewards["most_concise"] == t.rewards["fastest"] == 0.0 for t in misses)
 
 
@@ -357,7 +357,7 @@ def test_proposer_learnability_peaks_at_half():
         solvers = [_reply_trace("42", role="solver") for _ in range(n)]
         for solver in solvers[:hits]:
             solver.record_reward("correct", 1.0)
-        asyncio.run(env.score(task, {"proposer": proposer, "solver": solvers}))
+        asyncio.run(env.score(task, [proposer, *solvers]))
         return proposer
 
     assert score(0).rewards["learnability"] == 0.0

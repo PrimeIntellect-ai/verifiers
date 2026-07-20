@@ -62,8 +62,8 @@ class ToolsetError(RolloutError):
 
 class EnvError(RolloutError):
     """The environment's own hooks failed — `rollout()` or `score()` raised (or
-    returned malformed views). Episode-level: per-agent failures stay typed on
-    their traces. (Not `EnvironmentError` — that's a builtin alias of OSError.)"""
+    ran no agent at all). Episode-level: per-agent failures stay typed on their
+    traces. (Not `EnvironmentError` — that's a builtin alias of OSError.)"""
 
 
 class UserError(RolloutError):

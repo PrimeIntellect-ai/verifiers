@@ -25,7 +25,6 @@ from verifiers.v1.env import (
     SingleAgentEnv,
     StaticPoolConfig,
     TimeoutConfig,
-    Views,
     default_seat_harness,
     pool_serve_kwargs,
 )
@@ -249,7 +248,6 @@ __all__ = [
     "EnvServerConfig",
     "SingleAgentEnvConfig",
     "AgentConfig",
-    "Views",
     "StaticPoolConfig",
     "ElasticPoolConfig",
     "default_seat_harness",

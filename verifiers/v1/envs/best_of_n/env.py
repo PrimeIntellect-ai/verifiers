@@ -25,10 +25,7 @@ class BestOfNEnvConfig(vf.EnvConfig):
 
 class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
     async def rollout(self, task, agents):
-        attempts = await asyncio.gather(
-            *(agents["agent"].run(task) for _ in range(self.config.n))
-        )
-        return {"agent": list(attempts)}
+        await asyncio.gather(*(agents["agent"].run(task) for _ in range(self.config.n)))
 
     @vf.metric
     async def best(self, trace, traces):

@@ -571,45 +571,6 @@ def _as_error(e: Exception) -> Error:
     )
 
 
-Views = Mapping[str, "Trace | list[Trace]"]
-"""What `Environment.rollout` returns: the episode's local views, one entry per
-participant's experience — a name to a `Trace`, or to a `list[Trace]` for a
-fanned-out seat. A flat bag: names are for the author's own `score()`, nothing
-more — no order, no lineage, no structure."""
-
-
-def _view_traces(env_name: str, views: Views) -> list[Trace]:
-    """Flatten a rollout's views into the episode's trace list (mapping order,
-    list views in order — physical, not semantic), refusing anything that isn't
-    a named `Trace`/`list[Trace]` bag."""
-    if not isinstance(views, Mapping):
-        raise TypeError(
-            f"{env_name}.rollout() must return its local views as a mapping "
-            f"(name -> Trace | list[Trace]), got {type(views).__name__}"
-        )
-    traces: list[Trace] = []
-    seen: set[int] = set()
-    for name, view in views.items():
-        for trace in view if isinstance(view, list) else [view]:
-            if not isinstance(trace, Trace):
-                raise TypeError(
-                    f"{env_name}.rollout() view {name!r} must be a Trace or "
-                    f"list[Trace], got {type(trace).__name__}"
-                )
-            if (
-                id(trace) in seen
-            ):  # an alias view names an existing trace, not a new one
-                continue
-            seen.add(id(trace))
-            traces.append(trace)
-    if not traces:
-        raise ValueError(
-            f"{env_name}.rollout() returned no traces — every episode must carry "
-            "at least one run; return the traces your rollout produced"
-        )
-    return traces
-
-
 @dataclass
 class RunSlot:
     """One planned env-rollout of a task, observable while it happens: `traces`
@@ -643,11 +604,12 @@ class Environment(ABC, Generic[ConfigT]):
     `EnvConfig` subclass (bound via `Environment[YourConfig]`, available as
     `self.config`) and writes
 
-      - `rollout(task, agents)` — how the agents interact on one task, returning
-        the episode's named local views.
+      - `rollout(task, agents)` — how the agents interact on one task. It returns
+        nothing: every finished run joins the episode automatically, stamped with
+        its seat's standing.
 
     Optional overrides: `brief(agents)` (per-agent standing the env hardcodes —
-    a frozen judge opts out of training), `score(task, views)` (sibling-dependent
+    a frozen judge opts out of training), `score(task, traces)` (sibling-dependent
     judgement), and `setup()`/`teardown()` (env-owned shared resources). The base
     owns everything else: agent construction, episodes, retries, persistence/
     resume, serving. Task x agent fit is validated per run, on the task the agent
@@ -655,9 +617,9 @@ class Environment(ABC, Generic[ConfigT]):
     `NEEDS_CONTAINER`), so there is nothing to declare here."""
 
     _stamp_roles: ClassVar[bool] = True
-    """Whether traces are stamped with their role name at mint. True for every env
-    but `SingleAgentEnv`, whose one unstamped trace keeps the wire identical to a
-    plain eval's."""
+    """Whether traces are stamped with their seat name at mint. True for every env
+    but `SingleAgentEnv`, whose sole implicit seat stays nameless — a plain eval's
+    trace carries no role."""
 
     def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
@@ -755,23 +717,24 @@ class Environment(ABC, Generic[ConfigT]):
         Single-agent envs never write this."""
 
     @abstractmethod
-    async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> Views:
+    async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> None:
         """One env-rollout: how the agents interact on `task` — imperative Python
-        over the handed-in agents. Returns the episode's local views: what each
-        participant experienced, named; a list value is a fanned-out seat. An
-        agent-run failure is data on its trace (this hook decides what it means);
-        an exception raised here is the env-rollout itself failing."""
+        over the handed-in agents, returning nothing. Every finished run is
+        captured as the episode's traces automatically, each stamped with its
+        seat's standing (`agent.name`/`trainable`/`episode`/`env`). An agent-run
+        failure is data on its trace (this hook decides what it means); an
+        exception raised here is the env-rollout itself failing."""
 
-    async def score(self, task: Task, views: Views) -> None:
-        """Sibling-dependent judgement over one env-rollout's finished views
-        (per-trace judgement already ran on each trace's own task). The default runs
-        the env's decorated `@vf.reward`/`@vf.metric` methods, each invoked once per
-        target trace and recorded there, with `task`, `trace` (the target), `traces`
-        (all of them), and `views` in reach — `role=` narrows the targets, unset
-        means every trace. Override it for imperative control; `await
-        super().score(task, views)` keeps the decorated ones. Bounded by
-        `timeout.score`."""
-        traces = _view_traces(type(self).__name__, views)
+    async def score(self, task: Task, traces: list[Trace]) -> None:
+        """Sibling-dependent judgement over one env-rollout's finished traces
+        (per-trace judgement already ran on each trace's own task). The flat list
+        is the episode, completion order; each trace's `role` stamp names its
+        seat. The default runs the env's decorated `@vf.reward`/`@vf.metric`
+        methods, each invoked once per target trace and recorded there, with
+        `task`, `trace` (the target), and `traces` (all of them) in reach —
+        `role=` narrows the targets, unset means every trace. Override it for
+        imperative control; `await super().score(task, traces)` keeps the
+        decorated ones. Bounded by `timeout.score`."""
         metrics = discover_decorated(self, "metric")
         rewards = discover_decorated(self, "reward")
 
@@ -789,7 +752,6 @@ class Environment(ABC, Generic[ConfigT]):
                             "task": task,
                             "trace": target,
                             "traces": traces,
-                            "views": views,
                         },
                     )
                     for fn, target in pairs
@@ -926,17 +888,16 @@ class Environment(ABC, Generic[ConfigT]):
         gate: asyncio.Semaphore | None = None,
     ) -> Episode:
         """One env-rollout of `task`, minted as the wire atom: run `rollout()` over the
-        role agents, then `score()` over its views (bounded by `timeout.score`).
+        role agents, then `score()` over its traces (bounded by `timeout.score`).
         `gate` bounds the agent runs themselves — every run acquires it, so an env's
         internal fan-out counts against `--max-concurrent` too.
 
         The agents are built fresh for this episode (`_episode_agents`, briefed by
-        `brief()`): every trace gets `role`/`trainable` written the moment it's
-        created and is captured the moment its run completes — a `rollout()` that
-        raises after some runs finished still yields an episode with the completed
-        subset. Once `rollout()` returns, its views decide membership, kept even
-        when `score()` then fails. A hook exception lands on the episode's
-        `errors`, never on a trace."""
+        `brief()`): every trace gets its episode standing written the moment it's
+        created and joins the episode the moment its run completes (completion
+        order) — `rollout()` returns nothing, and a hook that raises after some
+        runs finished still yields an episode with the completed subset. A hook
+        exception lands on the episode's `errors`, never on a trace."""
         episode: Episode = Episode(
             env=self.config.env_id,
             task=TraceTask(type=type(task).__name__, data=task.data),
@@ -945,20 +906,22 @@ class Environment(ABC, Generic[ConfigT]):
         agents = self._episode_agents(ctx, episode.id, gate, completed, on_trace)
         try:
             async with boundary(EnvError, f"{type(self).__name__}.rollout()"):
-                views = await self.rollout(task, agents)
-                traces = _view_traces(type(self).__name__, views)
+                await self.rollout(task, agents)
+                if not completed:
+                    raise ValueError(
+                        f"{type(self).__name__}.rollout() ran no agent — every "
+                        "episode must carry at least one run"
+                    )
         except Exception as e:
             episode.errors.append(_as_error(e))
-            # The hook never returned views: keep the crash-safe completed subset.
+            # The completed subset is the crash-safe episode.
             episode.traces = list(completed)
             return episode
-        # Membership is set before scoring, so a score() failure can't demote the
-        # episode to the completed buffer.
-        episode.traces = traces
+        episode.traces = list(completed)
         try:
             async with asyncio.timeout(self.config.timeout.score):
                 async with boundary(EnvError, f"{type(self).__name__}.score()"):
-                    await self.score(task, views)
+                    await self.score(task, list(completed))
         except Exception as e:
             # A TimeoutError here can only be the deadline's own expiry — one
             # raised inside score() became an EnvError at the boundary.
@@ -1094,5 +1057,5 @@ class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
             shared_tools=type(self.taskset).tools,
         )
 
-    async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> Views:
-        return {"agent": await agents["agent"].run(task)}
+    async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> None:
+        await agents["agent"].run(task)
