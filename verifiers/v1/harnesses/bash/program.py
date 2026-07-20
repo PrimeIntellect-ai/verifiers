@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import json
 import subprocess
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -136,7 +137,11 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
 def run_bash(command: str) -> str:
     try:
         result = subprocess.run(
-            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
+            ["bash"],
+            input=command,
+            capture_output=True,
+            text=True,
+            timeout=3600,
         )
         return result.stdout + result.stderr
     except Exception as e:
@@ -300,6 +305,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt", default="")
+    parser.add_argument("--payload-stdin", action="store_true")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--prompt-file", default="")
     parser.add_argument("--initial-messages-file", default="")
@@ -314,6 +320,14 @@ async def main() -> None:
     args = parse_args()
     initial = []
     prompt = args.prompt
+    system_prompt = args.system_prompt
+    mcp_config = args.mcp_config
+    if args.payload_stdin:
+        payload = json.load(sys.stdin)
+        system_prompt = payload.get("system_prompt") or ""
+        prompt = payload.get("prompt") or ""
+        initial = payload.get("initial_messages") or []
+        mcp_config = json.dumps(payload.get("mcp_config") or {})
     if args.prompt_file:
         path = Path(args.prompt_file)
         prompt = path.read_text(encoding="utf-8")
@@ -324,7 +338,7 @@ async def main() -> None:
         path.unlink()
         initial = json.loads(payload)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
-    config = json.loads(args.mcp_config or "{}")
+    config = json.loads(mcp_config or "{}")
     tools = [BASH_TOOL]
     reserved = {"bash"}
     if args.edit:
@@ -339,11 +353,7 @@ async def main() -> None:
         else ([], {}, {})
     )
     tools += mcp_tools
-    messages = (
-        [{"role": "system", "content": args.system_prompt}]
-        if args.system_prompt
-        else []
-    )
+    messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
     if initial:
         messages.extend(initial)
     elif prompt:

@@ -135,6 +135,32 @@ class DockerRuntime(Runtime):
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
         )
 
+    async def _run_program_stdin(
+        self, argv: list[str], env: dict[str, str], stdin: bytes
+    ) -> ProgramResult:
+        env_args = [
+            arg for key, value in env.items() for arg in ("--env", f"{key}={value}")
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "-i",
+            *env_args,
+            "--workdir",
+            self.config.workdir,
+            self._container,
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate(input=stdin)
+        return ProgramResult(
+            exit_code=proc.returncode or 0,
+            stdout=stdout.decode(errors="replace"),
+            stderr=stderr.decode(errors="replace"),
+        )
+
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:

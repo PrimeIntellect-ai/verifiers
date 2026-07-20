@@ -234,7 +234,12 @@ class PiHarness(Harness[PiHarnessConfig]):
             if self.config.disabled_tools
             else []
         )
-        system_args = ["--append-system-prompt", system_prompt] if system_prompt else []
+        system_args: list[str] = []
+        if system_prompt:
+            system_prompt_path = f"{agent_dir}/system-prompt.txt"
+            await runtime.write(system_prompt_path, system_prompt.encode("utf-8"))
+            # Pi interprets an existing path as the system-prompt file contents.
+            system_args = ["--append-system-prompt", system_prompt_path]
         argv = [
             "sh",
             "-c",

@@ -68,19 +68,13 @@ class BashHarness(Harness[BashHarnessConfig]):
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
-            f"--system-prompt={system_prompt}",
+            "--payload-stdin",
         ]
         if self.config.edit:
             args.append("--edit")
         if self.config.search:
-            # Resolve the key and keep it OUT of the program env: it's handed to the program over
-            # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
-            # inheriting it via $SERPER_API_KEY / /proc/self/environ. Prefer a key set in the harness
-            # env (--harness.env / forward_env); fall back to the host env only when the key is
-            # *absent* (None), not present-but-empty — a rollout setting SERPER_API_KEY="" is
-            # deliberately masking the host secret, so honor that (the check below then fails loudly
-            # rather than leaking the host key). The pop is scoped to search=true, so an unrelated
-            # key forwarded for the agent's own bash-side use is left untouched.
+            # Keep the search key out of the program environment so agent-spawned Bash commands
+            # cannot inherit it. It is bounded secret/config data rather than task payload.
             serper_key = env.pop("SERPER_API_KEY", None)
             if serper_key is None:
                 serper_key = os.environ.get("SERPER_API_KEY")
@@ -90,34 +84,23 @@ class BashHarness(Harness[BashHarnessConfig]):
                     "(the host env or --harness.env)"
                 )
             args += ["--search", f"--serper-key={serper_key}"]
-        if mcp_urls:
-            # The program connects to the tool servers over HTTP; hand it a standard
-            # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
-            args.append(
-                "--mcp-config="
-                + json.dumps(
-                    {
-                        "mcpServers": {
-                            name: {"url": url} for name, url in mcp_urls.items()
-                        }
-                    }
-                )
-            )
-        if isinstance(prompt, str):
-            # Prompts can exceed the OS per-argument limit (typically 128 KiB on Linux),
-            # so pass them through the runtime filesystem instead of argv.
-            path = f".vf-prompt-{trace.id}.txt"
-            await runtime.write(path, prompt.encode("utf-8"))
-            args.append(f"--prompt-file={path}")
-        elif prompt is not None:
-            # Base64 images can exceed exec limits, so hand Messages off through a file.
-            path = f".vf-initial-messages-{trace.id}.json"
-            await runtime.write(
-                path,
-                json.dumps([message_to_wire(m) for m in prompt]).encode(),
-            )
-            args.append(f"--initial-messages-file={path}")
+        payload = {
+            "system_prompt": system_prompt,
+            "prompt": prompt if isinstance(prompt, str) else None,
+            "initial_messages": (
+                [message_to_wire(message) for message in prompt]
+                if prompt is not None and not isinstance(prompt, str)
+                else []
+            ),
+            "mcp_config": {
+                "mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}
+            },
+        }
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )
-        return await runtime.run_program([*program, *args], env)
+        return await runtime.run_program(
+            [*program, *args],
+            env,
+            stdin=json.dumps(payload).encode("utf-8"),
+        )

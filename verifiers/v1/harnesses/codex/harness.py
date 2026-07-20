@@ -119,6 +119,8 @@ class CodexHarness(Harness[CodexHarnessConfig]):
                     image_args += ["-i", path]
                     image_index += 1
             prompt = "\n\n".join(texts)
+        if prompt is None:
+            raise ValueError("Codex requires a task prompt (it has no user simulator)")
         # codex authenticates to the interception server with the session secret (its provider
         # api key) and posts Responses calls to `{endpoint}/responses`.
         env = {**self.config.resolved_env, KEY_VAR: secret}
@@ -163,10 +165,10 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             *tool_config,
             *image_args,
             "--",
-            prompt,
+            "-",
         ]
         try:
-            return await runtime.run_program(argv, env)
+            return await runtime.run_program(argv, env, stdin=prompt.encode("utf-8"))
         finally:
             if image_args:
                 try:

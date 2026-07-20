@@ -38,33 +38,23 @@ class NullHarness(Harness[NullHarnessConfig]):
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
+            "--payload-stdin",
         ]
-        if system_prompt:
-            args.append(f"--system-prompt={system_prompt}")
-        if mcp_urls:
-            # The program connects to the tool servers over HTTP; hand it a standard
-            # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
-            args.append(
-                "--mcp-config="
-                + json.dumps(
-                    {
-                        "mcpServers": {
-                            name: {"url": url} for name, url in mcp_urls.items()
-                        }
-                    }
-                )
-            )
-        if isinstance(prompt, str):
-            args.append(f"--prompt={prompt}")
-        elif prompt is not None:
-            # Base64 images can exceed exec limits, so hand Messages off through a file.
-            path = f".vf-initial-messages-{trace.id}.json"
-            await runtime.write(
-                path,
-                json.dumps([message_to_wire(m) for m in prompt]).encode(),
-            )
-            args.append(f"--initial-messages-file={path}")
+        payload = {
+            "system_prompt": system_prompt,
+            "prompt": prompt if isinstance(prompt, str) else None,
+            "initial_messages": (
+                [message_to_wire(message) for message in prompt]
+                if prompt is not None and not isinstance(prompt, str)
+                else []
+            ),
+            "mcp_config": {
+                "mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}
+            },
+        }
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )
-        return await runtime.run_program([*program, *args], env)
+        return await runtime.run_program(
+            [*program, *args], env, stdin=json.dumps(payload).encode("utf-8")
+        )

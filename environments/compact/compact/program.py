@@ -99,7 +99,7 @@ async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str:
 
 
 async def main() -> None:
-    task = sys.argv[1]
+    task = sys.stdin.read()
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
     notes: str | None = None  # the durable memory carried across turns
     tool_output: str | None = None  # the last tool result, kept for exactly one turn

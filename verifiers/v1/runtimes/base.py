@@ -145,13 +145,56 @@ class Runtime(ABC):
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         pass
 
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
-        agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
-        provisioning) that go through `run`. No framework layer may replay this argv: doing so
-        against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
-        still retry individual safe transport operations underneath `run`."""
-        return await self.run(argv, env)
+    async def run_program(
+        self,
+        argv: list[str],
+        env: dict[str, str],
+        *,
+        stdin: bytes | None = None,
+    ) -> ProgramResult:
+        """Run the harness's MAIN program once, optionally feeding binary stdin.
+
+        Runtimes with a native stdin channel override ``_run_program_stdin``; the portable
+        fallback stages the bytes in the runtime workspace and redirects them through a bounded
+        shell wrapper. Either path keeps unbounded payloads out of argv and the environment. No
+        framework layer may replay the program: doing so against the rollout's persistent trace
+        would fork a duplicate branch.
+        """
+        self._validate_exec_payload(argv, env)
+        if stdin is None:
+            return await self.run(argv, env)
+        return await self._run_program_stdin(argv, env, stdin)
+
+    async def _run_program_stdin(
+        self, argv: list[str], env: dict[str, str], stdin: bytes
+    ) -> ProgramResult:
+        """File-backed stdin fallback for runtimes whose execution API has no stdin channel."""
+        path = f".vf-stdin-{uuid.uuid4().hex}.bin"
+        await self.write(path, stdin)
+        command = (
+            'chmod 600 "$0"; status=0; "$@" < "$0" || status=$?; '
+            'rm -f -- "$0"; exit "$status"'
+        )
+        return await self.run(["sh", "-c", command, path, *argv], env)
+
+    @staticmethod
+    def _validate_exec_payload(argv: list[str], env: dict[str, str]) -> None:
+        """Fail clearly before exec when one argv/env entry exceeds Linux MAX_ARG_STRLEN."""
+        limit = 128 * 1024
+        entries = [(f"argv[{i}]", value) for i, value in enumerate(argv)]
+        entries += [(f"env[{key!r}]", f"{key}={value}") for key, value in env.items()]
+        for name, value in entries:
+            if "\0" in value:
+                raise ValueError(
+                    f"{name} contains a NUL byte and cannot be passed to exec"
+                )
+            size = len(value.encode("utf-8")) + 1
+            if size > limit:
+                raise ValueError(
+                    f"{name} is {size:,} bytes, exceeding the portable 128 KiB exec "
+                    "argument limit; pass unbounded content through run_program(stdin=...) "
+                    "or a runtime file"
+                )
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

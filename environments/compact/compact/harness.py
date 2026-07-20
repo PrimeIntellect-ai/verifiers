@@ -51,4 +51,7 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
         program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
-        return await runtime.run_program([*program, trace.task.data.prompt], env)
+        prompt = trace.task.data.prompt
+        if not isinstance(prompt, str):
+            raise ValueError("compact harness requires a string task prompt")
+        return await runtime.run_program(program, env, stdin=prompt.encode("utf-8"))
