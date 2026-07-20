@@ -282,23 +282,24 @@ class DebateEnv(vf.Environment[DebateConfig]):
 
     async def rollout(
         self, task: vf.Task, agents: Mapping[str, vf.Agent]
-    ) -> vf.Views:
+    ) -> None:
         """How the agents interact on one task: imperative Python over Agent values.
         A loop is rounds, asyncio.gather is fan-out, a function from traces to task
-        data is chaining. Returns the episode's local views — a flat bag of named
-        traces (a list value for a fanned-out seat), no order, no lineage."""
+        data is chaining. Returns nothing — every finished run joins the episode
+        automatically, stamped with its seat's standing."""
         pro, con = await asyncio.gather(
             agents["pro"].run(task), agents["con"].run(task)
         )
-        verdict = await agents["judge"].run(judge_task(task, pro, con))
-        return {"pro": pro, "con": con, "judge": verdict}
+        await agents["judge"].run(judge_task(task, pro, con))
 
-    async def score(self, task: vf.Task, views: vf.Views) -> None:
-        """Sibling-dependent judgement over the finished views (per-trace judgement
-        already ran on each trace's own task). Attach via record_reward/record_metric."""
-        winner = (views["judge"].last_reply or "").strip().lower()
-        views["pro"].record_reward("won", float(winner == "pro"))
-        views["con"].record_reward("won", float(winner == "con"))
+    async def score(self, task: vf.Task, traces: list[vf.Trace]) -> None:
+        """Sibling-dependent judgement over the finished traces (per-trace judgement
+        already ran on each trace's own task); each trace's `role` stamp names its
+        seat. Attach via record_reward/record_metric."""
+        by_role = {t.role: t for t in traces}
+        winner = (by_role["judge"].last_reply or "").strip().lower()
+        by_role["pro"].record_reward("won", float(winner == "pro"))
+        by_role["con"].record_reward("won", float(winner == "con"))
 ```
 
 - **Roles are typed fields on the env's config** (`Environment[DebateConfig]` binds
@@ -315,7 +316,9 @@ class DebateEnv(vf.Environment[DebateConfig]):
   pins only what makes it a different actor: its own harness or runtime
   (`--env.judge.harness.runtime.type docker`), a frozen model, an off-train
   endpoint, tighter limits — and a declared pin is the env author's per-seat
-  default.
+  default. Per-run caps (turns, tokens, the setup/rollout/finalize/scoring
+  timeouts) live only on seats — there is no env-level cap; the env keeps just
+  its own hook's bound (`--env.timeout.score`).
 - **The declared fields ARE the roles.** Every `AgentConfig` field plays under its
   field name; the config is the only naming site, so there is no separate role
   declaration to drift from what `rollout()` actually does.
@@ -339,16 +342,18 @@ class DebateEnv(vf.Environment[DebateConfig]):
   cheap per-rollout value and concurrent episodes share no agent state) — and
   hands them into `rollout()`. The hook never constructs agents.
 - **One env-rollout is one `Episode`** on the wire (`traces.jsonl`, the serve
-  protocol): the task, a rollout-level `errors` list, and the views' traces, each
-  stamped with its `role` and `trainable` (`episode.views` reconstitutes the named
-  views from the stamps). Episodes succeed, resume, and retry as a unit. An
-  agent failure is data on its trace (the hook decides what a failed participant
+  protocol): the task, a rollout-level `errors` list, and every completed run's
+  trace in completion order. Each trace is self-contained — its `agent` info
+  carries the seat name, trainability, episode id, and env id, so a flat bag of
+  traces reconstitutes its episodes without a nested schema (`episode.views`
+  regroups by role). Episodes succeed, resume, and retry as a unit. An agent
+  failure is data on its trace (the hook decides what a failed participant
   means); an exception in `rollout()`/`score()` is the env-rollout failing, and
   every trace that completed before it is still captured on the episode.
 - **Cross-agent signals can be declarative.** The default `score()` runs the env's
   own decorated `@vf.reward`/`@vf.metric` methods: each is invoked once per target
   trace and records there, with the finished set in reach (`trace` — the target,
-  `traces` — every trace in the episode, `views` — the named views, `task`). `role=` narrows
+  `traces` — every trace in the episode, `task`). `role=` narrows
   the targets to one role's traces; unset means every trace (a shared team signal).
   The bundled best-of-n's whole judgement is two such metrics:
 
@@ -360,7 +365,7 @@ class DebateEnv(vf.Environment[DebateConfig]):
 
   Override `score()` for imperative control (dynamic names or weights,
   parse-and-fail — the bundled agentic-judge env, or the debate verdict above);
-  `await super().score(task, views)` keeps the decorated ones running.
+  `await super().score(task, traces)` keeps the decorated ones running.
 - `score()` is bounded by `--env.timeout.score`; `setup()`/`teardown()` hooks bracket the
   serving lifetime for env-owned shared resources.
 
@@ -373,9 +378,9 @@ that needs no execution doesn't need an agent at all: plug the same spec in as a
 
 For the single-agent case none of this is machinery the user sees: `SingleAgentEnv`
 declares one `agent` seat (`--env.agent.harness.id codex`,
-`--env.agent.harness.runtime.type docker`), `rollout()` is
-`{"agent": await agents["agent"].run(task)}`, and the episode wraps exactly one
-unstamped trace — the wire identical to a plain eval's.
+`--env.agent.max_turns 20`), `rollout()` is
+`await agents["agent"].run(task)`, and the episode wraps exactly one trace with
+no seat name — the wire matches a plain eval's.
 
 The run's `[env]` block is the whole run — the env is the encompassing entity, composing three separately-chosen concerns:
 

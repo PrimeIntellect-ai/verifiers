@@ -1,25 +1,22 @@
 # The Agent
 
-An `Agent` is a reusable value: a **harness** (a concrete `Harness` object — the program
-that drives the model), a **model context** (model + client + optional sampling), and a
-**runtime policy** (where a run's box comes from by default). It has one executable arrow:
+An `Agent` is a reusable value: a **harness** (the program that drives the model), a
+**model context** (model + client + optional sampling), and a **runtime policy**
+(where a run's box comes from by default). It has one executable arrow:
 
 ```python
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
 
-solver = vf.Agent(
-    BashHarness(BashHarnessConfig()),
-    "z-ai/glm-5.2",
-    vf.resolve_client(vf.EvalClientConfig()),
-)
+solver = vf.Agent("bash", "z-ai/glm-5.2")
 trace = await solver.run(vf.Task(vf.TaskData(idx=0, prompt="What is 2+2?")))
 ```
 
-Construction is fully explicit — the harness is an object you build, and the client is
-yours to build and **share**: agents on the same endpoint should share one `Client` (one
-connection pool). prime-rl hands agents its renderer client the same way. (Internally
-these group into the `ModelContext` every rollout consumes, on `agent.ctx`.)
+Each piece is a live object or whatever resolves to one: `harness` a bare id, a typed
+`HarnessConfig`, or a `Harness` you built; `client` defaults to the env-var eval
+endpoint, or is yours to build and **share**: agents on the same endpoint should share
+one `Client` (one connection pool). prime-rl hands agents its renderer client the same
+way. (Internally these group into the `ModelContext` every rollout consumes, on
+`agent.ctx`.)
 
 Every run is a standard rollout — staged lifecycle, typed error attribution,
 token-true trace capture — so anything a program produces is evaluable and trainable.
@@ -62,10 +59,9 @@ its transcript:
 
 ```python
 sandbox = vf.PrimeConfig()
-harness = BashHarness(BashHarnessConfig())
-client = vf.resolve_client(vf.EvalClientConfig())
-solver = vf.Agent(harness, "z-ai/glm-5.2", client, sandbox)
-judge = vf.Agent(harness, "openai/gpt-5.4-mini", client, sandbox)
+client = vf.resolve_client(vf.EvalClientConfig())  # one endpoint, one shared pool
+solver = vf.Agent("bash", "z-ai/glm-5.2", client, sandbox)
+judge = vf.Agent("bash", "openai/gpt-5.4-mini", client, sandbox)
 
 def judge_task(solver_trace: vf.Trace) -> vf.Task:
     return vf.Task(vf.TaskData(
@@ -114,7 +110,7 @@ agent's interception server multiplexes the N concurrent runs. The Agent deliber
 group verb: each run scores its rollout on its own, and comparing siblings — relative
 success, preference, advantages — belongs to whoever gathered the traces (in training,
 prime-rl samples the group; in an `Environment`, `score()` compares the finished
-views).
+traces).
 
 Reward/metric handlers are `async def` — a sync handler fails at scoring time.
 

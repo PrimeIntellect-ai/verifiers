@@ -11,14 +11,15 @@ EvalConfig                          (the run)
 │  ├─ id                            (which Environment — empty = the taskset's story)
 │  ├─ taskset: TasksetConfig | None (subclass resolved by --env.taskset.id / positional)
 │  │  └─ task: TaskConfig           (judges, scoring knobs, task-scoped server config)
-│  ├─ <role>: AgentConfig           (per-seat harness/model/client/sampling/limits;
-│  │  │                              `agent` on the single-agent env)
-│  │  └─ harness: HarnessConfig     (subclass resolved by --env.<role>.harness.id)
-│  │     └─ runtime: RuntimeConfig  (subprocess | docker | prime | modal)
-│  ├─ timeout: TimeoutConfig
+│  ├─ <role>: AgentConfig           (per-seat harness/model/client/sampling +
+│  │  │                              per-run caps; `agent` on the single-agent env)
+│  │  ├─ harness: HarnessConfig     (subclass resolved by --env.<role>.harness.id)
+│  │  │  └─ runtime: RuntimeConfig  (subprocess | docker | prime | modal)
+│  │  ├─ timeout: TimeoutConfig     (per-stage: setup/rollout/finalize/scoring)
+│  │  └─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
+│  ├─ timeout: EnvTimeoutConfig     (score — the env's own hook)
 │  ├─ retries: RetryConfig
 │  │  └─ rollout: RolloutRetryConfig
-│  ├─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
 │  └─ interception
 └─ pool: PoolConfig                 (static | elastic) — env-server only
 ```
@@ -116,15 +117,11 @@ trace.
 | `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Environment` subclass, else `SingleAgentEnv`). |
 | `taskset` | `TasksetConfig \| None` | `None` | The seed taskset every rollout starts from; resolved to its concrete subclass by `--env.taskset.id` (positional shorthand: `eval <taskset-id>`). See [Taskset config](#taskset-config). `None` only for a taskset-less env; every bundled env requires one. |
 | *(roles)* | `AgentConfig` | env-declared | Each declared seat: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the agentic-judge env, the env's own names elsewhere. See [Agent config](#agent-config--the-seats). |
-| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | See [Timeout config](#timeout-config). Set via `--env.timeout.*`. |
+| `timeout` | `EnvTimeoutConfig` | `EnvTimeoutConfig()` | The env's own hook bound: `--env.timeout.score`. Per-run stage timeouts are each seat's (`--env.<role>.timeout.*`). |
 | `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). Set via `--env.retries.*`. |
-| `max_turns` | `int \| None` | `None` | Max model turns per rollout (None = no limit). Framework-enforced between turns. |
-| `max_input_tokens` | `int \| None` | `None` | Max input (prompt) tokens per rollout. Caps `trace.num_input_tokens`. |
-| `max_output_tokens` | `int \| None` | `None` | Max output (completion) tokens per rollout. Caps `trace.num_output_tokens`. |
-| `max_total_tokens` | `int \| None` | `None` | Max total (prompt + completion) tokens per rollout. Caps `trace.num_total_tokens`. |
 | `interception` | `InterceptionConfig` | `ElasticInterceptionPoolConfig()` | The interception shape: `elastic` (default — servers grown on demand, `multiplex` rollouts each), `server` (one server, tunnel choice incl. bring-your-own endpoint), or `static` (a fixed list). |
 
-The four `max_*` limits map onto [`RolloutLimits`](#rollout-limits) (interception server); each caps a trace computed property, checked between turns (soft by one turn).
+Per-run caps (turns, tokens, stage timeouts) are seat fields, not env fields — see [Agent config](#agent-config--the-seats).
 
 ### Agent config — the seats
 
@@ -140,7 +137,8 @@ author's per-seat default; partial overrides deep-merge onto it (an `id` switch 
 | `model` | `str \| None` | `None` | Pin a model for this seat (None = the run's `--model`). |
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
 | `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
-| `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-seat caps (None = the env's). |
+| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | Per-stage wall-clock timeouts for this seat's runs (`setup`/`rollout`/`finalize`/`scoring`; each stage falls back to the task's own). |
+| `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-seat caps (None = no limit); map onto [`RolloutLimits`](#rollout-limits), each checked between turns (soft by one turn). |
 
 Trainability is not a config field: it is env truth, set in place by the env's
 `brief(agents)` hook (default: every seat trains) and stamped on each trace. An env
@@ -174,7 +172,7 @@ fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrat
 
 ## Timeout config
 
-`verifiers/v1/env.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). Precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default.
+`verifiers/v1/env.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). A **seat** field (`--env.<role>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -182,7 +180,8 @@ fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrat
 | `rollout` | `float \| None` | `None` | Max wall-clock for the rollout (the harness run). |
 | `finalize` | `float \| None` | `None` | Max wall-clock for the task's `finalize` hook. |
 | `scoring` | `float \| None` | `None` | Max wall-clock for task rewards/metrics/judges and harness metrics. |
-| `score` | `float \| None` | `None` | Max wall-clock for the env's `score()` hook (cross-trace judgement over a finished env-rollout). |
+
+`EnvTimeoutConfig` (the env's `--env.timeout.*`) keeps only `score` — the bound on the env's own cross-trace `score()` hook.
 
 > Remote sandboxes cap any harness timeout at 24 hours (provider max lifetime).
 
@@ -574,14 +573,14 @@ is supplied, billed judge usage is recorded even if parsing later fails. Plugin 
 
 ## Rollout limits
 
-`verifiers/v1/interception/server.py` — `RolloutLimits` (frozen dataclass). Not directly user-settable; built from the `max_*` fields of [`EnvConfig`](#envconfig--the-environment). Checked before each turn is served; the first limit reached refuses the turn (the same mechanism as a `@stop`) and becomes the trace's stop condition. Token caps are **soft by one turn** (the turn that crosses a cap still completes).
+`verifiers/v1/interception/server.py` — `RolloutLimits` (frozen dataclass). Not directly user-settable; built from the `max_*` fields of the run's seat ([`AgentConfig`](#agent-config--the-seats)). Checked before each turn is served; the first limit reached refuses the turn (the same mechanism as a `@stop`) and becomes the trace's stop condition. Token caps are **soft by one turn** (the turn that crosses a cap still completes).
 
 | Field | Type | Default | Maps from | Caps |
 |---|---|---|---|---|
-| `max_turns` | `int \| None` | `None` | `EnvConfig.max_turns` | `trace.num_turns` |
-| `max_input_tokens` | `int \| None` | `None` | `EnvConfig.max_input_tokens` | `trace.num_input_tokens` |
-| `max_output_tokens` | `int \| None` | `None` | `EnvConfig.max_output_tokens` | `trace.num_output_tokens` |
-| `max_total_tokens` | `int \| None` | `None` | `EnvConfig.max_total_tokens` | `trace.num_total_tokens` |
+| `max_turns` | `int \| None` | `None` | `AgentConfig.max_turns` | `trace.num_turns` |
+| `max_input_tokens` | `int \| None` | `None` | `AgentConfig.max_input_tokens` | `trace.num_input_tokens` |
+| `max_output_tokens` | `int \| None` | `None` | `AgentConfig.max_output_tokens` | `trace.num_output_tokens` |
+| `max_total_tokens` | `int \| None` | `None` | `AgentConfig.max_total_tokens` | `trace.num_total_tokens` |
 
 ---
 
