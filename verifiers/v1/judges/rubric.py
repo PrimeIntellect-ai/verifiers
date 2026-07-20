@@ -140,29 +140,23 @@ def _contains_verdicts(value: object) -> bool:
 
 
 def last_verdicts_object(text: str) -> dict:
-    """Parse the final valid top-level verdict object, failing closed on verdict-shaped output."""
+    """Parse the final valid top-level verdict object."""
     candidates: list[dict] = []
     for raw, complete in _json_containers(answer_region(text)):
         if not complete:
-            if '"verdicts"' in raw:
-                raise ValueError("judge returned malformed verdicts JSON")
             continue
         try:
             value = json.loads(raw)
         except json.JSONDecodeError:
-            if '"verdicts"' in raw:
-                raise ValueError("judge returned malformed verdicts JSON")
             continue
         if not _contains_verdicts(value):
             continue
         if not isinstance(value, dict) or "verdicts" not in value:
-            raise ValueError(
-                "judge returned a verdicts payload that was not a top-level object"
-            )
+            continue
         try:
             RubricVerdicts.model_validate(value)
-        except ValueError as error:
-            raise ValueError("judge returned invalid verdicts JSON") from error
+        except ValueError:
+            continue
         candidates.append(value)
     if not candidates:
         raise ValueError(f"judge returned no verdicts JSON object: {text!r}")

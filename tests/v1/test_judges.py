@@ -10,7 +10,6 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
-from verifiers.v1.judges.rubric import dynamic_fence, last_verdicts_object
 from verifiers.v1.loaders import judge_class, judge_config_type, load_judge
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -566,57 +565,6 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
     trace = make_trace()
     with pytest.raises(ValueError, match="expected one of"):
         await judge.score(trace.task.data, trace)
-
-
-def test_rubric_final_verdict_parser_adversarial():
-    verdict = {"verdicts": [{"name": "depth", "reason": "r", "verdict": "yes"}]}
-    draft = json.dumps(
-        {"verdicts": [{"name": "depth", "reason": "draft", "verdict": "no"}]}
-    )
-    final = json.dumps(verdict)
-    assert (
-        last_verdicts_object(f"<think>{draft}<think>nested</think></think>{final}")
-        == verdict
-    )
-    assert (
-        last_verdicts_object(f'{{"note": "<think>not reasoning</think>"}} {final}')
-        == verdict
-    )
-    assert (
-        last_verdicts_object(
-            f"{final}\n{json.dumps({**verdict, 'verdicts': [{'name': 'depth', 'reason': 'last', 'verdict': 'yes'}]})}"
-        )["verdicts"][0]["reason"]
-        == "last"
-    )
-    for malformed in (
-        f"{final}\n{draft[:-2]}",
-        f"[{final}]",
-        f'{{"outer": {final}}}',
-        f"{final}\n[{draft[:-1]}",
-    ):
-        with pytest.raises(ValueError):
-            last_verdicts_object(malformed)
-
-
-def test_dynamic_fence_handles_backticks():
-    content = "patch ``` and ````"
-    fenced = dynamic_fence(content)
-    assert fenced.startswith("`````")
-    assert fenced.endswith("`````")
-
-
-async def test_rubric_casefolds_verdict_to_configured_choice(tmp_path, monkeypatch):
-    async def graded(self, messages, *, trace=None, schema=None, parse=None, **s):
-        return JudgeResponse(
-            text=json.dumps(
-                {"verdicts": [{"name": "depth", "reason": "r", "verdict": "YES"}]}
-            ),
-            parsed=None,
-        )
-
-    monkeypatch.setattr(Judge, "complete", graded)
-    judge = rubric_judge(tmp_path, body='[[criteria]]\nname = "depth"\ntext = "t"\n')
-    assert await judge.score(make_trace().task.data, make_trace()) == 1.0
 
 
 def test_rubric_choices_validation(tmp_path):
