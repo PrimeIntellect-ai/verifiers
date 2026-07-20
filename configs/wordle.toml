@@ -4,11 +4,11 @@
 num_tasks = 5
 num_rollouts = 2
 
-[env]
-max_turns = 8
-
 [env.taskset]
 id = "wordle-v1"
+
+[env.agent]
+max_turns = 8
 
 [env.agent.harness]
 id = "null"

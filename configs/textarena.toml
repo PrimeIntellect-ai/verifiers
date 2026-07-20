@@ -7,12 +7,12 @@
 num_tasks = 5
 num_rollouts = 2
 
-[env]
-max_turns = 15
-
 [env.taskset]
 id = "textarena"
 game = "Wordle-v0"
+
+[env.agent]
+max_turns = 15
 
 [env.agent.harness]
 id = "null"

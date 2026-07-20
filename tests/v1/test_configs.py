@@ -149,7 +149,7 @@ def test_replay_lifts_the_saved_eval_taskset():
     from verifiers.v1.configs.replay import ReplayConfig
 
     lifted = ReplayConfig.model_validate(
-        {"env": {"taskset": {"id": "echo-v1"}, "max_turns": 2}, "model": "m"}
+        {"env": {"taskset": {"id": "echo-v1"}, "agent": {"max_turns": 2}}, "model": "m"}
     )
     assert lifted.taskset.id == "echo-v1"
     rooted = ReplayConfig.model_validate(

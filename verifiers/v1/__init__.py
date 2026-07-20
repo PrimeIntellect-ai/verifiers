@@ -24,6 +24,7 @@ from verifiers.v1.env import (
     Environment,
     SingleAgentEnv,
     StaticPoolConfig,
+    EnvTimeoutConfig,
     TimeoutConfig,
     default_seat_harness,
     pool_serve_kwargs,
@@ -255,6 +256,7 @@ __all__ = [
     "RetryConfig",
     "RolloutRetryConfig",
     "TimeoutConfig",
+    "EnvTimeoutConfig",
     # agent
     "Agent",
     # loaders

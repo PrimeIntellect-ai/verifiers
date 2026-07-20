@@ -51,8 +51,10 @@ if TYPE_CHECKING:
 
 
 class TimeoutConfig(BaseConfig):
-    """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit)."""
+    """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None =
+    no limit). A per-seat cap: every agent run is bounded by its own seat's
+    stages (`--env.<role>.timeout.rollout`); each stage falls back to the task's
+    own `TaskTimeout` when unset."""
 
     setup: float | None = None
     """Shared wall-clock budget for task setup and harness provisioning."""
@@ -62,15 +64,21 @@ class TimeoutConfig(BaseConfig):
     """Max wall-clock for the task's `finalize` hook (post-run work, before scoring)."""
     scoring: float | None = None
     """Max wall-clock for task and harness scoring."""
+
+
+class EnvTimeoutConfig(BaseConfig):
+    """Wall-clock timeouts for the env's own hooks, in seconds (None = no limit).
+    Per-run stage timeouts are each seat's (`--env.<role>.timeout.*`)."""
+
     score: float | None = None
     """Max wall-clock for the env's cross-trace `score()` hook, run once per
-    env-rollout (per-trace scoring is bounded by `scoring`)."""
+    env-rollout (per-trace scoring is bounded by each seat's `timeout.scoring`)."""
 
 
 class AgentConfig(BaseConfig):
-    """One env role: who plays it. A role pins only what makes it a different actor;
-    everything unpinned falls back — the model context to the run's own, the harness to
-    the taskset's default."""
+    """One env role: who plays it, and its per-run caps. A role pins only what
+    makes it a different actor; everything unpinned falls back — the model context
+    to the run's own, the harness to the taskset's default."""
 
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The role's program + runtime policy (None = the taskset's default harness)."""
@@ -81,14 +89,21 @@ class AgentConfig(BaseConfig):
     judge, a pinned user sim) off the training endpoint."""
     sampling: SamplingConfig | None = None
     """Sampling override (None = the run's sampling)."""
+    timeout: TimeoutConfig = TimeoutConfig()
+    """Per-stage wall-clock timeouts for this seat's runs (each stage falls back
+    to the task's own)."""
     max_turns: int | None = None
-    """Max model turns per rollout for this role (None = the env's)."""
+    """Max model turns per run (None = no limit). Framework-enforced (the
+    interception server refuses turns past it), so it applies to any harness."""
     max_input_tokens: int | None = None
-    """Max input tokens per rollout for this role (None = the env's)."""
+    """Max input (prompt) tokens per run (None = no limit); framework-enforced
+    between turns."""
     max_output_tokens: int | None = None
-    """Max output tokens per rollout for this role (None = the env's)."""
+    """Max output (completion) tokens per run (None = no limit); framework-enforced
+    between turns."""
     max_total_tokens: int | None = None
-    """Max total tokens per rollout for this role (None = the env's)."""
+    """Max total (prompt + completion) tokens per run (None = no limit);
+    framework-enforced between turns."""
 
     @model_validator(mode="before")
     @classmethod
@@ -151,8 +166,9 @@ class EnvConfig(BaseConfig):
     `self.config`): declare each role as an `AgentConfig` field with a default
     instance, plus any env-level knobs. The run's `env` field narrows to it by the
     env `id` (else the taskset id), which is what gives `--env.<role>.model`-style
-    CLI/TOML addressing. The base carries what every environment has: which env,
-    the seed taskset, and the run limits."""
+    CLI/TOML addressing. The base carries what every environment has: which env
+    and the seed taskset — per-run caps (turns, tokens, stage timeouts) are each
+    seat's own (`--env.<role>.max_turns`)."""
 
     id: ID = ""
     """Which `Environment` runs. Empty = the taskset's own: the subclass its package
@@ -165,25 +181,13 @@ class EnvConfig(BaseConfig):
     """The seed taskset — the rows every rollout starts from (`--env.taskset.id`,
     positional shorthand `uv run eval <taskset-id>`). None only for an env that
     mints its tasks without a dataset; every bundled env requires one."""
-    timeout: TimeoutConfig = TimeoutConfig()
+    timeout: EnvTimeoutConfig = EnvTimeoutConfig()
     retries: RetryConfig = RetryConfig()
     max_concurrent: int | None = None
     """Bounds concurrent agent runs on a SERVED env, per worker — an env's internal
     fan-out counts, so best-of-n under many requests can't run unbounded (None = no
     limit). The in-process eval CLI gates with its run-level `--max-concurrent`
     instead."""
-    max_turns: int | None = None
-    """Max model turns per rollout (None = no limit). Framework-enforced (the
-    interception server refuses turns past it), so it applies to any harness."""
-    max_input_tokens: int | None = None
-    """Max input (prompt) tokens per rollout (None = no limit); framework-enforced
-    between turns."""
-    max_output_tokens: int | None = None
-    """Max output (completion) tokens per rollout (None = no limit); framework-enforced
-    between turns."""
-    max_total_tokens: int | None = None
-    """Max total (prompt + completion) tokens per rollout (None = no limit);
-    framework-enforced between turns."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape (see `verifiers.v1.interception`): `elastic` (default —
     servers grown on demand), `server` (one server, with a tunnel choice), or
@@ -691,12 +695,6 @@ class Environment(ABC, Generic[ConfigT]):
                     "for an isolated run.",
                     harness.config.id,
                 )
-        self.limits = RolloutLimits(
-            max_turns=config.max_turns,
-            max_input_tokens=config.max_input_tokens,
-            max_output_tokens=config.max_output_tokens,
-            max_total_tokens=config.max_total_tokens,
-        )
         # Eval-level serving resources, live only inside `serving()`; the env's
         # agents borrow them, so runners never thread them through `run_slot`.
         self._shared_tools: dict[str, SharedToolServer] = {}
@@ -825,7 +823,7 @@ class Environment(ABC, Generic[ConfigT]):
                 sampling=role_ctx.sampling,
                 interception=self._interception,
                 limits=self._role_limits(spec),
-                timeout=self.config.timeout,
+                timeout=spec.timeout,
                 name=name,
                 role=name if self._stamp_roles else None,
                 episode=episode_id,
@@ -862,21 +860,12 @@ class Environment(ABC, Generic[ConfigT]):
         return self._role_clients[key]
 
     def _role_limits(self, spec: AgentConfig) -> RolloutLimits:
-        """The role's per-rollout limits: each cap the role's own when set, else the
-        env's."""
+        """The role's per-run limits — the seat's own caps, nothing env-level."""
         return RolloutLimits(
-            max_turns=spec.max_turns
-            if spec.max_turns is not None
-            else self.limits.max_turns,
-            max_input_tokens=spec.max_input_tokens
-            if spec.max_input_tokens is not None
-            else self.limits.max_input_tokens,
-            max_output_tokens=spec.max_output_tokens
-            if spec.max_output_tokens is not None
-            else self.limits.max_output_tokens,
-            max_total_tokens=spec.max_total_tokens
-            if spec.max_total_tokens is not None
-            else self.limits.max_total_tokens,
+            max_turns=spec.max_turns,
+            max_input_tokens=spec.max_input_tokens,
+            max_output_tokens=spec.max_output_tokens,
+            max_total_tokens=spec.max_total_tokens,
         )
 
     async def run_episode(

@@ -312,8 +312,8 @@ async def test_run_slot_observes_and_completes(monkeypatch):
 
 def test_role_pins_fall_back_per_field():
     """What a rollout's agent actually gets: the role's pins where set (model,
-    sampling, per-seat caps) and the run's/env's values where not — asserted on the
-    built per-episode agents, not the helpers."""
+    sampling) fall back to the run's per field, and the per-run caps are the
+    seat's own — asserted on the built per-episode agents, not the helpers."""
 
     class PinnedConfig(vf.EnvConfig):
         a: vf.AgentConfig = vf.AgentConfig()
@@ -325,21 +325,19 @@ def test_role_pins_fall_back_per_field():
 
     class PinnedEnv(vf.Environment[PinnedConfig]):
         async def rollout(self, task, agents):
-            return {}
+            pass
 
-    env = PinnedEnv(
-        PinnedConfig(taskset={"id": "echo-v1"}, max_turns=7, max_output_tokens=100)
-    )
+    env = PinnedEnv(PinnedConfig(taskset={"id": "echo-v1"}, a={"max_turns": 7}))
     ctx = vf.ModelContext(model="run-model", client=object())  # duck client
     agents = env._episode_agents(ctx, "ep", None, [], None)
     assert agents["a"].ctx.model == "run-model"  # nothing pinned → the run's
     assert agents["a"].ctx.client is ctx.client
-    assert agents["a"].limits.max_turns == 7  # the env's caps
+    assert agents["a"].limits.max_turns == 7  # the seat's own cap
+    assert agents["a"].limits.max_output_tokens is None  # unset = no limit
     assert agents["b"].ctx.model == "frozen"  # pins win, per field
     assert agents["b"].ctx.client is ctx.client  # unpinned legs stay the run's
     assert agents["b"].ctx.sampling.temperature == 0.0
     assert agents["b"].limits.max_turns == 2
-    assert agents["b"].limits.max_output_tokens == 100  # unset caps stay the env's
 
 
 def test_seat_harness_is_a_pin_or_the_taskset_default():

@@ -36,6 +36,7 @@ from pathlib import Path
 
 import pytest
 
+import verifiers.v1 as vf
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.loaders import load_environment
 from verifiers.v1.cli.eval.runner import run_eval
@@ -154,12 +155,22 @@ def _eval_config(
         harness_cfg = {"id": harness, **(harness_overrides or {})}
         _configure_prime_runtimes(harness_cfg)
         env_cfg.setdefault("agent", {})["harness"] = harness_cfg
+    # Per-run caps live on the seats: resolve the env's declared roles and cap
+    # each one (a test's own seat dict wins over the shared defaults).
+    config_cls = vf.env_config_type(taskset, env_cfg.get("id", ""))
+    seats = [
+        name
+        for name, field in config_cls.model_fields.items()
+        if isinstance(field.default, vf.AgentConfig)
+    ]
+    for seat in seats:
+        seat_cfg = env_cfg.setdefault(seat, {})
+        seat_cfg.setdefault("max_turns", max_turns)
+        seat_cfg.setdefault("max_output_tokens", max_tokens)
+        seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
     return EvalConfig(
         env={
             "taskset": taskset_cfg,
-            "max_turns": max_turns,
-            "max_output_tokens": max_tokens,
-            "timeout": {"rollout": rollout_timeout, "scoring": 60},
             "retries": {"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
             **env_cfg,
         },

@@ -70,34 +70,56 @@ _MARK = {
 }
 
 
+def _seat_value(config: EvalConfig, read):
+    """A cap as the overview shows it: the declared seats' shared value, the
+    string 'per-seat' when they disagree (caps live on the seats)."""
+    from verifiers.v1.env import _declared_agent_configs
+
+    values = {read(spec) for spec in _declared_agent_configs(config.env).values()}
+    return values.pop() if len(values) == 1 else "per-seat"
+
+
 def _limits(config: EvalConfig) -> list[str]:
-    """Per-rollout caps for the overview (concurrency first, then turns, tokens). An unset cap
-    reads as 'no ...' rather than being hidden."""
+    """Per-run caps for the overview (concurrency first, then turns, tokens), read
+    off the declared seats. An unset cap reads as 'no ...' rather than being hidden."""
     toks = []
-    if config.env.max_input_tokens:
-        toks.append(f"in≤{config.env.max_input_tokens}")
-    if config.env.max_output_tokens:
-        toks.append(f"out≤{config.env.max_output_tokens}")
-    if config.env.max_total_tokens:
-        toks.append(f"total≤{config.env.max_total_tokens}")
+    for label, field in (
+        ("in", "max_input_tokens"),
+        ("out", "max_output_tokens"),
+        ("total", "max_total_tokens"),
+    ):
+        v = _seat_value(config, lambda spec, field=field: getattr(spec, field))
+        if v == "per-seat":
+            toks.append(f"{label} per-seat")
+        elif v:
+            toks.append(f"{label}≤{v}")
+    turns = _seat_value(config, lambda spec: spec.max_turns)
     return [
         f"≤{config.max_concurrent} concurrent"
         if config.max_concurrent
         else "no concurrency cap",
-        f"{config.env.max_turns} turns" if config.env.max_turns else "no turn cap",
+        "per-seat turn caps"
+        if turns == "per-seat"
+        else (f"{turns} turns" if turns else "no turn cap"),
         f"{', '.join(toks)} tokens" if toks else "no token cap",
     ]
 
 
 def _timeouts(config: EvalConfig) -> list[str]:
-    """Per-stage rollout timeouts for the overview, each stage enumerated (unset → 'no <stage>
-    timeout')."""
-    return [
-        f"{stage} {v:g}s"
-        if (v := getattr(config.env.timeout, stage))
-        else f"no {stage} timeout"
-        for stage in ("setup", "rollout", "finalize", "scoring")
-    ]
+    """Per-stage run timeouts for the overview (each seat's own), plus the env's
+    score() bound (unset → 'no <stage> timeout')."""
+    rows = []
+    for stage in ("setup", "rollout", "finalize", "scoring"):
+        v = _seat_value(config, lambda spec, stage=stage: getattr(spec.timeout, stage))
+        if v == "per-seat":
+            rows.append(f"{stage} per-seat")
+        elif v:
+            rows.append(f"{stage} {v:g}s")
+        else:
+            rows.append(f"no {stage} timeout")
+    score = config.env.timeout.score
+    rows.append(f"score {score:g}s" if score else "no score timeout")
+    return rows
 
 
 def _aligned(rows: list[list[str]]) -> list[str]:
