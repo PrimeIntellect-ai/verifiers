@@ -47,6 +47,22 @@ def mark(attr: str, **extra: Any) -> Callable[[F], F]:
     return decorator
 
 
+def _async_only(attr: str) -> Callable[[F], F]:
+    """Refuse a sync function at definition time — scoring/stop handlers are awaited
+    in a gather, where a sync one would surface as an opaque asyncio error at score
+    time, attributed to the wrong stage."""
+
+    def check(f: F) -> F:
+        if not inspect.iscoroutinefunction(f):
+            raise TypeError(
+                f"@vf.{attr} {f.__name__!r} must be `async def` — it is awaited at "
+                "scoring time"
+            )
+        return f
+
+    return check
+
+
 @overload
 def tool(func: F, name: str | None = None) -> F: ...
 @overload
@@ -64,7 +80,10 @@ def stop(func: F, priority: int = 0) -> F: ...
 def stop(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """Mark a stop condition `(self, trace) -> bool`."""
-    decorator = mark("stop", stop_priority=priority)
+
+    def decorator(f: F) -> F:
+        return mark("stop", stop_priority=priority)(_async_only("stop")(f))
+
     return decorator if func is None else decorator(func)
 
 
@@ -81,7 +100,12 @@ def metric(
     `Environment` it's a cross-agent signal: run once per episode trace with the
     finished sibling set in reach (`trace` = the target, `traces` = all of them);
     `role=` narrows the targets (env-only — a task has no roles)."""
-    decorator = mark("metric", metric_priority=priority, _vf_role=role)
+
+    def decorator(f: F) -> F:
+        return mark("metric", metric_priority=priority, _vf_role=role)(
+            _async_only("metric")(f)
+        )
+
     return decorator if func is None else decorator(func)
 
 
@@ -102,7 +126,10 @@ def reward(
     """Mark a weighted per-rollout reward returning a float or keyed scores. On an
     `Environment` it's a cross-agent signal — see `metric` for the env semantics
     (`role=` picks whose traces it records onto)."""
-    decorator = mark(
-        "reward", reward_priority=priority, _vf_weight=weight, _vf_role=role
-    )
+
+    def decorator(f: F) -> F:
+        return mark(
+            "reward", reward_priority=priority, _vf_weight=weight, _vf_role=role
+        )(_async_only("reward")(f))
+
     return decorator if func is None else decorator(func)

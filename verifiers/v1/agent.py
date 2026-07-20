@@ -138,15 +138,18 @@ class Agent:
         """Which interception this run rides. An injected one always — its owner
         sized its reach. The owned server only when provably reachable from all of
         this run's consumers: always when it tunnels, else for a local run with no
-        tool servers in play (any such server may sit in a remote runtime and must
-        reach `/state`). Otherwise `None` — the rollout brings up a per-run server
-        sized to the task."""
+        tool or user servers in play (any such server may sit in a remote runtime
+        and must reach `/state`). Otherwise `None` — the rollout brings up a per-run
+        server sized to the task."""
         if self.interception is not None:
             return self.interception
         if self._server is None:
             return None
         if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not type(task).tools
+            run_is_local
+            and not shared_tools
+            and not type(task).tools
+            and type(task).user is None
         ):
             return self._server
         return None

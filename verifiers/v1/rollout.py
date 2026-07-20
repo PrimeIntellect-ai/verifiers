@@ -145,10 +145,6 @@ class RolloutRun:
         """Whether the run can continue: nothing failed, nothing stopped it."""
         return not self._failed and self.trace.stop_condition is None
 
-    @property
-    def closed(self) -> bool:
-        return self._closed
-
     def fail(self, error: Exception) -> None:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped)."""
@@ -366,6 +362,7 @@ class RolloutRun:
                 trace.timing.setup,
                 trace.timing.generation,
                 trace.timing.finalize,
+                trace.timing.scoring,
             ):
                 if span.start and not span.end:
                     span.end = now

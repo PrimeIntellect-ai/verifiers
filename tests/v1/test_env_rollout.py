@@ -538,3 +538,49 @@ def test_role_scoped_signals_belong_to_environments():
             @vf.metric(role="solver")
             async def scoped(self, trace):
                 return 0.0
+
+
+async def test_aliased_views_land_once():
+    """A trace named under two view keys (a natural authoring move — e.g. `winner`
+    aliasing a solver) is one run: serialized once, scored once."""
+
+    class Aliased(vf.Environment[DuetConfig]):
+        async def rollout(self, task, agents):
+            a = await agents["a"].run(task)
+            return {"a": a, "winner": a, "b": await agents["b"].run(task)}
+
+        @vf.metric
+        async def n(self, trace):
+            return 1.0
+
+    env = Aliased(_duet_config())
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert episode.ok and len(episode.traces) == 2
+    assert all(t.metrics.get("n") == 1.0 for t in episode.traces)
+
+
+async def test_empty_views_fail_the_rollout():
+    """A rollout() that returns no traces is the env-rollout failing, not an ok
+    empty episode that resume would keep forever."""
+
+    class Empty(vf.SingleAgentEnv):
+        async def rollout(self, task, agents):
+            return {}
+
+    env = Empty(_env_config())
+    _stub_agents(env)
+    episode = await env.run_episode(_task(env), None)
+    assert not episode.ok and episode.error is not None
+    assert "returned no traces" in episode.error.message
+
+
+def test_scoring_handlers_must_be_async():
+    """A sync handler would surface as an opaque asyncio error at score time,
+    attributed to the scoring stage; refused at definition instead."""
+    for deco in (vf.reward, vf.metric, vf.stop):
+        with pytest.raises(TypeError, match="async def"):
+
+            @deco
+            def sync_handler(self, trace):
+                return 0.0

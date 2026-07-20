@@ -49,3 +49,26 @@ async def test_record_retry_is_record_atomic():
     # the final episode carries the retried attempts' trace errors as its history
     assert [e.message for e in episode.errors] == ["attempt 1", "attempt 2"]
     assert episode.traces[0].error is not None and not episode.ok
+
+
+async def test_any_captured_error_counts_for_retry():
+    """A retryable failure masked by a later capture (e.g. a teardown error recorded
+    after the real one) still retries — the policy matches all captured errors, not
+    just the most recent."""
+    calls = 0
+
+    def masked_then_good():
+        async def attempt() -> Episode:
+            nonlocal calls
+            calls += 1
+            episode = _record(trace_error=Boom("real") if calls == 1 else None)
+            if calls == 1:
+                episode.traces[0].capture_error(RuntimeError("teardown"))
+            return episode
+
+        return attempt()
+
+    retry = RolloutRetryConfig(max_retries=1, include=["Boom"])
+    episode = await run_episode_with_retry(masked_then_good, retry)
+    assert calls == 2
+    assert episode.ok

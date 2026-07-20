@@ -539,6 +539,7 @@ def _view_traces(env_name: str, views: Views) -> list[Trace]:
             f"(name -> Trace | list[Trace]), got {type(views).__name__}"
         )
     traces: list[Trace] = []
+    seen: set[int] = set()
     for name, view in views.items():
         for trace in view if isinstance(view, list) else [view]:
             if not isinstance(trace, Trace):
@@ -546,7 +547,17 @@ def _view_traces(env_name: str, views: Views) -> list[Trace]:
                     f"{env_name}.rollout() view {name!r} must be a Trace or "
                     f"list[Trace], got {type(trace).__name__}"
                 )
+            if (
+                id(trace) in seen
+            ):  # an alias view names an existing trace, not a new one
+                continue
+            seen.add(id(trace))
             traces.append(trace)
+    if not traces:
+        raise ValueError(
+            f"{env_name}.rollout() returned no traces — every episode must carry "
+            "at least one run; return the traces your rollout produced"
+        )
     return traces
 
 

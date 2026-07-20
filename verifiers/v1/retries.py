@@ -97,11 +97,12 @@ def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
 
 
 def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
-    """Whether a finished env-rollout should be retried: its episode-level error, or
-    any trace's error, is retryable. Episode-atomic — a half-played sibling context
-    isn't reproducible."""
-    return _retryable(episode.error, retry) or any(
-        _retryable(t.error, retry) for t in episode.traces
+    """Whether a finished env-rollout should be retried: any captured error —
+    episode-level or on any trace — is retryable. All captures count, not just the
+    most recent: a retryable failure followed by a teardown error would otherwise
+    never retry. Episode-atomic — a half-played sibling context isn't reproducible."""
+    return any(_retryable(e, retry) for e in episode.errors) or any(
+        _retryable(e, retry) for t in episode.traces for e in t.errors
     )
 
 
@@ -138,6 +139,7 @@ async def run_episode_with_retry(
 
     retrying = AsyncRetrying(
         stop=stop_after_attempt(retry.max_retries + 1),
+        wait=wait_exponential_jitter(initial=0.5, max=30),
         retry=retry_if_result(lambda rec: episode_should_retry(rec, retry)),
         before_sleep=note,
         retry_error_callback=lambda state: state.outcome.result(),
