@@ -16,7 +16,7 @@ jobs:
       has_envs: ${{ steps.set-matrix.outputs.has_envs }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set matrix
         id: set-matrix
@@ -47,7 +47,7 @@ jobs:
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: true
 

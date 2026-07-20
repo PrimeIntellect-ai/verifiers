@@ -34,7 +34,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -48,7 +48,7 @@ jobs:
         run: ls -1 dist/
 
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: verifiers-dev-dist
           path: dist/
@@ -63,7 +63,7 @@ jobs:
       id-token: write
     steps:
       - name: Download dist artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: verifiers-dev-dist
           path: dist/
@@ -84,14 +84,14 @@ jobs:
     steps:
       - name: Checkout tagged release (dispatch)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: refs/tags/${{ inputs.tag }}
 
       - name: Checkout tagged release (push)
         if: github.event_name != 'workflow_dispatch'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -122,7 +122,7 @@ jobs:
         run: uv build
 
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: verifiers-dist
           path: dist/
@@ -137,7 +137,7 @@ jobs:
       id-token: write
     steps:
       - name: Download dist artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: verifiers-dist
           path: dist/
@@ -152,12 +152,12 @@ jobs:
       contents: write
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ needs.build-tag.outputs.tag }}
 
       - name: Download dist artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: verifiers-dist
           path: dist/
