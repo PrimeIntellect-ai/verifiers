@@ -116,6 +116,13 @@ def response_from_generate(
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
+    completion_logprobs = result.get("completion_logprobs") or []
+    if len(completion_logprobs) != len(completion_ids):
+        raise ValueError(
+            "renderer returned misaligned sampled-token logprobs: "
+            f"{len(completion_ids)} completion ids but "
+            f"{len(completion_logprobs)} logprobs"
+        )
     # Per-message token spans (the renderer's attribution) let the trace graph store each
     # message's tokens once; carried transiently on TurnTokens and consumed by turn.commit().
     attribution = result.get("prompt_attribution")
@@ -145,7 +152,7 @@ def response_from_generate(
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
-            completion_logprobs=result.get("completion_logprobs") or [],
+            completion_logprobs=completion_logprobs,
             message_spans=message_spans,
             is_content=attribution.is_content if attribution is not None else None,
             multi_modal_data=result.get("multi_modal_data"),

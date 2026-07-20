@@ -158,16 +158,20 @@ class Branch(StrictBaseModel):
         out: list[float] = []
         for node in self.nodes:
             mask = node.mask
-            sampled = sum(mask) if node.logprobs else 0
+            sampled = sum(mask)
+            if len(node.logprobs) != sampled:
+                raise ValueError(
+                    "sampled-token logprobs are misaligned in trace node: "
+                    f"{sampled} sampled tokens but {len(node.logprobs)} logprobs"
+                )
             # Bulk-fill the canonical unsampled-prefix/sampled-suffix layout.
             if not sampled or all(mask[-sampled:]):
                 out += [0.0] * (len(mask) - sampled) + node.logprobs[:sampled]
-                out += [0.0] * max(0, sampled - len(node.logprobs))
                 continue
             li = 0
             for sampled in mask:
                 if sampled:
-                    out.append(node.logprobs[li] if li < len(node.logprobs) else 0.0)
+                    out.append(node.logprobs[li])
                     li += 1
                 else:
                     out.append(0.0)
