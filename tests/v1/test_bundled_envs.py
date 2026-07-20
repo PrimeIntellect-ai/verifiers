@@ -46,7 +46,7 @@ def test_load_environment_honors_env_id():
     config = EvalConfig(env={"id": "best-of-n", "taskset": {"id": "echo-v1"}, "n": 3})
     env = vf.load_environment(config.env)
     assert isinstance(env, BestOfNEnv)
-    assert set(env._roles) == {"solver"}
+    assert set(env._roles) == {"agent"}
 
 
 def test_shared_tools_ride_only_the_tasksets_own_tasks():
@@ -161,11 +161,11 @@ def test_paired_env_seats_pin_their_own_harness():
             {
                 "id": "best-of-n",
                 "taskset": {"id": "echo-v1"},
-                "solver": {"harness": {"id": "null"}},
+                "agent": {"harness": {"id": "null"}},
             }
         )
     )
-    assert env._harnesses["solver"].config.id == "null"
+    assert env._harnesses["agent"].config.id == "null"
     judged = vf.load_environment(
         vf.resolve_env_config(
             {
@@ -191,12 +191,12 @@ def test_best_of_n_sibling_scoring():
     )
     traces = [_scored_trace(0.4), _scored_trace(1.0)]
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
-    asyncio.run(env.score(task, {"solver": traces}))
+    asyncio.run(env.score(task, {"agent": traces}))
     assert [t.metrics["best"] for t in traces] == [0.0, 1.0]
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)
 
     misses = [_scored_trace(0.2), _scored_trace(0.2)]
-    asyncio.run(env.score(task, {"solver": misses}))
+    asyncio.run(env.score(task, {"agent": misses}))
     # Ties share `best`; nothing reached the threshold.
     assert [t.metrics["best"] for t in misses] == [1.0, 1.0]
     assert all(t.metrics["pass_at_n"] == 0.0 for t in misses)

@@ -298,12 +298,12 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
     traces = await run_v1(
         "echo-v1",
         harness=None,  # a multi-agent env refuses the run-level harness
-        env={"id": "best-of-n", "n": 2, "solver": {"harness": {"id": "null"}}},
+        env={"id": "best-of-n", "n": 2, "agent": {"harness": {"id": "null"}}},
         output_dir=tmp_path,
         max_turns=2,
     )
     assert len(traces) == 2  # one env-rollout, two attempts
-    assert all(t.role == "solver" and t.errors == [] for t in traces)
+    assert all(t.role == "agent" and t.errors == [] for t in traces)
     assert any(t.metrics["best"] == 1.0 for t in traces)
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes
 

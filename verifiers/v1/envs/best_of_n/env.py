@@ -1,6 +1,6 @@
 """best-of-n: n independent attempts at the task, scored against each other.
 
-One "solver" role attempts the task `--env.n` times (`--env.id best-of-n` over any
+One "agent" role attempts the task `--env.n` times (`--env.id best-of-n` over any
 taskset); each attempt is judged by the task's own rewards as usual, then two
 cross-agent metrics compare the finished siblings: `best` marks the argmax-reward
 attempt, `pass_at_n` whether any sibling reached `--env.threshold`.
@@ -14,7 +14,9 @@ import verifiers.v1 as vf
 
 
 class BestOfNEnvConfig(vf.EnvConfig):
-    solver: vf.AgentConfig = vf.AgentConfig()
+    # A single-role env keeps the single-agent seat name: `--env.id best-of-n`
+    # composes with a plain run's `--env.agent.*` flags unchanged.
+    agent: vf.AgentConfig = vf.AgentConfig()
     n: int = Field(4, ge=1)
     """Independent attempts per env-rollout, scored against each other."""
     threshold: float = 1.0
@@ -24,9 +26,9 @@ class BestOfNEnvConfig(vf.EnvConfig):
 class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
     async def rollout(self, task, agents):
         attempts = await asyncio.gather(
-            *(agents["solver"].run(task) for _ in range(self.config.n))
+            *(agents["agent"].run(task) for _ in range(self.config.n))
         )
-        return {"solver": list(attempts)}
+        return {"agent": list(attempts)}
 
     @vf.metric
     async def best(self, trace, traces):
