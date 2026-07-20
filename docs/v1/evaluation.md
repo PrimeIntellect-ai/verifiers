@@ -64,13 +64,14 @@ disabled by default; ASCII is the default mode when enabled:
 
 ```toml
 [textify]
-enabled = true
-width = 160
+enabled = true                  # enable rendering
+mode = "ascii"                  # output format
+width = 160                     # output columns
+height = 80                     # output rows
+char_aspect = 0.5               # aspect correction
+gamma = 1.0                     # luminance gamma
+invert = true                   # invert luminance
+ramp = " .:-=+*#%@"             # ASCII glyphs
+threshold = "otsu"              # adaptive threshold
+max_chars = 40000               # output limit
 ```
-
-Or on the CLI: `--textify.enabled true --textify.width 160`. Set
-`--textify.mode braille` for braille; `height`, `char_aspect`, `gamma`, `invert`, `ramp`,
-`threshold`, and `max_chars` tune rendering. Set `threshold = "otsu"` for deterministic
-global Otsu binarization in either ASCII or braille mode. `invert` defaults to auto, which maps the white
-backgrounds common in diagrams and documents to spaces. Each image is limited to 40,000 output
-characters by default (25 megapixels decoded), so extreme aspect ratios cannot explode a prompt.
