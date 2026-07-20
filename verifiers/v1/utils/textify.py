@@ -236,30 +236,6 @@ def image_to_text(image: bytes | np.ndarray, cfg: TextifyConfig) -> str:
     return "\n".join("".join(line) for line in glyphs[idx.astype(np.intp)])
 
 
-def describe(cfg: TextifyConfig) -> str:
-    """The conversion parameters as one prose line — for self-supervised
-    (image, parameters, rendering) data where the transform should be stated in text."""
-    parts = [f"mode={cfg.mode}", f"width={cfg.width}"]
-    if cfg.height is not None:
-        parts.append(f"height={cfg.height}")
-    else:
-        parts.append(f"char_aspect={cfg.char_aspect}")
-    if cfg.gamma != 1.0:
-        parts.append(f"gamma={cfg.gamma}")
-    parts.append(
-        "invert=auto" if cfg.invert is None else f"invert={str(cfg.invert).lower()}"
-    )
-    if cfg.max_chars is not None:
-        parts.append(f"max_chars={cfg.max_chars}")
-    if cfg.mode == "ascii":
-        parts.append(f"ramp={cfg.ramp!r}")
-        if cfg.threshold == "otsu":
-            parts.append("threshold=otsu")
-    else:
-        parts.append(f"threshold={cfg.threshold}")
-    return "rendered with " + ", ".join(parts)
-
-
 def data_url_bytes(url: str) -> bytes | None:
     """The decoded payload of a base64 `data:` URL, else None for non-data URLs.
     Malformed/unsupported data URLs raise so the rollout records the bad image."""

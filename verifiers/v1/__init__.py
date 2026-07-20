@@ -98,12 +98,7 @@ from verifiers.v1.mcp import (
     User,
     UserConfig,
 )
-from verifiers.v1.utils.textify import (
-    TextifyConfig,
-    describe as describe_textify,
-    image_to_text,
-    textify_messages,
-)
+from verifiers.v1.utils.textify import TextifyConfig, image_to_text, textify_messages
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     TRACE_VERSION,
@@ -241,7 +236,6 @@ __all__ = [
     "RolloutRetryConfig",
     "TimeoutConfig",
     "TextifyConfig",
-    "describe_textify",
     "image_to_text",
     "textify_messages",
     "Episode",

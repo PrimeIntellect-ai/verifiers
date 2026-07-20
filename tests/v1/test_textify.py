@@ -169,13 +169,11 @@ def test_http_url_passes_through() -> None:
     assert ChatDialect().textify_body(body, render) == body
 
 
-def test_safe_default_budget_and_describe() -> None:
+def test_safe_default_budget() -> None:
     img = np.zeros((1000, 1, 3), dtype=np.uint8)
     cfg = vf.TextifyConfig(enabled=True)
     lines = vf.image_to_text(img, cfg).splitlines()
     assert len(lines) * len(lines[0]) <= 40_000
-    assert "invert=auto" in vf.describe_textify(cfg)
-    assert "max_chars=40000" in vf.describe_textify(cfg)
 
 
 def test_malformed_data_url_raises() -> None:
@@ -411,16 +409,6 @@ async def test_concurrent_opening_calls_user_once() -> None:
 
     assert calls == 1
     assert one == two == session.opening
-
-
-def test_describe_includes_output_affecting_threshold() -> None:
-    ascii_fixed = vf.describe_textify(vf.TextifyConfig(mode="ascii", threshold=0.5))
-    ascii_otsu = vf.describe_textify(vf.TextifyConfig(mode="ascii", threshold="otsu"))
-    braille = vf.describe_textify(vf.TextifyConfig(mode="braille", threshold=0.25))
-
-    assert "ramp=" in ascii_fixed and "threshold=" not in ascii_fixed
-    assert "ramp=" in ascii_otsu and "threshold=otsu" in ascii_otsu
-    assert "ramp=" not in braille and "threshold=0.25" in braille
 
 
 def test_textify_cache_resists_full_history_scan(monkeypatch) -> None:
