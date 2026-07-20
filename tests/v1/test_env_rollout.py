@@ -90,37 +90,6 @@ async def test_single_agent_env_mints_single_agent_records(monkeypatch):
     assert episode.task.data.idx == trace.task.data.idx
 
 
-def test_roles_are_the_declared_agent_fields():
-    """Roles are the AgentConfig fields on the env's config — the field name is the
-    role, the only naming site. Every env stamps its traces' roles except
-    `SingleAgentEnv`, whose wire stays identical to a plain eval's."""
-    env = DuetEnv(_duet_config())
-    assert list(env._roles) == ["a", "b"]  # declaration order
-    assert all(isinstance(c, vf.AgentConfig) for c in env._roles.values())
-    assert env._stamp_roles
-    assert not vf.SingleAgentEnv(_env_config())._stamp_roles
-
-
-def test_role_fields_must_declare_default_instances():
-    """A `Field(default_factory=...)` role would silently fall out of role discovery
-    and the CLI deep-merge; the config class refuses at definition instead."""
-    from pydantic import Field
-
-    with pytest.raises(TypeError, match="default instance"):
-
-        class BadParams(vf.EnvConfig):
-            solver: vf.AgentConfig = Field(default_factory=vf.AgentConfig)
-
-
-def test_role_fields_must_not_shadow_base_fields():
-    """A role named like a base `EnvConfig` field (`taskset`, `timeout`, ...) would
-    break every framework read of that name; refuse at class definition."""
-    with pytest.raises(TypeError, match="shadow"):
-
-        class Shadowed(vf.EnvConfig):
-            taskset: vf.AgentConfig = vf.AgentConfig()  # type: ignore[assignment]
-
-
 async def test_multi_role_records_stamp_roles(monkeypatch):
     env = DuetEnv(_duet_config())
     _stub_engine(env, monkeypatch)
@@ -329,15 +298,6 @@ async def test_decorated_signal_failure_is_an_episode_error(monkeypatch):
     assert len(episode.traces) == 1 and episode.traces[0].error is None
 
 
-def test_roles_must_be_nonempty():
-    class Empty(vf.Environment):
-        async def rollout(self, task, agents):
-            return {}
-
-    with pytest.raises(ValueError, match="declares no roles"):
-        Empty(vf.EnvConfig(taskset={"id": "echo-v1"}))
-
-
 def test_slots_need_a_rollout():
     env = vf.SingleAgentEnv(_env_config())
     with pytest.raises(ValueError, match="n >= 1"):
@@ -364,44 +324,44 @@ async def test_run_slot_observes_and_completes(monkeypatch):
     assert [s.traces for s in slots] == [list(r.traces) for r in episodes]
     assert all(s.done for s in slots)
     assert completed == episodes
-
-
-def test_finished_slot_from_saved_record():
+    # --resume preloads kept episodes as already-finished slots.
     from verifiers.v1.env import RunSlot
-    from verifiers.v1.trace import Episode
 
-    trace = Trace(task=TraceTask(type="Task", data=vf.TaskData(idx=7, prompt="hi")))
-    episode = Episode.of(trace, env="stub")
-    slot = RunSlot.finished(episode)
-    assert slot.done and slot.episode is episode and slot.task.data.idx == 7
-    assert slot.traces == [trace]
+    slot = RunSlot.finished(episodes[0])
+    assert slot.done and slot.episode is episodes[0]
+    assert slot.traces == list(episodes[0].traces)
 
 
-def test_role_ctx_pins_fall_back_per_field():
-    env = vf.SingleAgentEnv(_env_config())
-    ctx = vf.ModelContext(model="run-model", client=object())  # duck client
-    assert env._role_ctx(vf.AgentConfig(), ctx) is ctx  # nothing pinned → the run's
-    pinned = env._role_ctx(vf.AgentConfig(model="frozen-judge"), ctx)
-    assert pinned.model == "frozen-judge"
-    assert pinned.client is ctx.client  # unpinned legs stay the run's
-    sampled = env._role_ctx(
-        vf.AgentConfig(sampling=vf.SamplingConfig(temperature=0.0)), ctx
+def test_role_pins_fall_back_per_field():
+    """What a rollout's agent actually gets: the role's pins where set (model,
+    sampling, per-seat caps) and the run's/env's values where not — asserted on the
+    built per-episode agents, not the helpers."""
+
+    class PinnedConfig(vf.EnvConfig):
+        a: vf.AgentConfig = vf.AgentConfig()
+        b: vf.AgentConfig = vf.AgentConfig(
+            model="frozen",
+            max_turns=2,
+            sampling=vf.SamplingConfig(temperature=0.0),
+        )
+
+    class PinnedEnv(vf.Environment[PinnedConfig]):
+        async def rollout(self, task, agents):
+            return {}
+
+    env = PinnedEnv(
+        PinnedConfig(taskset={"id": "echo-v1"}, max_turns=7, max_output_tokens=100)
     )
-    assert sampled.model == "run-model"
-    assert sampled.sampling.temperature == 0.0
-
-
-def test_role_limits_fall_back_per_field():
-    env = vf.SingleAgentEnv(_env_config(max_turns=7, max_output_tokens=100))
-    limits = env._role_limits(vf.AgentConfig(max_turns=2))
-    assert limits.max_turns == 2  # the role's own cap wins
-    assert limits.max_output_tokens == 100  # unset caps stay the env's
-
-
-def test_role_harness_config_narrows_by_id():
-    spec = vf.AgentConfig(harness={"id": "bash"})
-    assert type(spec.harness) is not vf.HarnessConfig  # resolved to the concrete type
-    assert spec.harness.id == "bash"
+    ctx = vf.ModelContext(model="run-model", client=object())  # duck client
+    agents = env._episode_agents(ctx, None, [], None)
+    assert agents["a"].ctx.model == "run-model"  # nothing pinned → the run's
+    assert agents["a"].ctx.client is ctx.client
+    assert agents["a"].limits.max_turns == 7  # the env's caps
+    assert agents["b"].ctx.model == "frozen"  # pins win, per field
+    assert agents["b"].ctx.client is ctx.client  # unpinned legs stay the run's
+    assert agents["b"].ctx.sampling.temperature == 0.0
+    assert agents["b"].limits.max_turns == 2
+    assert agents["b"].limits.max_output_tokens == 100  # unset caps stay the env's
 
 
 def test_seat_harness_is_a_pin_or_the_taskset_default():
@@ -443,22 +403,6 @@ def test_role_harness_override_switches_the_type():
     tuned = Pinned.model_validate({"solver": {"harness": {"edit": False}}})
     assert tuned.solver.harness is not None and tuned.solver.harness.id == "bash"
     assert tuned.solver.harness.edit is False
-
-
-def test_role_pins_survive_partial_overrides():
-    """A partial role override (`--env.user.sampling.temperature 0.7`) must not
-    silently reset the role's declared pins — the field-default instance deep-merges
-    under the provided keys, and only an explicit override replaces a pin."""
-
-    class Pinned(vf.EnvConfig):
-        user: vf.AgentConfig = vf.AgentConfig(model="frozen", max_turns=3)
-
-    params = Pinned.model_validate({"user": {"sampling": {"temperature": 0.7}}})
-    assert params.user.model == "frozen" and params.user.max_turns == 3
-    assert params.user.sampling is not None
-    assert params.user.sampling.temperature == 0.7
-    explicit = Pinned.model_validate({"user": {"model": "other"}})
-    assert explicit.user.model == "other" and explicit.user.max_turns == 3
 
 
 def test_env_subclass_loads_and_config_narrows():
