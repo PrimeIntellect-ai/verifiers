@@ -195,9 +195,10 @@ class EnvServerPool:
                         payload,
                     ) = await self.frontend.recv_multipart()
                     if method == b"health":
-                        await self.frontend.send_multipart(
-                            [client_id, request_id, _HEALTH]
-                        )
+                        with contextlib.suppress(zmq.ZMQError):
+                            await self.frontend.send_multipart(
+                                [client_id, request_id, _HEALTH]
+                            )
                     else:
                         # Pool capacity is measured in rollouts; one group request carries n.
                         rollout_slots = 1
