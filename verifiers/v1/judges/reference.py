@@ -18,6 +18,7 @@ from verifiers.v1.judge import (
     judge_response,
     judge_verdict,
 )
+from verifiers.v1.judges.rubric import dynamic_fence
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
@@ -81,11 +82,16 @@ class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
         if not response.strip():
             return 0.0  # nothing to grade — skip the (foregone) judge call
         positive, negative = self.config.choices
+        fence_fields = not (self.config.prompt or self.config.prompt_file)
         result = await self.evaluate(
             trace=trace,
-            question=judge_question(task, self.config.question_field),
-            answer=answer,
-            response=response,
+            question=(
+                dynamic_fence(judge_question(task, self.config.question_field))
+                if fence_fields
+                else judge_question(task, self.config.question_field)
+            ),
+            answer=dynamic_fence(answer) if fence_fields else answer,
+            response=dynamic_fence(response) if fence_fields else response,
             positive=positive,
             negative=negative,
         )

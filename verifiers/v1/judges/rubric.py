@@ -43,22 +43,130 @@ def normalize_choice(choice: str, choices: list[str]) -> float:
     return choices.index(choice) / (len(choices) - 1)
 
 
-def first_verdicts_object(text: str) -> dict | None:
-    """The first balanced JSON object in `text` that carries a `verdicts` key. Scanning for the
-    key (not just the first `{`) skips prose and, crucially, an echoed format example — the one
-    in `JSON_SUFFIX` fails to parse (its trailing `...` isn't JSON) and is passed over rather
-    than mistaken for the answer. Returns `None` if no such object is found."""
-    decoder = json.JSONDecoder()
-    idx = text.find("{")
-    while idx != -1:
+def dynamic_fence(text: str) -> str:
+    fence = "`" * (
+        max((len(match) for match in re.findall(r"`+", text)), default=2) + 1
+    )
+    return f"{fence}\n{text}\n{fence}"
+
+
+def answer_region(text: str) -> str:
+    """Keep only text outside balanced, possibly nested reasoning tags."""
+    answer: list[str] = []
+    depth = 0
+    string = False
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if string:
+            answer.append(char) if depth == 0 else None
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                string = False
+            index += 1
+            continue
+        if char == '"':
+            string = True
+            if depth == 0:
+                answer.append(char)
+            index += 1
+            continue
+        if text.startswith("<think>", index):
+            depth += 1
+            index += len("<think>")
+            continue
+        if text.startswith("</think>", index):
+            depth = max(0, depth - 1)
+            index += len("</think>")
+            continue
+        if depth == 0:
+            answer.append(char)
+        index += 1
+    return "".join(answer)
+
+
+def _json_containers(text: str) -> list[tuple[str, bool]]:
+    """Return outer JSON containers and whether each one is lexically complete."""
+    containers: list[tuple[str, bool]] = []
+    stack: list[tuple[str, int]] = []
+    string = False
+    escaped = False
+    start = None
+    for index, char in enumerate(text):
+        if string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                string = False
+            continue
+        if char == '"':
+            string = True
+            continue
+        if char in "[{":
+            if not stack:
+                start = index
+            stack.append((char, index))
+            continue
+        if char not in "]}":
+            continue
+        expected = "{" if char == "}" else "["
+        if not stack or stack[-1][0] != expected:
+            if start is not None:
+                containers.append((text[start : index + 1], False))
+                stack.clear()
+                start = None
+            continue
+        stack.pop()
+        if not stack and start is not None:
+            containers.append((text[start : index + 1], True))
+            start = None
+    if stack and start is not None:
+        containers.append((text[start:], False))
+    return containers
+
+
+def _contains_verdicts(value: object) -> bool:
+    if isinstance(value, dict):
+        return "verdicts" in value or any(_contains_verdicts(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_verdicts(v) for v in value)
+    return False
+
+
+def last_verdicts_object(text: str) -> dict:
+    """Parse the final valid top-level verdict object, failing closed on verdict-shaped output."""
+    candidates: list[dict] = []
+    for raw, complete in _json_containers(answer_region(text)):
+        if not complete:
+            if '"verdicts"' in raw:
+                raise ValueError("judge returned malformed verdicts JSON")
+            continue
         try:
-            obj, _ = decoder.raw_decode(text[idx:])
+            value = json.loads(raw)
         except json.JSONDecodeError:
-            obj = None
-        if isinstance(obj, dict) and "verdicts" in obj:
-            return obj
-        idx = text.find("{", idx + 1)
-    return None
+            if '"verdicts"' in raw:
+                raise ValueError("judge returned malformed verdicts JSON")
+            continue
+        if not _contains_verdicts(value):
+            continue
+        if not isinstance(value, dict) or "verdicts" not in value:
+            raise ValueError(
+                "judge returned a verdicts payload that was not a top-level object"
+            )
+        try:
+            RubricVerdicts.model_validate(value)
+        except ValueError as error:
+            raise ValueError("judge returned invalid verdicts JSON") from error
+        candidates.append(value)
+    if not candidates:
+        raise ValueError(f"judge returned no verdicts JSON object: {text!r}")
+    return candidates[-1]
 
 
 class Criterion(StrictBaseModel):
@@ -184,17 +292,23 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             # template's newline before Response closes it). Absent when `answer_field` is unset.
             # Fence longer than any backtick run in the answer, so a patch/markdown containing ```
             # can't close it early and spill into the prompt as instructions.
-            fence = "`" * (
-                max((len(m) for m in re.findall(r"`+", answer)), default=2) + 1
-            )
             reference = (
                 "\nReference solution (a correct implementation of this task, for comparison):\n"
-                f"{fence}\n{answer}\n{fence}\n"
+                f"{dynamic_fence(answer)}\n"
             )
 
+        fence_fields = not (self.config.prompt or self.config.prompt_file)
         fields = dict(
-            question=judge_question(task, self.config.question_field),
-            response=judge_response(trace, self.config.view),
+            question=(
+                dynamic_fence(judge_question(task, self.config.question_field))
+                if fence_fields
+                else judge_question(task, self.config.question_field)
+            ),
+            response=(
+                dynamic_fence(judge_response(trace, self.config.view))
+                if fence_fields
+                else judge_response(trace, self.config.view)
+            ),
             criteria="\n".join(render(c) for c in batch),
             reference=reference,
         )
@@ -204,12 +318,9 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         else:
             messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
             result = await self.complete(messages, trace=trace)
-            obj = first_verdicts_object(result.text)
-            if obj is None:
-                raise ValueError(
-                    f"judge returned no verdicts JSON object: {result.text!r}"
-                )
-            verdicts = RubricVerdicts.model_validate(obj).verdicts
+            verdicts = RubricVerdicts.model_validate(
+                last_verdicts_object(result.text)
+            ).verdicts
         # Exactly one verdict per criterion in the batch, matched by name — anything else is a
         # judge failure and must error the rollout, not score the model (see `judge_verdict`).
         by_criterion = {c.name: c for c in batch}
@@ -222,11 +333,19 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         for v in verdicts:
             choices = by_criterion[v.name].choices
             # An off-menu answer is a judge failure, not a zero score.
-            if v.verdict not in choices:
+            verdict = next(
+                (
+                    choice
+                    for choice in choices
+                    if choice.casefold() == v.verdict.casefold()
+                ),
+                None,
+            )
+            if verdict is None:
                 raise ValueError(
                     f"judge answered {v.verdict!r} for '{v.name}', expected one of {choices}"
                 )
-            scores[v.name] = normalize_choice(v.verdict, choices)
+            scores[v.name] = normalize_choice(verdict, choices)
         return scores
 
     async def score(self, task: TaskData, trace: Trace) -> float:

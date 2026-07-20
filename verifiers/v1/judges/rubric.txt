@@ -1,14 +1,10 @@
 Given a task, a response, and a list of grading criteria, determine for each criterion whether the response satisfies it.
 
 Task:
-```
 {question}
-```
 {reference}
 Response:
-```
 {response}
-```
 
 Criteria:
 {criteria}
