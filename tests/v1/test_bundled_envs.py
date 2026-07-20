@@ -351,3 +351,16 @@ def test_proposer_learnability_peaks_at_half():
     assert score(2).rewards["learnability"] == 1.0
     assert score(4).rewards["learnability"] == 0.0
     assert score(1).metrics["solve_rate"] == 0.25
+
+
+def test_solve_task_contract_tolerates_latex_escapes():
+    """Math proposers write LaTeX inside the JSON contract; the parse doubles the
+    off-spec backslashes instead of failing the episode."""
+    from proposer_solver_v1.taskset import SolveTask
+
+    trace = _reply_trace(
+        'Here it is:\n{"problem": "Let \\( S \\) be a set with \\\\leq 5 elements.", "answer": 3}'
+    )
+    task = SolveTask.from_trace(trace)
+    assert task.data.answer == "3"
+    assert "\\( S \\)" in task.data.prompt

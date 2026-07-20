@@ -53,6 +53,22 @@ class SolveData(vf.TaskData):
     """The proposer's verified answer — the minted task's ground truth."""
 
 
+def _loads_contract(chunk: str) -> object:
+    """``json.loads`` with one retry that doubles any backslash not part of a
+    valid JSON escape — a math proposer writes LaTeX (``\\(``, ``\\frac``) inside
+    the contract, which is off-spec JSON but an unambiguous fixup. Valid escapes
+    are consumed whole so ``\\\\`` stays itself."""
+    try:
+        return json.loads(chunk)
+    except json.JSONDecodeError:
+        fixed = re.sub(
+            r'\\(?:[\\"/bfnrtu]|u[0-9a-fA-F]{4})|\\',
+            lambda m: m.group(0) if len(m.group(0)) > 1 else "\\\\",
+            chunk,
+        )
+        return json.loads(fixed)
+
+
 class SolveTask(vf.Task[SolveData]):
     @classmethod
     def from_trace(cls, proposer: vf.Trace) -> "SolveTask":
@@ -69,7 +85,7 @@ class SolveTask(vf.Task[SolveData]):
             if not (chunk.startswith("{") and chunk.endswith("}")):
                 continue
             try:
-                parsed = json.loads(chunk)
+                parsed = _loads_contract(chunk)
             except json.JSONDecodeError:
                 continue
             if isinstance(parsed, dict) and {"problem", "answer"} <= parsed.keys():
