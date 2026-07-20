@@ -160,11 +160,10 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
 
 
 async def _read_back_port(runtime: Runtime, path: str) -> int:
-    """Poll the server's port file without stacking the runtime's own read retries."""
-    reader = getattr(runtime, "inner", runtime)
+    """Poll the server's port file until the server writes it."""
     for _ in range(180):
         with contextlib.suppress(Exception):
-            data = (await reader.read(path)).decode().strip()
+            data = (await runtime.read(path)).decode().strip()
             if data.isdigit():
                 return int(data)
         await asyncio.sleep(1)

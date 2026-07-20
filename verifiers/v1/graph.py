@@ -288,10 +288,6 @@ class PendingTurn:
     def tail(self) -> list[Message]:
         return self.prompt[self.tail_start :]
 
-    @property
-    def parent(self) -> int | None:
-        return self.prefix_node_ids[-1] if self.prefix_node_ids else None
-
     def previous_token_ids(self) -> tuple[list[int], list[int]] | None:
         """Return `(previous_prompt_ids, previous_completion_ids)` for a bridge anchor.
 

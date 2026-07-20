@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
 from pydantic import Field, PrivateAttr
@@ -123,11 +123,6 @@ class Branch(StrictBaseModel):
     index: int
     nodes: list[MessageNode]
     calls: list[ModelCall] = Field(default_factory=list)
-
-    @property
-    def num_turns(self) -> int:
-        """Model-sampled turns; prompt-supplied assistant messages do not count."""
-        return sum(1 for n in self.nodes if n.sampled)
 
     @property
     def messages(self) -> Messages:
@@ -429,11 +424,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
 
     @property
-    def has_response(self) -> bool:
-        last = self._last_assistant()
-        return bool(last and last.message.content)
-
-    @property
     def branches(self) -> list[Branch]:
         """One root-to-leaf path per graph leaf, its calls attached in path order."""
         by_node = {c.node: c for c in self.calls if c.node is not None}
@@ -591,8 +581,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         """JSON record without raw tensors, which remain available on the msgpack wire."""
         return self.model_dump(mode="json", exclude=_NODE_DUMP_EXCLUDE)
 
-
-TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
 
 WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""
