@@ -1,5 +1,6 @@
 """Resolve taskset, harness, and judge plugins."""
 
+import contextvars
 import importlib
 import importlib.util
 from types import ModuleType
@@ -15,6 +16,12 @@ from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 
 
+skip_plugin_install: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "skip_plugin_install", default=False
+)
+"""Skip installing envs from the Hub during config parse (for callers that read the config but never run the env)."""
+
+
 def narrow_plugin_field(
     data: dict,
     field: str,
@@ -26,8 +33,13 @@ def narrow_plugin_field(
         raw = raw.model_dump()
     raw = dict(raw or {})
     ident = raw.get("id") or default_id
-    if ident:
-        data[field] = resolve(ident).model_validate({**raw, "id": ident})
+    if not ident:
+        return
+    if skip_plugin_install.get():
+        # keep the plugin id-only; don't import/install from the Hub
+        data[field] = {"id": ident}
+        return
+    data[field] = resolve(ident).model_validate({**raw, "id": ident})
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
@@ -97,7 +109,8 @@ def judge_class(judge_id: str) -> type[Judge]:
 
 
 def default_harness_id(taskset_id: str) -> str:
-    if not taskset_id:
+    # In skip mode, don't import the taskset to probe for a bundled harness.
+    if not taskset_id or skip_plugin_install.get():
         return "bash"
     try:
         module = import_taskset(taskset_id)
