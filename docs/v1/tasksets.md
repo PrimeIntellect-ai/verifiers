@@ -21,12 +21,10 @@ The command also supports:
 - `-p`, `--path <dir>` — parent directory, default: `./environments`
 - `-T`, `--add-tool` — also scaffold a `vf.Toolset` tool server at `servers/tool.py`
   - Use this to create custom tools which are installed into supported harnesses via MCP.
-- `-U`, `--add-user` — also scaffold a `vf.User` simulator at `servers/user.py`
-  - Use this to simulate a user interacting with the model. Not all harnesses support user simulation.
 - `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--env.agent.harness.id <name>`
   - Prefer a built-in harness unless the model needs to run inside a custom program.
 
-Most tasksets do not need specific tools, user simulations or custom harnesses.
+Most tasksets do not need specific tools or custom harnesses. (To simulate a user interacting with the model, open a chat session from an env's `run()` and script the user's turns — see the [Agent docs](agent.md).)
 
 > For a production-scale catalog of tasksets, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
 

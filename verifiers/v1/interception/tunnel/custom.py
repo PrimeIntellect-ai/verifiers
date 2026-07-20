@@ -21,7 +21,7 @@ class CustomTunnelConfig(BaseTunnelConfig):
     url: str
     """Public base URL the server is reached at (no trailing slash) — a pre-started tunnel
     or reverse proxy's URL, or `http://<host>:<port>` for a direct bind. The model route is
-    `{url}/v1`; the tool/user state channels are `{url}/state` + `/task`."""
+    `{url}/v1`; the tool-server state channels are `{url}/state` + `/task`."""
     port: int = Field(ge=1, le=65535)
     """Fixed local port the interception server binds (on all interfaces) — your tunnel or
     proxy's target, or the public port for a direct bind."""

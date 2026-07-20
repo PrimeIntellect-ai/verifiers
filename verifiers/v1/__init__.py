@@ -12,7 +12,14 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.decorators import metric, reward, stop, tool
-from verifiers.v1.agent import Agent, AgentConfig, Agents, make_agent
+from verifiers.v1.agent import (
+    Agent,
+    AgentConfig,
+    Agents,
+    ChatSession,
+    Reply,
+    make_agent,
+)
 from verifiers.v1.configs.env import (
     ElasticPoolConfig,
     EnvServerConfig,
@@ -35,7 +42,6 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     TunnelError,
-    UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import (
@@ -108,8 +114,6 @@ from verifiers.v1.mcp import (
     Toolset,
     SharedToolsetConfig,
     ToolsetConfig,
-    User,
-    UserConfig,
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.episode import Episode, WireEpisode
@@ -216,7 +220,6 @@ __all__ = [
     "ProviderError",
     "HarnessError",
     "ToolsetError",
-    "UserError",
     "SandboxError",
     "TaskError",
     "InterceptionError",
@@ -302,9 +305,9 @@ __all__ = [
     "Toolset",
     "SharedToolsetConfig",
     "ToolsetConfig",
-    # user simulator
-    "User",
-    "UserConfig",
+    # the user channel
+    "ChatSession",
+    "Reply",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

@@ -57,7 +57,7 @@ prime eval run owner/name --env.agent.harness.id codex --env.agent.harness.runti
 ```
 
 The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`
-keeps the taskset's own story (its exported `Environment` subclass, else the single-agent
+keeps the taskset's own story (its exported `Env` subclass, else the single-agent
 env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
 
 ```bash

@@ -1,13 +1,17 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable
 arrow — `agent.run(task) -> Trace`; `runtime=` borrows a live box,
-`provision(task)` hands you one. Inject a live `Interception` to share servers
-across agents (a pool belongs to what spans agents, never to one agent); an
-entered agent (`async with`) owns one server; un-entered, each run brings its own."""
+`provision(task)` hands you one. The exchange is `agent.chat(task)`: the rollout
+held open turn-by-turn, the caller as the run's user — one `turn()` per harness
+segment; who computes the turns is control flow, not a framework concept.
+Inject a live `Interception` to share servers across agents (a pool belongs to
+what spans agents, never to one agent); an entered agent (`async with`) owns one
+server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
+from dataclasses import dataclass
 from typing import AsyncIterator
 
 from pydantic import SerializeAsAny, model_validator
@@ -20,11 +24,11 @@ from verifiers.v1.clients import (
     ModelContext,
     resolve_client,
 )
-from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.retries import RetryConfig, backoff, trace_should_retry
-from verifiers.v1.rollout import RolloutRun
+from verifiers.v1.rollout import RolloutRun, _as_messages
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -35,7 +39,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Sampling, SamplingConfig
+from verifiers.v1.types import Messages, Sampling, SamplingConfig, UserMessage
 from verifiers.v1.utils.compile import (
     cap_remote_harness_timeout,
     resolve_runtime_config,
@@ -116,6 +120,95 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
             runtime.name,
             box_image,
         )
+
+
+@dataclass(frozen=True)
+class Reply:
+    """One assistant turn, as `ChatSession.turn` returns it. `stopped` marks the
+    exchange over — the run ended (a limit, a `@stop`, or the harness finishing)
+    instead of producing another turn; a stopped `Reply` carries no text (the last
+    real turn was already delivered), and the session's `trace` holds the full
+    exchange."""
+
+    text: str
+    stopped: bool = False
+
+
+class ChatSession:
+    """An agent's rollout, held open turn-by-turn: the caller IS the run's user.
+
+    `agent.chat(task)` opens the rollout wired to this session; `await
+    session.turn("...")` sends one user turn and runs ONE harness segment — the
+    program, resumed onto the conversation, until it yields — returning the
+    assistant's `Reply`. A prompt-less (or masked) task is opened by the first
+    `turn(message)`; a prompted task speaks first — a bare `turn()` takes its
+    opening reply. One consumer at a time — `turn()` is a strict
+    request/response alternation, not a mailbox. `session.trace` is live from the
+    moment the session exists: watch tokens and turns mid-exchange, read rewards
+    after close. Leaving the `chat()` context closes the session (the exchange
+    stops as `user_closed`) and finishes the rollout — hooks and scoring
+    included."""
+
+    def __init__(self, run: "RolloutRun") -> None:
+        self._run = run
+        self._over = False  # a stopped reply was already delivered
+        self._started = False  # a segment has run (the exchange is under way)
+        self._lock = asyncio.Lock()
+
+    @property
+    def trace(self) -> Trace:
+        return self._run.trace
+
+    async def turn(self, message: str | Messages | None = None) -> Reply:
+        """Send one user turn (a string, or full `Messages` for multimodal /
+        multi-message turns); run one segment; return the assistant's `Reply`. A
+        prompted task speaks FIRST: take its opening reply with a bare `turn()`
+        before answering. A `stopped` reply means the run ended instead of
+        answering (the message went unconsumed)."""
+        async with self._lock:
+            return await self._turn(message)
+
+    async def _turn(self, message: str | Messages | None) -> Reply:
+        if self._run.closed:
+            raise RuntimeError("this chat is closed")
+        if self._over:
+            raise RuntimeError(
+                "the exchange is over (the run ended); read session.trace"
+            )
+        prompted = not self._started and self.trace.task.data.prompt is not None
+        if message is None and not prompted:
+            raise ValueError(
+                "nothing to run a turn on: a bare turn() takes a prompted task's "
+                "opening reply; this exchange takes its next user message"
+            )
+        if message is not None and prompted:
+            raise ValueError(
+                "the task's prompt opens this exchange: take its first reply with "
+                "a bare turn() before answering (or mask the prompt with "
+                "chat(mask_prompt=True) to open the conversation yourself)"
+            )
+        messages: Messages | None = None
+        if isinstance(message, str):
+            messages = [UserMessage(content=message)]
+        elif message is not None:
+            messages = _as_messages(message)
+        self._started = True
+        turns_before = self.trace.num_turns
+        await self._run.step(messages)
+        if self.trace.num_turns > turns_before:
+            # The segment answered — even if a limit or @stop then ended the
+            # exchange, that surfaces as the NEXT turn's stopped reply.
+            return Reply(text=self.trace.last_reply)
+        self._over = True
+        return Reply(text="", stopped=True)
+
+    async def close(self) -> Trace:
+        """End the exchange and finish the rollout (idempotent): scoring and hooks
+        run, then the finished trace returns (also on `session.trace`)."""
+        async with self._lock:
+            if not self._run.closed and self._run.ok:
+                self.trace.stop("user_closed")
+            return await self._run.close()
 
 
 class Agent:
@@ -201,20 +294,33 @@ class Agent:
         """Which interception this run rides: an injected one always (its owner
         sized its reach); the owned server only when provably reachable from all
         the run's consumers — when it tunnels, else for a local run with no tool
-        or user servers in play (such servers may sit in a remote runtime and must
-        reach `/state`). Otherwise `None`: a per-run server sized to the task."""
+        servers in play (such servers may sit in a remote runtime and must reach
+        `/state`). Otherwise `None`: a per-run server sized to the task."""
         if self.interception is not None:
             return self.interception
         if self._server is None:
             return None
         if self._server.tunnel is not None or (
-            run_is_local
-            and not shared_tools
-            and not type(task).tools
-            and type(task).user is None
+            run_is_local and not shared_tools and not type(task).tools
         ):
             return self._server
         return None
+
+    def _check_user_support(self) -> None:
+        # Multi-turn capability is a derived fact, not a flag: an exchange advances
+        # by resuming the harness onto the conversation, so the harness needs either
+        # the default relaunch (a Messages prompt) or its own native continuation.
+        harness = self.harness
+        if (
+            type(harness).resume is Harness.resume
+            and not harness.SUPPORTS_MESSAGE_PROMPT
+        ):
+            raise ValueError(
+                f"Harness {harness.config.id!r} cannot host a user: resuming an "
+                "exchange takes a Messages prompt (SUPPORTS_MESSAGE_PROMPT) for the "
+                "default relaunch-on-the-conversation, or a native resume() "
+                "override. Use a harness that has one (e.g. bash or null)."
+            )
 
     async def run(
         self,
@@ -224,12 +330,14 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
-        """Run this agent on `task` once and return the trace: `runtime` places it
-        into a live borrowed box instead of provisioning one; `tools` are live
-        servers borrowed from their owner, counted in the pairing check;
-        `on_trace` observes the trace the moment it's minted, before any I/O.
-        Retries whole while the trace ends with a retryable error (`config.retries`)
-        — never into a borrowed box; the final trace keeps earlier attempts' errors."""
+        """Run this agent on `task` once and return the trace: one segment — the
+        program runs on the task's prompt until it exits (a multi-turn exchange
+        is `chat()`). `runtime` places it into a live borrowed box instead of
+        provisioning one; `tools` are live servers borrowed from their
+        owner, counted in the pairing check; `on_trace` observes the trace the
+        moment it's minted, before any I/O. Retries whole while the trace ends
+        with a retryable error (`config.retries`) — never into a borrowed box;
+        the final trace keeps earlier attempts' errors."""
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
@@ -270,6 +378,8 @@ class Agent:
         try:
             if await run.open():
                 await run.step()
+                if run.ok:
+                    run.trace.stop("agent_completed")
             trace = await run.close()
         except BaseException:
             # A cancellation mid-run (or a lifetime bug raised to the caller) means
@@ -280,10 +390,76 @@ class Agent:
             trace.runtime.borrowed = runtime is not None
         return trace
 
+    @asynccontextmanager
+    async def chat(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        mask_prompt: bool = False,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> AsyncIterator[ChatSession]:
+        """Converse with this agent turn-by-turn: a full rollout of `task` where
+        the CALLER is the run's user — the one exchange surface. Yields a
+        `ChatSession`; `await session.turn("...")` sends one user turn and runs
+        one harness segment, returning the assistant's `Reply`. Who computes the
+        turns is control flow, not framework machinery: an env's rollout loop,
+        another agent's session, a game engine, a scripted closure, a human.
+
+        The task's shape says who speaks first: a prompt-less task is opened by
+        the first `turn(message)`; a prompted task speaks first — take its opening
+        reply with a bare `turn()` before answering. `mask_prompt` says a prompted
+        task's prompt belongs to the USER side (a scenario the caller pursues, not
+        the assistant's seed): the wire hides it — the caller opens — while the
+        task object keeps the full row, so its hooks, rewards, and judges score
+        the real question (the user-sim env's contract).
+
+        `runtime` and `tools` borrow live resources from their owners, just as
+        they do for `run()`; an env supplies its taskset's shared tools
+        automatically for tasks loaded from that taskset.
+
+        Everything is a real rollout — the trace (live on `session.trace`),
+        limits, `@stop`s, and scoring all apply; leaving the context ends the
+        exchange (`user_closed`) and finishes the rollout, hooks and scoring
+        included. An exchange is caller-driven, so `config.retries` does not
+        apply here."""
+        self._check_user_support()
+        if mask_prompt and task.data.prompt is None:
+            raise ValueError(
+                "mask_prompt hides a prompt the task doesn't have; a prompt-less "
+                "task is already opened by the first turn()"
+            )
+        params = self._rollout_params(task, runtime, dict(tools or {}))
+        run = RolloutRun(
+            task=task,
+            wire_data=(
+                task.data.model_copy(update={"prompt": None}) if mask_prompt else None
+            ),
+            has_user=True,
+            on_trace=on_trace,
+            **params,
+        )
+        session = ChatSession(run)
+        await run.open()
+        try:
+            yield session
+        except Exception as e:
+            run.fail(e)
+            raise
+        except BaseException:
+            await run.abort()
+            raise
+        finally:
+            trace = run.trace if run.closed else await session.close()
+            if trace.runtime is not None:
+                trace.runtime.borrowed = runtime is not None
+
     def _rollout_params(
         self, task: Task, runtime: Runtime | None, shared_tools: dict
     ) -> dict:
-        """Resolve one run's runtime config, pairing checks, timeouts, interception."""
+        """Resolve one run's runtime config, pairing checks, timeouts,
+        interception — shared by `run` and `chat`."""
         if runtime is not None:
             _check_borrowed_placement(task, runtime)
             runtime_config = runtime.config
@@ -387,14 +563,9 @@ class _EpisodeAgent(Agent):
     def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
         return self._shared_tools if isinstance(task, self._task_cls) else {}
 
-    async def run(
-        self,
-        task: Task,
-        *,
-        runtime: Runtime | None = None,
-        tools: Mapping[str, SharedToolServer] | None = None,
-        on_trace: Callable[[Trace], None] | None = None,
-    ) -> Trace:
+    def _watch(
+        self, on_trace: Callable[[Trace], None] | None
+    ) -> Callable[[Trace], None]:
         last: Trace | None = None
 
         def watch(trace: Trace) -> None:
@@ -412,15 +583,52 @@ class _EpisodeAgent(Agent):
             if on_trace is not None:
                 on_trace(trace)
 
+        return watch
+
+    async def run(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
-                on_trace=watch,
+                on_trace=self._watch(on_trace),
             )
         self._completed.append(trace)
         return trace
+
+    @asynccontextmanager
+    async def chat(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        mask_prompt: bool = False,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> AsyncIterator[ChatSession]:
+        """The agent's `chat`, with every trace stamped with its agent standing
+        at mint and captured in `completed` at close — a chat driven from
+        `Env.run` stays crash-safe. No gate: a session is held open
+        across the exchange (two of them interleave in one episode), so it must
+        not occupy an eval slot the way a one-shot `run` does."""
+        async with super().chat(
+            task,
+            runtime=runtime,
+            tools=tools if tools is not None else self._shared_for(task),
+            mask_prompt=mask_prompt,
+            on_trace=self._watch(on_trace),
+        ) as session:
+            try:
+                yield session
+            finally:
+                self._completed.append(session.trace)
 
 
 def make_agent(

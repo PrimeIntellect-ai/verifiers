@@ -518,13 +518,13 @@ class Env(ABC, Generic[ConfigT]):
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: role
-        runtimes, live `shared` servers, and the task class's tool/user servers;
+        runtimes, live `shared` servers, and the task class's tool servers;
         a class overriding `server_config` conservatively counts as remote."""
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
-        server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
+        server_classes = [*task_cls.tools]
         if server_classes and task_cls.server_config is not Task.server_config:
             return True
-        sole = len({*task_cls.tools} | ({task_cls.user} - {None})) == 1
+        sole = len({*task_cls.tools}) == 1
         configs = [
             resolve_server_config(
                 task_cls.__name__, self.taskset.config.task, server_cls, sole=sole

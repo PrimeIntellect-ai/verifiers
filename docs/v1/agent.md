@@ -15,6 +15,25 @@ Every run is a standard rollout producing a `vf.Trace`. By default, the agent
 is self-contained: each run brings up the machinery it needs — interception
 server, network tunnel — and tears it down afterwards.
 
+## Chat Sessions
+
+`agent.chat(task)` holds a rollout open turn by turn. The caller acts as the
+user, and each `turn()` runs one harness segment before returning a `vf.Reply`.
+
+```python
+async with agent.chat(task) as session:
+    reply = await session.turn("hello")
+    if not reply.stopped:
+        reply = await session.turn(f"you said: {reply.text}")
+
+trace = session.trace
+```
+
+A prompted task speaks first through a bare `turn()`; a prompt-less task starts
+with `turn(message)`. Leaving the context closes the exchange as `user_closed`
+and finishes scoring. `chat(mask_prompt=True)` keeps a scenario prompt available
+to the task while hiding it from the assistant.
+
 ## Borrowed Resources
 
 At scale (large evals, training), per-run machinery adds up. `make_agent`

@@ -4,22 +4,19 @@ import asyncio
 import contextlib
 import importlib.metadata
 import io
-import json
 import logging
 import shlex
 import sys
 import tarfile
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from functools import cache, partial
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-import httpx
-
-from verifiers.v1.errors import RolloutError, ToolsetError, UserError
+from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
 from verifiers.v1.runtimes import (
@@ -28,26 +25,14 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
-from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
-    from mcp import ClientSession
-
     from verifiers.v1.mcp.toolset import Toolset
-    from verifiers.v1.mcp.user import User
 
 logger = logging.getLogger(__name__)
 
 # Sandboxed servers install the working tree, so only wheel inputs need to cross the boundary.
 VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
-
-# One user turn: (message, seq) -> user messages; `seq` is the conversation position that
-# replayed turns dedup on.
-Respond = Callable[[str, int], Awaitable[Messages]]
-
-MCP_CALL_RETRIES = 5
-MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
-
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
@@ -258,7 +243,6 @@ async def reachable_url(
 async def serve(
     server: ServerBase,
     harness_runtime: Runtime | None = None,
-    for_host: bool = False,
     harness_is_local: bool = True,
     *,
     state_secret: str = "",
@@ -274,7 +258,7 @@ async def serve(
             stack.push_async_callback(runtime.stop)
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
-        exposed = for_host or runtime is not harness_runtime
+        exposed = runtime is not harness_runtime
         # The shared-state channel: every server reaches the interception at the rollout's
         # `state_base`, which is universally reachable (the interception is exposed via a tunnel
         # whenever any consumer is remote). Eval-level shared servers get no per-rollout channel
@@ -289,25 +273,22 @@ async def serve(
             state_url=state_url,
             state_secret=state_secret,
         )
-        # Who consumes the server decides reachability: a user sim is reached by the HOST
-        # (`for_host`, always local, never colocated with it); a tool by the harness — colocated
-        # when it shares the harness's runtime, reached with the harness's locality (read off the
-        # harness runtime when there is one, else `harness_is_local` for an eval-level shared tool).
-        if for_host:
-            colocated, consumer_is_local = False, True
-        else:
-            colocated = runtime is harness_runtime
-            consumer_is_local = (
-                harness_runtime.is_local
-                if harness_runtime is not None
-                else harness_is_local
-            )
+        # The harness consumes the server, and decides reachability: colocated when the
+        # server shares the harness's runtime, reached with the harness's locality (read
+        # off the harness runtime when there is one, else `harness_is_local` for an
+        # eval-level shared tool).
+        colocated = runtime is harness_runtime
+        consumer_is_local = (
+            harness_runtime.is_local
+            if harness_runtime is not None
+            else harness_is_local
+        )
         base = await stack.enter_async_context(
             reachable_url(
                 runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
             )
         )
-        if not for_host and not colocated and harness_runtime is not None:
+        if not colocated and harness_runtime is not None:
             base = harness_runtime.host_url(base)
         yield f"{base.rstrip('/')}/mcp"
 
@@ -435,89 +416,3 @@ async def serve_tools(
                 )
                 logger.info("tool server '%s': %s", name, urls[name])
         yield urls
-
-
-@contextlib.asynccontextmanager
-async def user_session(url: str) -> AsyncIterator[ClientSession]:
-    """One fresh session to the user server, opened and closed within the caller's task so AnyIO
-    cancellation scopes stay correctly nested. A teardown failure after the body completed is
-    suppressed — the result is already in hand, and closing noise must not fail (or replay) an
-    already-answered call."""
-    from mcp import ClientSession
-    from mcp.client.streamable_http import (
-        create_mcp_http_client,
-        streamable_http_client,
-    )
-
-    stack = contextlib.AsyncExitStack()
-    try:
-        http_client = await stack.enter_async_context(
-            create_mcp_http_client(timeout=MCP_TIMEOUT)
-        )
-        read, write, *_ = await stack.enter_async_context(
-            streamable_http_client(url, http_client=http_client)
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        yield session
-    finally:
-        with contextlib.suppress(Exception):
-            await stack.aclose()
-
-
-async def user_respond(url: str, message: str, seq: int) -> Messages:
-    """One `respond` turn against the user server, on a fresh session per attempt. A retried turn
-    whose response was lost would advance the simulator twice, so the server dedups on
-    (`seq`, `message`) and replays the recorded turn — making the retry effectively exactly-once.
-    The payload is parsed outside the retry so a parse failure fails once."""
-    from verifiers.v1.dialects import parse_message
-    from verifiers.v1.retries import retrying
-
-    try:
-        result = None
-        async for attempt in retrying(
-            give_up=RolloutError,
-            retries=MCP_CALL_RETRIES,
-            label=f"user respond ({url})",
-        ):
-            with attempt:
-                async with user_session(url) as session:
-                    result = await session.call_tool(
-                        "respond", {"message": message, "seq": seq}
-                    )
-        assert result is not None
-        texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
-        data = json.loads("\n".join(texts))
-        return [parse_message(m) for m in data["messages"]]
-    except RolloutError:
-        raise
-    except Exception as e:
-        raise UserError(f"user server at {url} respond failed: {e!r}") from e
-
-
-@contextlib.asynccontextmanager
-async def serve_user(
-    user: User | None,
-    harness_runtime: Runtime | None = None,
-    *,
-    state_secret: str = "",
-    state_base: str | None = None,
-) -> AsyncIterator[Respond | None]:
-    """Bring a rollout's user server up (via the shared `serve` launcher, `for_host=True` since
-    the framework drives the user from the HOST) and yield the async `respond` the interception
-    server drives — or `None` when the task has no user server. Placement is the user's
-    `config` (colocated in the harness's runtime, or its own); the server fetches its task
-    over the interception `/task` channel. `state_base`/`state_secret` wire it to the shared-state
-    channel — how the user sim's `respond` reads/writes `self.state` (and ends the trajectory via
-    a flag a task `@vf.stop` checks)."""
-    if user is None:
-        yield None
-        return
-    async with serve(
-        user,
-        harness_runtime,
-        for_host=True,
-        state_secret=state_secret,
-        state_base=state_base,
-    ) as url:
-        yield partial(user_respond, url)

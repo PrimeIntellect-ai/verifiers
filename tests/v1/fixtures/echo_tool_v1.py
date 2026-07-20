@@ -33,10 +33,11 @@ class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
 
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
-        # The stamped token reaches the answer only if the model called the MCP tool.
-        last = trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        last = (last or "").lower()
-        return float(PHRASE in last and ECHO_TOKEN in last)
+        # The stamped token surfaces in an ASSISTANT message only if the model called
+        # the MCP tool and relayed its result — wherever in the exchange that happened
+        # (in a conversation the last turn may be a closing pleasantry).
+        replies = ((m.content or "").lower() for m in trace.assistant_messages)
+        return float(any(PHRASE in r and ECHO_TOKEN in r for r in replies))
 
 
 class EchoToolConfig(vf.TasksetConfig):

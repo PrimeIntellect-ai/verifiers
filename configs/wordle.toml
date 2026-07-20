@@ -1,4 +1,4 @@
-# wordle-v1 — the textarena taskset pinned to Wordle, driven by a user simulator.
+# wordle-v1 — the textarena taskset pinned to Wordle, the engine playing the user.
 #
 #   uv run eval @ configs/wordle.toml --model <small-instruct-model>
 num_tasks = 5
@@ -7,8 +7,8 @@ num_rollouts = 2
 [env.taskset]
 id = "wordle-v1"
 
-[env.agent]
+[env.player]
 max_turns = 8
 
-[env.agent.harness]
+[env.player.harness]
 id = "null"

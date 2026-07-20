@@ -2,11 +2,11 @@
 
 `TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
 row IS — the base fields plus your typed, task-specific fields. It rides on
-`trace.task.data`, is what `traces.jsonl` stores, and what tool/user servers receive
+`trace.task.data`, is what `traces.jsonl` stores, and what tool servers receive
 over the `/task` channel. Subclass it per dataset.
 
 `Task` is the behavior half: runtime prep (`setup`/`finalize`), server declarations
-(`tools`/`user`), well-formedness (`validate`), and per-trace judgement
+(`tools`), well-formedness (`validate`), and per-trace judgement
 (`@reward`/`@metric` methods plus the plugged judges from `config.judges`, run by
 `score`). Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]`
 (all three default); judgement that compares sibling traces lives on
@@ -42,7 +42,7 @@ from verifiers.v1.utils.generic import generic_type
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
-    from verifiers.v1.mcp import Toolset, User
+    from verifiers.v1.mcp import Toolset
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.trace import Trace
 
@@ -131,7 +131,8 @@ class TaskData(StrictBaseModel):
     name: str | None = None
     description: str | None = None
     prompt: str | Messages | None = None
-    """Initial user prompt; `None` lets the user simulator open the conversation. (A
+    """Initial user prompt; `None` means the user opens the conversation — run the
+    task through `agent.chat()`, whose first `turn(message)` speaks first. (A
     default, not just optional: the wire drops `None`s — `traces.jsonl` rows for
     prompt-less tasks must read back.)"""
     system_prompt: str | None = None
@@ -208,8 +209,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
 
-    user: ClassVar[type[User] | None] = None
-
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else task_config_cls(type(self))()
@@ -220,19 +219,17 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return [load_judge(config) for config in self.config.judges]
 
     def server_config(self, server_cls: type) -> BaseConfig:
-        """The config a declared server class (`tools` / `user`) is built with (see
+        """The config a declared server class (`tools`) is built with (see
         `resolve_server_config`). Override to pair explicitly."""
-        declared = set(type(self).tools) | ({type(self).user} - {None})
         return resolve_server_config(
-            type(self).__name__, self.config, server_cls, sole=len(declared) == 1
+            type(self).__name__,
+            self.config,
+            server_cls,
+            sole=len(set(type(self).tools)) == 1,
         )
 
     def tool_servers(self) -> list[Toolset]:
         return [cls(self.server_config(cls)) for cls in type(self).tools]
-
-    def user_server(self) -> User | None:
-        cls = type(self).user
-        return cls(self.server_config(cls)) if cls is not None else None
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None

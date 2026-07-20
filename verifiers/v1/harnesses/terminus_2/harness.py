@@ -5,6 +5,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
+from verifiers.v1.task import TaskData
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 logger = logging.getLogger(__name__)
@@ -41,14 +42,13 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("Terminus 2 does not support disabling tools")
-        system_prompt, prompt = self.resolve_prompt(trace.task.data)
+        system_prompt, prompt = self.resolve_prompt(data)
         if prompt is None:
-            raise ValueError(
-                "Terminus 2 requires a task prompt (it has no user simulator)"
-            )
+            raise ValueError("Terminus 2 requires a task prompt")
         tmux_dir = f"/tmp/vf-terminus-2-{trace.id}"
         env = {
             **self.config.resolved_env,
