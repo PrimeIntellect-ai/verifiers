@@ -109,12 +109,12 @@ def compile_agents(*, check: bool = False) -> bool:
 
 
 def compile_environment_guides(*, check: bool = False) -> bool:
-    envs_body = read_without_title(ROOT / "docs" / "environments.md")
+    envs_body = read_without_title(ROOT / "docs" / "v1" / "tasksets.md")
     repo_envs_agents = combine_sections(
         [
             "# environments/AGENTS.md",
             REPO_GENERATED_NOTE,
-            'This file mirrors the "Environments" documentation page.',
+            'This file mirrors the "Tasksets" documentation page.',
             "---",
             envs_body,
         ]
@@ -123,7 +123,7 @@ def compile_environment_guides(*, check: bool = False) -> bool:
         [
             "# environments/AGENTS.md",
             LAB_GENERATED_NOTE,
-            'This file mirrors the "Environments" documentation page.',
+            'This file mirrors the "Tasksets" documentation page.',
             "---",
             envs_body,
         ]

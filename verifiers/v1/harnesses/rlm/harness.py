@@ -1,22 +1,15 @@
-"""The rlm harness: installs the rlm CLI into the runtime and runs the binary.
-
-`RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
-runtime knobs (`max_depth`, `skills`), which rlm reads from `RLM_*` env vars.
-
-A task's MCP tool servers are passed to rlm via `RLM_MCP_CONFIG` (a standard `mcpServers`
-URL map); rlm exposes each tool as a pre-imported IPython skill the agent calls
-programmatically (`await tools_<name>(...)`), rather than via a native MCP client.
-"""
+"""RLM exposes `RLM_MCP_CONFIG` tools as pre-imported IPython skills."""
 
 import json
 import logging
+import random
 import shlex
 from typing import Literal
 
 from pydantic import model_validator
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import metric
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -34,8 +27,6 @@ RLM_BIN = f"{RLM_DIR}/bin/rlm"
 
 
 class RLMHarnessConfig(HarnessConfig):
-    """The rlm CLI harness — how to install rlm and how it should run."""
-
     version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
@@ -43,6 +34,28 @@ class RLMHarnessConfig(HarnessConfig):
     skills: list[BuiltinSkill] = []
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); only built-in skills are selectable."""
+    summarize_at_tokens: int | tuple[int, int] | None = None
+    """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
+    past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
+    threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
+    `None` disables auto-compaction; ints must be positive."""
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> "RLMHarnessConfig":
+        value = self.summarize_at_tokens
+        if isinstance(value, tuple):
+            lo, hi = value
+            if lo <= 0 or hi <= 0:
+                raise ValueError("`summarize_at_tokens` range bounds must be positive.")
+            if lo > hi:
+                raise ValueError(
+                    "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
+                )
+        elif value is not None and value <= 0:
+            raise ValueError(
+                "`summarize_at_tokens` must be positive, or None to disable."
+            )
+        return self
 
     @model_validator(mode="after")
     def reject_disabled_tools(self) -> "RLMHarnessConfig":
@@ -72,28 +85,41 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
         ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
-        env = {**self.config.env, "RLM_HOME": RLM_HOME}
+        env = {**self.config.resolved_env, "RLM_HOME": RLM_HOME}
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 
+    def summarize_threshold(self, task_idx: int) -> str:
+        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index, so
+        a task's rollouts share one threshold). Always set — "" when disabled — so the typed field,
+        not a host var the subprocess runtime would inherit, wins."""
+        value = self.config.summarize_at_tokens
+        if value is None:
+            return ""
+        if isinstance(value, tuple):
+            lo, hi = value
+            return str(random.Random(task_idx).randint(lo, hi))
+        return str(value)
+
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         env = {
-            **self.config.env,
+            **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,
             "RLM_API_KEY": secret,
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
+            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.data.idx),
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
@@ -103,14 +129,14 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             env["RLM_MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        return await runtime.run_program([RLM_BIN, prompt], env)
+        return await runtime.run_program([RLM_BIN, "--", prompt], env)
 
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:
-        # rlm writes a session meta.json with a rich `metrics` block (turns, token
-        # stats, compactions, tool-call counts). There's one top-level session dir
-        # (sub-harnesses nest as sub-*/), so the glob matches a single file. Surface
-        # its numeric metrics under an `rlm_` prefix; non-numeric fields (e.g.
+        # rlm writes a session meta.json with a rich `metrics` block (compactions,
+        # ipython input size, programmatic tool-call counts). There's one top-level
+        # session dir (sub-harnesses nest as sub-*/), so the glob matches a single
+        # file. Surface its numeric metrics as-is; non-numeric fields (e.g.
         # stop_reason) don't fit the float-only trace metrics, so they're skipped.
         result = await runtime.run(
             ["sh", "-c", f"cat {RLM_HOME}/sessions/*/meta.json"], {}
@@ -122,7 +148,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         except json.JSONDecodeError:
             return {}
         return {
-            f"rlm_{key}": float(value)
+            key: float(value)
             for key, value in meta.get("metrics", {}).items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }

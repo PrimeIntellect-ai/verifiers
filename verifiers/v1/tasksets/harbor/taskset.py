@@ -1,58 +1,61 @@
-"""harbor: run a Harbor (Terminal-Bench) dataset.
+"""Harbor tasksets backed by Harbor Hub packages.
 
-`dataset` is a Harbor Hub package id (e.g. "org/name" or "org/name@ref"),
-downloaded directly from the registry and cached on first use. Each task dir
-ships task.toml + instruction.md (+ tests/, solution/, environment/). Defaults
-to the registry `harbor/hello-world` dataset.
+The Harbor CLI downloads and caches each task directory. Its verifier runs in the
+same runtime the harness edited, then writes the score to
+``/logs/verifier/reward.txt``.
 
-The harness runs in a container and edits /app; then the task's verifier
-(tests/test.sh) runs in the SAME container and the reward it writes to
-/logs/verifier/reward.txt becomes the score. The verification lives on the
-taskset (the `solved` reward), so a harbor task runs under ANY harness.
-
-A task's declared [environment].docker_image becomes a first-class `Task.image`
-the Environment injects into the runtime (docker/prime both pull it). A task whose
-environment is only a `Dockerfile` has no pullable image — we don't build Dockerfiles
-(a locally-built image isn't pullable by a remote sandbox) — so it's rejected unless
-`ignore_dockerfile`, which runs it on the harness runtime's image instead. A task with
-no environment at all also runs on that image, unless `require_image`.
+A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
+not build Dockerfile-only environments, so those are rejected unless ``ignore_dockerfile``
+deliberately uses the harness runtime image. Tasks without an environment also use that
+image unless ``require_image`` is set.
 """
 
+import hashlib
 import io
-import json
-import os
+import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 from pydantic import Field
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import Task, TaskResources, TaskTimeout
+from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
-HARBOR_SUPABASE_URL = "https://ofhuhcpkvzjlejydnvyd.supabase.co"
-HARBOR_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Z-vuQbpvpG-PStjbh4yE0Q_e-d3MTIH"
+HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 
 
 class HarborConfig(TasksetConfig):
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
-    tag, integer revision, or sha256 digest. Downloaded directly and cached."""
+    tag, integer revision, or sha256 digest. Legacy registries selected with `repo`,
+    `registry_path`, or `registry_url` use a bare dataset name ("name" or "name@version")."""
+    repo: str | None = None
+    """Optional Harbor `--repo` registry selector, e.g. "org/repo@ref"."""
+    registry_path: Path | None = None
+    """Optional Harbor `--registry-path` selector. Local unless `repo` is also set."""
+    registry_url: str | None = None
+    """Optional Harbor `--registry-url` selector for a raw registry.json URL."""
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
+    ignore_timeouts: bool = True
+    """Drop each task's declared agent and verifier timeouts so rollouts run
+    unbounded (unless run-level `--timeout.*` limits are set). Task timeouts are
+    authored against Harbor's runtime and confound model capability with inference
+    speed; set False to apply them anyway."""
     timeout_multiplier: float = Field(1.0, gt=0)
-    """Scale each task's agent and verifier timeouts."""
+    """Scale each task's agent and verifier timeouts. Only applies with
+    `ignore_timeouts=False`."""
     resource_multiplier: float = Field(1.0, gt=0)
     """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
     require_image: bool = False
@@ -72,142 +75,135 @@ class Author(StrictBaseModel):
     email: str | None = None
 
 
-class HarborTask(Task):
-    """A Harbor task. The base fields carry instruction.md (`prompt`), the
-    resolved container `image`, the `harness_timeout`/`scoring_timeout`/`resources`
-    (from task.toml's [harness]/[verifier]/[environment]), and [task].name/description;
-    the rest mirror [metadata]."""
+class HarborData(TaskData):
+    """Parsed ``task.toml`` metadata plus the host-side verifier directory.
+
+    Base ``TaskData`` fields hold the prompt, resolved image, timeout, resources,
+    name, and description. The remaining fields mirror Harbor metadata.
+    """
 
     keywords: list[str] = []
     authors: list[Author] = []
     difficulty: str | None = None
     category: str | None = None
     tags: list[str] = []
-    task_dir: str = Field(exclude=True)
+    task_dir: str = Field("", exclude=True)
     """Host path to the task dir; used to stage tests/ to verify, not serialized."""
+    verifier_env: dict[str, str] = {}
+    """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
+    Resolved against the host environment at scoring time, like `harbor run` — so a
+    verifier that needs judge API keys or configuration actually receives them."""
 
 
-def dataset_dir(dataset: str) -> Path:
-    """Download a Harbor Hub task or dataset package, cached on first use.
+class HarborTask(Task[HarborData]):
+    """Stage and run Harbor's verifier inside the task's live runtime."""
 
-    Harbor refs are tags, integer revisions, or ``sha256:`` digests.
-    """
-    out = CACHE / dataset.replace("/", "_").replace("@", "_")
+    @reward(weight=1.0)
+    async def solved(self, runtime: Runtime) -> float:
+        await runtime.write(
+            "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
+        )
+        await runtime.run(
+            [
+                "sh",
+                "-c",
+                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
+            ],
+            {},
+        )
+        await runtime.run(
+            ["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self.data)
+        )
+        try:
+            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
+            return float(reward or 0)
+        except (SandboxError, OSError, ValueError):
+            return 0.0
+
+
+def harbor_cli() -> str:
+    scripts_dir = Path(sys.executable).parent
+    harbor_bin = shutil.which("harbor", path=str(scripts_dir))
+    if harbor_bin is None:
+        raise RuntimeError(
+            "Harbor tasksets require the Harbor CLI from the `harbor` extra. "
+            f"Install it with: `{HARBOR_INSTALL_HINT}`"
+        )
+    return harbor_bin
+
+
+def cache_dir(config: HarborConfig) -> Path:
+    selector_parts = [config.dataset]
+    if config.repo is not None:
+        selector_parts.extend(("repo", config.repo))
+    if config.registry_path is not None:
+        registry_path = (
+            config.registry_path
+            if config.repo is not None
+            else config.registry_path.expanduser().resolve()
+        )
+        selector_parts.extend(("registry_path", str(registry_path)))
+    if config.registry_url is not None:
+        selector_parts.extend(("registry_url", config.registry_url))
+
+    name = config.dataset.replace("/", "_").replace("@", "_")
+    if len(selector_parts) > 1:
+        digest = hashlib.sha256("\0".join(selector_parts).encode()).hexdigest()[:12]
+        name = f"{name}_{digest}"
+    return CACHE / name
+
+
+def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
+    command = [
+        harbor_cli(),
+        "download",
+        config.dataset,
+        "--export",
+        "-o",
+        str(output_dir),
+    ]
+    if config.repo is not None:
+        command.extend(["--repo", config.repo])
+    if config.registry_path is not None:
+        registry_path = (
+            config.registry_path
+            if config.repo is not None
+            else config.registry_path.expanduser()
+        )
+        command.extend(["--registry-path", str(registry_path)])
+    if config.registry_url is not None:
+        command.extend(["--registry-url", config.registry_url])
+    return command
+
+
+def dataset_dir(config: HarborConfig) -> Path:
+    """Download/cache a Hub or legacy-registry package selected by the config."""
+    out = cache_dir(config)
     if out.is_dir():
         return out
 
-    package, _, ref = dataset.partition("@")
-    org, name = package.split("/", 1)
-    ref = ref or "latest"
-    url = os.getenv("HARBOR_SUPABASE_URL", HARBOR_SUPABASE_URL).rstrip("/")
-    key = os.getenv("HARBOR_SUPABASE_PUBLISHABLE_KEY", HARBOR_SUPABASE_PUBLISHABLE_KEY)
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
-    # Harbor stores datasets in version tables; standalone tasks use the RPC fallback below.
-    version_query = {
-        "package.name": f"eq.{name}",
-        "package.type": "eq.dataset",
-        "package.org.name": f"eq.{org}",
-        "limit": 1,
-    }
-    if ref.isdigit():
-        table = "dataset_version"
-        version_query |= {
-            "select": "id,package:package_id!inner(name,type,org:org_id!inner(name))",
-            "revision": f"eq.{ref}",
-        }
-    elif ref.startswith("sha256:"):
-        table = "dataset_version"
-        version_query |= {
-            "select": "id,package:package_id!inner(name,type,org:org_id!inner(name))",
-            "content_hash": f"eq.{ref.removeprefix('sha256:')}",
-        }
-    else:
-        table = "dataset_version_tag"
-        version_query |= {
-            "select": "dataset_version:dataset_version_id(id),package:package_id!inner(name,type,org:org_id!inner(name))",
-            "tag": f"eq.{ref}",
-        }
-    request = Request(
-        f"{url}/rest/v1/{table}?{urlencode(version_query)}", headers=headers
-    )
-    with urlopen(request) as response:
-        versions = json.load(response)
-
-    if versions:
-        version = versions[0]
-        version_id = version.get("id") or version["dataset_version"]["id"]
-        task_query = {
-            "select": "task_version:task_version_id(archive_path,package:package_id(name))",
-            "dataset_version_id": f"eq.{version_id}",
-            "order": "task_version_id",
-            "limit": 1000,
-            "offset": 0,
-        }
-        request = Request(
-            f"{url}/rest/v1/dataset_version_task?{urlencode(task_query)}",
-            headers={**headers, "Prefer": "count=exact"},
-        )
-        with urlopen(request) as response:
-            pages = [json.load(response)]
-            total = int(response.headers["Content-Range"].rsplit("/", 1)[1])
-
-        for offset in range(1000, total, 1000):
-            task_query["offset"] = offset
-            request = Request(
-                f"{url}/rest/v1/dataset_version_task?{urlencode(task_query)}",
-                headers=headers,
-            )
-            with urlopen(request) as response:
-                pages.append(json.load(response))
-        downloads = [
-            (
-                Path(name) / row["task_version"]["package"]["name"],
-                row["task_version"]["archive_path"],
-            )
-            for page in pages
-            for row in page
-        ]
-    else:
-        body = json.dumps({"p_org": org, "p_name": name, "p_ref": ref}).encode()
-        request = Request(
-            f"{url}/rest/v1/rpc/resolve_task_version", body, headers=headers
-        )
-        with urlopen(request) as response:
-            task = json.load(response)
-        if task is None:
-            raise ValueError(f"Harbor package not found: {dataset}")
-        downloads = [(Path(name), task["archive_path"])]
-
-    if not downloads:
-        raise ValueError(f"Harbor dataset has no tasks: {dataset}")
-
     CACHE.mkdir(parents=True, exist_ok=True)
-    # Stream archives concurrently into a temporary directory; publish only a complete cache.
+    # Publish only a complete CLI export to the cache.
     with tempfile.TemporaryDirectory(dir=CACHE) as temp:
-
-        def extract(item: tuple[Path, str]) -> None:
-            relative_path, archive_path = item
-            target = Path(temp) / relative_path
-            target.mkdir(parents=True, exist_ok=True)
-            request = Request(
-                f"{url}/storage/v1/object/authenticated/packages/{archive_path}",
-                headers=headers,
-            )
-            with urlopen(request) as response:
-                with tarfile.open(fileobj=response, mode="r|gz") as tar:
-                    kwargs = (
-                        {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
-                    )
-                    tar.extractall(target, **kwargs)
-
-        with ThreadPoolExecutor(max_workers=100) as pool:
-            list(pool.map(extract, downloads))
+        export_dir = Path(temp) / "export"
+        command = download_command(config, export_dir)
         try:
-            Path(temp).rename(out)
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            message = (
+                f"Harbor download failed for {config.dataset!r} with exit code "
+                f"{exc.returncode}"
+            )
+            outputs = [
+                output.strip()
+                for output in (exc.stdout, exc.stderr)
+                if isinstance(output, str) and output.strip()
+            ]
+            if output := "\n".join(outputs):
+                message = f"{message}:\n{output}"
+            raise RuntimeError(message) from exc
+        try:
+            export_dir.rename(out)
         except OSError:
             if out.is_dir():
                 return out
@@ -221,13 +217,12 @@ def resolve_image(
     require_image: bool,
     ignore_dockerfile: bool = False,
 ) -> str | None:
-    """The task's declared registry image (usable by docker or prime). A pullable
-    `[environment].docker_image` is used directly. A task whose environment is a
-    `Dockerfile` is rejected — we don't build Dockerfiles, and running it on the default
-    image would silently score against the wrong environment (e.g. SWE-bench's `/testbed`
-    repo would be missing) — unless `ignore_dockerfile`, which returns None to run it on the
-    harness runtime's image. A task with no environment at all runs on that image too, unless
-    `require_image`. None means "use the runtime's own image"."""
+    """Choose a pullable image without silently ignoring a declared Dockerfile.
+
+    ``None`` tells the runtime to keep the harness image. That is the intended
+    fallback for tasks with no environment, but would score a Dockerfile task in
+    the wrong environment unless the user explicitly opts in.
+    """
     declared = config.get("environment", {}).get("docker_image")
     if declared:
         return declared
@@ -247,27 +242,49 @@ def resolve_image(
     return None
 
 
+def size_to_mb(size: str | int | float) -> float:
+    """A Harbor size in MB, from either schema: current integer-MB fields or the
+    legacy schema-1.0 size strings ("8G", "512M", "64K")."""
+    if not isinstance(size, str):
+        return float(size)
+    scale = {"G": 1024.0, "M": 1.0, "K": 1 / 1024}.get(size.strip().upper()[-1:])
+    if scale is None:
+        raise ValueError(
+            f"invalid Harbor size {size!r}: expected a number of MB or a "
+            "'<number>[G|M|K]' string"
+        )
+    return float(size.strip()[:-1]) * scale
+
+
 def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
-    """Map a task.toml [environment] block to TaskResources (0 gpus -> unset)."""
+    # Harbor's current schema reports memory/storage as integer-MB fields; the
+    # legacy schema 1.0 used size strings under `memory`/`storage`, which Harbor
+    # still migrates (datasets like senior-swe-bench are authored against it).
+    # TaskResources stores GB. A zero GPU count means no GPU request rather than
+    # the string "0".
+    memory = env.get("memory_mb") or env.get("memory")
+    disk = env.get("storage_mb") or env.get("storage")
     return TaskResources(
         cpu=env["cpus"] * multiplier if env.get("cpus") else None,
-        memory=env["memory_mb"] / 1024 * multiplier if env.get("memory_mb") else None,
+        memory=size_to_mb(memory) / 1024 * multiplier if memory else None,
         gpu=str(env["gpus"]) if env.get("gpus") else None,
-        disk=env["storage_mb"] / 1024 * multiplier if env.get("storage_mb") else None,
+        disk=size_to_mb(disk) / 1024 * multiplier if disk else None,
     )
 
 
-def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborTask:
-    """Read a harbor task dir (task.toml + instruction.md) into a typed task,
-    handling both the [task].authors and legacy [metadata].author_name layouts."""
+def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
     config = tomllib.loads((task_dir / "task.toml").read_text())
     task, meta = config.get("task", {}), config.get("metadata", {})
     authors = [Author(**a) for a in task.get("authors", [])]
+    # Older registry entries stored one author in [metadata].
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
-    harness_timeout = config.get("agent", {}).get("timeout_sec")
-    scoring_timeout = config.get("verifier", {}).get("timeout_sec")
-    return HarborTask(
+    if harbor_config.ignore_timeouts:
+        harness_timeout = scoring_timeout = None
+    else:
+        harness_timeout = config.get("agent", {}).get("timeout_sec")
+        scoring_timeout = config.get("verifier", {}).get("timeout_sec")
+    return HarborData(
         idx=idx,
         name=task.get("name") or task_dir.name,
         description=task.get("description"),
@@ -295,14 +312,26 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        verifier_env=config.get("verifier", {}).get("env", {}),
     )
 
 
-# Harbor test directories are immutable after download, so repeated rollouts can reuse
-# the latest archive. One entry bounds retained memory to one task.
+def verifier_env(task: HarborData) -> dict[str, str]:
+    """Resolve templates at scoring time so host secrets are never serialized."""
+    if not task.verifier_env:
+        return {}
+
+    # Harbor is an optional dependency, so importing this module must still work
+    # for users who do not install the Harbor extra.
+    from harbor.utils.env import resolve_env_vars
+
+    return resolve_env_vars(task.verifier_env)
+
+
+# Downloaded test directories are immutable. Cache only the latest archive to
+# bound memory while reusing it across rollouts of the current task.
 @lru_cache(maxsize=1)
 def make_tar(directory: Path) -> bytes:
-    """Tar a directory's contents (flat) into a gzipped tarball."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         for item in sorted(directory.iterdir()):
@@ -311,8 +340,8 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
-    def load_tasks(self) -> list[HarborTask]:
-        root = dataset_dir(self.config.dataset)
+    def load(self) -> Iterator[HarborTask]:
+        root = dataset_dir(self.config)
         task_dirs = [
             toml_path.parent
             for toml_path in sorted(root.rglob("task.toml"))
@@ -323,28 +352,5 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         ]
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
-        return [
-            parse_task(task_dir, idx, self.config)
-            for idx, task_dir in enumerate(task_dirs)
-        ]
-
-    @reward(weight=1.0)
-    async def solved(self, task: HarborTask, trace: Trace, runtime: Runtime) -> float:
-        # Stage the task's tests into the live runtime, run its harbor verifier, and
-        # read back the reward it writes — runtime-opaque (write/run/read hide whether
-        # that's the host fs or across a container boundary), so it scores under any harness.
-        await runtime.write("/tmp/tests.tgz", make_tar(Path(task.task_dir) / "tests"))
-        await runtime.run(
-            [
-                "sh",
-                "-c",
-                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
-            ],
-            {},
-        )
-        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], {})
-        try:
-            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
-            return float(reward or 0)
-        except (SandboxError, OSError, ValueError):
-            return 0.0
+        for idx, task_dir in enumerate(task_dirs):
+            yield HarborTask(parse_task(task_dir, idx, self.config), self.config.task)

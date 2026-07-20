@@ -3,14 +3,14 @@
 Four mechanisms, each in one place:
 
 1. Vocabulary (this module): `RolloutError` and the flat boundary types below. Each names the
-   boundary a failure crossed — provider, harness, toolset, user, sandbox, taskset, or
+   boundary a failure crossed — provider, harness, toolset, user, sandbox, task, or
    interception — so a recorded `trace.error.type` says where the rollout broke.
 2. Classification (`boundary`): the one helper that runs a framework→code boundary and attributes
-   any escaping error to that boundary's type. Extension code (taskset hooks, harness subclasses)
+   any escaping error to that boundary's type. Extension code (task hooks, harness subclasses)
    raises plain Python errors — it never constructs a `vf` error type; `boundary` classifies them.
    Infra that fails raises its type at the source (`runtimes` → `SandboxError`, `clients` →
    `ProviderError`, tunnels → `TunnelError`); an already-typed `RolloutError` passes through unchanged.
-3. Surfacing (`interception.RolloutSession.error`): a model/tool/user call fails behind the harness
+3. Surfacing (`session.RolloutSession.error`): a model/tool/user call fails behind the harness
    subprocess and comes back as HTTP, so the interception server stashes the real error there and
    the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
 4. Capture (`Rollout.run`, mirrored by the env-server): the one place that records a failure (typed
@@ -44,7 +44,12 @@ class ProviderError(RolloutError):
 
 class OverlongPromptError(ProviderError):
     """The prompt exceeded the model's context window — a budget limit, ended as a clean
-    truncation rather than recorded as an error."""
+    truncation rather than recorded as an error. Defaults to a 400 (what the interception
+    server surfaces for it — deterministic, so an SDK never retries it); `model_error`
+    keeps the provider's real status when the failure carried one."""
+
+    def __init__(self, message: str = "", *, status_code: int = 400) -> None:
+        super().__init__(message, status_code=status_code)
 
 
 class HarnessError(RolloutError):
@@ -63,8 +68,8 @@ class SandboxError(RolloutError):
     """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
 
 
-class TasksetError(RolloutError):
-    """Taskset-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
+class TaskError(RolloutError):
+    """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
 
 
 class InterceptionError(RolloutError):
@@ -128,10 +133,18 @@ def model_error(
     becomes a plain `ProviderError`. `status_code` is the HTTP status surfaced to the harness (whose
     SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error when not given. Accepts
     an SDK error (the renderer) or the provider's raw error body (the httpx proxy)."""
+    from openai import APIStatusError
+
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
     if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):
-        return OverlongPromptError(text)
+        # Keep the provider's real status when the failure carried one; else the class
+        # default (the 400 the interception server surfaces for overlong prompts).
+        if status_code is None and isinstance(e, APIStatusError):
+            status_code = e.status_code
+        return OverlongPromptError(
+            text, **({} if status_code is None else {"status_code": status_code})
+        )
     return ProviderError(
         text,
         status_code=status_code if status_code is not None else _provider_status(e),

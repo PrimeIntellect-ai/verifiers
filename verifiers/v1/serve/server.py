@@ -1,21 +1,3 @@
-"""The env server: load a taskset once, run rollouts on request by task index.
-
-A ZMQ ROUTER front end (msgpack frames) over a v1 `Environment`. The server
-owns the environment — taskset, harness, runtime — and is the only process that ever
-loads it. A caller (e.g. the orchestrator) stays env-agnostic: it asks `info` for
-the task count + whether group scoring is needed, then `run_rollout` / `run_group`
-by task index. Per request the server resolves a `Client` from the request's
-`client` config (cached, so a renderer's tokenizer is built once), wraps it in a
-`RolloutContext`, and runs `env.episode(task, ctx, n).run()`, returning each
-`Trace` as a JSON dict (with its computed `branches`).
-
-Minimal port of `verifiers.serve` (ROUTER + msgpack), single async process: each
-request is its own `asyncio.Task`, so many rollouts run concurrently. No worker
-pool / heartbeats yet — the rollout's own runtime already isolates execution, and
-the structure leaves room to add a pool later. Health is just another request type
-(no separate socket), which is enough at this scale.
-"""
-
 import asyncio
 import contextlib
 import logging
@@ -26,7 +8,7 @@ import zmq.asyncio
 
 from verifiers.utils.process_utils import use_threading_tqdm_lock
 from verifiers.utils.serve_utils import msgpack_encoder
-from verifiers.v1.clients import RolloutContext, resolve_client
+from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
@@ -44,20 +26,31 @@ from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
 
+MAX_LAZY_TASKS = 1_000_000
+"""Most tasks an infinite taskset's generator is willing to build (and cache) per worker."""
+
 
 class EnvServer:
-    """Serve one v1 environment over ZMQ. The only process that loads the env."""
-
     def __init__(
         self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # Load tasks once; the index range is fixed for the server's lifetime.
-        self.tasks = self.env.taskset.load_tasks()
-        self.requires_group_scoring = bool(
-            discover_decorated(self.env.taskset, "group_reward")
+        # A finite taskset is materialized up front (its count is served via `info`); an
+        # infinite one is pulled off its generator on demand (see `_task`), so
+        # `num_tasks=None` on the wire ⟺ the taskset is infinite.
+        self._task_iter = iter(self.env.taskset.load())
+        self._tasks: list = []
+        self.num_tasks: int | None = None
+        if not type(self.env.taskset).INFINITE:
+            self._tasks = list(self._task_iter)
+            self.num_tasks = len(self._tasks)
+        # One task type per taskset (the authoring contract; its `load()` constructs it),
+        # so group scoring is a run-wide property.
+        first = self._task(0) if self.num_tasks != 0 else None
+        self.requires_group_scoring = first is not None and bool(
+            discover_decorated(first, "group_reward")
         )
         self._clients: dict[
             tuple[str, str], Client
@@ -76,10 +69,7 @@ class EnvServer:
 
     @classmethod
     def run_server(cls, address_queue=None, **kwargs) -> None:
-        """Build and run a server (entry point for a spawned process). If
-        `address_queue` is given, report the concrete bound address on it (so a
-        spawner that passed a `:0` address learns the OS-assigned port) before
-        serving."""
+        """Run a spawned server and report its concrete address when requested."""
         # This worker loads the taskset (and any HF datasets it pulls in) and is killed at
         # teardown; pin tqdm to a threading lock first so it never leaks a multiprocessing
         # semaphore (resource_tracker warning at shutdown).
@@ -95,10 +85,28 @@ class EnvServer:
             # of a spurious multiprocessing traceback, matching serve_env's own handling.
             pass
 
+    def _task(self, idx: int):
+        """The task at `idx`; an infinite taskset is generated (and cached) up to `idx`
+        on demand. Generation must be deterministic — every pool worker runs its own
+        `load()`, so idx-addressing relies on all of them producing the same sequence.
+        Lazy generation is capped at `MAX_LAZY_TASKS`: an idx that far ahead is a
+        runaway driver, and generating (and caching) toward it would hang the worker
+        and exhaust memory instead of failing the one request."""
+        while len(self._tasks) <= idx:
+            if idx >= MAX_LAZY_TASKS:
+                raise IndexError(
+                    f"task_idx {idx} exceeds the lazy-generation cap ({MAX_LAZY_TASKS})"
+                )
+            try:
+                self._tasks.append(next(self._task_iter))
+            except StopIteration:
+                raise IndexError(
+                    f"task_idx {idx} out of range ({len(self._tasks)} tasks)"
+                ) from None
+        return self._tasks[idx]
+
     def _client(self, client_config: ClientConfig, model: str) -> Client:
-        """Resolve (and cache) a `Client` for this config+model. Cached because a
-        renderer client builds the model's tokenizer pool on first use — doing that
-        per request would be ruinous."""
+        """Cache clients because renderer initialization builds a tokenizer pool."""
         key = (client_config.model_dump_json(), model)
         if key not in self._clients:
             self._clients[key] = resolve_client(client_config)
@@ -106,28 +114,28 @@ class EnvServer:
 
     def _context(
         self, client_config: ClientConfig, model: str, sampling: SamplingConfig
-    ) -> RolloutContext:
-        return RolloutContext(
+    ) -> ModelContext:
+        return ModelContext(
             client=self._client(client_config, model), model=model, sampling=sampling
         )
 
     def serving(self):
         """Context for the server's eval-level serving resources (shared tool servers +
-        interception pool), entered for the server's lifetime so they're reused across
+        interception), entered for the server's lifetime so they're reused across
         requests; episodes built inside it inherit them (see `Environment.serving`). The
         legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
-        return self.env.serving(self.tasks)
+        return self.env.serving()
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
+        episode = self.env.episode(self._task(req.task_idx), ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
+        episode = self.env.episode(self._task(req.task_idx), ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)
@@ -142,7 +150,7 @@ class EnvServer:
                 response: BaseResponse = HealthResponse()
             elif route == "info":
                 response = InfoResponse(
-                    num_tasks=len(self.tasks),
+                    num_tasks=self.num_tasks,
                     requires_group_scoring=self.requires_group_scoring,
                 )
             elif route == "run_rollout":
@@ -175,18 +183,16 @@ class EnvServer:
 
     async def run(self) -> None:
         logger.info(
-            "EnvServer up: taskset=%s address=%s tasks=%d group_scoring=%s",
+            "EnvServer up: taskset=%s address=%s tasks=%s group_scoring=%s",
             self.taskset_id,
             self.address,
-            len(self.tasks),
+            self.num_tasks if self.num_tasks is not None else "infinite",
             self.requires_group_scoring,
         )
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
-        # Enter the serving resources (shared tool servers + interception pool) for the
-        # server's lifetime so they're reused across requests; episodes built per request
-        # inherit them (the legacy bridge overrides this to a no-op).
+        # Shared servers and the interception live across requests in this worker.
         async with self.serving():
             try:
                 while True:

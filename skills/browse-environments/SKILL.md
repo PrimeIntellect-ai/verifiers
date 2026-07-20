@@ -1,15 +1,14 @@
 ---
 name: browse-environments
-description: Discover and inspect verifiers environments through the Prime ecosystem. Use when asked to find environments on the Hub, compare options, inspect metadata, check action status, pull local copies for inspection, or choose environment starting points before evaluation, training, or migration work.
+description: Discover and inspect verifiers tasksets through the Prime ecosystem. Use when asked to find tasksets on the Environment Hub, compare options, inspect metadata, check action status, pull local copies for inspection, or choose starting points before evaluation, training, or migration work.
 ---
 
-# Browse Environments
+# Browse Tasksets
 
 ## Goal
-Use Prime ecosystem commands to discover environments quickly, inspect quality signals, and pick the right starting point.
 
 ## Primary Discovery Workflow
-1. List candidate environments:
+1. List candidate tasksets:
 ```bash
 prime env list --search "math" --owner primeintellect --show-actions
 ```
@@ -20,10 +19,11 @@ prime env list --mine
 prime env list --starred
 ```
 3. Prioritize quality and freshness signals:
-   - Prefer environments published by `primeintellect` first.
+   - Prefer tasksets published by `primeintellect` first.
    - Keep only candidates with passing latest action/CI status from `--show-actions` or `prime env status`.
    - Prefer candidates updated in roughly the last 2 months.
-   - Prefer candidates on version `v0.1.8` or newer.
+   - Prefer candidates on version `v0.2.0` or newer.
+   - Prefer candidates with a published leaderboard.
 4. Inspect details for shortlisted candidates:
 ```bash
 prime env info owner/name
@@ -34,42 +34,38 @@ prime env status owner/name
 prime env pull owner/name -t ./tmp-env
 ```
 
-## Compare Candidates
-For each candidate, collect:
-1. Task type and horizon: single-turn, multi-turn, tool, sandbox, agent.
-2. Implementation style: classic `MultiTurnEnv`/`ToolEnv`, V1 `vf.Env` with explicit `vf.Taskset`/`vf.Harness` objects for framework programs, or `CliAgentEnv` for sandboxed agent binaries with LLM-API interception.
-3. Reward type: binary, continuous, judge-based, mixed.
-4. Dependencies and secrets requirements.
-5. Latest action status and version signal.
-6. Recency signal: last updated date (target within ~2 months).
-7. Fit to user goal: eval-only, GEPA, RL, BYO Harness, or benchmark migration.
+## Prefer v1 tasksets over legacy environments
 
-## Endpoint And Model Selection Nudge
-1. Encourage users to configure endpoint aliases in `configs/endpoints.toml` before comparison evals.
-2. Ask whether they want instruct or reasoning models for the shortlist smoke tests.
-3. Instruct go-tos: `gpt-4.1` series, `qwen3` instruct series.
-4. Reasoning go-tos: `gpt-5` series, `qwen3` thinking series, `glm` series.
+When you find tasksets, look through the code to see if they import `verifiers.v1`. If they do, always prefer these.
 
-## Prefer Official Ecosystem Paths
-1. Prefer Hub and Prime CLI workflows before manual third-party setup.
-2. Use install + smoke eval to validate real usability. Treat `prime eval run` as the canonical eval path and do not add `--skip-upload` unless the user explicitly requests that deviation:
+Inspect the taskset, task, data, and configs:
+
+- `Taskset.load()` constructs the tasks.
+- `TaskData` contains each serializable row.
+- `Task` contains hooks, scoring, task-scoped tools, and user simulation.
+- `TasksetConfig` contains load-time settings; task-facing settings live under its nested `task` config.
+- Check custom harness and runtime requirements explicitly.
+
+For each of the candidates, look into these categories to get a more complete picture.
+
+## Verify usability
+
+Qualified Hub IDs install on demand.
+
+When the user is ready to test a taskset, run a small-scale evaluation first to validate that the package runs without problems:
+
 ```bash
-prime env install owner/name
-prime eval run name -m openai/gpt-4.1-mini -n 5
+prime eval run owner/name -m deepseek/deepseek-v4-flash -n 3 -r 1
 ```
-3. For examples in the verifiers repository, use repo install path when available:
-```bash
-prime env install reverse-text --from-repo
-```
-4. For v1 Taskset + Harness examples, inspect the environment package for `Taskset` / optional `Harness` classes plus `load_taskset(config: MyTasksetConfig)`, optional `load_harness(config: MyHarnessConfig)`, and the canonical `load_environment(config: vf.EnvConfig) -> vf.Env` shim delegating through `vf.load_taskset(config=config.taskset)` and `vf.load_harness(config=config.harness)`.
 
-## Anti-Patterns
-1. Do not recommend building from scratch if a strong ecosystem option exists.
-2. Do not rely on README claims without running at least one quick eval.
-3. Do not hide incompatibilities or missing dependencies.
+Use the runtime the package actually requires. While `subprocess` is useful for small runs, use `docker` or `prime` when scaling up or when the taskset requires isolated rollouts, such as for coding tasks.
 
-## Output Format
+## Output
+
 Return:
-1. Ranked shortlist with one-line rationale per environment.
-2. Exact commands to install and run each shortlisted option.
-3. Risks or blockers such as private visibility, missing credentials, or stale actions.
+
+1. Ranked shortlist with one-line rationale.
+2. A compact comparison of each taskset's tasks, rewards, and overall goal.
+3. Exact `prime eval run` commands to run each taskset.
+4. For each taskset, state which harnesses might be supported: a custom one, CLI-based harnesses such as Codex, or the `bash` harness.
+5. Recommended starting tasksets and why.

@@ -7,7 +7,6 @@ max_turns = 8
 
 [taskset]
 id = "wordle-v1"
-num_tasks = 50  # pool of seeded episodes to draw the eval's tasks from
 
 [harness]
-id = "default"
+id = "null"

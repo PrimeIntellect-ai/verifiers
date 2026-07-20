@@ -1,28 +1,25 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp"]
+# dependencies = ["openai", "mcp", "httpx", "tenacity"]
 # ///
-"""The bash harness's program: a chat loop with a local `bash` tool (+ optional MCP tools).
-
-A growing-message-list chat loop. It always offers a local `bash` tool that runs shell commands
-in the runtime; when the harness sets MCP_CONFIG (a standard `mcpServers` URL map) it also
-connects to those servers over streamable HTTP, exposes their tools to the model as
-`<server>_<tool>`, and routes those calls to the server. The loop runs until the model answers
-without a tool call.
-
-It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the SDKs — the
-harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout secret, and model
-arrive as argv (not env), so the bash tool's local subprocesses never inherit them.
-"""
+"""Secrets arrive through argv so local tool subprocesses do not inherit them."""
 
 import argparse
 import asyncio
 import json
-import os
 import subprocess
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from pathlib import Path
 
+import httpx
 from openai import AsyncOpenAI
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+
+SERPER_URL = "https://google.serper.dev/search"
+
+MCP_CALL_ATTEMPTS = 6
+MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
+
 
 BASH_TOOL = {
     "type": "function",
@@ -39,6 +36,102 @@ BASH_TOOL = {
     },
 }
 
+EDIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit",
+        "description": (
+            "Replace a unique string in a file. old_str must appear exactly once in the file."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path (relative to cwd or absolute).",
+                },
+                "old_str": {
+                    "type": "string",
+                    "description": "Exact string to find (must appear exactly once).",
+                },
+                "new_str": {"type": "string", "description": "Replacement string."},
+            },
+            "required": ["path", "old_str", "new_str"],
+        },
+    },
+}
+
+
+SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search",
+        "description": (
+            "Run a web search via Serper (Google) and return the top organic results as title, "
+            "URL, and snippet. Issue focused queries and call it several times to cover different "
+            "angles; use the bash tool (e.g. curl) to read a result page in full."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."},
+                "num_results": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 5).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+def format_results(results, query: str) -> str:
+    """Format Serper organic results as title/URL/snippet blocks."""
+    sections = []
+    for i, result in enumerate(results, 1):
+        title = (result.get("title") or "").strip() or "Untitled"
+        lines = [f"Result {i}: {title}"]
+        link = (result.get("link") or "").strip()
+        if link:
+            lines.append(f"URL: {link}")
+        snippet = (result.get("snippet") or "").strip()
+        if snippet:
+            lines.append(f"  - {snippet}")
+        sections.append("\n".join(lines))
+    if not sections:
+        return f"No results returned for query: {query}"
+    return "\n\n---\n\n".join(sections)
+
+
+def run_search(query: str, api_key: str, num_results: int = 5) -> str:
+    """Serper Google web search -> formatted organic results.
+
+    The key arrives as an argument (handed in by the harness over argv, like the interception
+    secret) instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
+    The whole call is wrapped so a bad query or malformed payload becomes a tool error rather than
+    raising out of the chat loop and killing the rollout."""
+    if not api_key:
+        return "Error: no Serper API key (SERPER_API_KEY was not set in the eval environment)"
+    # num_results comes straight from model tool JSON, so it may be a non-int (e.g. "ten"); coerce
+    # defensively — `organic[:num_results]` would otherwise raise on a bad slice.
+    try:
+        num_results = max(1, int(num_results))
+    except (TypeError, ValueError):
+        num_results = 5
+    try:
+        response = httpx.post(
+            SERPER_URL,
+            json={"q": query},
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            timeout=45,
+        )
+        response.raise_for_status()
+        organic = response.json().get("organic") or []
+        return format_results(organic[:num_results], query)
+    except Exception as e:
+        return f"search failed ({e}). Try again or rephrase the query."
+
 
 def run_bash(command: str) -> str:
     try:
@@ -50,6 +143,36 @@ def run_bash(command: str) -> str:
         return f"error: {e}"
 
 
+def run_edit(path: str, old_str: str, new_str: str) -> str:
+    if not isinstance(path, str) or not path:
+        return "error: 'path' is required"
+    if not isinstance(old_str, str) or not isinstance(new_str, str):
+        return "error: 'old_str' and 'new_str' must be strings"
+    if not old_str:
+        # '' matches everywhere (''.count('') == 1 on an empty file), so it would insert
+        # rather than replace — reject it to keep the "exactly once" contract honest.
+        return "error: 'old_str' must be a non-empty string"
+    filepath = Path(path)
+    if not filepath.is_absolute():
+        filepath = Path.cwd() / filepath
+    if not filepath.exists():
+        return f"error: {path} not found"
+    # Reading/writing can fail on a directory, permissions, or non-text content; return the
+    # error as a tool result instead of letting it abort the chat loop.
+    try:
+        content = filepath.read_text()
+    except Exception as e:
+        return f"error: could not read {path}: {e}"
+    count = content.count(old_str)
+    if count != 1:
+        return f"error: old_str must appear exactly once in {path} (found {count})"
+    try:
+        filepath.write_text(content.replace(old_str, new_str, 1))
+    except Exception as e:
+        return f"error: could not write {path}: {e}"
+    return f"Edited {path}"
+
+
 async def chat(
     client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
 ):
@@ -59,28 +182,72 @@ async def chat(
     return completion.choices[0].message
 
 
-async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
-    """Connect to each configured MCP server (a streamable-HTTP `url`); return
-    (tool schemas, dispatch mapping `<server>_<tool>` -> (session, raw tool name))."""
+@asynccontextmanager
+async def mcp_session(spec: dict):
+    """One fresh streamable-HTTP session to an MCP server, opened and closed within the caller's
+    task so AnyIO cancellation scopes stay correctly nested. A teardown failure after the body
+    completed is swallowed — the result is already in hand, and closing noise must not fail (or
+    replay) an already-answered call."""
     from mcp import ClientSession
     from mcp.client.streamable_http import (
         create_mcp_http_client,
         streamable_http_client,
     )
 
-    tool_schemas: list[dict] = []
-    dispatch: dict[str, tuple] = {}
-    for name, spec in config.get("mcpServers", {}).items():
+    stack = AsyncExitStack()
+    try:
         http_client = await stack.enter_async_context(
-            create_mcp_http_client(headers=spec.get("headers") or None)
+            create_mcp_http_client(
+                headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
+            )
         )
         read, write, *_ = await stack.enter_async_context(
             streamable_http_client(spec["url"], http_client=http_client)
         )
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
-        for tool in (await session.list_tools()).tools:
-            full = f"{name}_{tool.name}"
+        yield session
+    finally:
+        with suppress(Exception):
+            await stack.aclose()
+
+
+async def with_retry(call):
+    """Run one session-scoped operation, retrying transient failures with backoff. A call whose
+    response was lost may be replayed — MCP has no idempotency key, so tools should tolerate
+    at-least-once delivery (a tool that fails reports through its result, not an exception)."""
+    async for attempt in AsyncRetrying(
+        stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
+        wait=wait_exponential_jitter(initial=0.5, max=30),
+        reraise=True,
+    ):
+        with attempt:
+            return await call()
+
+
+async def connect_mcp(
+    config: dict, reserved: set[str]
+) -> tuple[list[dict], dict, dict]:
+    """Enumerate each configured MCP server's tools (a streamable-HTTP `url`); return (tool schemas,
+    dispatch mapping `<server>_<tool>` -> (server name, raw tool name), servers mapping name -> spec).
+    No session is held — a stateless-HTTP server is reconnected per call."""
+    tool_schemas: list[dict] = []
+    dispatch: dict[str, tuple] = {}
+    servers: dict[str, dict] = {}
+    for name, spec in config.get("mcpServers", {}).items():
+        servers[name] = spec
+
+        async def list_tools(spec: dict = spec):
+            async with mcp_session(spec) as session:
+                return (await session.list_tools()).tools
+
+        for tool in await with_retry(list_tools):
+            # A server named "" (TOOL_PREFIX = None) advertises its tools bare.
+            full = f"{name}_{tool.name}" if name else tool.name
+            if full in reserved or full in dispatch:
+                raise ValueError(
+                    f"duplicate tool name {full!r}; keep MCP tool names qualified"
+                )
             tool_schemas.append(
                 {
                     "type": "function",
@@ -91,8 +258,8 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
                     },
                 }
             )
-            dispatch[full] = (session, tool.name)
-    return tool_schemas, dispatch
+            dispatch[full] = (name, tool.name)
+    return tool_schemas, dispatch, servers
 
 
 def mcp_content_to_chat_content(blocks) -> str | list[dict]:
@@ -112,9 +279,18 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
     return parts
 
 
-async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dict]:
-    session, raw = dispatch[name]
-    result = await session.call_tool(raw, arguments)
+async def call_mcp(
+    servers: dict, dispatch: dict, name: str, arguments: dict
+) -> str | list[dict]:
+    """Call a tool on a fresh session per attempt — see `with_retry` for the replay semantics.
+    The result is converted outside the retry so a conversion failure fails once."""
+    server_name, raw = dispatch[name]
+
+    async def call():
+        async with mcp_session(servers[server_name]) as session:
+            return await session.call_tool(raw, arguments)
+
+    result = await with_retry(call)
     return mcp_content_to_chat_content(result.content)
 
 
@@ -125,62 +301,101 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
+    parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
+    parser.add_argument("--edit", action="store_true")
+    parser.add_argument("--search", action="store_true")
+    parser.add_argument("--serper-key", default="")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
+    initial = []
+    if args.initial_messages_file:
+        path = Path(args.initial_messages_file)
+        payload = path.read_bytes()
+        path.unlink()
+        initial = json.loads(payload)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
-    async with AsyncExitStack() as stack:
-        mcp_tools, dispatch = (
-            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
-        )
-        tools = [BASH_TOOL] + mcp_tools
-        messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
-        )
-        # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
-        # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
-        # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
-        # message. Both empty means the task has no prompt — the user simulator seeds the opening.
-        initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
-        while True:
-            message = await chat(client, args.model, messages, tools)
-            messages.append(message.model_dump(exclude_none=True))
-            if not message.tool_calls:
-                break
-            for call in message.tool_calls:
-                name = call.function.name
-                try:
-                    tool_args = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError as e:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
-                        }
-                    )
-                    continue
-                if name in dispatch:
-                    content = await call_mcp(dispatch, name, tool_args)
-                elif name == "bash":
-                    content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
-                    )
-                else:
-                    content = f"error: unknown tool {name!r}"
+    tools = [BASH_TOOL]
+    reserved = {"bash"}
+    if args.edit:
+        tools.append(EDIT_TOOL)
+        reserved.add("edit")
+    if args.search:
+        tools.append(SEARCH_TOOL)
+        reserved.add("search")
+    mcp_tools, dispatch, servers = (
+        await connect_mcp(config, reserved)
+        if config.get("mcpServers")
+        else ([], {}, {})
+    )
+    tools += mcp_tools
+    messages = (
+        [{"role": "system", "content": args.system_prompt}]
+        if args.system_prompt
+        else []
+    )
+    if initial:
+        messages.extend(initial)
+    elif args.prompt:
+        messages.append({"role": "user", "content": args.prompt})
+    while True:
+        message = await chat(client, args.model, messages, tools)
+        messages.append(message.model_dump(exclude_none=True))
+        if not message.tool_calls:
+            break
+        for call in message.tool_calls:
+            name = call.function.name
+            try:
+                tool_args = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError as e:
                 messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
+                    }
                 )
+                continue
+            # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
+            # below assume a dict, so reject anything else as a tool error rather than crashing.
+            if not isinstance(tool_args, dict):
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
+                    }
+                )
+                continue
+            if name in dispatch:
+                content = await call_mcp(servers, dispatch, name, tool_args)
+            elif name == "bash":
+                content = await asyncio.to_thread(
+                    run_bash, tool_args.get("command", "")
+                )
+            elif name == "edit" and args.edit:
+                content = await asyncio.to_thread(
+                    run_edit,
+                    tool_args.get("path"),
+                    tool_args.get("old_str"),
+                    tool_args.get("new_str"),
+                )
+            elif name == "search" and args.search:
+                content = await asyncio.to_thread(
+                    run_search,
+                    tool_args.get("query", ""),
+                    args.serper_key,
+                    tool_args.get("num_results", 5),
+                )
+            else:
+                content = f"error: unknown tool {name!r}"
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": content}
+            )
 
 
 if __name__ == "__main__":

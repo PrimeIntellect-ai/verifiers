@@ -14,98 +14,200 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
         def parse(self, response: vf.JudgeResponse[bool]) -> bool:
             return response.text.strip().lower().startswith("yes")
 
-    self.judge = CorrectnessJudge(self.config.judge)  # self.config.judge: vf.JudgeConfig
+    class MyData(vf.TaskData):
+        answer: str
 
-    @vf.reward
-    async def correct(self, task, trace) -> float:
-        result = await self.judge.evaluate(
-            trace=trace, question=task.question, answer=task.answer, response=...
-        )
-        return float(result.parsed)
+    class MyTask(vf.Task[MyData, vf.State, MyConfig]):
+        @vf.reward
+        async def correct(self, trace) -> float:
+            judge = CorrectnessJudge(self.config.judge)  # config.judge: vf.JudgeConfig
+            result = await judge.evaluate(
+                trace=trace,
+                question=self.data.prompt_text,
+                answer=self.data.answer,
+                response=...,
+            )
+            return float(result.parsed)
+
+A judge is cheap to construct (the HTTP client is opened per call, inside `complete`, and
+closed when the call returns), so build it where you use it.
 
 Passing `trace=` records the call onto it — a typed record appended to `trace.info["judge"]` and
 the call's tokens + cost added to `trace.extra_usage` (kept separate from the agent's `trace.usage`),
 so judge behaviour and spend are no longer invisible. The record lands even if the judge refuses, an
 empty structured output comes back, or `parse` raises (the request was already billed). Omit `trace`
 for a pure call (e.g. in tests).
+
+A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
+`score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
+built-ins and `verifiers.v1.loaders` for resolution). Its config lives on `TaskConfig.judges`
+only — judges are config, never row data (`--taskset.task.judges`; a taskset config may
+pre-plug them as class defaults) — and `Task.score` builds and runs it after the task's own
+`@reward`s.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast
+import re
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, cast
 
-from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializeAsAny, model_validator
+from typing_extensions import TypeVar
 
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.types import Messages, SamplingConfig, StrictBaseModel, Usage
+from verifiers.v1.scoring import parse_judge_choice
+from verifiers.v1.utils.install import env_name
+from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.types import ID, Messages, SamplingConfig, StrictBaseModel, Usage
 
 if TYPE_CHECKING:
+    from verifiers.v1.task import TaskData
     from verifiers.v1.trace import Trace
 
 ParsedT = TypeVar("ParsedT")
 
 
 class JudgeSamplingConfig(SamplingConfig):
-    """Sampling knobs for a judge call (`temperature` / `top_p` / `reasoning_effort` /
-    `max_tokens`, plus provider-specific keys via `extra='allow'`). Same shape as the rollout's
-    `SamplingConfig` — set e.g. `judge.sampling.max_tokens`."""
+    pass
 
 
 class JudgeConfig(BaseClientConfig):
-    """An LLM-judge endpoint. Inherits `base_url` / `api_key_var` / `headers` (with the Prime
-    auto-config) from `BaseClientConfig`; adds the model and sampling. Subclass to add
-    taskset-specific fields."""
-
-    model: str = "openai/gpt-5-mini"
+    id: ID = ""
+    """Plugin id; empty for a judge called directly by task code."""
+    name: str = ""
+    """Reward key override for a plugged judge."""
+    weight: float = 1.0
+    model: str = "openai/gpt-5.4-nano"
     sampling: JudgeSamplingConfig = JudgeSamplingConfig()
+    prompt: str | None = None
+    prompt_file: Path | None = None
+    """Prompt file override, mutually exclusive with `prompt`."""
+
+    @model_validator(mode="after")
+    def check_prompt_source(self) -> "JudgeConfig":
+        if self.prompt is not None and self.prompt_file is not None:
+            raise ValueError("set `prompt` or `prompt_file`, not both")
+        return self
+
+
+Judges = list[SerializeAsAny[JudgeConfig]]
+"""Config-plugged judges, resolved by id and serialized as their concrete types."""
+
+
+def judge_key(config: JudgeConfig) -> str:
+    return config.name or env_name(config.id)
+
+
+def resolve_judges(entries: Sequence[Any]) -> list[JudgeConfig]:
+    from verifiers.v1.loaders import judge_config_type
+
+    resolved = []
+    for entry in entries:
+        raw = entry.model_dump() if isinstance(entry, BaseModel) else dict(entry)
+        if not raw.get("id"):
+            raise ValueError(
+                "each `judges` entry needs an `id` (a judge plugin: `reference`, "
+                "`rubric`, a local package, or a hub `org/name` package)"
+            )
+        resolved.append(judge_config_type(raw["id"]).model_validate(raw))
+    return resolved
+
+
+def check_judges(entries: Sequence[JudgeConfig]) -> None:
+    for entry in entries:
+        if not entry.id:
+            raise ValueError(
+                "each `judges` entry needs an `id` (a judge plugin: `reference`, "
+                "`rubric`, a local package, or a hub `org/name` package)"
+            )
+    keys = [judge_key(entry) for entry in entries]
+    if duplicates := {key for key in keys if keys.count(key) > 1}:
+        raise ValueError(
+            f"`judges` entries share a reward key {sorted(duplicates)}; set a "
+            "distinct `name` on each to keep both verdicts"
+        )
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
-    """One judge call's result — returned to the caller and (JSON-serialized) appended to
-    `trace.info["judge"]` for debugging, including the provider-reported `usage` (tokens + cost)."""
-
     text: str
-    """The judge's raw reply."""
     parsed: ParsedT | None = None
-    """The verdict the taskset acts on (`parse`'s output, or the structured object for `schema`)."""
     usage: Usage | None = None
 
 
-class Judge(Generic[ParsedT]):
-    """A per-task LLM judge over an OpenAI-compatible endpoint.
+JudgeView = Literal["last_reply", "full_trace"]
 
-    Override `build_messages` (prompt setup) and `parse` (verdict parsing) — or just set the
-    `prompt` template and use the defaults — then call `evaluate(**fields)`. Set `schema` to opt
-    into structured outputs.
-    """
 
+def judge_question(task: "TaskData", question_field: str) -> str:
+    if not question_field:
+        return task.prompt_text
+    question = getattr(task, question_field, None)
+    if question is None:
+        raise ValueError(
+            f"judge found no {question_field!r} field on the task; point "
+            "`question_field` at the task's question field, or leave it empty for the "
+            "task prompt"
+        )
+    return str(question)
+
+
+def judge_response(trace: "Trace", view: JudgeView) -> str:
+    return trace.transcript if view == "full_trace" else trace.last_reply
+
+
+def judge_verdict(text: str, choices: Sequence[str]) -> str:
+    """Parse a verdict, raising so judge failures are not scored against the model."""
+    verdict = parse_judge_choice(text, choices)
+    if verdict is None:
+        raise ValueError(f"judge returned no {'/'.join(choices)} verdict: {text!r}")
+    return verdict
+
+
+ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)
+
+
+def judge_config_cls(cls: type) -> type[JudgeConfig]:
+    """Resolve a judge's config specialization through its MRO, else `JudgeConfig`."""
+    return generic_type(cls, JudgeConfig) or JudgeConfig
+
+
+class Judge(Generic[ParsedT, ConfigT]):
     prompt: str | None = None
-    """Default template for `build_messages`, formatted with the `evaluate` kwargs and sent as a
-    single user message. Override `build_messages` for system+user or non-template prompts."""
+    """Default prompt template, overridden by config."""
     schema: type[BaseModel] | None = None
-    """Pydantic schema for OpenAI structured outputs. When set, the call uses
-    `response_format=schema` and `JudgeResponse.parsed` is the validated object (provider must
-    support structured outputs)."""
 
-    def __init__(self, config: JudgeConfig | None = None) -> None:
-        self.config = config or JudgeConfig()
-        self.client: AsyncOpenAI = build_async_openai(self.config)
+    def __init__(self, config: ConfigT | None = None) -> None:
+        self.config = cast(ConfigT, config or judge_config_cls(type(self))())
+        if self.config.prompt_file is not None:
+            self.prompt = self.config.prompt_file.read_text(encoding="utf-8")
+
+    @property
+    def reward_name(self) -> str:
+        fallback = re.sub(
+            r"(?<!^)(?=[A-Z])", "_", type(self).__name__.removesuffix("Judge")
+        ).lower()
+        return judge_key(self.config) or fallback or "judge"
 
     def build_messages(self, **fields: Any) -> str | Messages:
-        """Prompt-setup hook: turn the `evaluate` fields into the messages to send (a single user
-        message as a plain `str`, or a `vf.Messages` list). The default formats the `prompt`
-        template with the fields; override it for a system+user / non-template prompt."""
-        if self.prompt is None:
+        template = self.config.prompt or self.prompt
+        if template is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
             )
-        return self.prompt.format(**fields)
+        return template.format(**fields)
+
+    async def score(
+        self, task: "TaskData", trace: "Trace"
+    ) -> float | Mapping[str, float]:
+        raise NotImplementedError(
+            f"{type(self).__name__} implements no `score`, so it can't be plugged via "
+            "`taskset.task.judges`; implement `score` (see verifiers.v1.judges for examples) or "
+            "call it from a task `@reward` instead."
+        )
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
-        """Parsing hook: turn a `JudgeResponse` into the verdict. The default returns the
-        structured object when `schema` is set, otherwise the raw reply text."""
         if self.schema is not None:
             return cast(ParsedT, response.parsed)
         return cast(ParsedT, response.text)
@@ -119,10 +221,7 @@ class Judge(Generic[ParsedT]):
         parse: Callable[[JudgeResponse[Any]], Any] | None = None,
         **sampling: Any,
     ) -> JudgeResponse[Any]:
-        """Call the judge once: send `messages`, build the `JudgeResponse`, and — when a `trace` is
-        given — record it (`Trace.record_judge`) in a `finally`, so the call's tokens + cost are
-        captured even when a refusal / empty structured output / `parse` hook raises after the
-        billed request. `schema` opts into structured outputs; `parse` sets `JudgeResponse.parsed`."""
+        """Call the judge and record billed usage even when parsing fails."""
         wire = (
             [{"role": "user", "content": messages}]
             if isinstance(messages, str)
@@ -134,33 +233,32 @@ class Judge(Generic[ParsedT]):
 
         response: JudgeResponse[Any] | None = None
         try:
-            if schema is not None:
-                completion = await self.client.beta.chat.completions.parse(
-                    response_format=schema, **kwargs
-                )
-                choice = completion.choices[0]
-                response = JudgeResponse(
-                    text=choice.message.content or "",
-                    parsed=choice.message.parsed,
-                    usage=Usage.from_openai(completion.usage),
-                )
-                if choice.message.refusal is not None:
-                    raise RuntimeError(
-                        f"judge refused structured output: {choice.message.refusal}"
+            async with build_async_openai(self.config) as client:
+                if schema is not None:
+                    completion = await client.beta.chat.completions.parse(
+                        response_format=schema, **kwargs
                     )
-                if response.parsed is None:
-                    # No refusal but no object either — e.g. a truncated/malformed reply. Surface it
-                    # rather than returning a None verdict callers read as a (falsy) failure.
-                    raise RuntimeError(
-                        f"judge returned no parseable structured output "
-                        f"(finish_reason={choice.finish_reason})"
+                    choice = completion.choices[0]
+                    response = JudgeResponse(
+                        text=choice.message.content or "",
+                        parsed=choice.message.parsed,
+                        usage=Usage.from_openai(completion.usage),
                     )
-            else:
-                completion = await self.client.chat.completions.create(**kwargs)
-                response = JudgeResponse(
-                    text=completion.choices[0].message.content or "",
-                    usage=Usage.from_openai(completion.usage),
-                )
+                    if choice.message.refusal is not None:
+                        raise RuntimeError(
+                            f"judge refused structured output: {choice.message.refusal}"
+                        )
+                    if response.parsed is None:
+                        raise RuntimeError(
+                            f"judge returned no parseable structured output "
+                            f"(finish_reason={choice.finish_reason})"
+                        )
+                else:
+                    completion = await client.chat.completions.create(**kwargs)
+                    response = JudgeResponse(
+                        text=completion.choices[0].message.content or "",
+                        usage=Usage.from_openai(completion.usage),
+                    )
             if parse is not None:
                 response.parsed = parse(response)
             return response
@@ -171,9 +269,6 @@ class Judge(Generic[ParsedT]):
     async def evaluate(
         self, *, trace: "Trace | None" = None, **fields: Any
     ) -> JudgeResponse[ParsedT]:
-        """Render the prompt (`build_messages(**fields)`), call the judge, and parse the verdict
-        (`parse`). When a `trace` is given the call is recorded onto it (`trace.info["judge"]` +
-        usage on `trace.extra_usage`), even if a refusal / empty output / parse raises."""
         messages = self.build_messages(**fields)
         return await self.complete(
             messages, trace=trace, schema=self.schema, parse=self.parse

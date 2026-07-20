@@ -1,19 +1,18 @@
-"""The codex harness: installs the Codex CLI into the runtime and runs `codex exec`.
+"""Codex reaches interception as a Responses API provider using the session secret.
 
-Codex only speaks the streaming OpenAI Responses API, so it reaches the interception server as a
-custom model provider (`wire_api = responses`) pointed at the rollout endpoint — served by the
-Responses dialect + SSE relay (see `verifiers.v1.dialects.responses`). The binary is the static
-musl release, so it drops into any linux container with no runtime deps; its bearer token (the
-session secret) is read from an env var.
+The static musl binary runs in Linux containers without additional runtime dependencies.
 """
 
+import base64
 import logging
+import re
 import shlex
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import TextContentPart
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +36,16 @@ chmod +x {bin}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    """The Codex CLI harness — which codex release to install in the runtime."""
-
-    version: str = "0.137.0"
+    version: str = "0.144.5"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
+    multi_agent: bool = False
+    """Enable Codex's native multi-agent v2 tools."""
 
 
 class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = False  # TODO
+    SUPPORTS_MESSAGE_PROMPT = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("codex: ensuring codex %s is installed", self.config.version)
@@ -65,17 +65,63 @@ class CodexHarness(Harness[CodexHarnessConfig]):
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        _, prompt = self.resolve_prompt(trace.task)
+        task = trace.task.data
+        if (
+            task.system_prompt is not None
+            and task.prompt is not None
+            and not isinstance(task.prompt, str)
+        ):
+            system_prompt, prompt = task.system_prompt, task.prompt
+        else:
+            system_prompt, prompt = self.resolve_prompt(task)
+        image_args: list[str] = []
+        image_dir = f".vf-codex-images-{trace.id}"
+        if prompt is not None and not isinstance(prompt, str):
+            # Codex seeds one initial turn, so Messages system text joins its prompt.
+            texts = [system_prompt] if system_prompt else []
+            image_index = 0
+            for message in prompt:
+                if message.role not in ("system", "user"):
+                    raise ValueError(
+                        "codex exec only supports system and user initial messages"
+                    )
+                parts = (
+                    [TextContentPart(text=message.content)]
+                    if isinstance(message.content, str)
+                    else message.content
+                )
+                for part in parts:
+                    if isinstance(part, TextContentPart):
+                        texts.append(part.text)
+                        continue
+                    metadata, separator, encoded = part.image_url.url.partition(",")
+                    media_type, *parameters = metadata.removeprefix("data:").split(";")
+                    if (
+                        not separator
+                        or not metadata.startswith("data:image/")
+                        or not any(p.lower() == "base64" for p in parameters)
+                    ):
+                        raise ValueError(
+                            "codex image prompts require base64 data:image URLs"
+                        )
+                    extension = re.sub(
+                        r"[^a-zA-Z0-9]+", "_", media_type.removeprefix("image/")
+                    ).strip("_")
+                    path = f"{image_dir}/image_{image_index}.{extension or 'image'}"
+                    await runtime.write(path, base64.b64decode(encoded))
+                    image_args += ["-i", path]
+                    image_index += 1
+            prompt = "\n\n".join(texts)
         # codex authenticates to the interception server with the session secret (its provider
         # api key) and posts Responses calls to `{endpoint}/responses`.
-        env = {**self.config.env, KEY_VAR: secret}
+        env = {**self.config.resolved_env, KEY_VAR: secret}
         # Values are Codex feature names such as `shell_tool`; Codex owns validation.
         # https://developers.openai.com/codex/config-reference#features
         tool_config = [
@@ -90,6 +136,16 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "exec",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            # Apps/plugins can flip on remotely and advertise definitions custom providers reject.
+            "--disable",
+            "apps",
+            "--disable",
+            "plugins",
+            "--disable",
+            "multi_agent",
+            # Preserve any user-supplied multi-agent v2 tool and limit settings.
+            "-c",
+            f"features.multi_agent_v2.enabled={str(self.config.multi_agent).lower()}",
             "-m",
             ctx.model,
             "-c",
@@ -105,6 +161,18 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "-c",
             f"model_providers.{PROVIDER}.requires_openai_auth=false",
             *tool_config,
+            *image_args,
+            "--",
             prompt,
         ]
-        return await runtime.run_program(argv, env)
+        try:
+            return await runtime.run_program(argv, env)
+        finally:
+            if image_args:
+                try:
+                    await runtime.run(["rm", "-rf", image_dir], {})
+                except Exception:
+                    # Runtime teardown is the fallback; preserve the rollout result.
+                    logger.warning(
+                        "failed to clean up Codex prompt images", exc_info=True
+                    )

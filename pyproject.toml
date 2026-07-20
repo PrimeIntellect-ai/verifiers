@@ -35,7 +35,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "prime-tunnel>=0.1.8",
-    "prime-sandboxes>=0.2.27",
+    "prime-sandboxes>=0.2.31",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -51,7 +51,7 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers>=0.1.8.dev40",
+    "renderers>=0.1.8",
     "typing_extensions; python_version < '3.12'",
 ]
 
@@ -73,14 +73,14 @@ dev = [
     "nltk>=3.9.2",
     "textarena==0.7.4",
 ]
-# v1 example environments vendored under environments/, resolved by id via [tool.uv.sources].
+# V1 examples and support packages, resolved from their local sources below.
 # Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, serve) run straight
 # from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "reverse-text-v1", "color-codeword-v1",
-    "wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
+    "wordle-v1", "openenv-wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
 ]
 
 [project.optional-dependencies]
@@ -105,6 +105,9 @@ modal = [
 ]
 notebook = [
     "nest-asyncio>=1.6.0",
+]
+openenv = [
+    "openenv>=0.4.1",
 ]
 quest = [
     "certifi",
@@ -143,8 +146,8 @@ wiki-search-v1 = { path = "environments/wiki_search_v1", editable = true }
 gsm8k-v1 = { path = "environments/gsm8k_v1", editable = true }
 code-golf-v1 = { path = "environments/code_golf_v1", editable = true }
 reverse-text-v1 = { path = "environments/reverse_text_v1", editable = true }
-reverse-text = { path = "environments/reverse_text", editable = true }
 wordle-v1 = { path = "environments/wordle_v1", editable = true }
+openenv-wordle-v1 = { path = "environments/openenv_wordle_v1", editable = true }
 color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
@@ -166,17 +169,17 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 vf-eval = "verifiers.scripts.eval:main"
 eval = "verifiers.v1.cli.eval.main:main"
 validate = "verifiers.v1.cli.validate:main"
+debug = "verifiers.v1.cli.debug:main"
+replay = "verifiers.v1.cli.replay:main"
 serve = "verifiers.v1.cli.serve:main"
 init = "verifiers.v1.cli.init:main"
+gepa = "verifiers.v1.cli.gepa:main"
 vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-setup = "verifiers.scripts.setup:main"
 vf-build = "verifiers.scripts.build:main"
-vf-rl = "verifiers.scripts.rl:main"
-vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
-vf-vllm = "verifiers.scripts.vllm:main"
 
 # hatchling configuration
 [tool.hatch.version]
@@ -248,8 +251,7 @@ markers = [
     "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
-    "shared: v1 e2e cases with a shared (one-per-eval) tool server",
-    "default: v1 e2e cases on the default harness",
+    "null: v1 e2e cases on the null harness",
     "bash: v1 e2e cases on the bash harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",

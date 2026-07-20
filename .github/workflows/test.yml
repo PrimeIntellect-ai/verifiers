@@ -61,47 +61,8 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest tests/ -v --ignore=tests/test_envs.py --ignore=tests/v1 -m "not prime" --cov=verifiers --cov-report=xml --cov-report=term
+          uv run pytest tests/ -v --ignore=tests/v1 -m "not prime" --cov=verifiers --cov-report=xml --cov-report=term
 
       - name: Run v1 tests
         run: |
           uv run pytest tests/v1 -vv -n auto -m "not prime and not modal" --cov=verifiers --cov-append --cov-report=xml --cov-report=term
-  test-envs:
-    name: Environments
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
-      PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Detect changed environments
-        id: changed-envs
-        if: github.event_name == 'pull_request'
-        uses: tj-actions/changed-files@v47
-        with:
-          path: environments
-          dir_names: true
-          dir_names_max_depth: 1
-          separator: ","
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Install prime
-        run: uv pip install prime
-
-      - name: Run environment tests
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            export CHANGED_ENVS="${{ steps.changed-envs.outputs.all_changed_files || 'none' }}"
-            echo "CHANGED_ENVS: $CHANGED_ENVS"
-          fi
-          uv run pytest tests/test_envs.py -vv

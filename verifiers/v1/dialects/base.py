@@ -5,8 +5,8 @@ trace from the program's native request + the provider's native response. The se
 every registered dialect's `routes` (see `dialects.DIALECTS`), so a request's format is resolved
 from the endpoint the program's SDK posts to — the harness declares nothing.
 
-The eval client relays a request's bytes verbatim to a matching endpoint, while a dialect-owned
-`StreamParser` incrementally assembles a response copy for the trace; the renderer is chat-only.
+The eval client preserves a request's native JSON fields except for eval-owned overrides, while a
+dialect-owned `StreamParser` incrementally assembles a response copy for the trace; the renderer is chat-only.
 A dialect is therefore mostly wire -> vf (`parse_request`/`parse_response`/`stream_parser`); the
 exceptions are `apply_overrides` (impose the eval's model + sampling in this format's shape) and
 `extend` (chat-only user-sim injection).
@@ -21,7 +21,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import BaseModel
 from pydantic_core import from_json
 
-from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
+from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
@@ -121,6 +121,12 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     `dialects.DIALECTS` and a harness speaking that format works end-to-end (the eval client and
     interception server are generic over this interface)."""
 
+    sampling_fields: ClassVar[frozenset[str]] = frozenset()
+    """Request keys that are call settings — what shapes generation given the same
+    conversation: decoding knobs, budgets/stops, reasoning effort, output contract.
+    A whitelist, so payload, conversation state, and tracking fields can never leak
+    into the per-call record by omission; an unlisted knob is simply not recorded."""
+
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts model turns to. The interception server serves
     one handler per route, so the wire format is resolved from the route the SDK chose (it
@@ -128,7 +134,7 @@ class Dialect(ABC, Generic[ReqT, RespT]):
 
     aux_routes: ClassVar[tuple[str, ...]] = ()
     """Side endpoints the SDK may call that aren't model turns (e.g. Anthropic's
-    `count_tokens`): relayed verbatim by the eval client, never recorded on the trace."""
+    `count_tokens`): relayed as native JSON by the eval client, never recorded on the trace."""
 
     upstream_path: ClassVar[str]
     """The provider endpoint the proxy forwards to for this format (e.g. `/chat/completions`)."""
@@ -167,6 +173,14 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
         """The native request -> vf prompt + tools (for the trace)."""
 
+    def parse_sampling(self, body: ReqT) -> Sampling:
+        """The native request's call settings -> the canonical `Sampling` (for the
+        trace's per-call records): the `sampling_fields` whitelist, with this format's
+        aliases mapped onto the typed knobs; dialect-specific keys ride as extras."""
+        return Sampling.model_validate(
+            {k: v for k, v in body.items() if k in self.sampling_fields}
+        )
+
     @abstractmethod
     def parse_response(self, response: RespT) -> Response:
         """A native (non-streamed) response -> the vf `Response` we consume."""
@@ -182,7 +196,7 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     @abstractmethod
     def apply_overrides(self, body: ReqT, model: str, sampling: SamplingConfig) -> ReqT:
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
-        the only mutation the proxy makes to an otherwise byte-exact forward. Model overlays;
+        the only field mutation the proxy makes to the native JSON object. Model overlays;
         sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
 
     def extend(
