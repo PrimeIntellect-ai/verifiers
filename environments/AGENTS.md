@@ -397,6 +397,9 @@ uv run eval gsm8k-v1 --env.id best-of-n --env.n 8
 uv run eval my-task-v1 --env.id agentic-judge --env.judge.harness.runtime.type docker
 ```
 
+The same pairing as TOML — `env.id` plus one `[env.<role>]` block per seat — is
+checked in as `configs/agentic_judge.toml` (`uv run eval @ configs/agentic_judge.toml`).
+
 `--env.id` resolves like every plugin id — a bundled env (below), a local package
 exporting an `Environment` subclass via `__all__`, or a Hub `org/name[@version]` —
 and its `EnvConfig` surface typed on the CLI (`--env.<role>.*`, `-h` renders them).
