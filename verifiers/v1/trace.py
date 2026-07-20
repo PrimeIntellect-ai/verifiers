@@ -238,9 +238,7 @@ class Branch(StrictBaseModel):
 
     @property
     def num_total_tokens(self) -> int:
-        """Final sequence length: the last call's prompt + completion. Earlier turns' context
-        is already contained in that prompt, so re-sent tokens are counted once rather than
-        summed per turn."""
+        """Total tokens reported for the final model call."""
         last = self.last_usage
         return last.total_tokens if last is not None else 0
 
