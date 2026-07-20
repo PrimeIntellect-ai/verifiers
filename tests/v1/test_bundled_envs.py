@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1 import graph
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNEnvConfig
 from verifiers.v1.envs.agentic_judge import AgenticJudgeEnvConfig
@@ -257,3 +258,96 @@ def test_rubric_spec_agent_execution_round_trip(tmp_path):
     assert total == 0.75  # (3*1 + 1*0) / 4
     assert trace.metrics["rubric/correct"] == 1.0
     assert trace.metrics["rubric/concise"] == 0.0
+
+
+def _reply_trace(reply: str, role: str | None = None) -> Trace:
+    trace = Trace(
+        task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")), role=role
+    )
+    graph.prepare_turn(trace, [vf.UserMessage(content="q")]).commit(
+        vf.Response(
+            id="",
+            created=0,
+            model="test",
+            message=vf.AssistantMessage(content=reply),
+            finish_reason="stop",
+        )
+    )
+    return trace
+
+
+def _golf_trace(reply: str, passed: float, latency: float) -> Trace:
+    trace = _reply_trace(reply)
+    trace.record_metrics({"passed": passed, "latency": latency})
+    return trace
+
+
+def test_code_golf_only_passing_attempts_compete():
+    """The sibling comparisons rank passing attempts only: a short-but-wrong
+    program must not beat a long-but-right sibling, and an all-failed group
+    pays nobody."""
+    env = vf.load_environment(
+        vf.resolve_env_config({"taskset": {"id": "code-golf-v1"}})
+    )
+    task = vf.Task(vf.TaskData(idx=0, prompt="q"))
+    wrong = _golf_trace("```python\nx\n```", passed=0.0, latency=0.01)
+    right = _golf_trace(
+        "```python\nprint(sum(range(101)))\n```", passed=1.0, latency=0.9
+    )
+    asyncio.run(env.score(task, {"golfer": [wrong, right]}))
+    assert wrong.rewards["most_concise"] == 0.0
+    assert wrong.rewards["fastest"] == 0.0
+    assert right.rewards["most_concise"] == 0.5  # the sole passing attempt (weighted)
+    assert right.rewards["fastest"] == 0.5
+
+    misses = [
+        _golf_trace("```python\nx\n```", passed=0.0, latency=0.01),
+        _golf_trace("no code at all", passed=0.0, latency=0.02),
+    ]
+    asyncio.run(env.score(task, {"golfer": misses}))
+    assert all(t.rewards["most_concise"] == t.rewards["fastest"] == 0.0 for t in misses)
+
+
+def test_solve_task_minted_from_the_proposer_contract():
+    from proposer_solver_v1.taskset import SolveTask
+
+    minted = SolveTask.from_trace(
+        _reply_trace('Verified.\n{"problem": "How many cats?", "answer": 12}')
+    )
+    assert minted.data.answer == "12"
+    assert minted.data.prompt.startswith("How many cats?")
+
+
+def test_solve_task_refuses_off_contract_answers():
+    """Off-contract output raises (the env-rollout fails, retryable): a float or
+    bool answer must not be coerced into a ground truth."""
+    from proposer_solver_v1.taskset import SolveTask
+
+    with pytest.raises(ValueError, match="JSON integer"):
+        SolveTask.from_trace(_reply_trace('{"problem": "p", "answer": 4.9}'))
+    with pytest.raises(ValueError, match="JSON integer"):
+        SolveTask.from_trace(_reply_trace('{"problem": "p", "answer": true}'))
+    with pytest.raises(ValueError, match="JSON contract"):
+        SolveTask.from_trace(_reply_trace("no contract here"))
+
+
+def test_proposer_learnability_peaks_at_half():
+    """The curriculum signal is 4p(1-p) over the solver seat: 0 when the problem
+    is impossible or trivial for the solvers, 1 when half crack it."""
+    env = vf.load_environment(
+        vf.resolve_env_config({"taskset": {"id": "proposer-solver-v1"}})
+    )
+    task = vf.Task(vf.TaskData(idx=0, prompt="q"))
+
+    def score(hits: int, n: int = 4) -> Trace:
+        proposer = _reply_trace("proposed", role="proposer")
+        solvers = [_reply_trace("42", role="solver") for _ in range(n)]
+        for solver in solvers[:hits]:
+            solver.record_reward("correct", 1.0)
+        asyncio.run(env.score(task, {"proposer": proposer, "solver": solvers}))
+        return proposer
+
+    assert score(0).rewards["learnability"] == 0.0
+    assert score(2).rewards["learnability"] == 1.0
+    assert score(4).rewards["learnability"] == 0.0
+    assert score(1).metrics["solve_rate"] == 0.25

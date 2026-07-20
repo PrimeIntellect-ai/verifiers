@@ -245,9 +245,10 @@ def _v1_stop_condition(out: dict) -> str | None:
 def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     """Map a v0 ``RolloutOutput`` into a v1 ``Trace``, preserving the meta a native v1
     trace carries: per-turn prompt messages, the response message (content / reasoning /
-    tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, and the task's
-    system prompt / prompt / answer. A truncated v0 rollout is mapped to a v1 truncation
-    stop condition (see ``_v1_stop_condition``) so ``Trace.is_truncated`` derives ``True``."""
+    tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, the rollout's
+    ``info``, and the task's system prompt / prompt / answer. A truncated v0 rollout is
+    mapped to a v1 truncation stop condition (see ``_v1_stop_condition``) so
+    ``Trace.is_truncated`` derives ``True``."""
     model = str(out.get("model") or "")
 
     error = None
@@ -271,6 +272,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         tools=_to_v1_tools(out.get("tool_defs")),
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
+        info=dict(out.get("info") or {}),
         is_completed=bool(out.get("is_completed", True)),
         stop_condition=_v1_stop_condition(out),
         errors=[error] if error else [],
@@ -313,7 +315,7 @@ def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTaskData:
             system_prompt = _text(m.get("content"))
         elif m.get("role") == "user":
             user_texts.append(_text(m.get("content")))
-    extra = {"answer": answer} if answer else {}
+    extra = {"answer": answer} if answer is not None else {}
     return WireTaskData(
         idx=task_idx,
         prompt="\n\n".join(user_texts),
@@ -489,7 +491,7 @@ async def run_legacy_eval(config) -> list[Trace]:
     from verifiers import load_environment
 
     from verifiers.v1.cli.output import append_trace, save_config
-    from verifiers.v1.utils.install import ensure_installed
+    from verifiers.v1.utils.install import ensure_installed, env_name
     from verifiers.v1.utils.sampling import sample
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
@@ -502,6 +504,7 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)
+    taskset_id = env_name(config.id)  # the same identity the served bridge stamps
     out_dir = _legacy_output_dir(config)
     save_config(config, out_dir)
     logger.info("results: %s", out_dir)
@@ -526,7 +529,7 @@ async def run_legacy_eval(config) -> list[Trace]:
                 state_columns=["trajectory"],
             )
             trace = rollout_output_to_trace(out, task_idx)
-            await append_trace(out_dir, trace, write_lock)
+            await append_trace(out_dir, trace, write_lock, env=taskset_id)
             return trace
 
         if sem is None:

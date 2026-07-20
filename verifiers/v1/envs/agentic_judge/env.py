@@ -19,7 +19,7 @@ from pydantic import SerializeAsAny, model_validator
 import verifiers.v1 as vf
 from verifiers.v1.env import _deep_merge
 from verifiers.v1.harness import Harness
-from verifiers.v1.judge import JudgeConfig
+from verifiers.v1.judge import Judge, JudgeConfig
 from verifiers.v1.judges.score import ScoreJudgeConfig
 from verifiers.v1.task import _record_result
 
@@ -100,6 +100,15 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
         from verifiers.v1.loaders import load_judge
 
         self._spec = load_judge(self.config.spec)
+        # The spec drives the judge agent's task: refuse a render-less one at
+        # construction, not after burning a full solver run.
+        if type(self._spec).render is Judge.render:
+            raise ValueError(
+                f"agentic-judge runs the spec's `render` prompt as its judge "
+                f"agent's task, but judge {self.config.spec.id!r} implements no "
+                "`render` — a score-only judge belongs on the plugged tier "
+                "(--env.taskset.task.judges), not this env."
+            )
 
     def _judge_harness(self) -> Harness:
         """The judge seat's resolved harness: its pin, else the taskset's default."""
@@ -136,7 +145,7 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
                 prompt=_noted(prompt, _sandbox_note(task.data)),
                 image=task.data.image,
                 workdir=task.data.workdir,
-                resources=task.data.resources.model_copy(),
+                resources=task.data.resources,
             ),
             files={
                 TRANSCRIPT_MD: solution.transcript.encode(),
@@ -151,7 +160,7 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
         tier would — a malformed verdict raises, failing the env-rollout
         (retryable) rather than scoring the solver 0."""
         solution, verdict = views["solver"], views["judge"]
-        result = self._spec.verdict(task.data, solution, verdict.last_reply or "")
+        result = self._spec.verdict(task.data, solution, verdict.last_reply)
         _record_result(
             solution, self._spec.reward_name, result, self._spec.config.weight
         )

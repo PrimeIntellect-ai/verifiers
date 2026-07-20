@@ -9,12 +9,14 @@ metadata across the finished siblings:
   - `evaluate`      per-attempt `@metric`: runs the program once in that attempt's
                     runtime and records `passed` + `latency`. (task, trace, runtime)
   - `correct`       per-attempt `@reward`: reads `passed` off the trace.      (trace)
-  - `most_concise`  env `score()`: of the attempts, the shortest source wins.
-  - `fastest`       env `score()`: of the attempts, the lowest recorded
+  - `most_concise`  env `score()`: of the PASSING attempts, the shortest source wins.
+  - `fastest`       env `score()`: of the PASSING attempts, the lowest recorded
                     `latency` wins — a comparison of trace metadata.
 
 So one env-rollout produces, per attempt: did it work, was it the shorter one, was it
-the quicker one — the relative signals you can only get by comparing siblings.
+the quicker one — the relative signals you can only get by comparing siblings. Only
+correct attempts compete: a failed one earns nothing on either comparison, and an
+all-failed group pays nobody.
 """
 
 import asyncio
@@ -79,21 +81,21 @@ class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
 
     @vf.reward(weight=0.5)
     async def most_concise(self, trace, traces):
-        """The sibling comparison: shortest source wins (ties share)."""
-
-        def length(t):
-            return len(extract_program(t)) or 10**9
-
-        return float(length(trace) == min(length(t) for t in traces))
+        """The sibling comparison: shortest source among the passing attempts wins
+        (ties share); a failed attempt earns nothing."""
+        if not trace.metrics.get("passed"):
+            return 0.0
+        lengths = [len(extract_program(t)) for t in traces if t.metrics.get("passed")]
+        return float(len(extract_program(trace)) == min(lengths))
 
     @vf.reward(weight=0.5)
     async def fastest(self, trace, traces):
-        """The sibling comparison: lowest run latency wins (ties share)."""
-
-        def latency(t):
-            return t.metrics.get("latency", 1e6)
-
-        return float(latency(trace) == min(latency(t) for t in traces))
+        """The sibling comparison: lowest run latency among the passing attempts
+        wins (ties share); a failed attempt earns nothing."""
+        if not trace.metrics.get("passed"):
+            return 0.0
+        latencies = [t.metrics["latency"] for t in traces if t.metrics.get("passed")]
+        return float(trace.metrics["latency"] == min(latencies))
 
 
 class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
