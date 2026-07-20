@@ -57,9 +57,8 @@ async def gather_scoring(*awaitables: Awaitable[Any]) -> list[Any]:
         except asyncio.CancelledError:
             raise
         except BaseException:
-            if isinstance(error, asyncio.CancelledError):
-                raise
-        raise
+            pass
+        raise error
 
 
 class Phase(StrEnum):
