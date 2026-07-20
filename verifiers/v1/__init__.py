@@ -72,6 +72,11 @@ from verifiers.v1.scoring import (
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
+from verifiers.v1.utils.git import (
+    PATCH_CAP_BYTES as PATCH_CAP_BYTES,
+    capture_patch as capture_patch,
+    resolve_head as resolve_head,
+)
 from verifiers.v1.runtimes import (
     DockerConfig,
     PrimeConfig,
@@ -260,6 +265,10 @@ __all__ = [
     "RubricJudge",
     "RubricJudgeConfig",
     "Criterion",
+    # git patch capture
+    "PATCH_CAP_BYTES",
+    "capture_patch",
+    "resolve_head",
     # scoring
     "compare_stdout_results",
     "extract_boxed_answer",
