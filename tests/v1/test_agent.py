@@ -14,13 +14,26 @@ from verifiers.v1.runtimes import DockerConfig, SubprocessConfig, make_runtime
 
 
 def _agent() -> vf.Agent:
-    # The guard under test raises before the model leg is touched, so the
-    # client can be a stub.
-    return vf.Agent(
-        BashHarness(BashHarnessConfig()),
-        "test-model",
-        None,  # type: ignore[arg-type]
-    )
+    # client=None resolves the eval default; the guards under test raise before
+    # any model I/O, so no credentials are needed.
+    return vf.Agent(BashHarness(BashHarnessConfig()), "test-model")
+
+
+def test_agent_construction_accepts_ids_and_configs():
+    """Each piece resolves from what you hand it: a bare harness id, a typed
+    `HarnessConfig`, or a live `Harness`; `client=None` resolves the env-var eval
+    default, and a live (or duck) client passes through untouched — sharing one
+    client across agents stays explicit."""
+    from verifiers.v1.clients import EvalClient
+
+    by_id = vf.Agent("bash", "m")
+    assert isinstance(by_id.harness, BashHarness)
+    assert isinstance(by_id.ctx.client, EvalClient)
+    assert isinstance(vf.Agent(BashHarnessConfig(), "m").harness, BashHarness)
+    live = BashHarness(BashHarnessConfig())
+    assert vf.Agent(live, "m").harness is live
+    shared = object()
+    assert vf.Agent(live, "m", shared).ctx.client is shared  # type: ignore[arg-type]
 
 
 async def test_borrowed_subprocess_box_refuses_task_image():

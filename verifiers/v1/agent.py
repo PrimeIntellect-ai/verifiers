@@ -18,14 +18,20 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from typing import AsyncIterator
 
-from verifiers.v1.clients import Client, ModelContext
+from verifiers.v1.clients import (
+    BaseClientConfig,
+    Client,
+    EvalClientConfig,
+    ModelContext,
+    resolve_client,
+)
 from verifiers.v1.env import (
     TimeoutConfig,
     cap_remote_harness_timeout,
     resolve_runtime_config,
     validate_pairing,
 )
-from verifiers.v1.harness import Harness
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.rollout import RolloutRun
@@ -73,9 +79,13 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
 class Agent:
     """A harness + model + runtime policy, runnable on any task.
 
-    Harnesses are stateless, so one instance can back any number of agents.
-    `model`/`client`/`sampling` are the model context, bound at construction; agents on
-    the same endpoint should share one `Client` (one connection pool).
+    Construction takes each piece as the live object or as what resolves to one:
+    `harness` a `Harness`, a `HarnessConfig`, or a bare id (`vf.Agent("bash", ...)`);
+    `client` a live `Client`, a client config, or None for the env-var-driven eval
+    default. Harnesses are stateless, so one instance can back any number of
+    agents. `model`/`client`/`sampling` are the model context, bound at
+    construction; agents on the same endpoint should share one `Client` (one
+    connection pool) — which is why a live client is still first-class.
 
     `runtime` is a *policy* (a `RuntimeConfig`, default the harness config's own):
     each `run` provisions a fresh box from it, resolved per task. Pass a live
@@ -88,9 +98,9 @@ class Agent:
 
     def __init__(
         self,
-        harness: Harness,
+        harness: Harness | HarnessConfig | str,
         model: str,
-        client: Client,
+        client: Client | BaseClientConfig | None = None,
         runtime: RuntimeConfig | None = None,
         *,
         sampling: Sampling | None = None,
@@ -98,6 +108,17 @@ class Agent:
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
     ) -> None:
+        if isinstance(harness, str):
+            # A bare id resolves through the plugin registry, typed config included.
+            from verifiers.v1.loaders import harness_config_type
+
+            harness = harness_config_type(harness)(id=harness)
+        if isinstance(harness, HarnessConfig):
+            from verifiers.v1.loaders import load_harness
+
+            harness = load_harness(harness)
+        if client is None or isinstance(client, BaseClientConfig):
+            client = resolve_client(client or EvalClientConfig())
         self.harness = harness
         self.ctx = ModelContext(
             model=model,
