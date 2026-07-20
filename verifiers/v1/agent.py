@@ -12,9 +12,10 @@ agent (`async with`) owns one interception server; un-entered, each run brings
 up its own per-rollout server.
 """
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import AsyncIterator
 
 from verifiers.v1.clients import Client, ModelContext
@@ -272,3 +273,85 @@ class Agent:
             yield runtime
         finally:
             await runtime.stop()
+
+
+class _EpisodeAgent(Agent):
+    """One role's `Agent` for one env-rollout. An `Environment` builds these fresh
+    per episode (an Agent is a cheap bundle of references — the expensive resources
+    are env-owned and borrowed), so the episode's own capture lives right here with
+    no state shared across concurrent episodes: every trace gets `role`/`trainable`
+    written the moment it's created, finished traces land in `completed` (the
+    crash-safe episode source if the hook then raises), and each run takes the
+    eval's concurrency gate. The taskset's shared tool servers ride only its own
+    tasks — an env-minted task carries its own needs, and handing shared servers
+    to its run would wrongly put MCP in play (pass `shared_tools=` explicitly to
+    override either way)."""
+
+    def __init__(
+        self,
+        harness: Harness,
+        model: str,
+        client: Client,
+        *,
+        sampling: Sampling | None,
+        interception: Interception | None,
+        limits: RolloutLimits,
+        timeout: TimeoutConfig,
+        name: str,
+        role: str | None,
+        shared_tools: Mapping[str, SharedToolServer],
+        task_cls: type[Task],
+        gate: asyncio.Semaphore | None,
+        completed: list[Trace],
+        on_trace: Callable[[Trace], None] | None,
+        warned_resources: set,
+    ) -> None:
+        super().__init__(
+            harness,
+            model,
+            client,
+            sampling=sampling,
+            interception=interception,
+            limits=limits,
+            timeout=timeout,
+        )
+        # Resource warnings dedupe env-wide, not per episode.
+        self._warned_resources = warned_resources
+        self._name = name
+        self._role = role
+        self._shared_tools = shared_tools
+        self._task_cls = task_cls
+        self._gate = gate
+        self._completed = completed
+        self._on_trace = on_trace
+
+    def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
+        return self._shared_tools if isinstance(task, self._task_cls) else {}
+
+    async def run(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        shared_tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> Trace:
+        def watch(trace: Trace) -> None:
+            trace.role = self._role
+            trace.trainable = self.trainable
+            if self._on_trace is not None:
+                self._on_trace(trace)
+            if on_trace is not None:
+                on_trace(trace)
+
+        async with self._gate or nullcontext():
+            trace = await super().run(
+                task,
+                runtime=runtime,
+                shared_tools=shared_tools
+                if shared_tools is not None
+                else self._shared_for(task),
+                on_trace=watch,
+            )
+        self._completed.append(trace)
+        return trace

@@ -1,12 +1,14 @@
-"""The env-rollout surface: roles()/rollout()/score() defaults, episode minting, role
-stamping, crash-safe recording, and the score() deadline (no live agents — stubs stand
-in behind `_agents_for`)."""
+"""The env-rollout surface: role discovery, rollout()/score() defaults, episode
+minting, role stamping, crash-safe recording, and the score() deadline (no live
+runs — the engine is stubbed at `Agent.run`, under the real per-episode agents)."""
 
 import asyncio
+from collections import Counter
 
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1.agent import Agent
 from verifiers.v1.trace import Trace, TraceTask
 
 
@@ -18,33 +20,36 @@ def _task(env: vf.Environment) -> vf.Task:
     return env.taskset.load()[0]
 
 
-class StubAgent:
-    """Duck-types the one method `_RoleAgent` wraps: mint a trace, publish it via
-    `on_trace` (as the engine does the moment a run starts), return it finished."""
+def _ctx() -> vf.ModelContext:
+    """A run context for stubbed-engine tests (duck client — no call ever leaves)."""
+    return vf.ModelContext(model="stub", client=object())  # type: ignore[arg-type]
 
-    def __init__(self, error: Exception | None = None) -> None:
-        self.runs = 0
-        self.error = error
-        self.trainable = True  # the env-owned standing `brief()` adjusts
 
-    async def run(
-        self, task: vf.Task, *, runtime=None, shared_tools=None, on_trace=None
-    ) -> Trace:
-        self.runs += 1
+def _stub_engine(
+    env: vf.Environment,
+    monkeypatch,
+    errors: dict[str, Exception] | None = None,
+) -> Counter:
+    """Stub the engine underneath the real per-episode agents: `Agent.run` mints a
+    finished trace through the injected watch, so agent construction, `brief()`,
+    role stamping, gating, and crash-safe capture all run for real. Returns the
+    per-role run counter; `errors` injects a failure onto a role's traces."""
+    errs = dict(errors or {})
+    runs: Counter = Counter()
+
+    async def fake_run(self, task, *, runtime=None, shared_tools=None, on_trace=None):
+        runs[self._name] += 1
         trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
         if on_trace is not None:
             on_trace(trace)
-        if self.error is not None:
-            trace.capture_error(self.error)
+        error = errs.get(self._name)
+        if error is not None:
+            trace.capture_error(error)
         trace.is_completed = True
         return trace
 
-
-def _stub_agents(env: vf.Environment) -> dict[str, StubAgent]:
-    agents = {name: StubAgent() for name in env._roles}
-    env.brief(agents)  # the real _agents_for briefs after building
-    env._agents_for = lambda ctx: agents  # type: ignore[method-assign]
-    return agents
+    monkeypatch.setattr(Agent, "run", fake_run)
+    return runs
 
 
 class DuetConfig(vf.EnvConfig):
@@ -69,16 +74,16 @@ class DuetEnv(vf.Environment[DuetConfig]):
             trace.record_metric("siblings", float(len(views)))
 
 
-async def test_single_agent_env_mints_single_agent_records():
+async def test_single_agent_env_mints_single_agent_records(monkeypatch):
     """`SingleAgentEnv` is the single-agent case every plain taskset resolves to:
     one `agent` seat playing the seed taskset, one unstamped trace per episode,
     score() a no-op."""
     env = vf.SingleAgentEnv(_env_config())
     assert list(env._roles) == ["agent"]
-    agents = _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    runs = _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert episode.ok and episode.env == "echo-v1"
-    assert agents["agent"].runs == 1
+    assert runs["agent"] == 1
     assert len(episode.traces) == 1
     trace = episode.traces[0]
     assert trace.role is None and trace.trainable  # the wire matches a plain eval's
@@ -116,12 +121,12 @@ def test_role_fields_must_not_shadow_base_fields():
             taskset: vf.AgentConfig = vf.AgentConfig()  # type: ignore[assignment]
 
 
-async def test_multi_role_records_stamp_roles():
+async def test_multi_role_records_stamp_roles(monkeypatch):
     env = DuetEnv(_duet_config())
-    _stub_agents(env)
+    _stub_engine(env, monkeypatch)
     seen_live: list[str | None] = []
     episode = await env.run_episode(
-        _task(env), None, on_trace=lambda t: seen_live.append(t.role)
+        _task(env), _ctx(), on_trace=lambda t: seen_live.append(t.role)
     )
     assert episode.ok and len(episode.traces) == 2
     assert [t.role for t in episode.traces] == ["a", "b"]
@@ -131,15 +136,15 @@ async def test_multi_role_records_stamp_roles():
     assert sorted(seen_live) == ["a", "b"]
 
 
-async def test_agent_failures_are_trace_data_not_record_errors():
+async def test_agent_failures_are_trace_data_not_record_errors(monkeypatch):
     env = vf.SingleAgentEnv(_env_config())
-    env._agents_for = lambda ctx: {"agent": StubAgent(error=RuntimeError("boom"))}  # type: ignore[method-assign]
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch, errors={"agent": RuntimeError("boom")})
+    episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok and not episode.errors  # the failure lives on the trace
     assert episode.traces[0].error is not None
 
 
-async def test_hook_crash_keeps_completed_traces():
+async def test_hook_crash_keeps_completed_traces(monkeypatch):
     """A rollout() that raises after some runs finished still yields a episode carrying
     them — the crash-safe subset — with the failure on the episode, not a trace."""
 
@@ -149,8 +154,8 @@ async def test_hook_crash_keeps_completed_traces():
             raise RuntimeError("hook bug")
 
     env = Crashy(_env_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
     # Hook failures land episode-level with the stable boundary type.
     assert episode.error is not None and episode.error.type == "EnvError"
@@ -158,20 +163,20 @@ async def test_hook_crash_keeps_completed_traces():
     assert len(episode.traces) == 1 and episode.traces[0].error is None
 
 
-async def test_score_deadline_is_a_record_error():
+async def test_score_deadline_is_a_record_error(monkeypatch):
     class Slow(vf.SingleAgentEnv):
         async def score(self, task, views):
             await asyncio.sleep(60)
 
     env = Slow(_env_config(timeout={"score": 0.05}))
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
     assert episode.error is not None and episode.error.type == "TimeoutError"
     assert len(episode.traces) == 1  # the finished traces survive the score failure
 
 
-async def test_score_failure_keeps_the_views():
+async def test_score_failure_keeps_the_views(monkeypatch):
     """Once rollout() returns its views, they decide episode membership — a score()
     failure must not demote the episode to the completed buffer. The record
     flattens in mapping order (physical, not semantic)."""
@@ -186,14 +191,14 @@ async def test_score_failure_keeps_the_views():
             raise RuntimeError("judge crashed")
 
     env = Reordered(_duet_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
     assert episode.error is not None and episode.error.type == "EnvError"
     assert [t.role for t in episode.traces] == ["b", "a"]
 
 
-async def test_score_failure_keeps_rollout_membership():
+async def test_score_failure_keeps_rollout_membership(monkeypatch):
     """rollout() may deliberately return a subset (a dropped warm-up, a forfeited
     seat); a score() failure keeps that membership, not the completed buffer."""
 
@@ -206,13 +211,13 @@ async def test_score_failure_keeps_rollout_membership():
             raise RuntimeError("judge crashed")
 
     env = Subset(_duet_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
     assert [t.role for t in episode.traces] == ["b"]
 
 
-async def test_views_must_be_a_named_bag():
+async def test_views_must_be_a_named_bag(monkeypatch):
     """rollout() returns a mapping of named views; any other shape is the
     env-rollout failing, recorded on the episode."""
 
@@ -221,13 +226,13 @@ async def test_views_must_be_a_named_bag():
             return [await agents["agent"].run(task)]  # the retired list shape
 
     env = Listy(_env_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok and episode.error is not None
     assert "local views as a mapping" in episode.error.message
 
 
-async def test_a_view_may_fan_out():
+async def test_a_view_may_fan_out(monkeypatch):
     """A list-valued view is a fanned-out seat: all its traces land on the episode."""
 
     class Fan(DuetEnv):
@@ -241,13 +246,13 @@ async def test_a_view_may_fan_out():
             pass
 
     env = Fan(_duet_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert episode.ok
     assert [t.role for t in episode.traces] == ["a", "a", "b"]
 
 
-async def test_decorated_signals_cross_agent():
+async def test_decorated_signals_cross_agent(monkeypatch):
     """`@vf.reward`/`@vf.metric` on an Environment run in the default score(): once
     per target trace (`role=` narrows to one role's traces, unset is every trace),
     with the finished sibling set in reach; metrics record before rewards run, and
@@ -271,8 +276,8 @@ async def test_decorated_signals_cross_agent():
             return trace.metrics["b_count"]  # metrics recorded before rewards run
 
     env = Signals(_duet_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert episode.ok
     a, b = episode.traces
     assert a.metrics == {"b_count": 1.0}
@@ -290,7 +295,7 @@ def test_decorated_signal_role_must_be_declared():
         Bad(_env_config())
 
 
-async def test_decorated_signals_on_unstamped_single_role():
+async def test_decorated_signals_on_unstamped_single_role(monkeypatch):
     """A `SingleAgentEnv` subclass leaves traces unstamped (the wire matches a plain
     eval's); a role='agent' signal still records onto them — every trace belongs to
     the sole implicit role."""
@@ -301,13 +306,13 @@ async def test_decorated_signals_on_unstamped_single_role():
             return float(len(traces))
 
     env = Solo(_env_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert episode.traces[0].role is None
     assert episode.traces[0].metrics["n"] == 1.0
 
 
-async def test_decorated_signal_failure_is_an_episode_error():
+async def test_decorated_signal_failure_is_an_episode_error(monkeypatch):
     """A decorated signal raising is score() failing — a rollout-level error on the
     episode, with the finished traces kept (never blamed on a trace)."""
 
@@ -317,8 +322,8 @@ async def test_decorated_signal_failure_is_an_episode_error():
             raise RuntimeError("signal bug")
 
     env = Bad(_env_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
     assert episode.error is not None and episode.error.type == "EnvError"
     assert len(episode.traces) == 1 and episode.traces[0].error is None
@@ -339,13 +344,13 @@ def test_slots_need_a_rollout():
         env.slots(_task(env), n=0)
 
 
-async def test_run_slot_observes_and_completes():
+async def test_run_slot_observes_and_completes(monkeypatch):
     """`slots` plans n independent env-rollouts; `run_slot` runs each to its episode,
     keeping the slot live (traces appear at mint) and firing `on_complete` once final."""
     from verifiers.v1.trace import Episode
 
     env = vf.SingleAgentEnv(_env_config())
-    _stub_agents(env)
+    _stub_engine(env, monkeypatch)
     slots = env.slots(_task(env), n=3)
     assert [s.traces for s in slots] == [[]] * 3
     assert not any(s.done for s in slots)
@@ -354,7 +359,7 @@ async def test_run_slot_observes_and_completes():
     async def on_complete(episode: Episode) -> None:
         completed.append(episode)
 
-    episodes = [await env.run_slot(slot, None, None, on_complete) for slot in slots]
+    episodes = [await env.run_slot(slot, _ctx(), None, on_complete) for slot in slots]
     assert [s.episode for s in slots] == episodes
     assert [s.traces for s in slots] == [list(r.traces) for r in episodes]
     assert all(s.done for s in slots)
@@ -501,25 +506,27 @@ def test_env_config_data_keeps_the_env_shape():
     assert rebuilt.a.harness.id == "null"  # the fixture's pin rode the wire
 
 
-async def test_max_concurrent_gates_env_internal_fanout():
+async def test_max_concurrent_gates_env_internal_fanout(monkeypatch):
     """The semaphore bounds agent RUNS, not episodes — an env's internal fan-out
-    (asyncio.gather inside rollout()) counts against --max-concurrent too."""
+    (asyncio.gather inside rollout()) counts against --max-concurrent too. The
+    gate is acquired by the per-episode agent, so the gauge under the stubbed
+    engine sees at most one run live."""
     env = DuetEnv(_duet_config())
     state = {"live": 0, "peak": 0}
 
-    class Gauged(StubAgent):
-        async def run(self, task, *, runtime=None, shared_tools=None, on_trace=None):
-            state["live"] += 1
-            state["peak"] = max(state["peak"], state["live"])
-            await asyncio.sleep(0.02)
-            state["live"] -= 1
-            return await super().run(
-                task, runtime=runtime, shared_tools=shared_tools, on_trace=on_trace
-            )
+    async def gauged_run(self, task, *, runtime=None, shared_tools=None, on_trace=None):
+        state["live"] += 1
+        state["peak"] = max(state["peak"], state["live"])
+        await asyncio.sleep(0.02)
+        state["live"] -= 1
+        trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
+        if on_trace is not None:
+            on_trace(trace)
+        trace.is_completed = True
+        return trace
 
-    agents = {name: Gauged() for name in env._roles}
-    env._agents_for = lambda ctx: agents  # type: ignore[method-assign]
-    episode = await env.run_episode(_task(env), None, gate=asyncio.Semaphore(1))
+    monkeypatch.setattr(Agent, "run", gauged_run)
+    episode = await env.run_episode(_task(env), _ctx(), gate=asyncio.Semaphore(1))
     assert episode.ok and state["peak"] == 1
 
 
@@ -541,7 +548,7 @@ def test_role_scoped_signals_belong_to_environments():
                 return 0.0
 
 
-async def test_aliased_views_land_once():
+async def test_aliased_views_land_once(monkeypatch):
     """A trace named under two view keys (a natural authoring move — e.g. `winner`
     aliasing a solver) is one run: serialized once, scored once."""
 
@@ -555,13 +562,13 @@ async def test_aliased_views_land_once():
             return 1.0
 
     env = Aliased(_duet_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert episode.ok and len(episode.traces) == 2
     assert all(t.metrics.get("n") == 1.0 for t in episode.traces)
 
 
-async def test_empty_views_fail_the_rollout():
+async def test_empty_views_fail_the_rollout(monkeypatch):
     """A rollout() that returns no traces is the env-rollout failing, not an ok
     empty episode that resume would keep forever."""
 
@@ -570,8 +577,8 @@ async def test_empty_views_fail_the_rollout():
             return {}
 
     env = Empty(_env_config())
-    _stub_agents(env)
-    episode = await env.run_episode(_task(env), None)
+    _stub_engine(env, monkeypatch)
+    episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok and episode.error is not None
     assert "returned no traces" in episode.error.message
 

@@ -84,9 +84,11 @@ class DebateEnv(vf.Environment[DebateConfig]):
   (default: everyone trains) rather than exposed as a per-agent knob. An env that
   legitimately wants the flip exposes its *own* switch: the proposer-solver
   example's `--env.train_solver false` is a config field its `brief()` consults.
-- **The base builds the agents** — one per role, inside the eval's serving resources
-  (shared interception pool, shared tool servers, per-endpoint clients) — and hands
-  them into `rollout()`. The hook never constructs agents.
+- **The base builds the agents** — one per role, fresh for every env-rollout,
+  riding the eval's serving resources (shared interception pool, shared tool
+  servers, per-endpoint clients — all env-owned and borrowed, so an agent is a
+  cheap per-rollout value and concurrent episodes share no agent state) — and
+  hands them into `rollout()`. The hook never constructs agents.
 - **One env-rollout is one `Episode`** on the wire (`traces.jsonl`, the serve
   protocol): the task, a rollout-level `errors` list, and the views' traces, each
   stamped with its `role` and `trainable` (`episode.views` reconstitutes the named

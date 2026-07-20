@@ -54,8 +54,6 @@ def test_shared_tools_ride_only_the_tasksets_own_tasks():
     receives: the agentic judge env loads over a tool-declaring taskset with no
     upfront refusal — its minted `JudgeTask` carries its own needs — and the
     taskset's shared servers are handed to a run iff its task is the taskset's."""
-    from verifiers.v1.env import _RoleAgent
-
     env = vf.load_environment(
         vf.resolve_env_config(
             {
@@ -66,19 +64,14 @@ def test_shared_tools_ride_only_the_tasksets_own_tasks():
         )
     )
     shared = {"echo": object()}
-    handed = _RoleAgent(
-        object(),  # _shared_for never touches the wrapped agent
-        role="judge",
-        shared_tools=shared,
-        task_cls=env._task_cls,
-        gate=None,
-        completed=[],
-        on_trace=None,
-    )
+    env._shared_tools = shared  # what serving() would install
+    ctx = vf.ModelContext(model="stub", client=object())  # duck client — no runs here
+    judge = env._episode_agents(ctx, None, [], None)["judge"]
     dataset_task = env.taskset.load()[0]
     minted = JudgeTask(vf.TaskData(idx=0, prompt="verify"), files={})
-    assert handed._shared_for(dataset_task) is shared
-    assert handed._shared_for(minted) == {}
+    assert judge.trainable is False  # brief() ran on the fresh set
+    assert judge._shared_for(dataset_task) is shared
+    assert judge._shared_for(minted) == {}
     # The single-agent case keeps the upfront refusal: its one seat definitionally
     # plays the taskset, so an MCP-less harness over a tool taskset fails at
     # construction, before any work.

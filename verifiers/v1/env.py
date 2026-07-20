@@ -48,7 +48,6 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 if TYPE_CHECKING:
     from verifiers.v1.agent import Agent
-    from verifiers.v1.runtimes import Runtime
 
 
 class TimeoutConfig(BaseConfig):
@@ -740,20 +739,20 @@ class Environment(ABC, Generic[ConfigT]):
         # agents borrow them, so runners never thread them through `run_slot`.
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
-        self._agents: dict[str, "Agent"] | None = None
-        self._agents_ctx: ModelContext | None = None
         # Clients for endpoint-pinning roles, cached by config, closed with serving().
         self._role_clients: dict[str, Client] = {}
+        # Resource warnings dedupe env-wide (agents are per-episode).
+        self._warned_resources: set = set()
 
     # --- the multi-agent surface (override these) ------------------------------
 
     def brief(self, agents: Mapping[str, "Agent"]) -> None:
-        """Brief the initialized agents before any rollout — the in-place spot for
-        per-agent standing the env hardcodes rather than exposes as config. Today
-        that is `trainable` (every agent defaults True; a fixed seat opts out:
-        `agents["judge"].trainable = False`). Runs whenever the env's agents are
-        (re)built for a run context, so keep it idempotent. Single-agent envs
-        never write this."""
+        """Brief this rollout's agents before `rollout()` sees them — the in-place
+        spot for per-agent standing the env hardcodes rather than exposes as
+        config. Today that is `trainable` (every agent defaults True; a fixed seat
+        opts out: `agents["judge"].trainable = False`). Agents are built fresh per
+        env-rollout, so this runs once per episode — keep it cheap and in-place.
+        Single-agent envs never write this."""
 
     @abstractmethod
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> Views:
@@ -840,27 +839,41 @@ class Environment(ABC, Generic[ConfigT]):
             return list(traces)
         return [t for t in traces if t.role == role]
 
-    def _agents_for(self, ctx: ModelContext) -> dict[str, "Agent"]:
-        """The agents that play this env's roles for `ctx`, riding the live serving
-        resources. Single-slot cache keyed by ctx value — a miss just rebuilds."""
-        from verifiers.v1.agent import Agent  # env <-> agent import cycle
+    def _episode_agents(
+        self,
+        ctx: ModelContext,
+        gate: "asyncio.Semaphore | None",
+        completed: list[Trace],
+        on_trace: Callable[[Trace], None] | None,
+    ) -> dict[str, "Agent"]:
+        """One env-rollout's agents, one per role — fresh value objects riding the
+        live serving resources (everything expensive is env-owned and borrowed, so
+        construction is cheap and no state is shared across concurrent episodes),
+        briefed before `rollout()` sees them."""
+        from verifiers.v1.agent import _EpisodeAgent  # env <-> agent import cycle
 
-        if self._agents is None or self._agents_ctx != ctx:
-            self._agents = {}
-            for name, spec in self._roles.items():
-                role_ctx = self._role_ctx(spec, ctx)
-                self._agents[name] = Agent(
-                    self._harnesses[name],
-                    role_ctx.model,
-                    role_ctx.client,
-                    sampling=role_ctx.sampling,
-                    interception=self._interception,
-                    limits=self._role_limits(spec),
-                    timeout=self.config.timeout,
-                )
-            self.brief(self._agents)
-            self._agents_ctx = ctx
-        return self._agents
+        agents: dict[str, Agent] = {}
+        for name, spec in self._roles.items():
+            role_ctx = self._role_ctx(spec, ctx)
+            agents[name] = _EpisodeAgent(
+                self._harnesses[name],
+                role_ctx.model,
+                role_ctx.client,
+                sampling=role_ctx.sampling,
+                interception=self._interception,
+                limits=self._role_limits(spec),
+                timeout=self.config.timeout,
+                name=name,
+                role=name if self._stamp_roles else None,
+                shared_tools=self._shared_tools,
+                task_cls=self._task_cls,
+                gate=gate,
+                completed=completed,
+                on_trace=on_trace,
+                warned_resources=self._warned_resources,
+            )
+        self.brief(agents)
+        return agents
 
     def _role_ctx(self, spec: AgentConfig, ctx: ModelContext) -> ModelContext:
         """The role's model leg: the run's `ctx` unless the role pins its own model,
@@ -914,33 +927,22 @@ class Environment(ABC, Generic[ConfigT]):
         `gate` bounds the agent runs themselves — every run acquires it, so an env's
         internal fan-out counts against `--max-concurrent` too.
 
-        The handed-in agents are wrapped so every trace is stamped
-        (`role`/`trainable`) the moment it's minted and captured the moment its run
-        completes — a `rollout()` that raises after some runs finished still yields
-        an episode with the completed subset. Once `rollout()` returns, its views
-        decide membership, kept even when `score()` then fails. A hook exception
-        lands on the episode's `errors`, never on a trace."""
-        agents = self._agents_for(ctx)
+        The agents are built fresh for this episode (`_episode_agents`, briefed by
+        `brief()`): every trace gets `role`/`trainable` written the moment it's
+        created and is captured the moment its run completes — a `rollout()` that
+        raises after some runs finished still yields an episode with the completed
+        subset. Once `rollout()` returns, its views decide membership, kept even
+        when `score()` then fails. A hook exception lands on the episode's
+        `errors`, never on a trace."""
         completed: list[Trace] = []
-        handed = {
-            name: _RoleAgent(
-                agents[name],
-                role=name if self._stamp_roles else None,
-                shared_tools=self._shared_tools,
-                task_cls=self._task_cls,
-                gate=gate,
-                completed=completed,
-                on_trace=on_trace,
-            )
-            for name in self._roles
-        }
+        agents = self._episode_agents(ctx, gate, completed, on_trace)
         episode: Episode = Episode(
             env=self.config.env_id,
             task=TraceTask(type=type(task).__name__, data=task.data),
         )
         try:
             async with boundary(EnvError, f"{type(self).__name__}.rollout()"):
-                views = await self.rollout(task, handed)
+                views = await self.rollout(task, agents)
                 traces = _view_traces(type(self).__name__, views)
         except Exception as e:
             episode.errors.append(_as_error(e))
@@ -1014,16 +1016,12 @@ class Environment(ABC, Generic[ConfigT]):
             async with interception:
                 self._shared_tools = shared
                 self._interception = interception
-                self._agents = None  # rebuilt on the live resources (and dropped after)
-                self._agents_ctx = None
                 try:
                     await self.setup()
                     yield
                 finally:
                     self._shared_tools = {}
                     self._interception = None
-                    self._agents = None
-                    self._agents_ctx = None
                     try:
                         await self.teardown()
                     finally:
@@ -1093,66 +1091,3 @@ class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
 
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> Views:
         return {"agent": await agents["agent"].run(task)}
-
-
-class _RoleAgent:
-    """A role's `Agent` as handed to `Environment.rollout`: stamps every trace
-    (`role`/`trainable`) at mint and captures it in `completed` when its run
-    finishes — the crash-safe episode source if the hook then raises. The taskset's
-    shared tool servers ride only its own tasks — an env-minted task carries its
-    own needs, and handing shared servers to its run would wrongly put MCP in play
-    (pass `shared_tools=` explicitly to override either way). Everything else
-    delegates to the wrapped agent."""
-
-    def __init__(
-        self,
-        agent: "Agent",
-        *,
-        role: str | None,
-        shared_tools: Mapping[str, SharedToolServer],
-        task_cls: type[Task],
-        gate: "asyncio.Semaphore | None",
-        completed: list[Trace],
-        on_trace: Callable[[Trace], None] | None,
-    ) -> None:
-        self._agent = agent
-        self._role = role
-        self._shared_tools = shared_tools
-        self._task_cls = task_cls
-        self._gate = gate
-        self._completed = completed
-        self._on_trace = on_trace
-
-    def __getattr__(self, name: str):
-        return getattr(self._agent, name)
-
-    def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
-        return self._shared_tools if isinstance(task, self._task_cls) else {}
-
-    async def run(
-        self,
-        task: Task,
-        *,
-        runtime: "Runtime | None" = None,
-        shared_tools: Mapping[str, SharedToolServer] | None = None,
-        on_trace: Callable[[Trace], None] | None = None,
-    ) -> Trace:
-        def watch(trace: Trace) -> None:
-            trace.role = self._role
-            trace.trainable = self._agent.trainable
-            if self._on_trace is not None:
-                self._on_trace(trace)
-            if on_trace is not None:
-                on_trace(trace)
-
-        async with self._gate or contextlib.nullcontext():
-            trace = await self._agent.run(
-                task,
-                runtime=runtime,
-                shared_tools=shared_tools
-                if shared_tools is not None
-                else self._shared_for(task),
-                on_trace=watch,
-            )
-        self._completed.append(trace)
-        return trace
