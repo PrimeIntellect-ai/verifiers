@@ -1020,11 +1020,13 @@ class Environment(ABC, Generic[ConfigT]):
                     await self.setup()
                     yield
                 finally:
-                    self._shared_tools = {}
-                    self._interception = None
                     try:
+                        # teardown() sees the same live resources setup() saw;
+                        # the framework's own unwind comes after.
                         await self.teardown()
                     finally:
+                        self._shared_tools = {}
+                        self._interception = None
                         clients, self._role_clients = self._role_clients, {}
                         for client in clients.values():
                             with contextlib.suppress(Exception):

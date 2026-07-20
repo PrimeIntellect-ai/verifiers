@@ -55,15 +55,19 @@ class SolveData(vf.TaskData):
 
 
 def _loads_contract(chunk: str) -> object:
-    """``json.loads`` with one retry that doubles any backslash not part of a
-    valid JSON escape — a math proposer writes LaTeX (``\\(``, ``\\frac``) inside
-    the contract, which is off-spec JSON but an unambiguous fixup. Valid escapes
-    are consumed whole so ``\\\\`` stays itself."""
+    """``json.loads`` with one retry that doubles every backslash not part of an
+    unambiguous JSON escape (``\\\\``, ``\\"``, ``\\/``, ``\\uXXXX``) — a math
+    proposer writes LaTeX (``\\(``, ``\\frac``) inside the contract, which is
+    off-spec JSON. The single-letter escapes ``\\b \\f \\n \\r \\t`` are NOT kept:
+    in a failed-parse contract they are the heads of LaTeX commands (``\\frac``,
+    ``\\neq``, ``\\times``), and a literal backslash-n in problem text beats a
+    corrupted ``\\neq``. The retry only runs when the strict parse failed, so a
+    fully valid contract keeps its real escapes."""
     try:
         return json.loads(chunk)
     except json.JSONDecodeError:
         fixed = re.sub(
-            r'\\(?:[\\"/bfnrtu]|u[0-9a-fA-F]{4})|\\',
+            r'\\(?:["\\/]|u[0-9a-fA-F]{4})|\\',
             lambda m: m.group(0) if len(m.group(0)) > 1 else "\\\\",
             chunk,
         )

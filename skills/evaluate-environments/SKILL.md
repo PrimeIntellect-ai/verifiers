@@ -154,7 +154,7 @@ prime eval run my-task-v1 \
 Default output:
 
 ```text
-outputs/<taskset>--<model>--<harness>/<uuid>/
+outputs/<env>--<model>--<harness>/<uuid>/
 ├── config.toml
 ├── traces.jsonl
 └── eval.log

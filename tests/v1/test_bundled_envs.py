@@ -367,7 +367,9 @@ def test_proposer_learnability_peaks_at_half():
 
 def test_solve_task_contract_tolerates_latex_escapes():
     """Math proposers write LaTeX inside the JSON contract; the parse doubles the
-    off-spec backslashes instead of failing the episode."""
+    off-spec backslashes instead of failing the episode — including commands whose
+    first letter collides with a JSON single-letter escape (\\frac, \\neq, \\tfrac,
+    \\begin), which must survive as text, not turn into control characters."""
     from proposer_solver_v1.taskset import SolveTask
 
     trace = _reply_trace(
@@ -376,3 +378,15 @@ def test_solve_task_contract_tolerates_latex_escapes():
     task = SolveTask.from_trace(trace)
     assert task.data.answer == "3"
     assert "\\( S \\)" in task.data.prompt
+
+    collisions = _reply_trace(
+        '{"problem": "Show \\( \\frac{a}{b} \\neq \\tfrac{1}{2} \\) '
+        'where \\beta > 0 and \\rho \\times 2 = 1.", "answer": 7}'
+    )
+    prompt = SolveTask.from_trace(collisions).data.prompt
+    assert "\\frac{a}{b}" in prompt and "\\neq" in prompt and "\\tfrac" in prompt
+    assert "\\beta" in prompt and "\\rho" in prompt and "\\times" in prompt
+    # No LaTeX head collapsed into its JSON control-character reading (the
+    # framework-appended answer instruction carries real newlines; skip it).
+    problem = prompt.split("\n\nEnd your reply")[0]
+    assert not any(c in problem for c in "\f\n\t\b\r")

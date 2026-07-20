@@ -109,10 +109,17 @@ class RolloutSession:
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
 
     def adopt(self, task: "asyncio.Task | None") -> None:
-        """Track a handler task serving this session, for cancellation at release."""
-        if task is not None:
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
+        """Track a handler task serving this session, for cancellation at release.
+        Callers adopt in the same synchronous stretch that fetched the session, so
+        `release()` can't interleave; the released check keeps the seal even if a
+        future caller breaks that invariant (an await before adopting)."""
+        if task is None:
+            return
+        if self.released:  # sealed while this handler was scheduled — don't serve
+            task.cancel()
+            return
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
 
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""

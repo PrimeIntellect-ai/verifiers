@@ -128,7 +128,13 @@ class Agent:
             self._server = InterceptionServer(
                 requires_tunnel=not runtime_is_local(self.runtime_config)
             )
-            await self._server.__aenter__()
+            try:
+                await self._server.__aenter__()
+            except BaseException:
+                # A failed __aenter__ gets no __aexit__ from `async with`: unwind
+                # here, or the agent stays "already entered" forever.
+                self._entered, self._server = False, None
+                raise
         return self
 
     async def __aexit__(self, *exc) -> None:
