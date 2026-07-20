@@ -89,75 +89,28 @@ def answer_region(text: str) -> str:
     return "".join(answer)
 
 
-def _json_containers(text: str) -> list[tuple[str, bool]]:
-    """Return outer JSON containers and whether each one is lexically complete."""
-    containers: list[tuple[str, bool]] = []
-    stack: list[tuple[str, int]] = []
-    string = False
-    escaped = False
-    start = None
-    for index, char in enumerate(text):
-        if string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                string = False
-            continue
-        if char == '"':
-            string = True
-            continue
-        if char in "[{":
-            if not stack:
-                start = index
-            stack.append((char, index))
-            continue
-        if char not in "]}":
-            continue
-        expected = "{" if char == "}" else "["
-        if not stack or stack[-1][0] != expected:
-            if start is not None:
-                containers.append((text[start : index + 1], False))
-                stack.clear()
-                start = None
-            continue
-        stack.pop()
-        if not stack and start is not None:
-            containers.append((text[start : index + 1], True))
-            start = None
-    if stack and start is not None:
-        containers.append((text[start:], False))
-    return containers
-
-
-def _contains_verdicts(value: object) -> bool:
-    if isinstance(value, dict):
-        return "verdicts" in value or any(_contains_verdicts(v) for v in value.values())
-    if isinstance(value, list):
-        return any(_contains_verdicts(v) for v in value)
-    return False
-
-
 def last_verdicts_object(text: str) -> dict:
     """Parse the final valid top-level verdict object."""
     candidates: list[dict] = []
-    for raw, complete in _json_containers(answer_region(text)):
-        if not complete:
+    decoded_spans: list[tuple[int, int]] = []
+    answer = answer_region(text)
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(answer):
+        if char not in "[{":
             continue
         try:
-            value = json.loads(raw)
+            value, end = decoder.raw_decode(answer, index)
         except json.JSONDecodeError:
             continue
-        if not _contains_verdicts(value):
+        if any(start < index < stop for start, stop in decoded_spans):
             continue
-        if not isinstance(value, dict) or "verdicts" not in value:
-            continue
-        try:
-            RubricVerdicts.model_validate(value)
-        except ValueError:
-            continue
-        candidates.append(value)
+        decoded_spans.append((index, end))
+        if isinstance(value, dict) and "verdicts" in value:
+            try:
+                RubricVerdicts.model_validate(value)
+            except ValueError:
+                continue
+            candidates.append(value)
     if not candidates:
         raise ValueError(f"judge returned no verdicts JSON object: {text!r}")
     return candidates[-1]
