@@ -9,15 +9,12 @@ import asyncio
 import json
 
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
 
 
 async def main() -> None:
-    solver = vf.Agent(
-        BashHarness(BashHarnessConfig()),
-        "z-ai/glm-5.2",
-        vf.resolve_client(vf.EvalClientConfig()),
-    )
+    # A bare harness id and the default eval client; pass a built Harness or a
+    # shared Client to pin more.
+    solver = vf.Agent("bash", "z-ai/glm-5.2")
     task = vf.Task(
         vf.TaskData(idx=0, prompt="What is 2+2? Answer with just the number.")
     )
