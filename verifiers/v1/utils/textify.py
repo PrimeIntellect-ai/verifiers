@@ -175,12 +175,9 @@ def _decode(image: bytes | np.ndarray, cfg: TextifyConfig) -> np.ndarray:
     return (rgba[..., :3] * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
 
 
-def _luminance(img: np.ndarray, rows: int, cols: int, cfg: TextifyConfig) -> np.ndarray:
-    """Subsample to (rows, cols) and reduce to gamma-corrected luminance in [0, 1]."""
-    h, w = img.shape[:2]
-    ys = np.linspace(0, h, rows, endpoint=False).astype(np.intp)
-    xs = np.linspace(0, w, cols, endpoint=False).astype(np.intp)
-    lum = img[np.ix_(ys, xs)].astype(np.float32) @ _LUMA / 255.0
+def _luminance(img: np.ndarray, cfg: TextifyConfig) -> np.ndarray:
+    """Reduce the target-grid image to gamma-corrected luminance in [0, 1]."""
+    lum = img.astype(np.float32) @ _LUMA / 255.0
     if cfg.gamma != 1.0:
         lum **= cfg.gamma
     if cfg.invert or (cfg.invert is None and float(lum.mean()) > 0.5):
@@ -219,7 +216,7 @@ def image_to_text(image: bytes | np.ndarray, cfg: TextifyConfig) -> str:
     factor = (4, 2) if cfg.mode == "braille" else (1, 1)
     rows, cols = img.shape[0] // factor[0], img.shape[1] // factor[1]
     if cfg.mode == "braille":
-        lum = _luminance(img, rows * 4, cols * 2, cfg)
+        lum = _luminance(img, cfg)
         threshold = _otsu_threshold(lum) if cfg.threshold == "otsu" else cfg.threshold
         dots = lum >= threshold
         codes = np.zeros((rows, cols), dtype=np.uint16)
@@ -228,7 +225,7 @@ def image_to_text(image: bytes | np.ndarray, cfg: TextifyConfig) -> str:
                 bits = dots[row::4, col::2].astype(np.uint16)
                 codes |= bits << _BRAILLE_BITS[row, col]
         return "\n".join("".join(chr(0x2800 + int(c)) for c in line) for line in codes)
-    lum = _luminance(img, rows, cols, cfg)
+    lum = _luminance(img, cfg)
     if cfg.threshold == "otsu":
         lum = (lum >= _otsu_threshold(lum)).astype(np.float32)
     idx = np.clip((lum * (len(cfg.ramp) - 1)).round(), 0, len(cfg.ramp) - 1)

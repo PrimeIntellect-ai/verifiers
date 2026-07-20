@@ -27,9 +27,9 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Literal, TypeVar
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
@@ -71,6 +71,8 @@ _STREAM_QUEUE_MAXSIZE = 16
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
 _HASH_INLINE_MAX = 1024**2  # 1 MiB
+
+T = TypeVar("T")
 
 
 def _body_digest(raw: bytes) -> bytes:
@@ -239,27 +241,17 @@ class InterceptionServer(Interception):
         session.error = error
         return self._error_response(session, dialect, error)
 
-    async def _textify_body(
-        self, session: RolloutSession, dialect: Dialect, body: dict
-    ) -> dict:
+    async def _textify(
+        self,
+        session: RolloutSession,
+        value: T,
+        transform: Callable[..., T],
+        *args,
+    ) -> T:
         if not session.textify.enabled:
-            return body
+            return value
         try:
-            return await asyncio.to_thread(
-                dialect.textify_body, body, session.render_image
-            )
-        except Exception as e:
-            raise TaskError(f"textify failed: {type(e).__name__}: {e}") from e
-
-    async def _textify_messages(
-        self, session: RolloutSession, messages: Messages
-    ) -> Messages:
-        if not session.textify.enabled:
-            return messages
-        try:
-            return await asyncio.to_thread(
-                textify_messages, messages, session.textify, session.render_image
-            )
+            return await asyncio.to_thread(transform, value, *args)
         except Exception as e:
             raise TaskError(f"textify failed: {type(e).__name__}: {e}") from e
 
@@ -272,8 +264,12 @@ class InterceptionServer(Interception):
                 session.opening = await respond("", turn)
             if not session._opening_textified:
                 try:
-                    session.opening = await self._textify_messages(
-                        session, session.opening
+                    session.opening = await self._textify(
+                        session,
+                        session.opening,
+                        textify_messages,
+                        session.textify,
+                        session.render_image,
                     )
                 except TaskError as e:
                     # Store while holding the lock. The caller only writes the HTTP response,
@@ -335,60 +331,43 @@ class InterceptionServer(Interception):
             )
         )
 
-    @staticmethod
-    def _replay_response(session: RolloutSession, completion: dict) -> web.Response:
-        """Return a committed response and clear any previous request failure."""
-        session.error = None
-        return _completion_response(completion)
-
-    def _replay_error(
-        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+    def _replay_result(
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        result: dict | RolloutError,
     ) -> web.Response:
-        """Replay a cached post-commit failure consistently across SDK retries."""
-        session.error = error
-        return self._error_response(session, dialect, error)
+        """Replay a committed response or its post-commit failure."""
+        if isinstance(result, RolloutError):
+            session.error = result
+            return self._error_response(session, dialect, result)
+        session.error = None
+        return _completion_response(result)
 
     @staticmethod
-    def _remember_response(
+    def _remember_result(
         session: RolloutSession,
         req_hash: bytes,
-        response: Response,
+        result: dict | RolloutError,
         fut: "asyncio.Future[dict | RolloutError | None] | None" = None,
     ) -> None:
-        """Cache a committed response and release any coalesced retry."""
+        """Cache one completed request result and release any coalesced retry."""
         session.last_request = req_hash
-        session.last_response = response.raw
-        session.last_response_error = None
+        session.last_result = result
         if fut is not None and not fut.done():
-            fut.set_result(response.raw)
-
-    @staticmethod
-    def _remember_postcommit_error(
-        session: RolloutSession,
-        req_hash: bytes,
-        response: Response,
-        error: RolloutError,
-        fut: "asyncio.Future[dict | RolloutError | None]",
-    ) -> None:
-        """Cache a committed response's later failure and release coalesced retries."""
-        session.last_request = req_hash
-        session.last_response = response.raw
-        session.last_response_error = error
-        if not fut.done():
-            fut.set_result(error)
+            fut.set_result(result)
 
     def _fail_after_commit(
         self,
         session: RolloutSession,
         dialect: Dialect,
         req_hash: bytes,
-        response: Response,
         error: RolloutError,
         fut: "asyncio.Future[dict | RolloutError | None]",
     ) -> web.Response:
         """Cache a committed turn's later failure and report it consistently."""
         session.error = error
-        self._remember_postcommit_error(session, req_hash, response, error, fut)
+        self._remember_result(session, req_hash, error, fut)
         return self._error_response(session, dialect, error)
 
     async def handle_request(
@@ -416,12 +395,9 @@ class InterceptionServer(Interception):
         #      result, so a slow turn is safe without an inflated client timeout.
         # A growing conversation never repeats a body, so these only ever match a real retry.
         # Pre-commit failures cache nothing; post-commit failures replay the same error.
-        if session.last_request == req_hash:
+        if session.last_request == req_hash and session.last_result is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            if session.last_response_error is not None:
-                return self._replay_error(session, dialect, session.last_response_error)
-            if session.last_response is not None:
-                return self._replay_response(session, session.last_response)
+            return self._replay_result(session, dialect, session.last_result)
 
         async def coalesced(
             inflight: "asyncio.Future[dict | RolloutError | None]",
@@ -436,14 +412,14 @@ class InterceptionServer(Interception):
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
-            if isinstance(completion, RolloutError):
-                return self._replay_error(session, dialect, completion)
-            return self._replay_response(session, completion)
+            return self._replay_result(session, dialect, completion)
 
         if (inflight := session.inflight.get(req_hash)) is not None:
             return await coalesced(inflight)
         try:
-            body = await self._textify_body(session, dialect, body)
+            body = await self._textify(
+                session, body, dialect.textify_body, session.render_image
+            )
         except TaskError as e:
             return self._fail(session, dialect, e)
         logger.debug(
@@ -493,7 +469,7 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            self._remember_response(session, req_hash, response, fut)
+            self._remember_result(session, req_hash, response.raw, fut)
             return _completion_response(response.raw)
 
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -623,24 +599,25 @@ class InterceptionServer(Interception):
                         response.message.content or "", len(prompt)
                     )
                 except RolloutError as e:
-                    return self._fail_after_commit(
-                        session, dialect, req_hash, response, e, fut
-                    )
+                    return self._fail_after_commit(session, dialect, req_hash, e, fut)
                 except Exception as e:
                     return self._fail_after_commit(
                         session,
                         dialect,
                         req_hash,
-                        response,
                         UserError(f"user simulator failed: {type(e).__name__}: {e}"),
                         fut,
                     )
                 try:
-                    user_messages = await self._textify_messages(session, user_messages)
-                except TaskError as e:
-                    return self._fail_after_commit(
-                        session, dialect, req_hash, response, e, fut
+                    user_messages = await self._textify(
+                        session,
+                        user_messages,
+                        textify_messages,
+                        session.textify,
+                        session.render_image,
                     )
+                except TaskError as e:
+                    return self._fail_after_commit(session, dialect, req_hash, e, fut)
                 # Inject the model turn + the simulator's user turn(s): into the wire request for
                 # the next model call (`dialect.extend`, which keeps the model turn verbatim so
                 # reasoning survives) and into the typed prompt for the trace. The simulator ends
@@ -846,7 +823,9 @@ class InterceptionServer(Interception):
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             body = await request.json()
-            body = await self._textify_body(session, dialect, body)
+            body = await self._textify(
+                session, body, dialect.textify_body, session.render_image
+            )
             result = await session.ctx.client.relay_aux(
                 dialect, route, body, headers=request.headers
             )

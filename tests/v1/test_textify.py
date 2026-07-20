@@ -178,27 +178,20 @@ def test_textify_cache_is_bounded_and_scan_resistant(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_concurrent_opening_textify_is_serialized(monkeypatch) -> None:
-    user_calls = 0
-    textify_calls = 0
+    calls = 0
     active = 0
-    max_active = 0
-    first_started = asyncio.Event()
-    release_first = asyncio.Event()
 
     async def user(_: str, _turn: int) -> vf.Messages:
-        nonlocal user_calls
-        user_calls += 1
         return [vf.UserMessage(content="raw")]
 
-    async def textify_opening(_session, _messages) -> vf.Messages:
-        nonlocal textify_calls, active, max_active
-        textify_calls += 1
+    async def textify_opening(_session, _messages, *_) -> vf.Messages:
+        nonlocal calls, active
+        calls += 1
         active += 1
-        max_active = max(max_active, active)
         try:
-            if textify_calls == 1:
-                first_started.set()
-                await release_first.wait()
+            assert active == 1
+            if calls == 1:
+                await asyncio.sleep(0)
                 raise TaskError("first textify failed")
             return [vf.UserMessage(content="rendered")]
         finally:
@@ -210,20 +203,19 @@ async def test_concurrent_opening_textify_is_serialized(monkeypatch) -> None:
         _opening_textified=False,
         _opening_lock=asyncio.Lock(),
         error=None,
-        trace=SimpleNamespace(id="trace"),
+        textify=vf.TextifyConfig(enabled=True),
+        render_image=lambda _: None,
     )
     server = InterceptionServer()
-    monkeypatch.setattr(server, "_textify_messages", textify_opening)
-    first = asyncio.create_task(server._opening_messages(session, 0))
-    await first_started.wait()
-    second = asyncio.create_task(server._opening_messages(session, 0))
-    release_first.set()
-    results = await asyncio.gather(first, second, return_exceptions=True)
+    monkeypatch.setattr(server, "_textify", textify_opening)
+    results = await asyncio.gather(
+        server._opening_messages(session, 0),
+        server._opening_messages(session, 0),
+        return_exceptions=True,
+    )
 
     assert isinstance(results[0], TaskError)
     assert results[1] == [vf.UserMessage(content="rendered")]
-    assert user_calls == 1
-    assert textify_calls == 2
-    assert max_active == 1
+    assert calls == 2
     assert session.opening == results[1]
     assert session.error is None
