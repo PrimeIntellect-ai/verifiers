@@ -60,12 +60,15 @@ def main(argv: list[str] | None = None) -> None:
         config_type = narrow_config(EvalConfig, argv)
         sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
         config = cli(config_type)
-        if config.dry_run:  # resolved + validated; write it to the output dir and exit
-            setup_logging("DEBUG" if config.verbose else "INFO")
-            logger.info("wrote config to %s", write_config(config, output_path(config)))
-            return
     if config.is_legacy and config.resume is not None:
+        # Before the --dry-run exit, so a dry run can't bless a config (e.g. a toml
+        # carrying a legacy id plus resume) that the real run would refuse.
         raise SystemExit("--resume is not supported for legacy (v0) evals")
+    if resume_dir is None and config.dry_run:
+        # resolved + validated; write it to the output dir and exit
+        setup_logging("DEBUG" if config.verbose else "INFO")
+        logger.info("wrote config to %s", write_config(config, output_path(config)))
+        return
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
     # state, so it's in-process only (`server + rich` is rejected at config validation). Legacy
