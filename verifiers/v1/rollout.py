@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 from enum import StrEnum
+from typing import Any
 
 from verifiers import __version__
 from verifiers.v1.harness import Harness
@@ -38,7 +39,7 @@ from verifiers.v1.utils.version import verifiers_commit
 logger = logging.getLogger(__name__)
 
 
-async def gather_scoring(*awaitables):
+async def gather_scoring(*awaitables: Awaitable[Any]) -> list[Any]:
     """Run scoring handlers concurrently and drain every sibling after failure."""
     if len(awaitables) == 1 and isinstance(awaitables[0], (list, tuple)):
         awaitables = tuple(awaitables[0])
