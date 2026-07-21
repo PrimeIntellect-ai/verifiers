@@ -588,9 +588,9 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                 # Label the agent only when the episode has several traces — a
                 # single-agent row's `agent=agent` would be noise.
                 label = (
-                    f"{base} agent={t.agent.name}"
+                    f"agent={t.agent.name} · task {base}"
                     if t.agent is not None and len(slot.traces) > 1
-                    else base
+                    else f"task {base}"
                 )
                 if slot.done:  # fully scored — reward is final
                     state = "error" if t.has_error else "success"
@@ -655,7 +655,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     if details:
                         tokens += f" ({', '.join(details)})"
                 left = [
-                    f"task {label}",
+                    label,
                     t.id[:8],
                     runtime,
                     f"{turns} turn{'s' * (turns != 1)}",
