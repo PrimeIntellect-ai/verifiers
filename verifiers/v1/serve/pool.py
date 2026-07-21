@@ -29,11 +29,13 @@ import os
 import signal
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import fields, is_dataclass
 
 import msgpack
 import zmq
 import zmq.asyncio
+from pydantic import BaseModel
 
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
@@ -261,11 +263,41 @@ class EnvServerPool:
         logger.info("EnvServerPool down")
 
 
+def _constructor_excludes(value: object) -> dict:
+    """Build a Pydantic exclusion tree for fields that cannot be constructor inputs."""
+    if is_dataclass(value) and not isinstance(value, type):
+        excluded = {}
+        for config_field in fields(value):
+            if not config_field.init:
+                excluded[config_field.name] = True
+                continue
+            nested = _constructor_excludes(getattr(value, config_field.name))
+            if nested:
+                excluded[config_field.name] = nested
+        return excluded
+
+    if isinstance(value, BaseModel):
+        items = ((name, getattr(value, name)) for name in type(value).model_fields)
+    elif isinstance(value, Mapping):
+        items = value.items()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        items = enumerate(value)
+    else:
+        return {}
+
+    excluded = {}
+    for key, item in items:
+        nested = _constructor_excludes(item)
+        if nested:
+            excluded[key] = nested
+    return excluded
+
+
 def env_config_data(config) -> dict:
     """The picklable `EnvConfig` fields of a (possibly dynamically-narrowed, unpicklable)
     config object — ship this across a process boundary, then rebuild via
     `EnvConfig.model_validate` (its validator re-resolves the concrete taskset/harness)."""
-    data = config.model_dump(mode="json")
+    data = config.model_dump(mode="json", exclude=_constructor_excludes(config))
     return {k: v for k, v in data.items() if k in EnvConfig.model_fields}
 
 
