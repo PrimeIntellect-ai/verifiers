@@ -1,4 +1,3 @@
-import fcntl
 import hashlib
 import logging
 import os
@@ -14,6 +13,17 @@ from verifiers.envs.experimental.utils.file_locks import (
     exclusive_path_lock,
     sibling_lock_path,
 )
+
+try:
+    import fcntl
+
+    _HAVE_FCNTL = True
+except ImportError:
+    # fcntl is Unix-only; on Windows fall back to msvcrt byte-range locking.
+    # See verifiers.envs.experimental.utils.file_locks.
+    import msvcrt
+
+    _HAVE_FCNTL = False
 
 _IN_USE_LOCK_SUFFIX = ".in-use.lock"
 
@@ -293,7 +303,13 @@ def _acquire_in_use_lock(checkout: Path) -> None:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fh = lock_path.open("a+")
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+        if _HAVE_FCNTL:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+        else:
+            # msvcrt has no shared locks; an exclusive byte lock is strictly
+            # more conservative and preserves the pruning contract.
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
     except Exception:
         fh.close()
         raise
