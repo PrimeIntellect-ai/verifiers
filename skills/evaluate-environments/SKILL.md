@@ -160,7 +160,7 @@ outputs/<env>--<model>--<harness>/<uuid>/
 └── eval.log
 ```
 
-Set an exact path with `-o`. Results append as each trace finishes.
+Set an exact path with `-o`. `traces.jsonl` is one **episode** per line — an env-rollout's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
 
 Resume in place:
 

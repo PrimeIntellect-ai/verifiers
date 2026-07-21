@@ -430,16 +430,16 @@ Unsupported fields are ignored; evaluation warns once per runtime/field combinat
 
 ### `TaskTimeout` (frozen)
 Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For eval, a non-`None`
-value in the run's `TimeoutConfig` wins; otherwise the corresponding row value is used. If both are
-`None`, that stage has no framework timeout. Remote harness execution is capped at the provider's
-24-hour sandbox lifetime.
+value in the agent's `TimeoutConfig` (`--env.<agent>.timeout.*`) wins; otherwise the corresponding
+row value is used. If both are `None`, that stage has no framework timeout. Remote harness execution
+is capped at the provider's 24-hour sandbox lifetime.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `setup` | `float \| None` | `None` | Task and harness setup stage. Overridden by eval's `timeout.setup`; validate uses it for `Task.setup` when `CheckTimeoutConfig.setup` is unset. |
-| `harness` | `float \| None` | `None` | Harness execution. Overridden by the run-level `timeout.rollout`. |
-| `finalize` | `float \| None` | `None` | Task `finalize` hook. Overridden by `timeout.finalize`. |
-| `scoring` | `float \| None` | `None` | Task rewards/metrics/judges and harness metrics. Overridden by `timeout.scoring`. |
+| `setup` | `float \| None` | `None` | Task and harness setup stage. Overridden by the agent's `timeout.setup`; validate uses it for `Task.setup` when `CheckTimeoutConfig.setup` is unset. |
+| `harness` | `float \| None` | `None` | Harness execution. Overridden by the agent's `timeout.rollout`. |
+| `finalize` | `float \| None` | `None` | Task `finalize` hook. Overridden by the agent's `timeout.finalize`. |
+| `scoring` | `float \| None` | `None` | Task rewards/metrics/judges and harness metrics. Overridden by the agent's `timeout.scoring`. |
 
 ### `TaskData` (frozen)
 | Field | Type | Default | Notes |
@@ -649,9 +649,10 @@ log line per task.
   `TaskData`; otherwise a non-`None` row value fills it, and otherwise the runtime/provider default
   remains. `TaskData.image` is the required image for that row and replaces the runtime's base
   image. Unsupported resource fields are ignored; evaluation warns once per runtime/field.
-- **Timeout precedence.** For eval stages, a non-`None` run-level `TimeoutConfig` value wins over
-  the corresponding `TaskData.timeout` value; if both are `None`, there is no framework timeout.
-  The setup value is one deadline shared by task setup and harness provisioning.
+- **Timeout precedence.** For eval stages, a non-`None` agent-level `TimeoutConfig` value
+  (`--env.<agent>.timeout.*`) wins over the corresponding `TaskData.timeout` value; if both are
+  `None`, there is no framework timeout. The setup value is one deadline shared by task setup and
+  harness provisioning.
   Validate uses `CheckTimeoutConfig.setup`, then falls back to `TaskData.timeout.setup`, while
   `CheckTimeoutConfig.total` independently bounds `Task.validate`.
 - **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `env.<agent>.harness.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
