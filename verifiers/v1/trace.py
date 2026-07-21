@@ -329,7 +329,7 @@ class AgentInfo(StrictBaseModel):
 class EpisodeInfo(StrictBaseModel):
     """One env-rollout's shared standing, stamped on each of its traces at mint —
     a flat bag of traces reconstitutes its episodes with no side lookup. `errors`
-    are failures not attributable to any one trace (the env's `rollout`/`score`
+    are failures not attributable to any one trace (the env's `run`/`finalize`
     hooks, plus prior attempts' when retried); per-trace failures stay on the
     traces. In memory an episode's traces share one instance."""
 
