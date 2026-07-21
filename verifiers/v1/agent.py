@@ -252,8 +252,18 @@ class Agent:
                 trace.error.type if trace.error else "?",
             )
             await asyncio.sleep(delay)
-        if history and trace.errors:  # the final attempt failed too
-            trace.errors = history + trace.errors
+        if history:
+            if (
+                trace.errors
+            ):  # the final attempt failed too — the full history explains it
+                trace.errors = history + trace.errors
+            else:
+                # A recovered rollout: `trace.errors` stays empty (its emptiness is
+                # the error-free sentinel resume and training read), so the prior
+                # attempts' failures ride `info` instead of vanishing.
+                trace.info["retried_errors"] = [
+                    {"type": e.type, "message": e.message} for e in history
+                ]
         return trace
 
     async def _run_once(
