@@ -222,18 +222,16 @@ class Agent:
         *,
         runtime: Runtime | None = None,
         shared_tools: Mapping[str, SharedToolServer] | None = None,
-        on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: `runtime` places it
         into a live borrowed box instead of provisioning one; `shared_tools` are
-        live servers borrowed from their owner, counted in the pairing check;
-        `on_trace` observes the trace the moment it's minted, before any I/O.
+        live servers borrowed from their owner, counted in the pairing check.
         Retries whole while the trace ends with a retryable error (`config.retries`)
         — never into a borrowed box; the final trace keeps earlier attempts' errors."""
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
-            trace = await self._run_once(task, runtime, shared_tools, on_trace)
+            trace = await self._run_once(task, runtime, shared_tools)
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
             if runtime is not None:
@@ -243,6 +241,8 @@ class Agent:
                 )
                 break
             history.extend(trace.errors)
+            # This attempt is abandoned; drop it from any live view before backoff.
+            self._discard(trace)
             delay = backoff(attempt)
             logger.warning(
                 "retrying agent rollout (retry %d/%d) in %.1fs after error: %s",
@@ -258,15 +258,22 @@ class Agent:
             trace.errors = history + trace.errors
         return trace
 
+    def _observe(self, trace: Trace) -> None:
+        """The moment a trace is minted, before any I/O. Base: no-op; an episode
+        seat stamps its standing onto the trace and feeds the episode's live view."""
+
+    def _discard(self, trace: Trace) -> None:
+        """A retry is abandoning this attempt's trace. Base: no-op; an episode seat
+        drops it from live views (only the final attempt joins the episode)."""
+
     async def _run_once(
         self,
         task: Task,
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
-        on_trace: Callable[[Trace], None] | None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        run = RolloutRun(task=task, on_trace=on_trace, **params)
+        run = RolloutRun(task=task, on_trace=self._observe, **params)
         try:
             if await run.open():
                 await run.step()
@@ -387,31 +394,28 @@ class _EpisodeAgent(Agent):
     def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
         return self._shared_tools if isinstance(task, self._task_cls) else {}
 
+    def _observe(self, trace: Trace) -> None:
+        # The seat's standing lands on the trace the moment it's minted, then the
+        # trace joins the episode's live view (before any I/O, retries included).
+        if trace.agent is not None:
+            trace.agent.name = self._name
+            trace.agent.trainable = self.trainable
+        if self._on_trace is not None:
+            self._on_trace(trace)
+
+    def _discard(self, trace: Trace) -> None:
+        # A per-agent retry abandons this attempt's trace; drop it from live views
+        # (only the final attempt joins the episode).
+        if self._on_discard is not None:
+            self._on_discard(trace)
+
     async def run(
         self,
         task: Task,
         *,
         runtime: Runtime | None = None,
         shared_tools: Mapping[str, SharedToolServer] | None = None,
-        on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
-        last: Trace | None = None
-
-        def watch(trace: Trace) -> None:
-            nonlocal last
-            if trace.agent is not None:
-                trace.agent.name = self._name
-                trace.agent.trainable = self.trainable
-            # A per-agent retry mints a replacement: the abandoned attempt's trace
-            # must leave live views (only the final one joins the episode).
-            if last is not None and self._on_discard is not None:
-                self._on_discard(last)
-            last = trace
-            if self._on_trace is not None:
-                self._on_trace(trace)
-            if on_trace is not None:
-                on_trace(trace)
-
         async with self._gate or nullcontext():
             trace = await super().run(
                 task,
@@ -419,7 +423,6 @@ class _EpisodeAgent(Agent):
                 shared_tools=shared_tools
                 if shared_tools is not None
                 else self._shared_for(task),
-                on_trace=watch,
             )
         self._completed.append(trace)
         return trace
