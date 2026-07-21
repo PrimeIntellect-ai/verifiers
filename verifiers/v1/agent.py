@@ -34,7 +34,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
-from verifiers.v1.trace import EpisodeInfo, Trace
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import Sampling, SamplingConfig
 from verifiers.v1.utils.compile import (
     cap_remote_harness_timeout,
@@ -350,10 +350,11 @@ class Agent:
 class _EpisodeAgent(Agent):
     """One role's `Agent` for one env-rollout, built fresh per episode (a cheap
     bundle of references — expensive resources are env-owned and borrowed, so no
-    state spans concurrent episodes): traces get their episode standing the moment
-    they're created, finished ones land in `completed`, each run takes the eval's
-    gate. The taskset's shared tool servers ride only its own tasks — on an
-    env-minted task they'd wrongly put MCP in play (`shared_tools=` overrides)."""
+    state spans concurrent episodes): traces get their agent standing the moment
+    they're created, finished ones land in `completed` (the episode's traces),
+    each run takes the eval's gate. The taskset's shared tool servers ride only
+    its own tasks — on an env-minted task they'd wrongly put MCP in play
+    (`shared_tools=` overrides)."""
 
     def __init__(
         self,
@@ -362,24 +363,24 @@ class _EpisodeAgent(Agent):
         client: Client,
         interception: Interception | None,
         name: str,
-        episode: EpisodeInfo,
         shared_tools: Mapping[str, SharedToolServer],
         task_cls: type[Task],
         gate: asyncio.Semaphore | None,
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
+        on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
     ) -> None:
         super().__init__(config, client=client, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name
-        self._episode = episode
         self._shared_tools = shared_tools
         self._task_cls = task_cls
         self._gate = gate
         self._completed = completed
         self._on_trace = on_trace
+        self._on_discard = on_discard
 
     def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
         return self._shared_tools if isinstance(task, self._task_cls) else {}
@@ -392,12 +393,18 @@ class _EpisodeAgent(Agent):
         shared_tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
+        last: Trace | None = None
+
         def watch(trace: Trace) -> None:
-            # Episode standing on the trace; the shared EpisodeInfo links siblings.
+            nonlocal last
             if trace.agent is not None:
                 trace.agent.name = self._name
                 trace.agent.trainable = self.trainable
-            trace.episode = self._episode
+            # A per-agent retry mints a replacement: the abandoned attempt's trace
+            # must leave live views (only the final one joins the episode).
+            if last is not None and self._on_discard is not None:
+                self._on_discard(last)
+            last = trace
             if self._on_trace is not None:
                 self._on_trace(trace)
             if on_trace is not None:

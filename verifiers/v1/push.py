@@ -15,7 +15,8 @@ import httpx
 
 from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.trace import Episode, Trace
+from verifiers.v1.episode import Episode
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +34,16 @@ class PushState:
     error: str | None = None
 
 
-def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
+def trace_to_sample(
+    trace: Trace, rollout_number: int = 1, episode_id: str | None = None
+) -> dict[str, Any]:
     """One trace -> the platform's sample dict (the v0 eval-sample format).
 
-    The hub table stays flat — one row per trace, and the trace itself carries its
-    episode standing (`episode.id`/`agent.name`/`agent.trainable`), so a
-    multi-trace rollout's grouping is reconstructable without a nested schema. No
-    prompt/completion split (meaningless mid-branch): `completion` is the final
-    branch's messages, `trajectory` one message list per branch."""
+    The hub table stays flat — one row per trace; its episode is denormalized onto
+    the row (`episode_id` from the envelope, plus the trace's own `agent`/`trainable`),
+    so a multi-trace rollout's grouping travels with each row without a nested
+    schema. No prompt/completion split (meaningless mid-branch): `completion` is the
+    final branch's messages, `trajectory` one message list per branch."""
 
     def dump(messages):
         return [m.model_dump(mode="json", exclude_none=True) for m in messages]
@@ -51,7 +54,7 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "sample_id": trace.id,
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
-        "episode_id": trace.episode.id if trace.episode is not None else None,
+        "episode_id": episode_id,
         "agent": trace.agent_name,
         "trainable": trace.trainable,
         "task": task,
@@ -133,23 +136,23 @@ def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]
     }
 
 
-def _build_samples(traces: list[Trace]) -> list[dict[str, Any]]:
+def _build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
     """One platform sample per trace, with one `rollout_number` per EPISODE: a
     multi-agent rollout's seats are the same attempt at the task, not attempts
-    1..n. The grouping is each trace's own episode stamp (`trace.episode.id`); an
-    unstamped trace counts as an attempt of its own."""
+    1..n. The grouping is the episode envelope — every trace in one episode shares
+    its `rollout_number` and `episode_id`."""
     counts: dict[int, int] = {}
     episode_numbers: dict[str, int] = {}
     samples = []
-    for trace in traces:
-        episode_id = trace.episode.id if trace.episode is not None else None
-        number = episode_numbers.get(episode_id) if episode_id else None
-        if number is None:
-            idx = trace.task.data.idx
-            counts[idx] = number = counts.get(idx, 0) + 1
-            if episode_id:
-                episode_numbers[episode_id] = number
-        samples.append(trace_to_sample(trace, number))
+    for episode in episodes:
+        # One rollout_number per episode: all its seats are the same attempt.
+        number = episode_numbers.get(episode.id)
+        for trace in episode.traces:
+            if number is None:
+                idx = trace.task.data.idx
+                counts[idx] = number = counts.get(idx, 0) + 1
+                episode_numbers[episode.id] = number
+            samples.append(trace_to_sample(trace, number, episode.id))
     return samples
 
 
@@ -182,7 +185,7 @@ def push_traces(
         config.env.taskset.id if config.env.taskset is not None else ""
     ) or config.id
     metrics = _run_metrics(episodes, traces)
-    samples = _build_samples(traces)
+    samples = _build_samples(episodes)
     num_examples = len({t.task.data.idx for t in traces})
     metadata = {
         "framework": "verifiers",

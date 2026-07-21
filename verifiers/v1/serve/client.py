@@ -33,7 +33,8 @@ from verifiers.v1.serve.types import (
     RunResponse,
 )
 from verifiers.v1.task import WireTaskData
-from verifiers.v1.trace import Trace, WireEpisode
+from verifiers.v1.episode import WireEpisode
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)

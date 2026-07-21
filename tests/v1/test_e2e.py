@@ -287,7 +287,7 @@ async def test_multi_agent_env(run_v1, tmp_path):
     # agent info (completion order — the gathered seats land in either order).
     (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
     row = json.loads(line)
-    assert row["episode"]["env"] == "duet-v1"
+    assert row["env"] == "duet-v1"
     by_name = {t["agent"]["name"]: t for t in row["traces"]}
     assert set(by_name) == {"a", "b"}
     assert by_name["a"]["agent"]["trainable"] is True

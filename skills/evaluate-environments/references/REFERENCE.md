@@ -16,10 +16,10 @@ EvalConfig                          (the run)
 │  │  ├─ harness: HarnessConfig     (subclass resolved by --env.<agent>.harness.id)
 │  │  │  └─ runtime: RuntimeConfig  (subprocess | docker | prime | modal)
 │  │  ├─ timeout: TimeoutConfig     (per-stage: setup/rollout/finalize/scoring)
+│  │  ├─ retries: RolloutRetryConfig (per-agent whole-run retries)
 │  │  └─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
-│  ├─ timeout: EnvTimeoutConfig     (score — the env's own hook)
-│  ├─ retries: RetryConfig
-│  │  └─ rollout: RolloutRetryConfig
+│  ├─ timeout: EnvTimeoutConfig     (episode / finalize — the env's own hooks)
+│  ├─ retries: RolloutRetryConfig   (whole-episode fallback for faults no agent owns)
 │  └─ interception
 └─ pool: PoolConfig                 (static | elastic) — env-server only
 ```
@@ -181,7 +181,7 @@ fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrat
 | `finalize` | `float \| None` | `None` | Max wall-clock for the task's `finalize` hook. |
 | `scoring` | `float \| None` | `None` | Max wall-clock for task rewards/metrics/judges and harness metrics. |
 
-`EnvTimeoutConfig` (the env's `--env.timeout.*`) keeps only `score` — the bound on the env's own cross-trace `score()` hook.
+`EnvTimeoutConfig` (the env's `--env.timeout.*`) keeps only `episode` — the bound on the whole `run()` interaction — and `finalize` — the bound on the env's `finalize()` hook plus its decorated signals.
 
 > Remote sandboxes cap any harness timeout at 24 hours (provider max lifetime).
 

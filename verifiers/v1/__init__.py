@@ -115,12 +115,11 @@ from verifiers.v1.mcp import (
     UserConfig,
 )
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import (
     TRACE_VERSION,
     AgentInfo,
     Branch,
-    EpisodeInfo,
-    Episode,
     Error,
     EvalRunInfo,
     GenerationSpan,
@@ -133,7 +132,6 @@ from verifiers.v1.trace import (
     TraceTask,
     TrainRunInfo,
     VersionInfo,
-    WireEpisode,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -190,7 +188,6 @@ __all__ = [
     "Trace",
     "TraceTask",
     "WireTrace",
-    "EpisodeInfo",
     "Episode",
     "WireEpisode",
     "TRACE_VERSION",

@@ -16,7 +16,8 @@ from verifiers.v1.cli.output import (
     save_config,
 )
 from verifiers.v1.env import Environment, RunSlot
-from verifiers.v1.trace import Episode, EvalRunInfo
+from verifiers.v1.episode import Episode
+from verifiers.v1.trace import EvalRunInfo
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)

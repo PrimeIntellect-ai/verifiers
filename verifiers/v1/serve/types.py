@@ -4,15 +4,16 @@ from pydantic import BaseModel, Field, field_serializer
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTaskData
-from verifiers.v1.trace import Trace, WireEpisode
+from verifiers.v1.episode import WireEpisode
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import SamplingConfig
 
 PROTOCOL_VERSION = 2
 """The serve wire protocol: bumped when response shapes change (consumers —
 prime-rl's orchestrator — read it off `info` to detect a mismatched server). In
-protocol 2, the rollout route is `run` and answers the episode's flat traces
-plus its shared stamp — the renamed route makes a stale server fail loudly
-instead of validating to an empty response."""
+protocol 2, the rollout route is `run` and answers the `Episode` (its standing
+inlined next to its flat traces) — the renamed route makes a stale server fail
+loudly instead of validating to an empty response."""
 
 
 class BaseRequest(BaseModel):
@@ -59,9 +60,9 @@ class RunRequest(BaseRequest):
 
 class RunResponse(BaseResponse):
     episode: WireEpisode | None = None
-    """The rollout's episode record — flat, self-contained traces plus the shared
-    stamp (which carries episode-level errors even when no trace minted);
-    task-specific data preserved in `model_extra`."""
+    """The rollout's episode — its standing (`id`/`env`/`errors`, carrying
+    episode-level errors even when no trace minted) inlined next to its flat,
+    self-contained traces; task-specific data preserved in `model_extra`."""
 
     @field_serializer("episode")
     def _ser_episode(self, episode: "WireEpisode | None") -> dict | None:

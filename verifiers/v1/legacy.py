@@ -32,8 +32,8 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
+from verifiers.v1.episode import Episode
 from verifiers.v1.trace import (
-    Episode,
     Error,
     GenerationSpan,
     ModelCall,

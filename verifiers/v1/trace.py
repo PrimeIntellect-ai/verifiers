@@ -308,7 +308,7 @@ class VersionInfo(StrictBaseModel):
 
 class AgentInfo(StrictBaseModel):
     """The agent that produced this trace's sampled turns — its resolved identity
-    plus its standing in the episode; episode linkage rides `Trace.episode`."""
+    plus its standing in the episode; the `Episode` envelope links siblings."""
 
     model: str
     """The model identifier requested from the client."""
@@ -324,24 +324,6 @@ class AgentInfo(StrictBaseModel):
     trainable: bool = True
     """Whether this trace's tokens are training data for the run's policy. An env's
     `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
-
-
-class EpisodeInfo(StrictBaseModel):
-    """One env-rollout's shared standing, stamped on each of its traces at mint —
-    a flat bag of traces reconstitutes its episodes with no side lookup. `errors`
-    are failures not attributable to any one trace (the env's `run`/`finalize`
-    hooks, plus prior attempts' when retried); per-trace failures stay on the
-    traces. In memory an episode's traces share one instance."""
-
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    env: str = ""
-    """The env that ran the episode (`EnvConfig.env_id`, e.g.
-    `agentic-judge+gsm8k-v1`)."""
-    errors: list[Error] = Field(default_factory=list)
-
-    @property
-    def error(self) -> Error | None:
-        return self.errors[-1] if self.errors else None
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):
@@ -372,9 +354,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The run this trace belongs to (eval or train), consumer-stamped."""
     agent: AgentInfo | None = None
     """The agent (model, sampling, harness) that produced the sampled turns."""
-    episode: EpisodeInfo | None = None
-    """The env-rollout this trace belongs to, stamped at mint (None outside an
-    env); siblings share the id (and, in memory, the instance)."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
     tools: list[Tool] | None = None
@@ -617,44 +596,3 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
 WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""
-
-
-class Episode(StrictBaseModel, Generic[DataT, StateT]):
-    """The durability envelope: one env-rollout as one `traces.jsonl` line and one
-    serve reply, so an episode persists and arrives whole or not at all — a torn
-    line is the whole episode owed again, and a failure before any trace minted
-    still leaves its errors on disk. The envelope is NOT the trace schema: each
-    trace inside is self-contained (its `episode` stamp carries the same id), so
-    flat consumers read `traces` and never look back.
-
-    The type parameters serve the wire loaders: `WireEpisode` reads any
-    taskset's episodes without importing the taskset."""
-
-    episode: EpisodeInfo = Field(default_factory=EpisodeInfo)
-    traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
-
-    @property
-    def id(self) -> str:
-        return self.episode.id
-
-    @property
-    def errors(self) -> list[Error]:
-        """Episode-level failures (the shared stamp's); per-trace ones stay on traces."""
-        return self.episode.errors
-
-    @property
-    def ok(self) -> bool:
-        """Whether the whole episode is good — no episode-level error and no trace
-        errors. The resume unit: anything less is redone."""
-        return not self.episode.errors and not any(t.errors for t in self.traces)
-
-    @classmethod
-    def of(cls, trace: Trace, env: str = "") -> "Episode":
-        """The single-agent record: one trace, stamped if it wasn't already."""
-        if trace.episode is None:
-            trace.episode = EpisodeInfo(env=env)
-        return cls(episode=trace.episode, traces=[trace])
-
-
-WireEpisode = Episode[WireTaskData, State]
-"""Record loader that preserves unknown task fields in `task.model_extra`."""

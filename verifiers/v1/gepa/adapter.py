@@ -19,7 +19,7 @@ from pydantic_core import to_jsonable_python
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import Environment
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Episode
+from verifiers.v1.episode import Episode
 
 Candidate = dict[str, str]
 

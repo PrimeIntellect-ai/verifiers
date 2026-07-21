@@ -30,7 +30,8 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.trace import Episode, Error
+    from verifiers.v1.episode import Episode
+    from verifiers.v1.trace import Error
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
     episode-level or on any trace — is retryable. All captures count, not just the
     most recent: a retryable failure followed by a teardown error would otherwise
     never retry. Episode-atomic — a half-played sibling context isn't reproducible."""
-    return any(_retryable(e, retry) for e in episode.episode.errors) or any(
+    return any(_retryable(e, retry) for e in episode.errors) or any(
         _retryable(e, retry) for t in episode.traces for e in t.errors
     )
 
@@ -126,16 +127,14 @@ async def run_episode_with_retry(
         final = await run()
         if attempt == retry.max_retries or not episode_should_retry(final, retry):
             break
-        cause = final.episode.error or next(
-            (t.error for t in final.traces if t.error), None
-        )
-        history.extend(final.episode.errors)
+        cause = final.error or next((t.error for t in final.traces if t.error), None)
+        history.extend(final.errors)
         for trace in final.traces:
             history.extend(trace.errors)
         delay = backoff(attempt)
         logger.warning(
             "retrying env-rollout %s (retry %d/%d) in %.1fs after error: %s",
-            final.episode.id,
+            final.id,
             attempt + 1,
             retry.max_retries,
             delay,
@@ -143,5 +142,6 @@ async def run_episode_with_retry(
         )
         await asyncio.sleep(delay)
     if history and not final.ok:  # final attempt failed too → prepend the history
-        final.episode.errors = history + final.episode.errors
+        # In place: the envelope, the stamp, and every trace share this one list.
+        final.errors[:0] = history
     return final

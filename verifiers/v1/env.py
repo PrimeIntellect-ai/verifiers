@@ -33,7 +33,8 @@ from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, _record_result, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.trace import EpisodeInfo, Episode, Error, Trace
+from verifiers.v1.episode import Episode
+from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.generic import deep_merge, generic_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.mcp import SharedToolServer, serve_shared
@@ -389,10 +390,10 @@ class Environment(ABC, Generic[ConfigT]):
     def _episode_agents(
         self,
         ctx: ModelContext,
-        episode: EpisodeInfo,
         gate: "asyncio.Semaphore | None",
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
+        on_discard: Callable[[Trace], None] | None,
     ) -> Agents:
         """One env-rollout's `Agents` — fresh value objects riding the live serving
         resources (nothing shared across concurrent episodes); `setup()` sees them first."""
@@ -417,12 +418,12 @@ class Environment(ABC, Generic[ConfigT]):
                 else ctx.client,
                 interception=self._interception,
                 name=name,
-                episode=episode,
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
                 gate=gate,
                 completed=completed,
                 on_trace=on_trace,
+                on_discard=on_discard,
                 warned_resources=self._warned_resources,
             )
 
@@ -442,23 +443,25 @@ class Environment(ABC, Generic[ConfigT]):
         ctx: ModelContext,
         *,
         on_trace: Callable[[Trace], None] | None = None,
+        on_discard: Callable[[Trace], None] | None = None,
         gate: asyncio.Semaphore | None = None,
     ) -> Episode:
         """One env-rollout of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()` and the decorated signals; `gate` bounds
         the agent runs, so internal fan-out counts against `--max-concurrent` too.
-        Traces join as runs complete — a hook raising mid-way yields the completed
-        subset, its exception on `errors`."""
-        info = EpisodeInfo(env=self.config.env_id)
-        completed: list[Trace] = []
-        agents = self._episode_agents(ctx, info, gate, completed, on_trace)
+        Traces join the episode as runs complete — a hook raising mid-way yields the
+        completed subset, its exception on the episode's `errors`. `on_trace` observes
+        each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
+        retry mints a replacement)."""
+        episode = Episode(env=self.config.env_id)
+        agents = self._episode_agents(ctx, gate, episode.traces, on_trace, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
                     await self.setup(agents)
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
                     await self.run(task, agents)
-                    if not completed:
+                    if not episode.traces:
                         raise ValueError(
                             f"{type(self).__name__}.run() ran no agent — every "
                             "episode must carry at least one run"
@@ -470,10 +473,9 @@ class Environment(ABC, Generic[ConfigT]):
                     f"{type(self).__name__}.run() exceeded its "
                     f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
                 )
-            info.errors.append(_as_error(e))
+            episode.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode.
-            return Episode(episode=info, traces=list(completed))
-        episode = Episode(episode=info, traces=list(completed))
+            return episode
         try:
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
@@ -487,7 +489,7 @@ class Environment(ABC, Generic[ConfigT]):
                     f"{type(self).__name__}.finalize() exceeded its "
                     f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
                 )
-            info.errors.append(_as_error(e))
+            episode.errors.append(_as_error(e))
         return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
@@ -509,8 +511,19 @@ class Environment(ABC, Generic[ConfigT]):
 
         async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
+            live = slot.traces
+
+            def discard(trace: Trace) -> None:
+                # A retried agent attempt abandons its trace; drop it from the view.
+                with contextlib.suppress(ValueError):
+                    live.remove(trace)
+
             return await self.run_episode(
-                slot.task, ctx, on_trace=slot.traces.append, gate=semaphore
+                slot.task,
+                ctx,
+                on_trace=live.append,
+                on_discard=discard,
+                gate=semaphore,
             )
 
         episode = await run_episode_with_retry(attempt, self.config.retries)
