@@ -19,7 +19,11 @@ class BestOfNEnvConfig(vf.EnvConfig):
 
 class BestOfNEnv(vf.Env[BestOfNEnvConfig]):
     async def run(self, task, agents):
-        await asyncio.gather(*(agents.agent.run(task) for _ in range(self.config.n)))
+        # TaskGroup, not gather: a raising attempt cancels and awaits its
+        # siblings, so no straggler keeps running past the episode.
+        async with asyncio.TaskGroup() as group:
+            for _ in range(self.config.n):
+                group.create_task(agents.agent.run(task))
 
     async def finalize(self, task, traces):
         # `best` marks the argmax-reward attempt (ties share); `pass_at_n` is an

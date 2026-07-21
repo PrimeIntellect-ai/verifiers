@@ -117,9 +117,9 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
     async def run(self, task, agents):
         proposed = await agents.proposer.run(task)
         solve_task = SolveTask.from_trace(proposed)
-        await asyncio.gather(
-            *(agents.solver.run(solve_task) for _ in range(self.config.n))
-        )
+        async with asyncio.TaskGroup() as group:
+            for _ in range(self.config.n):
+                group.create_task(agents.solver.run(solve_task))
 
     async def finalize(self, task, traces):
         """The curriculum signal: `learnability` rewards the proposer where half

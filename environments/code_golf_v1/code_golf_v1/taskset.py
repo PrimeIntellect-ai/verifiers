@@ -74,9 +74,9 @@ class CodeGolfEnvConfig(vf.EnvConfig):
 
 class CodeGolfEnv(vf.Env[CodeGolfEnvConfig]):
     async def run(self, task, agents):
-        await asyncio.gather(
-            *(agents.golfer.run(task) for _ in range(self.config.attempts))
-        )
+        async with asyncio.TaskGroup() as group:
+            for _ in range(self.config.attempts):
+                group.create_task(agents.golfer.run(task))
 
     async def finalize(self, task, traces):
         """The sibling comparisons: of the PASSING attempts, the shortest source

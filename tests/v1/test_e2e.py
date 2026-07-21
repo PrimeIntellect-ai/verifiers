@@ -283,13 +283,16 @@ async def test_multi_agent_env(run_v1, tmp_path):
         assert trace.errors == []
         assert trace.reward == 1.0  # each agent's own task reward
         assert trace.metrics["duet"] == 1.0  # the sibling-dependent signal
-    # On disk: one line per trace, agent-stamped, linked by the shared episode id.
+    # On disk: one line per trace (completion order), agent-stamped, linked by
+    # the shared episode id.
     rows = [
         json.loads(line)
         for line in (tmp_path / "traces.jsonl").read_text().splitlines()
     ]
-    assert [row["agent"]["name"] for row in rows] == ["a", "b"]
-    assert [row["agent"]["trainable"] for row in rows] == [True, False]
+    by_name = {row["agent"]["name"]: row for row in rows}
+    assert sorted(by_name) == ["a", "b"]
+    assert by_name["a"]["agent"]["trainable"] is True
+    assert by_name["b"]["agent"]["trainable"] is False
     assert all(row["episode"]["env"] == "duet-v1" for row in rows)
     assert len({row["episode"]["id"] for row in rows}) == 1
 

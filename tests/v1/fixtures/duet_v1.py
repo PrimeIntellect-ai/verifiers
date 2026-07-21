@@ -18,7 +18,9 @@ class DuetEnv(vf.Env[DuetEnvConfig]):
         agents.b.trainable = False
 
     async def run(self, task, agents):
-        await asyncio.gather(agents.a.run(task), agents.b.run(task))
+        async with asyncio.TaskGroup() as group:
+            group.create_task(agents.a.run(task))
+            group.create_task(agents.b.run(task))
 
     async def finalize(self, task, traces):
         # A sibling-dependent signal: did every agent echo the phrase?

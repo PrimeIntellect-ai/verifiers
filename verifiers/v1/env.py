@@ -314,6 +314,20 @@ class Env(ABC, Generic[ConfigT]):
         completed: list[Trace] = []
         agents = self._episode_agents(ctx, episode, gate, completed, on_trace)
         try:
+            return await self._attempt(episode, task, agents, completed)
+        finally:
+            # hand freed per-turn request bodies (base64 images) back to the OS —
+            # failed episodes included
+            await trim_memory_periodically()
+
+    async def _attempt(
+        self,
+        episode: EpisodeInfo,
+        task: Task,
+        agents: Agents,
+        completed: list[Trace],
+    ) -> list[Trace]:
+        try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
                     await self.run(task, agents)
@@ -360,9 +374,6 @@ class Env(ABC, Generic[ConfigT]):
                     traceback=traceback.format_exc(),
                 )
             )
-        finally:
-            # hand freed per-turn request bodies (base64 images) back to the OS
-            await trim_memory_periodically()
         return list(completed)
 
     @contextlib.asynccontextmanager

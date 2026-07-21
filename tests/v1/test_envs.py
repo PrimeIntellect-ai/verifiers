@@ -22,6 +22,18 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 # research-environments now.
 SKIP_EVAL: set[str] = set()
 
+# Turn caps are per-agent, so a recipe env's caps address its own agents (and cut
+# its internal fan-out for a cheap smoke run); everything else has the single
+# `agent`.
+TURN_CAPS: dict[str, list[str]] = {
+    "code_golf_v1": ["--env.golfer.max-turns", "4", "--env.attempts", "1"],
+    "proposer_solver_v1": [
+        "--env.proposer.max-turns", "6",
+        "--env.solver.max-turns", "2",
+        "--env.n", "1",
+    ],
+}  # fmt: skip
+
 
 def v1_tasksets() -> list[str]:
     if not ENVIRONMENTS.is_dir():
@@ -54,7 +66,8 @@ def test_eval(taskset: str):
     cmd = [
         "uv", "run", "--no-sync", "eval", taskset,
         *model,
-        "-n", "1", "-r", "1", "--env.max-turns", "4",
+        "-n", "1", "-r", "1",
+        *TURN_CAPS.get(taskset, ["--env.agent.max-turns", "4"]),
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:

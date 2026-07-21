@@ -439,8 +439,16 @@ class Agent:
                             await self.harness.run(
                                 self.ctx, trace, runtime, endpoint, secret, urls
                             )
-                    except TimeoutError:
-                        trace.stop("harness_timeout")
+                    except TimeoutError as e:
+                        # Only our deadline's own expiry is a clean truncation; a
+                        # TimeoutError from harness internals is a failure.
+                        if (
+                            deadline_at is not None
+                            and asyncio.get_running_loop().time() >= deadline_at
+                        ):
+                            trace.stop("harness_timeout")
+                        else:
+                            fail(e)
                     except Exception as e:
                         real = session.error
                         if real is not None and isinstance(e, RolloutError):
