@@ -8,13 +8,6 @@ from verifiers.v1.episode import WireEpisode
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SamplingConfig
 
-PROTOCOL_VERSION = 2
-"""The serve wire protocol: bumped when response shapes change (consumers —
-prime-rl's orchestrator — read it off `info` to detect a mismatched server). In
-protocol 2, the rollout route is `run` and answers the `Episode` (its standing
-inlined next to its flat traces) — the renamed route makes a stale server fail
-loudly instead of validating to an empty response."""
-
 
 class BaseRequest(BaseModel):
     """`method` is sent as its own route frame, not as payload data."""
@@ -46,8 +39,6 @@ class InfoResponse(BaseResponse):
     """Whether tasks must be run as whole groups — legacy (v0) envs only; a v1
     server always reports False (sibling-dependent signals run inside the env's
     own rollout)."""
-    protocol: int = PROTOCOL_VERSION
-    """The server's wire protocol version (`PROTOCOL_VERSION`)."""
 
 
 class RunRequest(BaseRequest):

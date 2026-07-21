@@ -14,7 +14,6 @@ from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.loaders import load_environment
 from verifiers.v1.serve.types import (
-    PROTOCOL_VERSION,
     BaseResponse,
     HealthResponse,
     InfoResponse,
@@ -151,7 +150,6 @@ class EnvServer:
                 response = InfoResponse(
                     num_tasks=self.num_tasks,
                     requires_group_scoring=self.requires_group_scoring,
-                    protocol=PROTOCOL_VERSION,
                 )
             elif route == "run":
                 response = await self._run(RunRequest.model_validate(raw))
