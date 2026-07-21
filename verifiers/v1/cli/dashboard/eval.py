@@ -2,6 +2,8 @@
 
 import contextlib
 import time
+import dataclasses
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -17,9 +19,10 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.cli.eval.slots import RunSlot
+
 from verifiers.v1.env import agent_harnesses
-from verifiers.v1.trace import Trace
+from verifiers.v1.task import Task
+from verifiers.v1.trace import Error, Trace, episode_ok
 from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import (
     format_count,
@@ -31,6 +34,37 @@ from verifiers.utils.pricing_utils import format_cost_usd
 
 if TYPE_CHECKING:
     from verifiers.v1.push import PushState
+
+
+@dataclass
+class RunSlot:
+    """One planned env-rollout of a task, observable while it happens: `traces`
+    collects the live traces as they mint, `done` lands when the rollout is
+    final. The dashboard renders slots; `--resume` preloads kept episodes as
+    `finished` slots."""
+
+    task: Task
+    traces: list[Trace] = dataclasses.field(default_factory=list)
+    done: bool = False
+
+    @classmethod
+    def finished(cls, traces: list[Trace]) -> "RunSlot":
+        return cls(task=Task(traces[0].task.data), traces=list(traces), done=True)
+
+    @property
+    def errors(self) -> list[Error]:
+        """Episode-level errors, read off the traces' shared episode stamp."""
+        for trace in self.traces:
+            if trace.episode is not None:
+                return trace.episode.errors
+        return []
+
+    @property
+    def ok(self) -> bool:
+        """Whether the finished rollout is good: it produced traces and none of
+        them — nor the episode — captured an error."""
+        return self.done and bool(self.traces) and episode_ok(self.traces)
+
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.

@@ -8,8 +8,8 @@ import time
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
-from verifiers.v1.cli.eval.slots import RunSlot
 from verifiers.v1.cli.dashboard import dashboard
+from verifiers.v1.cli.dashboard.eval import RunSlot
 from verifiers.v1.cli.output import (
     append_episode,
     append_trace,
