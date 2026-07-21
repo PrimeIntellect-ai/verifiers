@@ -227,19 +227,6 @@ class Environment(ABC, Generic[ConfigT]):
     — the base owns everything else. Task x agent fit is validated per run, on the
     task the agent actually receives — an env-minted task carries its own needs."""
 
-    def __init_subclass__(cls, **kwargs) -> None:
-        super().__init_subclass__(**kwargs)
-        # Cross-agent judgement is finalize(), imperatively — a decorated signal
-        # on an env would never run; refuse it where it's written.
-        for name, attr in vars(cls).items():
-            for kind in ("metric", "reward"):
-                if callable(attr) and hasattr(attr, kind):
-                    raise TypeError(
-                        f"{cls.__name__}.{name}: @vf.{kind} scores a Task's or "
-                        "Harness's own trace; an Environment judges across agents "
-                        "in finalize() — record via record_reward/record_metric"
-                    )
-
     def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
 
