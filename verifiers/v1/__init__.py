@@ -15,17 +15,18 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.decorators import metric, reward, stop, tool
-from verifiers.v1.env import (
-    AgentConfig,
+from verifiers.v1.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.configs.env import (
     ElasticPoolConfig,
-    EnvConfig,
     EnvServerConfig,
-    Environment,
     StaticPoolConfig,
-    EnvTimeoutConfig,
-    TimeoutConfig,
-    default_seat_harness,
     pool_serve_kwargs,
+)
+from verifiers.v1.env import (
+    EnvConfig,
+    Environment,
+    EnvTimeoutConfig,
+    default_agent_harness,
 )
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
@@ -255,7 +256,7 @@ __all__ = [
     "AgentConfig",
     "StaticPoolConfig",
     "ElasticPoolConfig",
-    "default_seat_harness",
+    "default_agent_harness",
     "pool_serve_kwargs",
     "RetryConfig",
     "RolloutRetryConfig",

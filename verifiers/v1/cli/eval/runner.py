@@ -110,7 +110,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     from functools import partial
 
     from verifiers.v1.utils.logging import setup_logging
-    from verifiers.v1.env import pool_serve_kwargs
+    from verifiers.v1.configs.env import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
 
     legacy = config.is_legacy

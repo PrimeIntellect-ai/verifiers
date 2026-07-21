@@ -40,7 +40,7 @@ def output_path(config: EvalConfig) -> Path:
         env = f"{env_name(config.env.id)}+{env}"
     # Every seat's resolved harness, distinct, in role order.
     harness = "+".join(
-        dict.fromkeys(h.name for h in config.env.seat_harnesses().values())
+        dict.fromkeys(h.name for h in config.env.agent_harnesses().values())
     )
     name = f"{env}--{config.model.replace('/', '--')}--{harness or 'default'}"
     return Path("outputs") / name / config.uuid

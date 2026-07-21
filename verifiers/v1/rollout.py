@@ -286,8 +286,16 @@ class RolloutRun:
                     self._secret,
                     self._urls,
                 )
-        except TimeoutError:
-            trace.stop("harness_timeout")
+        except TimeoutError as e:
+            # Only the rollout deadline reads as a clean truncation; a TimeoutError
+            # from the harness's own I/O with no expired deadline is a failure —
+            # recording it as a stop would score a broken run as a partial success.
+            if self.deadline_at is not None and (
+                asyncio.get_running_loop().time() >= self.deadline_at
+            ):
+                trace.stop("harness_timeout")
+            else:
+                self.fail(e)
             return False
         except Exception as e:
             real = self._session.error

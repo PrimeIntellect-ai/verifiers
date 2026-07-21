@@ -162,7 +162,7 @@ def _warning(config: EvalConfig) -> Text | None:
 
     if any(
         h.runtime.type == "subprocess" and harness_class(h.id).EXECUTES_CODE
-        for h in config.env.seat_harnesses().values()
+        for h in config.env.agent_harnesses().values()
     ):
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
@@ -228,7 +228,7 @@ def Overview(config: EvalConfig) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
-    seats = config.env.seat_harnesses()
+    seats = config.env.agent_harnesses()
     taskset = config.env.taskset
     env_label = taskset.name if taskset is not None else "no taskset"
     if config.env.id:
@@ -753,7 +753,7 @@ def _render(
             now,
             "/".join(
                 dict.fromkeys(
-                    h.runtime.type for h in config.env.seat_harnesses().values()
+                    h.runtime.type for h in config.env.agent_harnesses().values()
                 )
             )
             or "subprocess",

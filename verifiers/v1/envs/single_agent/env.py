@@ -8,12 +8,9 @@ eval is exactly this env (one `agent` seat, one nameless trace per episode).
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from verifiers.v1.env import (
-    AgentConfig,
-    EnvConfig,
-    Environment,
-    validate_pairing,
-)
+from verifiers.v1.agent import AgentConfig
+from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.utils.compile import validate_pairing
 from verifiers.v1.task import Task
 
 if TYPE_CHECKING:

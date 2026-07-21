@@ -6,7 +6,7 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field, model_validator
 
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
-from verifiers.v1.env import EnvServerConfig
+from verifiers.v1.configs.env import EnvServerConfig
 from verifiers.v1.types import SamplingConfig
 
 

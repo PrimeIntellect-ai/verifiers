@@ -17,7 +17,7 @@ import json
 from pydantic import SerializeAsAny, model_validator
 
 import verifiers.v1 as vf
-from verifiers.v1.env import _deep_merge
+from verifiers.v1.utils.generic import deep_merge
 from verifiers.v1.harness import Harness
 from verifiers.v1.judge import Judge, JudgeConfig
 from verifiers.v1.judges.score import ScoreJudgeConfig
@@ -89,7 +89,7 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
         else:  # a partial override tunes the default spec, never resets it
             default = cls.model_fields["spec"].default
             data["spec"] = type(default).model_validate(
-                _deep_merge(default.model_dump(exclude_none=True), raw)
+                deep_merge(default.model_dump(exclude_none=True), raw)
             )
         return data
 

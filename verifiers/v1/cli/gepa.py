@@ -63,6 +63,18 @@ def main(argv: list[str] | None = None) -> None:
         sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
         config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
+    # Refuse multi-agent before the dry-run return, so --dry-run can't write a
+    # config the real invocation would reject.
+    env_cls = vf.environment_class(
+        config.env.taskset.id if config.env.taskset is not None else "",
+        config.env.id,
+    )
+    if not issubclass(env_cls, vf.SingleAgentEnv):
+        raise SystemExit(
+            f"gepa: {config.env.env_id!r} runs {env_cls.__name__}, a multi-agent env; "
+            "gepa optimizes one agent's prompt against per-trace rewards and can't "
+            "drive a multi-agent interaction — only eval runs those"
+        )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return

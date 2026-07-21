@@ -10,11 +10,8 @@ from typing import Callable
 from pydantic import ValidationError
 from pydantic_config import BaseConfig
 
-from verifiers.v1.env import (
-    EnvConfig,
-    Environment,
-    prefix_validation_error,
-)
+from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.utils.generic import prefix_validation_error
 from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls

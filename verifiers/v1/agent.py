@@ -18,18 +18,16 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from typing import AsyncIterator
 
+from pydantic import SerializeAsAny, model_validator
+from pydantic_config import BaseConfig
+
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
+    ClientConfig,
     EvalClientConfig,
     ModelContext,
     resolve_client,
-)
-from verifiers.v1.env import (
-    TimeoutConfig,
-    cap_remote_harness_timeout,
-    resolve_runtime_config,
-    validate_pairing,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import Interception, InterceptionServer
@@ -45,9 +43,74 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Sampling
+from verifiers.v1.types import Sampling, SamplingConfig
+from verifiers.v1.utils.compile import (
+    cap_remote_harness_timeout,
+    resolve_runtime_config,
+    validate_pairing,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class TimeoutConfig(BaseConfig):
+    """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None =
+    no limit). A per-agent cap: every agent run is bounded by its own agent's
+    stages (`--env.<agent>.timeout.rollout`); each stage falls back to the task's
+    own `TaskTimeout` when unset."""
+
+    setup: float | None = None
+    """Shared wall-clock budget for task setup and harness provisioning."""
+    rollout: float | None = None
+    """Max wall-clock for the rollout (the harness run)."""
+    finalize: float | None = None
+    """Max wall-clock for the task's `finalize` hook (post-run work, before scoring)."""
+    scoring: float | None = None
+    """Max wall-clock for task and harness scoring."""
+
+
+class AgentConfig(BaseConfig):
+    """One env agent: who plays it, and its per-run caps. It pins only what
+    makes it a different actor; everything unpinned falls back — the model context
+    to the run's own, the harness to the taskset's default."""
+
+    harness: SerializeAsAny[HarnessConfig] | None = None
+    """The agent's program + runtime policy (None = the taskset's default harness)."""
+    model: str | None = None
+    """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
+    client: ClientConfig | None = None
+    """Endpoint override (None = the run's client) — routes a fixed agent (a frozen
+    judge, a pinned user sim) off the training endpoint."""
+    sampling: SamplingConfig | None = None
+    """Sampling override (None = the run's sampling)."""
+    timeout: TimeoutConfig = TimeoutConfig()
+    """Per-stage wall-clock timeouts for this agent's runs (each stage falls back
+    to the task's own)."""
+    max_turns: int | None = None
+    """Max model turns per run (None = no limit). Framework-enforced (the
+    interception server refuses turns past it), so it applies to any harness."""
+    max_input_tokens: int | None = None
+    """Max input (prompt) tokens per run (None = no limit); framework-enforced
+    between turns."""
+    max_output_tokens: int | None = None
+    """Max output (completion) tokens per run (None = no limit); framework-enforced
+    between turns."""
+    max_total_tokens: int | None = None
+    """Max total (prompt + completion) tokens per run (None = no limit);
+    framework-enforced between turns."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_harness(cls, data):
+        """Narrow a pinned `harness` to its concrete config type by `id`; an absent
+        harness stays None (the taskset's default, resolved at env construction).
+        The lazy import keeps class-body `AgentConfig()` defaults constructible
+        while this module is still initializing."""
+        if isinstance(data, dict) and data.get("harness") is not None:
+            from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
+
+            narrow_plugin_field(data, "harness", harness_config_type, "bash")
+        return data
 
 
 def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:

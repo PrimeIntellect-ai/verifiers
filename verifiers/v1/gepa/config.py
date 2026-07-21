@@ -15,11 +15,8 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import EvalClientConfig
-from verifiers.v1.env import (
-    EnvConfig,
-    _narrowed_env_annotation,
-    resolve_env_field,
-)
+from verifiers.v1.configs.env import narrowed_env_annotation, resolve_env_field
+from verifiers.v1.env import EnvConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -36,7 +33,7 @@ class GEPAConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_env(cls, data):
-        return resolve_env_field(data, _narrowed_env_annotation(cls))
+        return resolve_env_field(data, narrowed_env_annotation(cls))
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
