@@ -30,11 +30,6 @@ class UserConfig(BaseConfig):
 
     colocated: bool = False
     runtime: RuntimeConfig = SubprocessConfig()
-    timeout: float = 60.0
-    """Bound on one `respond()` attempt (connect + call). A wedged connection fails the attempt
-    so the host's retry can recover it within the harness window; the turn's worst case is
-    this times the retry budget. Raise it for simulators whose turns legitimately run long
-    (e.g. model-backed users)."""
 
 
 ConfigT = TypeVar("ConfigT", bound=UserConfig)

@@ -465,12 +465,10 @@ async def user_session(url: str) -> AsyncIterator[ClientSession]:
             await stack.aclose()
 
 
-async def user_respond(url: str, message: str, seq: int, *, timeout: float) -> Messages:
+async def user_respond(url: str, message: str, seq: int) -> Messages:
     """One `respond` turn against the user server, on a fresh session per attempt. A retried turn
     whose response was lost would advance the simulator twice, so the server dedups on
     (`seq`, `message`) and replays the recorded turn — making the retry effectively exactly-once.
-    `timeout` bounds each attempt (connect + initialize + call): a wedged connection must fail
-    fast enough for a retry to land inside the harness window instead of silently absorbing it.
     The payload is parsed outside the retry so a parse failure fails once."""
     from verifiers.v1.dialects import parse_message
     from verifiers.v1.retries import retrying
@@ -483,11 +481,10 @@ async def user_respond(url: str, message: str, seq: int, *, timeout: float) -> M
             label=f"user respond ({url})",
         ):
             with attempt:
-                async with asyncio.timeout(timeout):
-                    async with user_session(url) as session:
-                        result = await session.call_tool(
-                            "respond", {"message": message, "seq": seq}
-                        )
+                async with user_session(url) as session:
+                    result = await session.call_tool(
+                        "respond", {"message": message, "seq": seq}
+                    )
         assert result is not None
         texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
         data = json.loads("\n".join(texts))
@@ -523,4 +520,4 @@ async def serve_user(
         state_secret=state_secret,
         state_base=state_base,
     ) as url:
-        yield partial(user_respond, url, timeout=user.config.timeout)
+        yield partial(user_respond, url)
