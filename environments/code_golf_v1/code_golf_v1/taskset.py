@@ -76,7 +76,7 @@ class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
     async def rollout(self, task, agents):
         async with asyncio.TaskGroup() as tg:
             for _ in range(self.config.attempts):
-                tg.create_task(agents["golfer"].run(task))
+                tg.create_task(agents.golfer.run(task))
 
     @vf.reward(weight=0.5)
     async def most_concise(self, trace, traces):

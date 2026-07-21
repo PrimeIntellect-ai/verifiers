@@ -2,6 +2,8 @@
 
 import asyncio
 
+import types
+
 import pytest
 
 import verifiers.v1 as vf
@@ -46,7 +48,7 @@ def test_load_environment_honors_env_id():
     config = EvalConfig(env={"id": "best-of-n", "taskset": {"id": "echo-v1"}, "n": 3})
     env = vf.load_environment(config.env)
     assert isinstance(env, BestOfNEnv)
-    assert set(env._roles) == {"agent"}
+    assert set(env._agent_specs) == {"agent"}
 
 
 def test_shared_tools_ride_only_the_tasksets_own_tasks():
@@ -66,7 +68,7 @@ def test_shared_tools_ride_only_the_tasksets_own_tasks():
     shared = {"echo": object()}
     env._shared_tools = shared  # what serving() would install
     ctx = vf.ModelContext(model="stub", client=object())  # duck client — no runs here
-    judge = env._episode_agents(ctx, "ep", None, [], None)["judge"]
+    judge = env._episode_agents(ctx, "ep", None, [], None).judge
     dataset_task = env.taskset.load()[0]
     minted = JudgeTask(vf.TaskData(idx=0, prompt="verify"), files={})
     assert judge.trainable is False  # brief() ran on the fresh set
@@ -113,13 +115,13 @@ def test_agentic_judge_is_sandboxed():
     )
     assert rebuilt._harnesses["judge"].config.runtime.type == "docker"
 
-    # brief() is the judge's standing, not config: the judge seat is untrainable.
-    class _Seat:
+    # brief() is the judge's standing, not config: the judge agent is untrainable.
+    class _Stub:
         trainable = True
 
-    seats = {"solver": _Seat(), "judge": _Seat()}
-    env.brief(seats)
-    assert seats["judge"].trainable is False and seats["solver"].trainable
+    stubs = types.SimpleNamespace(solver=_Stub(), judge=_Stub())
+    env.brief(stubs)
+    assert stubs.judge.trainable is False and stubs.solver.trainable
     # A tool-less judge harness is refused: a verdict that needs no execution is
     # a plugged judge (env.taskset.task.judges), not an agent.
     with pytest.raises(ValueError, match="plugged judge"):
@@ -139,13 +141,13 @@ def test_roles_are_the_declared_config_fields():
     config declaring no AgentConfig fields has no roles and refuses at
     construction."""
     env = vf.SingleAgentEnv(_bundled_config())
-    assert set(env._roles) == {"agent"}
+    assert set(env._agent_specs) == {"agent"}
 
     class Bare(vf.Environment):
         async def rollout(self, task, agents):
             return {}
 
-    with pytest.raises(ValueError, match="declares no roles"):
+    with pytest.raises(ValueError, match="declares no agents"):
         Bare(vf.EnvConfig(taskset={"id": "echo-v1"}))
 
 

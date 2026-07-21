@@ -4,7 +4,6 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -15,7 +14,7 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.decorators import metric, reward, stop, tool
-from verifiers.v1.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.agent import Agent, AgentConfig, Agents, TimeoutConfig, make_agent
 from verifiers.v1.configs.env import (
     ElasticPoolConfig,
     EnvServerConfig,
@@ -264,6 +263,8 @@ __all__ = [
     "EnvTimeoutConfig",
     # agent
     "Agent",
+    "Agents",
+    "make_agent",
     # loaders
     "import_taskset",
     "import_harness",

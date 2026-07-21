@@ -14,7 +14,7 @@ up its own per-rollout server.
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from typing import AsyncIterator
 
@@ -22,14 +22,13 @@ from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import (
-    BaseClientConfig,
     Client,
     ClientConfig,
     EvalClientConfig,
     ModelContext,
     resolve_client,
 )
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.rollout import RolloutRun
@@ -140,62 +139,57 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
 
 
 class Agent:
-    """A harness + model + runtime policy, runnable on any task.
+    """A configured harness + model + runtime policy, runnable on any task.
 
-    Construction takes each piece as the live object or as what resolves to one:
-    `harness` a `Harness`, a `HarnessConfig`, or a bare id (`vf.Agent("bash", ...)`);
-    `client` a live `Client`, a client config, or None for the env-var-driven eval
-    default. Harnesses are stateless, so one instance can back any number of
-    agents. `model`/`client`/`sampling` are the model context, bound at
-    construction; agents on the same endpoint should share one `Client` (one
-    connection pool) — which is why a live client is still first-class.
+    Built from an `AgentConfig` alone; `client=`/`interception=` inject live
+    resources to borrow — agents on the same endpoint should share one `Client`
+    (one connection pool), and a live `Interception`'s owner keeps its lifecycle.
+    Without one, an entered agent (`async with`) owns one interception server (a
+    server multiplexes concurrent runs — one agent never needs a pool) and an
+    un-entered one brings up a per-run server.
 
-    `runtime` is a *policy* (a `RuntimeConfig`, default the harness config's own):
-    each `run` provisions a fresh box from it, resolved per task. Pass a live
-    `Runtime` to `run(runtime=...)` to place a run into an existing box instead —
-    borrowed boxes are never started or torn down by the run. `interception` is the
-    same story for the model boundary: a live one is borrowed; without it, an
-    entered agent owns one interception server (a server multiplexes concurrent
-    runs — one agent never needs a pool) and an un-entered one brings up a per-run
-    server."""
+    The harness config's `runtime` is a *policy*: each `run` provisions a fresh
+    box from it, resolved per task. `run(runtime=...)` places the run into an
+    existing box instead — borrowed boxes are never started or torn down by the
+    run."""
 
     def __init__(
         self,
-        harness: Harness | HarnessConfig | str,
-        model: str,
-        client: Client | BaseClientConfig | None = None,
-        runtime: RuntimeConfig | None = None,
+        config: AgentConfig,
         *,
-        sampling: Sampling | None = None,
+        client: Client | None = None,
         interception: Interception | None = None,
-        limits: RolloutLimits | None = None,
-        timeout: TimeoutConfig | None = None,
     ) -> None:
-        if isinstance(harness, str):
-            # A bare id resolves through the plugin registry, typed config included.
-            from verifiers.v1.loaders import harness_config_type
+        from verifiers.v1.loaders import harness_config_type, load_harness
 
-            harness = harness_config_type(harness)(id=harness)
-        if isinstance(harness, HarnessConfig):
-            from verifiers.v1.loaders import load_harness
-
-            harness = load_harness(harness)
-        if client is None or isinstance(client, BaseClientConfig):
-            client = resolve_client(client or EvalClientConfig())
-        self.harness = harness
+        if config.model is None:
+            raise ValueError(
+                "AgentConfig.model is unset; an Agent needs a pinned model "
+                "(inside an env the run's own model fills it in)"
+            )
+        harness_config = config.harness
+        if harness_config is None:
+            harness_config = harness_config_type("bash")(id="bash")
+        self.config = config
+        self.harness = load_harness(harness_config)
+        if client is None:
+            client = resolve_client(config.client or EvalClientConfig())
         self.ctx = ModelContext(
-            model=model,
+            model=config.model,
             client=client,
-            sampling=sampling if sampling is not None else Sampling(),
+            sampling=config.sampling if config.sampling is not None else Sampling(),
         )
-        self.runtime_config: RuntimeConfig = (
-            runtime if runtime is not None else harness.config.runtime
-        )
+        self.runtime_config: RuntimeConfig = self.harness.config.runtime
         self.interception = interception
-        self.limits = RolloutLimits() if limits is None else limits
-        self.timeout = TimeoutConfig() if timeout is None else timeout
-        # Env-owned standing, not config: `Environment.brief` marks fixed seats
-        # (a frozen judge) untrainable and the role wrapper stamps traces from
+        self.limits = RolloutLimits(
+            max_turns=config.max_turns,
+            max_input_tokens=config.max_input_tokens,
+            max_output_tokens=config.max_output_tokens,
+            max_total_tokens=config.max_total_tokens,
+        )
+        self.timeout = config.timeout
+        # Env-owned standing, not config: `Environment.brief` marks fixed agents
+        # (a frozen judge) untrainable and the episode wrapper stamps traces from
         # here. Inert in bespoke scripts — nothing outside an env reads it.
         self.trainable: bool = True
         self._entered = False
@@ -379,14 +373,10 @@ class _EpisodeAgent(Agent):
 
     def __init__(
         self,
-        harness: Harness,
-        model: str,
-        client: Client,
+        config: AgentConfig,
         *,
-        sampling: Sampling | None,
+        client: Client,
         interception: Interception | None,
-        limits: RolloutLimits,
-        timeout: TimeoutConfig,
         name: str,
         role: str | None,
         episode: str,
@@ -398,15 +388,7 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None,
         warned_resources: set,
     ) -> None:
-        super().__init__(
-            harness,
-            model,
-            client,
-            sampling=sampling,
-            interception=interception,
-            limits=limits,
-            timeout=timeout,
-        )
+        super().__init__(config, client=client, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name
@@ -453,3 +435,55 @@ class _EpisodeAgent(Agent):
             )
         self._completed.append(trace)
         return trace
+
+
+def make_agent(
+    config: AgentConfig,
+    *,
+    client: Client | None = None,
+    interception: Interception | None = None,
+) -> Agent:
+    """The agent for a config (the counterpart to `make_runtime`/`make_interception`).
+    `client`/`interception` inject live resources to borrow; everything else — the
+    harness, the model, the caps — comes from the config."""
+    return Agent(config, client=client, interception=interception)
+
+
+MakeAgent = Callable[[str, AgentConfig], Agent]
+"""An agent factory keyed by name — what `Agents` calls per scraped config field."""
+
+
+def agent_config_fields(config) -> dict[str, AgentConfig]:
+    """The top-level `AgentConfig` fields declared on a config, in declaration
+    order — the env's agents, keyed by field name (the only naming site)."""
+    return {name: value for name, value in config if isinstance(value, AgentConfig)}
+
+
+class Agents:
+    """A config's agents, addressed by attribute: every top-level `AgentConfig`
+    field becomes an `Agent` under the field's name (`agents.solver`)."""
+
+    def __init__(self, config, make: MakeAgent | None = None) -> None:
+        if make is None:
+            make = lambda _, spec: make_agent(spec)  # noqa: E731
+        self._agents: dict[str, Agent] = {
+            name: make(name, value)
+            for name, value in agent_config_fields(config).items()
+        }
+
+    def __getattr__(self, name: str) -> Agent:
+        # self.__dict__ directly: attribute lookup re-entering __getattr__ before
+        # __init__ ran (copy/unpickle) must raise, not recurse.
+        agents = self.__dict__.get("_agents")
+        if agents is None or name not in agents:
+            raise AttributeError(
+                f"no agent {name!r}; this config declares "
+                f"{sorted(agents) if agents else []}"
+            )
+        return agents[name]
+
+    def __iter__(self) -> Iterator[Agent]:
+        return iter(self._agents.values())
+
+    def __len__(self) -> int:
+        return len(self._agents)

@@ -131,10 +131,10 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
 
     def brief(self, agents):
         # The judge grades the policy; its tokens are never training data.
-        agents["judge"].trainable = False
+        agents.judge.trainable = False
 
     async def rollout(self, task, agents):
-        solution = await agents["solver"].run(task)
+        solution = await agents.solver.run(task)
         prompt = self._spec.render(task.data, solution)
         # A fresh box of the solver task's image, original state (the solver's
         # edits live only in its own box), transcript uploaded.
@@ -151,7 +151,7 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
                 TRANSCRIPT_JSON: json.dumps(solution.to_record()).encode(),
             },
         )
-        await agents["judge"].run(judge_task)
+        await agents.judge.run(judge_task)
 
     async def score(self, task, traces):
         """Parse the judge's reply through the spec and record it like the plugged

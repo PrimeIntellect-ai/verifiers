@@ -12,9 +12,9 @@ import verifiers.v1 as vf
 
 
 async def main() -> None:
-    # A bare harness id and the default eval client; pass a built Harness or a
-    # shared Client to pin more.
-    solver = vf.Agent("bash", "z-ai/glm-5.2")
+    # Everything declarative rides the config (harness None = the built-in bash);
+    # live resources (a shared Client, an Interception) are injected, not configured.
+    solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"))
     task = vf.Task(
         vf.TaskData(idx=0, prompt="What is 2+2? Answer with just the number.")
     )

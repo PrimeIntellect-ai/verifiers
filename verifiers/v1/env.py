@@ -5,7 +5,7 @@ import contextlib
 import logging
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import (
     ClassVar,
@@ -17,7 +17,7 @@ from typing import (
 from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent, AgentConfig, _EpisodeAgent
+from verifiers.v1.agent import Agent, AgentConfig, Agents, _EpisodeAgent
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
 from verifiers.v1.types import ID
@@ -28,7 +28,6 @@ from verifiers.v1.interception import (
     make_interception,
     requires_tunnel,
 )
-from verifiers.v1.session import RolloutLimits
 from verifiers.v1.retries import RetryConfig, run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -296,32 +295,32 @@ class Environment(ABC, Generic[ConfigT]):
         self._default_harness = default_agent_harness(config.taskset.id)
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
         self._task_cls: type[Task] = task_cls
-        self._roles: dict[str, AgentConfig] = _declared_agent_configs(self.config)
-        if not self._roles:
+        self._agent_specs: dict[str, AgentConfig] = _declared_agent_configs(self.config)
+        if not self._agent_specs:
             raise ValueError(
-                f"{type(self).__name__} declares no roles; declare each seat as an "
+                f"{type(self).__name__} declares no agents; declare each as an "
                 "AgentConfig field on the env's config "
                 "(`solver: vf.AgentConfig = vf.AgentConfig()`) — the field name is "
-                "the role. The single-agent case is SingleAgentEnv."
+                "the agent's name. The single-agent case is SingleAgentEnv."
             )
         for fn in (
             *discover_decorated(self, "metric"),
             *discover_decorated(self, "reward"),
         ):
             agent = getattr(fn, "_vf_agent", None)
-            if agent is not None and agent not in self._roles:
+            if agent is not None and agent not in self._agent_specs:
                 name = getattr(fn, "__name__", repr(fn))
                 raise ValueError(
                     f"{type(self).__name__}.{name} is decorated with "
                     f"agent={agent!r}, but the env's config declares agents "
-                    f"{sorted(self._roles)}"
+                    f"{sorted(self._agent_specs)}"
                 )
         # Seats resolving to the same harness config share the loaded object
         # (harnesses are stateless values).
         loaded: dict[str, Harness] = {}
         self._harnesses: dict[str, Harness] = {}
-        for name, spec in self._roles.items():
-            cfg = self._seat_harness(spec)
+        for name, spec in self._agent_specs.items():
+            cfg = self._agent_harness(spec)
             key = cfg.model_dump_json()
             if key not in loaded:
                 loaded[key] = load_harness(cfg)
@@ -347,22 +346,22 @@ class Environment(ABC, Generic[ConfigT]):
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
         # Clients for endpoint-pinning roles, cached by config, closed with serving().
-        self._role_clients: dict[str, Client] = {}
+        self._agent_clients: dict[str, Client] = {}
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
 
     # --- the multi-agent surface (override these) ------------------------------
 
-    def brief(self, agents: Mapping[str, Agent]) -> None:
+    def brief(self, agents: Agents) -> None:
         """Brief this rollout's agents before `rollout()` sees them — the in-place
         spot for per-agent standing the env hardcodes rather than exposes as
-        config. Today that is `trainable` (every agent defaults True; a fixed seat
-        opts out: `agents["judge"].trainable = False`). Agents are built fresh per
+        config. Today that is `trainable` (every agent defaults True; a fixed one
+        opts out: `agents.judge.trainable = False`). Agents are built fresh per
         env-rollout, so this runs once per episode — keep it cheap and in-place.
         Single-agent envs never write this."""
 
     @abstractmethod
-    async def rollout(self, task: Task, agents: Mapping[str, Agent]) -> None:
+    async def rollout(self, task: Task, agents: Agents) -> None:
         """One env-rollout: how the agents interact on `task` — imperative Python
         over the handed-in agents, returning nothing. Every finished run is
         captured as the episode's traces automatically, each stamped with its
@@ -431,7 +430,7 @@ class Environment(ABC, Generic[ConfigT]):
 
     # --- machinery (the base owns everything below) -----------------------------
 
-    def _seat_harness(self, agent: AgentConfig) -> HarnessConfig:
+    def _agent_harness(self, agent: AgentConfig) -> HarnessConfig:
         """The harness config a role resolves to: its own pin, else the taskset's
         default (`default_agent_harness`)."""
         return agent.harness if agent.harness is not None else self._default_harness
@@ -453,22 +452,33 @@ class Environment(ABC, Generic[ConfigT]):
         gate: "asyncio.Semaphore | None",
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
-    ) -> dict[str, Agent]:
-        """One env-rollout's agents, one per role — fresh value objects riding the
-        live serving resources (everything expensive is env-owned and borrowed, so
-        construction is cheap and no state is shared across concurrent episodes),
-        briefed before `rollout()` sees them."""
-        agents: dict[str, Agent] = {}
-        for name, spec in self._roles.items():
-            role_ctx = self._role_ctx(spec, ctx)
-            agents[name] = _EpisodeAgent(
-                self._harnesses[name],
-                role_ctx.model,
-                role_ctx.client,
-                sampling=role_ctx.sampling,
+    ) -> Agents:
+        """One env-rollout's `Agents`, scraped off the config — fresh value objects
+        riding the live serving resources (everything expensive is env-owned and
+        borrowed, so construction is cheap and no state is shared across concurrent
+        episodes), briefed before `rollout()` sees them."""
+
+        def make(name: str, spec: AgentConfig) -> Agent:
+            # The episode's resolved config: every unpinned field falls back to
+            # the run's own context (model, sampling) or the taskset's default
+            # (harness); the live client is injected, never configured here.
+            resolved = spec.model_copy(
+                update={
+                    "harness": spec.harness
+                    if spec.harness is not None
+                    else self._default_harness,
+                    "model": spec.model if spec.model is not None else ctx.model,
+                    "sampling": spec.sampling
+                    if spec.sampling is not None
+                    else ctx.sampling,
+                }
+            )
+            return _EpisodeAgent(
+                resolved,
+                client=self._client_for(spec.client)
+                if spec.client is not None
+                else ctx.client,
                 interception=self._interception,
-                limits=self._role_limits(spec),
-                timeout=spec.timeout,
                 name=name,
                 role=name if self._stamp_roles else None,
                 episode=episode_id,
@@ -480,38 +490,18 @@ class Environment(ABC, Generic[ConfigT]):
                 on_trace=on_trace,
                 warned_resources=self._warned_resources,
             )
+
+        agents = Agents(self.config, make)
         self.brief(agents)
         return agents
 
-    def _role_ctx(self, spec: AgentConfig, ctx: ModelContext) -> ModelContext:
-        """The role's model context: the run's `ctx` unless the role pins its own model,
-        endpoint, or sampling (each falls back to the run's independently)."""
-        if spec.model is None and spec.client is None and spec.sampling is None:
-            return ctx
-        return ModelContext(
-            model=spec.model if spec.model is not None else ctx.model,
-            client=self._client_for(spec.client)
-            if spec.client is not None
-            else ctx.client,
-            sampling=spec.sampling if spec.sampling is not None else ctx.sampling,
-        )
-
     def _client_for(self, config: ClientConfig) -> Client:
-        """Resolve (and cache by config) a role-pinned endpoint's client; closed when
-        `serving()` exits."""
+        """Resolve (and cache by config) an agent-pinned endpoint's client; closed
+        when `serving()` exits."""
         key = config.model_dump_json()
-        if key not in self._role_clients:
-            self._role_clients[key] = resolve_client(config)
-        return self._role_clients[key]
-
-    def _role_limits(self, spec: AgentConfig) -> RolloutLimits:
-        """The role's per-run limits — the seat's own caps, nothing env-level."""
-        return RolloutLimits(
-            max_turns=spec.max_turns,
-            max_input_tokens=spec.max_input_tokens,
-            max_output_tokens=spec.max_output_tokens,
-            max_total_tokens=spec.max_total_tokens,
-        )
+        if key not in self._agent_clients:
+            self._agent_clients[key] = resolve_client(config)
+        return self._agent_clients[key]
 
     async def run_episode(
         self,
@@ -635,7 +625,7 @@ class Environment(ABC, Generic[ConfigT]):
                     finally:
                         self._shared_tools = {}
                         self._interception = None
-                        clients, self._role_clients = self._role_clients, {}
+                        clients, self._agent_clients = self._agent_clients, {}
                         for client in clients.values():
                             with contextlib.suppress(Exception):
                                 await client.close()

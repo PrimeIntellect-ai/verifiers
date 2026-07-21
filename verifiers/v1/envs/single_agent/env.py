@@ -47,4 +47,4 @@ class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
         )
 
     async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> None:
-        await agents["agent"].run(task)
+        await agents.agent.run(task)

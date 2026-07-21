@@ -14,26 +14,28 @@ from verifiers.v1.runtimes import DockerConfig, SubprocessConfig, make_runtime
 
 
 def _agent() -> vf.Agent:
-    # client=None resolves the eval default; the guards under test raise before
-    # any model I/O, so no credentials are needed.
-    return vf.Agent(BashHarness(BashHarnessConfig()), "test-model")
+    # No injected client resolves the eval default; the guards under test raise
+    # before any model I/O, so no credentials are needed.
+    return vf.Agent(vf.AgentConfig(model="test-model"))
 
 
-def test_agent_construction_accepts_ids_and_configs():
-    """Each piece resolves from what you hand it: a bare harness id, a typed
-    `HarnessConfig`, or a live `Harness`; `client=None` resolves the env-var eval
-    default, and a live (or duck) client passes through untouched — sharing one
-    client across agents stays explicit."""
+def test_agent_construction_is_config_only():
+    """An agent is built from its `AgentConfig` alone: harness None resolves to the
+    built-in bash, a pinned `HarnessConfig` loads typed, a missing model refuses,
+    and a live client is injected (never configured) — sharing one client across
+    agents stays explicit."""
     from verifiers.v1.clients import EvalClient
 
-    by_id = vf.Agent("bash", "m")
-    assert isinstance(by_id.harness, BashHarness)
-    assert isinstance(by_id.ctx.client, EvalClient)
-    assert isinstance(vf.Agent(BashHarnessConfig(), "m").harness, BashHarness)
-    live = BashHarness(BashHarnessConfig())
-    assert vf.Agent(live, "m").harness is live
+    default = vf.make_agent(vf.AgentConfig(model="m"))
+    assert isinstance(default.harness, BashHarness)
+    assert isinstance(default.ctx.client, EvalClient)
+    pinned = vf.Agent(vf.AgentConfig(harness=BashHarnessConfig(), model="m"))
+    assert isinstance(pinned.harness, BashHarness)
+    with pytest.raises(ValueError, match="model is unset"):
+        vf.Agent(vf.AgentConfig())
     shared = object()
-    assert vf.Agent(live, "m", shared).ctx.client is shared  # type: ignore[arg-type]
+    agent = vf.Agent(vf.AgentConfig(model="m"), client=shared)  # type: ignore[arg-type]
+    assert agent.ctx.client is shared
 
 
 async def test_borrowed_subprocess_box_refuses_task_image():
@@ -76,11 +78,8 @@ async def test_shared_tools_hit_the_mcp_pairing_guard():
     class NoMcpHarness(BashHarness):
         SUPPORTS_MCP = False
 
-    agent = vf.Agent(
-        NoMcpHarness(BashHarnessConfig()),
-        "test-model",
-        None,  # type: ignore[arg-type]
-    )
+    agent = vf.Agent(vf.AgentConfig(model="test-model"))
+    agent.harness = NoMcpHarness(BashHarnessConfig())
     task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
     with pytest.raises(ValueError, match="does not support MCP"):
         await agent.run(task, shared_tools={"search": object()})  # type: ignore[dict-item]

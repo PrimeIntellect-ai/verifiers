@@ -68,10 +68,10 @@ def _duet_config(**kwargs) -> "DuetConfig":
 
 class DuetEnv(vf.Environment[DuetConfig]):
     def brief(self, agents):
-        agents["b"].trainable = False
+        agents.b.trainable = False
 
     async def rollout(self, task, agents):
-        await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
+        await asyncio.gather(agents.a.run(task), agents.b.run(task))
 
     async def score(self, task, traces):
         for trace in traces:
@@ -83,7 +83,7 @@ async def test_single_agent_env_mints_single_agent_records(monkeypatch):
     one `agent` seat playing the seed taskset, one unstamped trace per episode,
     score() a no-op."""
     env = vf.SingleAgentEnv(_env_config())
-    assert list(env._roles) == ["agent"]
+    assert list(env._agent_specs) == ["agent"]
     runs = _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
     assert episode.ok and episode.env == "echo-v1"
@@ -125,7 +125,7 @@ async def test_hook_crash_keeps_completed_traces(monkeypatch):
 
     class Crashy(vf.SingleAgentEnv):
         async def rollout(self, task, agents):
-            await agents["agent"].run(task)
+            await agents.agent.run(task)
             raise RuntimeError("hook bug")
 
     env = Crashy(_env_config())
@@ -189,8 +189,8 @@ async def test_a_seat_may_fan_out(monkeypatch):
     class Fan(DuetEnv):
         async def rollout(self, task, agents):
             for _ in range(2):
-                await agents["a"].run(task)
-            await agents["b"].run(task)
+                await agents.a.run(task)
+            await agents.b.run(task)
 
         async def score(self, task, traces):
             pass
@@ -210,7 +210,7 @@ async def test_decorated_signals_cross_agent(monkeypatch):
 
     class Signals(vf.Environment[DuetConfig]):
         async def rollout(self, task, agents):
-            await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
+            await asyncio.gather(agents.a.run(task), agents.b.run(task))
 
         @vf.metric(agent="a")
         async def b_count(self, traces):
@@ -332,14 +332,14 @@ def test_role_pins_fall_back_per_field():
     env = PinnedEnv(PinnedConfig(taskset={"id": "echo-v1"}, a={"max_turns": 7}))
     ctx = vf.ModelContext(model="run-model", client=object())  # duck client
     agents = env._episode_agents(ctx, "ep", None, [], None)
-    assert agents["a"].ctx.model == "run-model"  # nothing pinned → the run's
-    assert agents["a"].ctx.client is ctx.client
-    assert agents["a"].limits.max_turns == 7  # the seat's own cap
-    assert agents["a"].limits.max_output_tokens is None  # unset = no limit
-    assert agents["b"].ctx.model == "frozen"  # pins win, per field
-    assert agents["b"].ctx.client is ctx.client  # unpinned legs stay the run's
-    assert agents["b"].ctx.sampling.temperature == 0.0
-    assert agents["b"].limits.max_turns == 2
+    assert agents.a.ctx.model == "run-model"  # nothing pinned → the run's
+    assert agents.a.ctx.client is ctx.client
+    assert agents.a.limits.max_turns == 7  # the seat's own cap
+    assert agents.a.limits.max_output_tokens is None  # unset = no limit
+    assert agents.b.ctx.model == "frozen"  # pins win, per field
+    assert agents.b.ctx.client is ctx.client  # unpinned legs stay the run's
+    assert agents.b.ctx.sampling.temperature == 0.0
+    assert agents.b.limits.max_turns == 2
 
 
 def test_seat_harness_is_a_pin_or_the_taskset_default():
@@ -399,7 +399,7 @@ def test_env_subclass_loads_and_config_narrows():
     assert cfg.b.harness is not None
     assert cfg.b.harness.id == "null"  # the pin survives the partial override
     env = vf.load_environment(cfg)
-    assert type(env).__name__ == "DuetEnv" and list(env._roles) == ["a", "b"]
+    assert type(env).__name__ == "DuetEnv" and list(env._agent_specs) == ["a", "b"]
     # a run config narrows its `env` field the same way
     run = EvalConfig(env={"taskset": {"id": "duet-v1"}})
     assert isinstance(run.env, config_cls)
@@ -476,8 +476,8 @@ async def test_aliased_views_land_once(monkeypatch):
 
     class Aliased(vf.Environment[DuetConfig]):
         async def rollout(self, task, agents):
-            a = await agents["a"].run(task)
-            return {"a": a, "winner": a, "b": await agents["b"].run(task)}
+            a = await agents.a.run(task)
+            return {"a": a, "winner": a, "b": await agents.b.run(task)}
 
         @vf.metric
         async def n(self, trace):

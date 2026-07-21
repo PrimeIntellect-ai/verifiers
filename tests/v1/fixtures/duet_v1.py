@@ -23,10 +23,10 @@ class DuetEnvConfig(vf.EnvConfig):
 class DuetEnv(vf.Environment[DuetEnvConfig]):
     def brief(self, agents):
         # "b" plays a fixed, untrainable participant.
-        agents["b"].trainable = False
+        agents.b.trainable = False
 
     async def rollout(self, task, agents):
-        await asyncio.gather(agents["a"].run(task), agents["b"].run(task))
+        await asyncio.gather(agents.a.run(task), agents.b.run(task))
 
     async def score(self, task, traces):
         # A sibling-dependent signal: did every seat echo the phrase?

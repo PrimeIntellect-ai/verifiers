@@ -137,15 +137,15 @@ class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
     def brief(self, agents):
         # Both seats CAN train (same underlying policy); which one does this run
         # is this env's explicit choice to expose.
-        agents["proposer"].trainable = self.config.train_proposer
-        agents["solver"].trainable = self.config.train_solver
+        agents.proposer.trainable = self.config.train_proposer
+        agents.solver.trainable = self.config.train_solver
 
     async def rollout(self, task, agents):
-        proposed = await agents["proposer"].run(task)
+        proposed = await agents.proposer.run(task)
         solve_task = SolveTask.from_trace(proposed)
         async with asyncio.TaskGroup() as tg:
             for _ in range(self.config.n):
-                tg.create_task(agents["solver"].run(solve_task))
+                tg.create_task(agents.solver.run(solve_task))
 
     @staticmethod
     def _solve_rate(traces: list[vf.Trace]) -> float:

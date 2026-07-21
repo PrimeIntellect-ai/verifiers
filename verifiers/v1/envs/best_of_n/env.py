@@ -29,7 +29,7 @@ class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
         # straggler keeps burning tokens past the episode.
         async with asyncio.TaskGroup() as tg:
             for _ in range(self.config.n):
-                tg.create_task(agents["agent"].run(task))
+                tg.create_task(agents.agent.run(task))
 
     @vf.metric
     async def best(self, trace, traces):
