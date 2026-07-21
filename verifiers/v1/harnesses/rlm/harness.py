@@ -12,6 +12,7 @@ from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import metric
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class RLMHarnessConfig(HarnessConfig):
     summarize_at_tokens: int | tuple[int, int] | None = None
     """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
     past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
-    threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
+    threshold (seeded by the task's data, so a task's rollouts share one draw and tasks vary).
     `None` disables auto-compaction; ints must be positive."""
 
     @model_validator(mode="after")
@@ -90,16 +91,17 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 
-    def summarize_threshold(self, task_idx: int) -> str:
-        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index, so
-        a task's rollouts share one threshold). Always set — "" when disabled — so the typed field,
-        not a host var the subprocess runtime would inherit, wins."""
+    def summarize_threshold(self, data: TaskData) -> str:
+        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by the task's
+        data, so a task's rollouts share one threshold — idx-less ad-hoc tasks included). Always
+        set — "" when disabled — so the typed field, not a host var the subprocess runtime would
+        inherit, wins."""
         value = self.config.summarize_at_tokens
         if value is None:
             return ""
         if isinstance(value, tuple):
             lo, hi = value
-            return str(random.Random(task_idx).randint(lo, hi))
+            return str(random.Random(data.model_dump_json()).randint(lo, hi))
         return str(value)
 
     async def launch(
@@ -119,7 +121,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
-            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.data.idx),
+            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.data),
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt

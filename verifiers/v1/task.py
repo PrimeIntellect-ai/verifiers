@@ -125,7 +125,9 @@ class TaskData(StrictBaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    idx: int
+    idx: int | None = None
+    """Dataset row index — set by tasksets (selection, resume, and grouping key
+    on the eval path); `None` for ad-hoc tasks minted in scripts."""
     name: str | None = None
     description: str | None = None
     prompt: str | Messages | None = None
