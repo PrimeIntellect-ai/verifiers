@@ -33,7 +33,7 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
-- `env.agent.harness.id` — pick the agent seat's harness (`[env.agent.harness]` in TOML)
+- `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — rollouts per task

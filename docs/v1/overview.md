@@ -18,7 +18,7 @@ A harness is the program the model is run in, e.g. Claude Code, Codex or mini-sw
 
 ## Environment
 
-The control flow between agents: how many run on one task, in what order, judged how across the finished set. The default is the single-agent case; `--env.id` pairs a reusable interaction (best-of-n, a judge) with any taskset. One env-rollout mints one `Episode` — the task, a rollout-level error list, and one role-stamped trace per agent run.
+The control flow between agents: how many run on one task, in what order, judged how across the finished set. The default is the single-agent case; `--env.id` pairs a reusable interaction (best-of-n, a judge) with any taskset. One env-rollout yields flat, self-contained traces — each stamped with its episode and agent — persisted whole (one episode per `traces.jsonl` line).
 
 ## Agent
 

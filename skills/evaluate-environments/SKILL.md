@@ -48,9 +48,9 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 - `owner/name` installs a Hub package on demand.
 - `owner/name@version` pins a Hub version.
 
-The leading ID is shorthand for `--env.taskset.id`. A harness belongs to a seat —
-`--env.agent.harness.*` on the single-agent env, `--env.<role>.harness.*` on a
-multi-agent role (there is no run-level `--harness.*`):
+The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent —
+`--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a
+multi-agent one (there is no run-level `--harness.*`):
 
 ```bash
 prime eval run owner/name --env.agent.harness.id codex --env.agent.harness.runtime.type prime
@@ -144,9 +144,9 @@ Whole-rollout retry is opt-in. That means if something fails in the rollout, the
 
 ```bash
 prime eval run my-task-v1 \
-  --env.retries.rollout.max-retries 2 \
-  --env.retries.rollout.include SandboxError ProviderError \
-  --env.retries.rollout.exclude TaskError
+  --env.agent.retries.max-retries 2 \
+  --env.agent.retries.include SandboxError ProviderError \
+  --env.agent.retries.exclude TaskError
 ```
 
 ## Output and resume

@@ -8,7 +8,7 @@ uv run gepa reverse-text-v1
 
 `gepa` runs GEPA where a number of rollouts are done before a teacher LLM reflects on the results to propose a better `Task.system_prompt` without any gradient based training. It runs against native v1 tasksets.
 
-GEPA reuses the same `env` (taskset + seats) / `client` / `sampling` config as eval, so the `.toml` config remains very similar:
+GEPA reuses the same `env` (taskset + agent) / `client` / `sampling` config as eval, so the `.toml` config remains very similar:
 
 ```toml
 model = "deepseek/deepseek-v4-flash"
