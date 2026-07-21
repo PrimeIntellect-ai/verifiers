@@ -73,13 +73,13 @@ class CodeGolfEnvConfig(vf.EnvConfig):
 
 
 class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
-    async def rollout(self, task, agents):
+    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
         async with asyncio.TaskGroup() as tg:
             for _ in range(self.config.attempts):
                 tg.create_task(agents.golfer.run(task))
 
     @vf.reward(weight=0.5)
-    async def most_concise(self, trace, traces):
+    async def most_concise(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
         """The sibling comparison: shortest source among the passing attempts wins
         (ties share); a failed attempt earns nothing."""
         if not trace.metrics.get("passed"):
@@ -88,7 +88,7 @@ class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
         return float(len(extract_program(trace)) == min(lengths))
 
     @vf.reward(weight=0.5)
-    async def fastest(self, trace, traces):
+    async def fastest(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
         """The sibling comparison: lowest run latency among the passing attempts
         wins (ties share); a failed attempt earns nothing."""
         if not trace.metrics.get("passed"):

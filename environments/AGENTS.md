@@ -107,10 +107,7 @@ class AdditionTaskConfig(vf.TaskConfig):
 class AdditionTask(vf.Task[AdditionData, vf.State, AdditionTaskConfig]):
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
-        try:
-            error = abs(float(trace.last_reply) - self.data.answer)
-        except ValueError:  # a non-numeric reply is a wrong answer, not a task error
-            return 0.0
+        error = abs(float(trace.last_reply) - self.data.answer)
         return float(error <= self.config.tolerance)
 
 class AdditionConfig(vf.TasksetConfig):
@@ -188,6 +185,10 @@ If your reward is semantic, use an LLM judge.
 
 ```python
 import verifiers.v1 as vf
+from functools import cached_property
+
+class Task(vf.Task):
+    answer: str
 
 class CorrectnessJudge(vf.Judge[bool]):
     # The rubric for the judge
@@ -298,85 +299,6 @@ class DebateEnv(vf.Environment[DebateConfig]):
         by_agent["pro"].record_reward("won", float(winner == "pro"))
         by_agent["con"].record_reward("won", float(winner == "con"))
 ```
-
-- **The declared fields ARE the agents.** Every top-level `AgentConfig` field on the
-  env's config plays under its field name — the config is the only naming site, so
-  there is no separate declaration to drift from what `rollout()` actually does.
-  The base scrapes them into the attribute-addressed `Agents` container
-  (`agents.judge`) it hands the hooks.
-- **Agents are typed config** (`Environment[DebateConfig]` binds it; `self.config`
-  reads it), so the CLI addresses them for free: `--env.pro.model ...`,
-  `--env.judge.client.base_url ...`, `--env.con.max_turns 4` — the framework
-  narrows the run's `env` field to the selected env's config class by the env id
-  (else the taskset id), and a partial override deep-merges with the declared
-  default (`--env.judge.sampling.temperature 0` doesn't reset the judge's pinned
-  model). An `AgentConfig`'s model context defaults to the run's own —
-  `AgentConfig()` is "the policy under evaluation/training" (the serve protocol
-  carries model/client/sampling per rollout request, which is what makes self-play
-  trainable). Its harness does not: an unpinned agent runs the taskset's default
-  harness (its bundled one, else `bash`) — there is no run-level harness. An agent
-  pins only what makes it a different actor: its own harness or runtime
-  (`--env.judge.harness.runtime.type docker`), a frozen model, an off-train
-  endpoint, tighter limits. Per-run caps (turns, tokens, the
-  setup/rollout/finalize/scoring timeouts) and whole-run `retries` live only on
-  agents; the env keeps just its own hooks' bounds (`--env.timeout.episode` for
-  `rollout()`, `--env.timeout.score` for `score()`) and its own coarse fallback
-  `--env.retries` (below).
-- **Task x agent fit validates on ground truth, per run.** Tasks require (declared
-  `tools`, `NEEDS_CONTAINER`), harnesses support — and `Agent.run` checks the pair
-  on every task it's actually given, before any work. An env-minted task carries
-  its own needs, which is why a bare verdict task pairs the judge with *any*
-  taskset; the taskset's shared tool servers ride only its own tasks (a run may
-  pass `shared_tools=` to override). `SingleAgentEnv` still refuses an impossible
-  pairing at construction: its one agent definitionally plays the taskset, so the
-  mismatch is knowable before any rollout.
-- **`brief()` is env truth, not config.** Whether an agent trains is decided by the
-  env's design — a judge that grades the policy must never be trainable, no matter
-  what a run config says — so it is set in place on the initialized agents
-  (default: everyone trains) rather than exposed as a per-agent knob. An env that
-  legitimately wants the flip exposes its *own* switch: the proposer-solver
-  example's `--env.train_solver false` is a config field its `brief()` consults.
-- **The base builds the agents** — one per field, fresh for every env-rollout,
-  riding the eval's serving resources (shared interception pool, shared tool
-  servers, per-endpoint clients — all env-owned and borrowed, so an agent is a
-  cheap per-rollout value and concurrent episodes share no agent state) — and
-  hands them into `rollout()`. The hook never constructs agents.
-- **Traces are flat and self-contained; the episode is the durability atom.**
-  Every trace carries its own `EpisodeInfo` stamp (`trace.episode` — id, env,
-  episode-level errors; siblings share it) next to its `agent` info (name,
-  trainability), so a flat bag of traces reconstitutes its episodes without a
-  nested schema. On disk, one env-rollout is one `traces.jsonl` line (an
-  `EpisodeRecord`: the episode's traces plus the shared stamp), so an episode
-  persists whole or not at all — a torn line is the whole episode owed on resume,
-  and a failure before any trace minted still leaves its errors on disk. An agent
-  failure is data on its trace (the hook decides what a failed participant
-  means); an exception in `rollout()`/`score()` is the env-rollout failing, and
-  every trace that completed before it is still captured.
-- **Retries are agent-first.** Each agent reruns its own rollout while its trace
-  ends with a retryable error (`--env.judge.retries.max_retries 2` retries a
-  flaky judge without re-burning the solver). The env-level `--env.retries.*` is
-  the opt-in coarse fallback for faults no agent owns — the env's own hooks,
-  cross-agent state — and reruns the episode whole: a half-played sibling context
-  isn't reproducible.
-- **Cross-agent signals can be declarative.** The default `score()` runs the env's
-  own decorated `@vf.reward`/`@vf.metric` methods: each is invoked once per target
-  trace and records there, with the finished set in reach (`trace` — the target,
-  `traces` — every trace in the episode, `task`). `agent=` narrows the targets to
-  one agent's traces; unset means every trace (a shared team signal). The bundled
-  best-of-n's whole judgement is two such metrics:
-
-  ```python
-      @vf.metric
-      async def pass_at_n(self, trace, traces):
-          return float(max(t.reward for t in traces) >= self.config.threshold)
-  ```
-
-  Override `score()` for imperative control (dynamic names or weights,
-  parse-and-fail — the bundled agentic-judge env, or the debate verdict above);
-  `await super().score(task, traces)` keeps the decorated ones running.
-- `setup()`/`teardown()` hooks bracket the serving lifetime for env-owned shared
-  resources. Only `eval` runs multi-agent envs; `gepa` and `replay` refuse
-  anything but `SingleAgentEnv`.
 
 For the single-agent case none of this is machinery the user sees: `SingleAgentEnv`
 declares one `agent` (`--env.agent.harness.id codex`, `--env.agent.max_turns 20`),

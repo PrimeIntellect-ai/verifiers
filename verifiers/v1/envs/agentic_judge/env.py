@@ -90,14 +90,14 @@ class JudgeTask(vf.Task):
             },
         )
 
-    async def setup(self, trace, runtime):
+    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         # A pre-seeded verdict (baked into the image) must never read as the
         # judge's own; remove it before the judge starts.
         await runtime.run(["rm", "-f", VERDICT_FILE], env={})
         for path, content in self._files.items():
             await runtime.write(path, content)
 
-    async def finalize(self, trace, runtime):
+    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         """Scrape the verdict off the box while it's alive. A judge that wrote no
         file (or garbage) fails HERE — on the judge's own trace, the retryable
         unit — never silently."""
@@ -143,15 +143,15 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
                 "or prime."
             )
 
-    def brief(self, agents):
+    def brief(self, agents: vf.Agents) -> None:
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
-    async def rollout(self, task, agents):
+    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
         solution = await agents.solver.run(task)
         await agents.judge.run(JudgeTask.from_trace(task, solution))
 
-    async def score(self, task, traces):
+    async def score(self, task: vf.Task, traces: list[vf.Trace]) -> None:
         """Record the scraped verdict on the SOLVER's trace. Strict on scale: an
         off-scale score raises (a judge answering `95` must not clamp to full
         marks), failing the env-rollout rather than scoring the solver wrong."""

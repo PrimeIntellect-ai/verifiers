@@ -134,13 +134,13 @@ class ProposerSolverEnvConfig(vf.EnvConfig):
 
 
 class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
-    def brief(self, agents):
+    def brief(self, agents: vf.Agents) -> None:
         # Both seats CAN train (same underlying policy); which one does this run
         # is this env's explicit choice to expose.
         agents.proposer.trainable = self.config.train_proposer
         agents.solver.trainable = self.config.train_solver
 
-    async def rollout(self, task, agents):
+    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
         proposed = await agents.proposer.run(task)
         solve_task = SolveTask.from_trace(proposed)
         async with asyncio.TaskGroup() as tg:
@@ -155,14 +155,14 @@ class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
         return sum(t.rewards.get("correct", 0.0) for t in solves) / len(solves)
 
     @vf.reward(agent="proposer")
-    async def learnability(self, trace, traces):
+    async def learnability(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
         """The curriculum signal: 1.0 when half the solvers crack the problem, 0
         when it's trivial or impossible for them (4p(1-p))."""
         rate = self._solve_rate(traces)
         return 4.0 * rate * (1.0 - rate)
 
     @vf.metric(agent="proposer")
-    async def solve_rate(self, trace, traces):
+    async def solve_rate(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
         return self._solve_rate(traces)
 
 

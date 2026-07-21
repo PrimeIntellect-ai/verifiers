@@ -24,7 +24,7 @@ class BestOfNEnvConfig(vf.EnvConfig):
 
 
 class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
-    async def rollout(self, task, agents):
+    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
         # TaskGroup: a raising attempt cancels and awaits its siblings, so no
         # straggler keeps burning tokens past the episode.
         async with asyncio.TaskGroup() as tg:
@@ -32,13 +32,13 @@ class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
                 tg.create_task(agents.agent.run(task))
 
     @vf.metric
-    async def best(self, trace, traces):
+    async def best(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
         """Marks the argmax-reward attempt; ties share (a degenerate all-equal
         rollout marks every sibling)."""
         return float(trace.reward == max(t.reward for t in traces))
 
     @vf.metric
-    async def pass_at_n(self, trace, traces):
+    async def pass_at_n(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
         """Whether any sibling reached the threshold — a rollout-level fact,
         recorded identically on every sibling so flat consumers see it without
         reconstructing the group."""

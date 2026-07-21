@@ -5,16 +5,9 @@ it whenever neither `--env.id` nor the taskset names an `Environment`, so a plai
 eval is exactly this env (one `agent` seat, one nameless trace per episode).
 """
 
-from collections.abc import Mapping
-from typing import TYPE_CHECKING
-
-from verifiers.v1.agent import AgentConfig
+from verifiers.v1.agent import AgentConfig, Agents
 from verifiers.v1.env import EnvConfig, Environment
-from verifiers.v1.utils.compile import validate_pairing
 from verifiers.v1.task import Task
-
-if TYPE_CHECKING:
-    from verifiers.v1.agent import Agent
 
 
 class SingleAgentEnvConfig(EnvConfig):
@@ -30,19 +23,5 @@ class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
     seat playing the seed taskset (`--env.agent.*`). Its one trace per episode
     carries no seat name, so the wire matches a plain eval's."""
 
-    def __init__(self, config: SingleAgentEnvConfig) -> None:
-        super().__init__(config)
-        # The one seat definitionally plays the seed taskset, so an impossible
-        # pairing is knowable from class facts alone — refuse at construction,
-        # before any work (multi-agent envs validate per run instead, on the
-        # task each agent actually receives).
-        harness = self._harnesses["agent"]
-        validate_pairing(
-            harness,
-            self._task_cls,
-            harness.config.runtime,
-            shared_tools=type(self.taskset).tools,
-        )
-
-    async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> None:
+    async def rollout(self, task: Task, agents: Agents) -> None:
         await agents.agent.run(task)

@@ -101,10 +101,7 @@ class AdditionTaskConfig(vf.TaskConfig):
 class AdditionTask(vf.Task[AdditionData, vf.State, AdditionTaskConfig]):
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
-        try:
-            error = abs(float(trace.last_reply) - self.data.answer)
-        except ValueError:  # a non-numeric reply is a wrong answer, not a task error
-            return 0.0
+        error = abs(float(trace.last_reply) - self.data.answer)
         return float(error <= self.config.tolerance)
 
 class AdditionConfig(vf.TasksetConfig):
@@ -182,6 +179,10 @@ If your reward is semantic, use an LLM judge.
 
 ```python
 import verifiers.v1 as vf
+from functools import cached_property
+
+class Task(vf.Task):
+    answer: str
 
 class CorrectnessJudge(vf.Judge[bool]):
     # The rubric for the judge
