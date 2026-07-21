@@ -265,8 +265,8 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
 @pytest.mark.e2e
 async def test_multi_agent_env(run_v1, tmp_path):
     """An `Env` subclass shipped with its taskset (duet-v1): two roles run the
-    task, `score()` episodes a sibling-dependent metric, and one eval rollout lands one
-    episode carrying two role-stamped traces."""
+    task, `score()` episodes a sibling-dependent metric, and one episode carries
+    two role-stamped traces."""
     import json
 
     traces = await run_v1(
@@ -275,7 +275,7 @@ async def test_multi_agent_env(run_v1, tmp_path):
         output_dir=tmp_path,
         max_turns=2,
     )
-    assert len(traces) == 2  # one env-rollout, one trace per role
+    assert len(traces) == 2  # one episode, one trace per role
     assert sorted(t.agent_name for t in traces) == ["a", "b"]
     (b,) = [t for t in traces if t.agent_name == "b"]
     assert b.trainable is False
@@ -305,7 +305,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
         output_dir=tmp_path,
         max_turns=2,
     )
-    assert len(traces) == 2  # one env-rollout, two attempts
+    assert len(traces) == 2  # one episode, two attempts
     assert all(t.agent_name == "agent" and t.ok for t in traces)
     assert any(t.metrics["best"] == 1.0 for t in traces)
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes

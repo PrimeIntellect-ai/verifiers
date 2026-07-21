@@ -136,7 +136,7 @@ Runtime config chooses where code executes. Task hooks should use the `vf.Runtim
 - Prefer deterministic verification grounded in the task's actual artifact or answer.
 - Use an LLM judge only when semantic judgment is unavoidable.
 - Metrics are for observability and do not contribute to reward, but are useful. Use them deliberately and appropriately!
-- Judgement that compares the sibling traces of one env-rollout (best-of-n selection, zero-sum payoffs) lives on `Environment.finalize(task, episode)` — attach via `trace.record_reward`/`record_metric`, in program order; no live runtime there.
+- Judgement that compares the sibling traces of one episode (best-of-n selection, zero-sum payoffs) lives on `Environment.finalize(task, episode)` — attach via `trace.record_reward`/`record_metric`, in program order; no live runtime there.
 - Raise ordinary Python exceptions from rollout hooks and scoring. The rollout records them as `TaskError`.
 
 ## Validation and lifecycle

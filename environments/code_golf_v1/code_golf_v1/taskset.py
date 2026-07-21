@@ -1,6 +1,6 @@
 """code_golf: write a short, fast Python program — the sibling-comparison recipe env.
 
-Each task asks for a tiny program with a known output. The env fans one env-rollout
+Each task asks for a tiny program with a known output. The env fans one episode
 into `--env.attempts` independent attempts by the same "golfer" role and scores them
 against each other. Anything that needs the runtime is measured per attempt, box-live,
 into that attempt's trace; the env's `finalize()` then just compares the recorded
@@ -13,7 +13,7 @@ metadata across the finished siblings:
   - `fastest`       env `finalize()`: of the PASSING attempts, the lowest recorded
                     `latency` wins — a comparison of trace metadata.
 
-So one env-rollout produces, per attempt: did it work, was it the shorter one, was it
+So one episode produces, per attempt: did it work, was it the shorter one, was it
 the quicker one — the relative signals you can only get by comparing siblings. Only
 correct attempts compete: a failed one earns nothing on either comparison, and an
 all-failed group pays nobody.
@@ -69,7 +69,7 @@ class CodeGolfTask(vf.Task[CodeGolfData]):
 class CodeGolfEnvConfig(vf.EnvConfig):
     golfer: vf.AgentConfig = vf.AgentConfig()
     attempts: int = Field(2, ge=1)
-    """Independent attempts per env-rollout, scored against each other."""
+    """Independent attempts per episode, scored against each other."""
 
 
 class CodeGolfEnv(vf.Env[CodeGolfEnvConfig]):

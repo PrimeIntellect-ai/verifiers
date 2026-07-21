@@ -54,7 +54,7 @@ class GEPAAdapter:
         capture_traces: bool = False,
     ) -> EvaluationBatch[Episode, Episode]:
         """Run `candidate`'s system prompt on the tasks named by `batch` (`Task.idx` values)
-        and score them — one env-rollout and one score per batch entry, so the batch stays
+        and score them — one episode and one score per batch entry, so the batch stays
         aligned however many traces the env's episode holds. Called synchronously by GEPA on
         the main thread; each batch's rollouts run on the runner's persistent loop via
         `run_until_complete`."""
@@ -122,7 +122,7 @@ class GEPAAdapter:
 
 
 def _episode_score(episode: Episode) -> float:
-    """A candidate's score on one env-rollout: the mean reward of the episode's scored
+    """A candidate's score on one episode: the mean reward of the episode's scored
     traces. Seats that recorded no rewards (a reward-less judge) don't dilute the
     signal; an episode with no scored traces scores 0."""
     scored = [trace.reward for trace in episode.traces if trace.rewards]

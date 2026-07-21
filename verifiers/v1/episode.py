@@ -1,4 +1,4 @@
-"""The episode — one env-rollout's traces plus their shared standing, whole."""
+"""The episode — one run's traces plus their shared standing, whole."""
 
 import uuid
 from typing import Generic
@@ -12,7 +12,7 @@ from verifiers.v1.types import StrictBaseModel
 
 
 class Episode(StrictBaseModel, Generic[DataT, StateT]):
-    """One env-rollout, whole: its identity and standing (`id`, `env`, `errors`)
+    """One run of a task, whole: its identity and standing (`id`, `env`, `errors`)
     next to its flat `traces` — the object `finalize()` receives, the engine
     returns, and the durability envelope: one episode is one `traces.jsonl` line
     and one serve reply, so it persists and arrives whole or not at all — a torn

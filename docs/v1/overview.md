@@ -22,7 +22,7 @@ An `Agent` is a reusable (harness × model × runtime policy) value with one exe
 
 ## Environment
 
-The control flow between agents: how many run on one task, in what order, judged how across the finished set. The default is the single-agent case; `--env.id` pairs a reusable interaction (best-of-n, a judge) with any taskset. One env-rollout yields flat, self-contained traces — each stamped with its episode and agent — persisted whole (one episode per `traces.jsonl` line).
+The control flow between agents: how many run on one task, in what order, judged how across the finished set. The default is the single-agent case; `--env.id` pairs a reusable interaction (best-of-n, a judge) with any taskset. One episode yields flat, self-contained traces — each stamped with its episode and agent — persisted whole (one episode per `traces.jsonl` line).
 
 ## Toolset
 

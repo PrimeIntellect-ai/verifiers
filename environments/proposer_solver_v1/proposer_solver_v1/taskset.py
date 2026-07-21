@@ -78,7 +78,7 @@ class SolveTask(vf.Task[SolveData]):
     @classmethod
     def from_trace(cls, proposer: vf.Trace) -> "SolveTask":
         """trace -> Task: the proposer's JSON contract becomes the solvers' task.
-        Off-contract output raises — the env-rollout fails (retryable) instead of
+        Off-contract output raises — the episode fails (retryable) instead of
         scoring solvers against garbage."""
         reply = proposer.last_reply or ""
         greedy = re.search(r"\{.*\}", reply, re.DOTALL)

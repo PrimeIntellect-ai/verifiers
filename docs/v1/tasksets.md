@@ -238,6 +238,6 @@ To override the judge model, set `env.taskset.task.judge.model` in your config (
 
 ## Beyond one agent
 
-One eval rollout doesn't have to be one agent run: agents, the control flow between
+One episode doesn't have to be one agent run: agents, the control flow between
 agents, and cross-agent rewards are the environment's job — see
 [Multi-agent environments](environments.md).

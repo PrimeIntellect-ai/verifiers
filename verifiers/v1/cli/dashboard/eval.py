@@ -291,7 +291,7 @@ def Progress(
 ) -> Group:
     # On resume, `slots` includes the previous session's kept rollouts (as finished slots), so
     # progress, reward, err, and the breakdown cover the whole run, not just this session's.
-    done = [s for s in slots if s.done]  # fully scored env-rollouts
+    done = [s for s in slots if s.done]  # fully scored episodes
     done_traces = [t for s in done for t in s.traces]
     # Score aggregates read the policy's traces: auxiliary roles (a judge's verdict
     # run, a modeled user) are `trainable=False` and carry no rewards, so counting
@@ -300,7 +300,7 @@ def Progress(
     scored = [t for t in done_traces if t.trainable] or done_traces
     total = len(slots)
     # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
-    # the global avg (errored count as 0) in parens. `err` is the share of env-rollouts that
+    # the global avg (errored count as 0) in parens. `err` is the share of episodes that
     # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
     reward = format_mean(scored, lambda t: t.reward)
     err = (
@@ -477,7 +477,7 @@ def _stage(trace: Trace) -> str:
     """The stage a live (not-yet-done) rollout is in, derived from its trace's timing
     spans — the engine opens and closes each span exactly at the stage transitions, so
     the current stage is the latest span started but not yet ended. A completed trace
-    whose slot isn't done is waiting on its env-rollout's other traces (and the env's
+    whose slot isn't done is waiting on its episode's other traces (and the env's
     `score()`) — that's scoring."""
     if trace.is_completed:
         return "scoring"
@@ -531,7 +531,7 @@ def _brace(i: int, size: int) -> str:
 
 def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
     # (brace, state, left sections, result, time); a slot contributes one row per live
-    # trace (a multi-agent env-rollout shows each role's trace), braced per task.
+    # trace (a multi-agent episode shows each role's trace), braced per task.
     rows: list[tuple[str, str, list[str], str, str]] = []
     for group in groups:
         group_rows: list[tuple[str, list[str], str, str]] = []
@@ -572,7 +572,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                         ):  # flag a clipped rollout next to its stop condition
                             stop = f"{stop} (truncated)".strip()
                 elif t.is_completed and (err := t.error) is not None:
-                    # An errored trace whose env-rollout is still running its other
+                    # An errored trace whose episode is still running its other
                     # traces (or `score()`) is already a failure — show it, don't
                     # let it sit as "scoring" until the whole episode lands.
                     state, result, stop = "error", err.type, ""

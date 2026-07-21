@@ -5,7 +5,7 @@ framework adds targeted retries only where no SDK sits underneath (`retrying()`)
 Two opt-in whole-run retry atoms sit above that: `Agent.run` reruns ITS OWN rollout
 while the trace ends with a retryable error (`--env.<agent>.retries` — a flaky
 grader retries without re-burning the solver), and `run_episode_with_retry` reruns
-the entire env-rollout (`--env.retries`) — the coarse fallback for faults no agent
+the entire episode (`--env.retries`) — the coarse fallback for faults no agent
 owns: the env's own hooks, cross-agent state. Both match by exception type name;
 both off by default.
 """
@@ -105,7 +105,7 @@ def trace_should_retry(trace, retry: RetryConfig) -> bool:
 
 
 def episode_should_retry(episode: Episode, retry: RetryConfig) -> bool:
-    """Whether a finished env-rollout should be retried: any LIVE captured error —
+    """Whether a finished episode should be retried: any LIVE captured error —
     episode-level, or on a trace that ended not-`ok` — is retryable. An `ok` trace's
     errors are history its own per-agent retry already recovered from, never
     grounds to re-run the episode. All of a failed trace's captures count, not just
@@ -121,7 +121,7 @@ async def run_episode_with_retry(
     run: Callable[[], Awaitable[Episode]],
     retry: RetryConfig,
 ) -> Episode:
-    """Run one env-rollout (`run` must mint a fresh episode per call), retrying while
+    """Run one episode (each attempt mints a fresh one), retrying while
     it ends with a retryable error. When the final attempt fails too, the earlier
     attempts' errors are prepended so the episode shows the full history; a final
     good attempt returns clean."""
@@ -136,7 +136,7 @@ async def run_episode_with_retry(
             history.extend(trace.errors)
         delay = backoff(attempt)
         logger.warning(
-            "retrying env-rollout %s (retry %d/%d) in %.1fs after error: %s",
+            "retrying episode %s (retry %d/%d) in %.1fs after error: %s",
             final.id,
             attempt + 1,
             retry.max_retries,

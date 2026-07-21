@@ -350,7 +350,7 @@ class Agent:
 
 
 class _EpisodeAgent(Agent):
-    """One role's `Agent` for one env-rollout, built fresh per episode (a cheap
+    """One role's `Agent` for one episode, built fresh each time (a cheap
     bundle of references — expensive resources are env-owned and borrowed, so no
     state spans concurrent episodes): traces get their agent standing the moment
     they're created, finished ones land in `completed` (the episode's traces),

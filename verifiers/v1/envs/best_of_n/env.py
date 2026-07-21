@@ -18,7 +18,7 @@ class BestOfNEnvConfig(vf.EnvConfig):
     # composes with a plain run's `--env.agent.*` flags unchanged.
     agent: vf.AgentConfig = vf.AgentConfig()
     n: int = Field(4, ge=1)
-    """Independent attempts per env-rollout, scored against each other."""
+    """Independent attempts per episode, scored against each other."""
     threshold: float = 1.0
     """A sibling counts as solved when its task reward reaches this (`pass_at_n`)."""
 

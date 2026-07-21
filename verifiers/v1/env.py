@@ -1,4 +1,4 @@
-"""Compose a taskset, its agents, and how one task becomes one env-rollout."""
+"""Compose a taskset, its agents, and how one task becomes one episode."""
 
 import asyncio
 import contextlib
@@ -196,7 +196,7 @@ def _as_error(e: Exception) -> Error:
 
 @dataclass
 class RunSlot:
-    """One planned env-rollout, observable while it happens: `traces` collects the
+    """One planned episode, observable while it happens: `traces` collects the
     current attempt (a retry restarts the list), `episode`/`done` land when final."""
 
     task: Task
@@ -218,7 +218,7 @@ ConfigT = TypeVar("ConfigT", bound=EnvConfig)
 
 
 class Env(ABC, Generic[ConfigT]):
-    """A taskset, the agents that play it, and how one task becomes one env-rollout.
+    """A taskset, the agents that play it, and how one task becomes one episode.
 
     Abstract: every run gets a concrete subclass — `SingleAgentEnv` for every plain
     taskset. A multi-agent env declares each role as an `AgentConfig` field on an
@@ -298,10 +298,10 @@ class Env(ABC, Generic[ConfigT]):
 
     @abstractmethod
     async def run(self, task: Task, agents: Agents) -> None:
-        """One env-rollout: how the agents interact on `task`, returning nothing —
+        """One episode: how the agents interact on `task`, returning nothing —
         every finished run joins the episode automatically, stamped with its seat's
         standing. An agent-run failure is data on its trace (this hook decides what
-        it means); an exception raised here is the env-rollout itself failing."""
+        it means); an exception raised here is the episode itself failing."""
 
     async def finalize(self, task: Task, episode: Episode) -> None:
         """Cross-agent judgement — THE programmable judgement surface: plain
@@ -309,11 +309,11 @@ class Env(ABC, Generic[ConfigT]):
         ran on each trace's own task). `episode.traces` is the flat episode in
         completion order, each trace's `agent_name` stamp naming its agent; attach
         signals via `record_reward`/`record_metric`, in program order. A raise
-        fails the env-rollout (the retryable unit) — validate strictly, never
+        fails the episode (the retryable unit) — validate strictly, never
         record a guess."""
 
     def complete(self, episode: Episode) -> bool:
-        """Whether a finished env-rollout is a valid result — what `--resume` keeps
+        """Whether a finished episode is a valid result — what `--resume` keeps
         vs. redoes (default `episode.ok`). An env whose `run()` tolerates a
         failed participant overrides this, else resume re-runs accepted rollouts."""
         return episode.ok
@@ -340,7 +340,7 @@ class Env(ABC, Generic[ConfigT]):
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
     ) -> Agents:
-        """One env-rollout's `Agents` — fresh value objects riding the live serving
+        """One episode's `Agents` — fresh value objects riding the live serving
         resources (nothing shared across concurrent episodes); `setup()` sees them first."""
 
         def make(name: str, spec: AgentConfig) -> Agent:
@@ -391,7 +391,7 @@ class Env(ABC, Generic[ConfigT]):
         on_discard: Callable[[Trace], None] | None = None,
         gate: asyncio.Semaphore | None = None,
     ) -> Episode:
-        """One env-rollout of `task`, minted as the wire atom: `setup()` then `run()`
+        """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`; `gate` bounds
         the agent runs, so internal fan-out counts against `--max-concurrent` too.
         Traces join the episode as runs complete — a hook raising mid-way yields the
@@ -440,7 +440,7 @@ class Env(ABC, Generic[ConfigT]):
         return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
-        """Plan `n` independent env-rollouts of `task` (`-r n`): nothing couples them."""
+        """Plan `n` independent episodes of `task` (`-r n`): nothing couples them."""
         if n < 1:
             raise ValueError("a task needs at least one rollout (n >= 1)")
         return [RunSlot(task) for _ in range(n)]
@@ -452,7 +452,7 @@ class Env(ABC, Generic[ConfigT]):
         semaphore: asyncio.Semaphore | None = None,
         on_complete: Callable[[Episode], Awaitable[None]] | None = None,
     ) -> Episode:
-        """Run one planned env-rollout to its finished episode, with whole-episode
+        """Run one planned episode to completion, with whole-episode
         retries per `--env.retries`; `semaphore` gates the agent RUNS, not the
         episode; `on_complete` (the runners' persistence hook) fires when final."""
 
