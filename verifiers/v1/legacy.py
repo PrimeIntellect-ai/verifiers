@@ -33,7 +33,7 @@ from verifiers.v1.serve.types import (
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
 from verifiers.v1.trace import (
-    EpisodeRecord,
+    Episode,
     Error,
     GenerationSpan,
     ModelCall,
@@ -432,7 +432,7 @@ class LegacyEnvServer(EnvServer):
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
         # Trust the bridge-minted record; serialize it once (mirrors `EnvServer`).
         return RunResponse.model_construct(
-            episode=EpisodeRecord.of(
+            episode=Episode.of(
                 rollout_output_to_trace(out, req.task_idx), env=self.taskset_id
             )
         )
@@ -484,7 +484,7 @@ def _legacy_output_dir(config) -> Path:
     return Path("outputs") / name / config.uuid
 
 
-async def run_legacy_eval(config) -> list[EpisodeRecord]:
+async def run_legacy_eval(config) -> list[Episode]:
     """Run a legacy environment in process and return v1 episode records."""
     import asyncio
 
@@ -541,4 +541,4 @@ async def run_legacy_eval(config) -> list[EpisodeRecord]:
     coros = [run_one(i) for i in idxs for _ in range(config.num_rollouts)]
     traces = await asyncio.gather(*coros)
     # append_trace stamped each trace's episode; .of reuses the stamp.
-    return [EpisodeRecord.of(trace) for trace in traces]
+    return [Episode.of(trace) for trace in traces]

@@ -1,6 +1,6 @@
 """On-disk output: traces.jsonl (one rollout episode per line) + config.toml.
 
-Each line is an `EpisodeRecord` — the episode's flat, self-contained traces plus
+Each line is an `Episode` — the episode's flat, self-contained traces plus
 its shared stamp — so an episode persists whole or not at all: a torn line is the
 whole episode owed on resume, and a failure before any trace minted still leaves
 its errors on disk. config.toml is the run's resolved config in the format the
@@ -18,7 +18,7 @@ import tomli_w
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.trace import EpisodeRecord, Trace, WireEpisodeRecord
+from verifiers.v1.trace import Episode, Trace, WireEpisode
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.install import env_name
 
@@ -68,7 +68,7 @@ def save_config(config: BaseModel, results_dir: Path) -> None:
     )  # fresh; appended to as rollouts complete
 
 
-def write_episode(results_dir: Path, episode: EpisodeRecord) -> None:
+def write_episode(results_dir: Path, episode: Episode) -> None:
     """Serialize and append one rollout episode in the worker thread."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
     data = TypeAdapter(type(episode)).dump_json(episode, exclude_none=True)
@@ -77,18 +77,18 @@ def write_episode(results_dir: Path, episode: EpisodeRecord) -> None:
 
 
 def sniff_episode(row: dict) -> bool:
-    """Whether a parsed traces.jsonl row is an `EpisodeRecord` (vs a pre-episode
+    """Whether a parsed traces.jsonl row is an `Episode` (vs a pre-episode
     bare trace, recognizable by its message graph)."""
     return "traces" in row and "nodes" not in row
 
 
-def read_episodes(results_dir: Path, trace_type: type) -> list[EpisodeRecord]:
+def read_episodes(results_dir: Path, trace_type: type) -> list[Episode]:
     """Load a run's saved rollouts from `traces.jsonl` with traces typed as
     `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
     importing it). A pre-episode line (one bare trace) is wrapped as a single-trace
     record, so both file generations read uniformly."""
     trace_adapter = TypeAdapter(trace_type)
-    episodes: list[EpisodeRecord] = []
+    episodes: list[Episode] = []
     with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
         for line in f:
             if not line.strip():
@@ -97,19 +97,19 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[EpisodeRecord]:
             if sniff_episode(row):
                 # Validate the shell wire-typed (unknown task fields preserved), then
                 # re-type the traces as the caller asked.
-                record = WireEpisodeRecord.model_validate({**row, "traces": []})
+                record = WireEpisode.model_validate({**row, "traces": []})
                 record.traces = [
                     trace_adapter.validate_python(t) for t in row.get("traces") or []
                 ]
                 episodes.append(record)
             else:
                 trace = trace_adapter.validate_python(row)
-                episodes.append(EpisodeRecord.of(trace))
+                episodes.append(Episode.of(trace))
     return episodes
 
 
 async def append_episode(
-    results_dir: Path, episode: EpisodeRecord, lock: asyncio.Lock
+    results_dir: Path, episode: Episode, lock: asyncio.Lock
 ) -> None:
     """Append one finished rollout episode without blocking the event loop. The run's
     shared lock preserves whole-line ordering, and awaiting the worker preserves
@@ -130,4 +130,4 @@ async def append_trace(
     """Append one finished trace as a single-agent rollout episode — the writers that
     complete trace-at-a-time (eval runners, gepa, replay, the legacy bridge) all go
     through here."""
-    await append_episode(results_dir, EpisodeRecord.of(trace, env=env), lock)
+    await append_episode(results_dir, Episode.of(trace, env=env), lock)

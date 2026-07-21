@@ -30,7 +30,7 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.trace import EpisodeRecord, Error
+    from verifiers.v1.trace import Episode, Error
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def trace_should_retry(trace, retry: RolloutRetryConfig) -> bool:
     return any(_retryable(e, retry) for e in trace.errors)
 
 
-def episode_should_retry(episode: EpisodeRecord, retry: RolloutRetryConfig) -> bool:
+def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
     """Whether a finished env-rollout should be retried: any captured error —
     episode-level or on any trace — is retryable. All captures count, not just the
     most recent: a retryable failure followed by a teardown error would otherwise
@@ -114,9 +114,9 @@ def episode_should_retry(episode: EpisodeRecord, retry: RolloutRetryConfig) -> b
 
 
 async def run_episode_with_retry(
-    run: Callable[[], Awaitable[EpisodeRecord]],
+    run: Callable[[], Awaitable[Episode]],
     retry: RolloutRetryConfig,
-) -> EpisodeRecord:
+) -> Episode:
     """Run one env-rollout (`run` must mint a fresh episode per call), retrying while
     it ends with a retryable error. When the final attempt fails too, the earlier
     attempts' errors are prepended so the episode shows the full history; a final

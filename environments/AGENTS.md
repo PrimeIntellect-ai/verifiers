@@ -290,12 +290,13 @@ class DebateEnv(vf.Environment[DebateConfig]):
         pro, con = await asyncio.gather(agents.pro.run(task), agents.con.run(task))
         await agents.judge.run(VerdictTask.from_traces(task, pro, con))
 
-    async def finalize(self, task: vf.Task, traces: list[vf.Trace]) -> None:
-        """Sibling-dependent judgement over the finished traces (per-trace
-        judgement already ran on each trace's own task); each trace's
-        `agent_name` stamp names its agent. Attach via record_reward/record_metric;
-        the env's own `@vf.reward`/`@vf.metric` methods run after this."""
-        by_agent = {t.agent_name: t for t in traces}
+    async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
+        """Sibling-dependent judgement over the finished episode (per-trace
+        judgement already ran on each trace's own task); `episode.traces` is
+        the flat episode, each trace's `agent_name` stamp naming its agent.
+        Attach via record_reward/record_metric; the env's own
+        `@vf.reward`/`@vf.metric` methods run after this."""
+        by_agent = {t.agent_name: t for t in episode.traces}
         winner = (by_agent["judge"].last_reply or "").strip().lower()
         by_agent["pro"].record_reward("won", float(winner == "pro"))
         by_agent["con"].record_reward("won", float(winner == "con"))

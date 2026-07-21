@@ -15,7 +15,7 @@ import httpx
 
 from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.trace import EpisodeRecord, Trace
+from verifiers.v1.trace import Episode, Trace
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     return api_key, base, frontend, team_id
 
 
-def _run_metrics(episodes: list[EpisodeRecord], traces: list[Trace]) -> dict[str, Any]:
+def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
     """Run-level aggregates as v0's `GenerateMetadata`. Rewards/metrics aggregate
     over the trainable traces only — fixed agents (a judge, a modeled user) often
     carry no rewards and would dilute every mean with structural zeros — falling
@@ -154,7 +154,7 @@ def _build_samples(traces: list[Trace]) -> list[dict[str, Any]]:
 
 
 def push_traces(
-    episodes: list[EpisodeRecord],
+    episodes: list[Episode],
     config: EvalConfig,
     state: "PushState | None" = None,
 ) -> str | None:

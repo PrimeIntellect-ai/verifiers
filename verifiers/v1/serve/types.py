@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, field_serializer
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTaskData
-from verifiers.v1.trace import Trace, WireEpisodeRecord
+from verifiers.v1.trace import Trace, WireEpisode
 from verifiers.v1.types import SamplingConfig
 
 PROTOCOL_VERSION = 2
@@ -58,13 +58,13 @@ class RunRequest(BaseRequest):
 
 
 class RunResponse(BaseResponse):
-    episode: WireEpisodeRecord | None = None
+    episode: WireEpisode | None = None
     """The rollout's episode record — flat, self-contained traces plus the shared
     stamp (which carries episode-level errors even when no trace minted);
     task-specific data preserved in `model_extra`."""
 
     @field_serializer("episode")
-    def _ser_episode(self, episode: "WireEpisodeRecord | None") -> dict | None:
+    def _ser_episode(self, episode: "WireEpisode | None") -> dict | None:
         return episode.model_dump() if episode is not None else None
 
 

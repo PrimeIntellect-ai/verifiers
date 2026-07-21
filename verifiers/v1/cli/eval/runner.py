@@ -16,13 +16,13 @@ from verifiers.v1.cli.output import (
     save_config,
 )
 from verifiers.v1.env import Environment, RunSlot
-from verifiers.v1.trace import EpisodeRecord, EvalRunInfo
+from verifiers.v1.trace import Episode, EvalRunInfo
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
 
 
-async def run_eval(env: Environment, config: EvalConfig) -> list[EpisodeRecord]:
+async def run_eval(env: Environment, config: EvalConfig) -> list[Episode]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
     tasks = env.taskset.select(config.num_tasks, config.shuffle)
@@ -33,7 +33,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[EpisodeRecord]:
     out = output_path(config)
     owed: dict[str, int] | None = None
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
-    finished: list[EpisodeRecord] = []
+    finished: list[Episode] = []
     if config.resume is not None:
         finished, owed = resume.load(
             out, [t.data.idx for t in tasks], config.num_rollouts, env.complete
@@ -61,7 +61,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[EpisodeRecord]:
 
     write_lock = asyncio.Lock()
 
-    async def on_complete(episode: EpisodeRecord) -> None:
+    async def on_complete(episode: Episode) -> None:
         for trace in episode.traces:
             trace.stamp(EvalRunInfo(id=config.uuid))
         await append_episode(out, episode, write_lock)
@@ -103,7 +103,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[EpisodeRecord]:
     return episodes
 
 
-async def run_eval_server(config: EvalConfig) -> list[EpisodeRecord]:
+async def run_eval_server(config: EvalConfig) -> list[Episode]:
     """Run evaluation through the env-server worker pool."""
     import multiprocessing as mp
     from functools import partial
@@ -169,7 +169,7 @@ async def run_eval_server(config: EvalConfig) -> list[EpisodeRecord]:
         else:
             idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
         out = output_path(config)
-        finished: list[EpisodeRecord] = []
+        finished: list[Episode] = []
         if config.resume is not None:
             # (legacy only) a group is served and scored together, so a partially-kept
             # task redoes as a whole group — whole_task drops its kept rows.
@@ -207,7 +207,7 @@ async def run_eval_server(config: EvalConfig) -> list[EpisodeRecord]:
         )
         write_lock = asyncio.Lock()
 
-        async def run_group_unit(idx: int) -> list[EpisodeRecord]:
+        async def run_group_unit(idx: int) -> list[Episode]:
             async with semaphore or contextlib.nullcontext():
                 traces = await client.run_group(
                     task_idx=idx,
@@ -220,10 +220,10 @@ async def run_eval_server(config: EvalConfig) -> list[EpisodeRecord]:
             for trace in traces:
                 trace.stamp(EvalRunInfo(id=config.uuid))
                 await append_trace(out, trace, write_lock, env=config.env_id)
-                records.append(EpisodeRecord.of(trace))
+                records.append(Episode.of(trace))
             return records
 
-        async def run_unit(idx: int) -> list[EpisodeRecord]:
+        async def run_unit(idx: int) -> list[Episode]:
             async with semaphore or contextlib.nullcontext():
                 episode = await client.run(
                     task_idx=idx,

@@ -28,13 +28,13 @@ class DuetEnv(vf.Environment[DuetEnvConfig]):
     async def run(self, task, agents):
         await asyncio.gather(agents.a.run(task), agents.b.run(task))
 
-    async def finalize(self, task, traces):
+    async def finalize(self, task, episode):
         # A sibling-dependent signal: did every seat echo the phrase?
         echoed = all(
             lenient_match(task.data.answer, t.last_reply) and not t.has_error
-            for t in traces
+            for t in episode.traces
         )
-        for trace in traces:
+        for trace in episode.traces:
             trace.record_metric("duet", float(echoed))
 
 

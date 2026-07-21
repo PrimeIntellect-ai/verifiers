@@ -120,7 +120,7 @@ from verifiers.v1.trace import (
     AgentInfo,
     Branch,
     EpisodeInfo,
-    EpisodeRecord,
+    Episode,
     Error,
     EvalRunInfo,
     GenerationSpan,
@@ -133,7 +133,7 @@ from verifiers.v1.trace import (
     TraceTask,
     TrainRunInfo,
     VersionInfo,
-    WireEpisodeRecord,
+    WireEpisode,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -191,8 +191,8 @@ __all__ = [
     "TraceTask",
     "WireTrace",
     "EpisodeInfo",
-    "EpisodeRecord",
-    "WireEpisodeRecord",
+    "Episode",
+    "WireEpisode",
     "TRACE_VERSION",
     "AgentInfo",
     "RunInfo",

@@ -619,7 +619,7 @@ WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""
 
 
-class EpisodeRecord(StrictBaseModel, Generic[DataT, StateT]):
+class Episode(StrictBaseModel, Generic[DataT, StateT]):
     """The durability envelope: one env-rollout as one `traces.jsonl` line and one
     serve reply, so an episode persists and arrives whole or not at all — a torn
     line is the whole episode owed again, and a failure before any trace minted
@@ -627,11 +627,20 @@ class EpisodeRecord(StrictBaseModel, Generic[DataT, StateT]):
     trace inside is self-contained (its `episode` stamp carries the same id), so
     flat consumers read `traces` and never look back.
 
-    The type parameters serve the wire loaders: `WireEpisodeRecord` reads any
+    The type parameters serve the wire loaders: `WireEpisode` reads any
     taskset's episodes without importing the taskset."""
 
     episode: EpisodeInfo = Field(default_factory=EpisodeInfo)
     traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
+
+    @property
+    def id(self) -> str:
+        return self.episode.id
+
+    @property
+    def errors(self) -> list[Error]:
+        """Episode-level failures (the shared stamp's); per-trace ones stay on traces."""
+        return self.episode.errors
 
     @property
     def ok(self) -> bool:
@@ -640,12 +649,12 @@ class EpisodeRecord(StrictBaseModel, Generic[DataT, StateT]):
         return not self.episode.errors and not any(t.errors for t in self.traces)
 
     @classmethod
-    def of(cls, trace: Trace, env: str = "") -> "EpisodeRecord":
+    def of(cls, trace: Trace, env: str = "") -> "Episode":
         """The single-agent record: one trace, stamped if it wasn't already."""
         if trace.episode is None:
             trace.episode = EpisodeInfo(env=env)
         return cls(episode=trace.episode, traces=[trace])
 
 
-WireEpisodeRecord = EpisodeRecord[WireTaskData, State]
+WireEpisode = Episode[WireTaskData, State]
 """Record loader that preserves unknown task fields in `task.model_extra`."""

@@ -33,7 +33,7 @@ from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, _record_result, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.trace import EpisodeInfo, EpisodeRecord, Error, Trace
+from verifiers.v1.trace import EpisodeInfo, Episode, Error, Trace
 from verifiers.v1.utils.generic import deep_merge, generic_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.mcp import SharedToolServer, serve_shared
@@ -201,11 +201,11 @@ class RunSlot:
 
     task: Task
     traces: list[Trace] = field(default_factory=list)
-    episode: EpisodeRecord | None = None
+    episode: Episode | None = None
     done: bool = False
 
     @classmethod
-    def finished(cls, episode: EpisodeRecord) -> "RunSlot":
+    def finished(cls, episode: Episode) -> "RunSlot":
         return cls(
             task=Task(episode.traces[0].task.data),
             traces=list(episode.traces),
@@ -317,19 +317,20 @@ class Environment(ABC, Generic[ConfigT]):
         standing. An agent-run failure is data on its trace (this hook decides what
         it means); an exception raised here is the env-rollout itself failing."""
 
-    async def finalize(self, task: Task, traces: list[Trace]) -> None:
-        """Imperative sibling-dependent judgement over one env-rollout's finished
-        traces (per-trace judgement already ran); the flat list is the episode,
+    async def finalize(self, task: Task, episode: Episode) -> None:
+        """Imperative sibling-dependent judgement over one finished env-rollout
+        (per-trace judgement already ran); `episode.traces` is the flat episode in
         completion order — record onto traces via record_reward/record_metric.
         The decorated `@vf.reward`/`@vf.metric` signals run after this,
         unconditionally; override this only for what they can't express."""
 
-    async def score(self, task: Task, traces: list[Trace]) -> None:
+    async def score(self, task: Task, episode: Episode) -> None:
         """Run the decorated `@vf.reward`/`@vf.metric` signals once per target trace
         (`agent=` narrows the targets). Internal, like `Task.score`: it runs after
         `finalize()` — users author `finalize()` and the decorators, not this."""
         metrics = discover_decorated(self, "metric")
         rewards = discover_decorated(self, "reward")
+        traces = episode.traces
 
         async def run_signals(fns) -> list[tuple]:
             pairs = [
@@ -358,9 +359,9 @@ class Environment(ABC, Generic[ConfigT]):
         for (fn, target), result in await run_signals(rewards):
             _record_result(target, fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
 
-    def complete(self, episode: EpisodeRecord) -> bool:
+    def complete(self, episode: Episode) -> bool:
         """Whether a finished env-rollout is a valid result — what `--resume` keeps
-        vs. redoes (default `episode.ok`). An env whose `rollout()` tolerates a
+        vs. redoes (default `episode.ok`). An env whose `run()` tolerates a
         failed participant overrides this, else resume re-runs accepted rollouts."""
         return episode.ok
 
@@ -442,7 +443,7 @@ class Environment(ABC, Generic[ConfigT]):
         *,
         on_trace: Callable[[Trace], None] | None = None,
         gate: asyncio.Semaphore | None = None,
-    ) -> EpisodeRecord:
+    ) -> Episode:
         """One env-rollout of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()` and the decorated signals; `gate` bounds
         the agent runs, so internal fan-out counts against `--max-concurrent` too.
@@ -471,13 +472,14 @@ class Environment(ABC, Generic[ConfigT]):
                 )
             info.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode.
-            return EpisodeRecord(episode=info, traces=list(completed))
+            return Episode(episode=info, traces=list(completed))
+        episode = Episode(episode=info, traces=list(completed))
         try:
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
-                    await self.finalize(task, list(completed))
+                    await self.finalize(task, episode)
                 async with boundary(EnvError, f"{type(self).__name__} scoring"):
-                    await self.score(task, list(completed))
+                    await self.score(task, episode)
         except Exception as e:
             # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
@@ -486,7 +488,7 @@ class Environment(ABC, Generic[ConfigT]):
                     f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
                 )
             info.errors.append(_as_error(e))
-        return EpisodeRecord(episode=info, traces=list(completed))
+        return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
         """Plan `n` independent env-rollouts of `task` (`-r n`): nothing couples them."""
@@ -499,13 +501,13 @@ class Environment(ABC, Generic[ConfigT]):
         slot: RunSlot,
         ctx: ModelContext,
         semaphore: asyncio.Semaphore | None = None,
-        on_complete: Callable[[EpisodeRecord], Awaitable[None]] | None = None,
-    ) -> EpisodeRecord:
+        on_complete: Callable[[Episode], Awaitable[None]] | None = None,
+    ) -> Episode:
         """Run one planned env-rollout to its finished episode, with whole-episode
         retries per `--env.retries`; `semaphore` gates the agent RUNS, not the
         episode; `on_complete` (the runners' persistence hook) fires when final."""
 
-        async def attempt() -> EpisodeRecord:
+        async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
             return await self.run_episode(
                 slot.task, ctx, on_trace=slot.traces.append, gate=semaphore

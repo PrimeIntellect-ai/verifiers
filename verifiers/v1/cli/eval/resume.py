@@ -16,7 +16,7 @@ from pydantic_core import from_json
 
 from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.trace import EpisodeRecord, WireEpisodeRecord, WireTrace
+from verifiers.v1.trace import Episode, WireEpisode, WireTrace
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -52,10 +52,10 @@ def load(
     resume_dir: Path,
     selected_idxs: list[int],
     num_rollouts: int,
-    complete: Callable[[EpisodeRecord], bool] | None = None,
+    complete: Callable[[Episode], bool] | None = None,
     *,
     whole_task: bool = False,
-) -> tuple[list[EpisodeRecord], dict[int, int]]:
+) -> tuple[list[Episode], dict[int, int]]:
     """Load the good saved rollouts as finished episodes and diff them against the
     run's target: returns (kept episodes, rollouts owed per task idx). A rollout is
     kept or redone as a unit — the episode — so a multi-trace rollout interrupted
@@ -70,13 +70,13 @@ def load(
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
 
-    def parse(row: dict) -> EpisodeRecord:
+    def parse(row: dict) -> Episode:
         if sniff_episode(row):
-            return WireEpisodeRecord.model_validate(row)
-        return EpisodeRecord.of(WireTrace.model_validate(row))
+            return WireEpisode.model_validate(row)
+        return Episode.of(WireTrace.model_validate(row))
 
     verdict = complete if complete is not None else (lambda episode: episode.ok)
-    good: dict[int, list[tuple[bytes, EpisodeRecord]]] = defaultdict(list)
+    good: dict[int, list[tuple[bytes, Episode]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -109,7 +109,7 @@ def load(
                     (line if line.endswith(b"\n") else line + b"\n", episode)
                 )
     keep: list[bytes] = []
-    episodes: list[EpisodeRecord] = []
+    episodes: list[Episode] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
         rows = good.get(idx, [])
