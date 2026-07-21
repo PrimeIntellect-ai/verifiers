@@ -154,16 +154,15 @@ class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
             return 0.0
         return sum(t.rewards.get("correct", 0.0) for t in solves) / len(solves)
 
-    @vf.reward(agent="proposer")
-    async def learnability(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
-        """The curriculum signal: 1.0 when half the solvers crack the problem, 0
-        when it's trivial or impossible for them (4p(1-p))."""
-        rate = self._solve_rate(traces)
-        return 4.0 * rate * (1.0 - rate)
-
-    @vf.metric(agent="proposer")
-    async def solve_rate(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
-        return self._solve_rate(traces)
+    async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
+        """The proposer is judged by what its problem DOES to the solvers:
+        `learnability` — the curriculum signal — is 1.0 when half of them crack
+        the problem, 0 when it's trivial or impossible for them (4p(1-p))."""
+        rate = self._solve_rate(episode.traces)
+        for trace in episode.traces:
+            if trace.agent_name == "proposer":
+                trace.record_metric("solve_rate", rate)
+                trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
 
 
 class ProposerSolverTaskset(vf.Taskset[ProposeTask, vf.TasksetConfig]):

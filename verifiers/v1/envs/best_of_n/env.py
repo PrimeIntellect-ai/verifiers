@@ -1,8 +1,8 @@
 """best-of-n: n independent attempts at the task, scored against each other.
 
 One "agent" role attempts the task `--env.n` times (`--env.id best-of-n` over any
-taskset); each attempt is judged by the task's own rewards as usual, then two
-cross-agent metrics compare the finished siblings: `best` marks the argmax-reward
+taskset); each attempt is judged by the task's own rewards as usual, then
+`finalize()` compares the finished siblings: `best` marks the argmax-reward
 attempt, `pass_at_n` whether any sibling reached `--env.threshold`.
 """
 
@@ -31,15 +31,14 @@ class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
             for _ in range(self.config.n):
                 tg.create_task(agents.agent.run(task))
 
-    @vf.metric
-    async def best(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
-        """Marks the argmax-reward attempt; ties share (a degenerate all-equal
-        rollout marks every sibling)."""
-        return float(trace.reward == max(t.reward for t in traces))
-
-    @vf.metric
-    async def pass_at_n(self, trace: vf.Trace, traces: list[vf.Trace]) -> float:
-        """Whether any sibling reached the threshold — a rollout-level fact,
+    async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
+        """The sibling comparison: `best` marks the argmax-reward attempt (ties
+        share; a degenerate all-equal rollout marks every sibling); `pass_at_n` —
+        whether any sibling reached the threshold — is a rollout-level fact,
         recorded identically on every sibling so flat consumers see it without
         reconstructing the group."""
-        return float(max(t.reward for t in traces) >= self.config.threshold)
+        top = max(t.reward for t in episode.traces)
+        solved = float(top >= self.config.threshold)
+        for trace in episode.traces:
+            trace.record_metric("best", float(trace.reward == top))
+            trace.record_metric("pass_at_n", solved)

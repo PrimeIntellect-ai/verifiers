@@ -116,8 +116,6 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge agent. Its runtime must be a container:
     `--env.judge.harness.runtime.type docker|prime`."""
-    weight: float = 1.0
-    """Weight of the `judge` reward recorded on the solver's trace."""
 
 
 class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
@@ -173,4 +171,4 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
                 f"verdict score {score!r} is not on the 0-10 scale; refusing to "
                 "clamp or coerce it"
             )
-        solution.record_reward("judge", float(score) / 10.0, self.config.weight)
+        solution.record_reward("judge", float(score) / 10.0)

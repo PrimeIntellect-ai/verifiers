@@ -44,8 +44,7 @@ class DebateEnv(vf.Environment[DebateConfig]):
         """Sibling-dependent judgement over the finished episode (per-trace
         judgement already ran on each trace's own task); `episode.traces` is
         the flat episode, each trace's `agent_name` stamp naming its agent.
-        Attach via record_reward/record_metric; the env's own
-        `@vf.reward`/`@vf.metric` methods run after this."""
+        Attach via record_reward/record_metric, in program order."""
         by_agent = {t.agent_name: t for t in episode.traces}
         winner = (by_agent["judge"].last_reply or "").strip().lower()
         by_agent["pro"].record_reward("won", float(winner == "pro"))
