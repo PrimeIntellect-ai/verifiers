@@ -60,11 +60,10 @@ class JudgeRubric(Rubric):
         state: State | None = None,
     ) -> str:
         if isinstance(prompt, list):
+            # Rollouts normalize prompts to Pydantic Messages (not raw dicts).
             last_msg = prompt[-1]
-            if isinstance(last_msg, dict) and "content" in last_msg:
-                question = str(last_msg["content"])
-            else:
-                question = ""
+            content = self.parser._message_field(last_msg, "content", "")
+            question = self.parser._content_to_text(content)
         else:
             question = str(prompt)
         response = self.parser.parse_answer(completion)
