@@ -18,12 +18,13 @@ import verifiers.v1 as vf
 from verifiers.v1.cli.output import append_trace, save_config
 from verifiers.v1.cli.resolve import (
     extract_id,
+    plugin_errors,
     references_config_file,
     with_positional_taskset,
 )
 from verifiers.v1.configs.debug import DebugConfig
 from verifiers.v1.decorators import invoke
-from verifiers.v1.env import resolve_runtime_config
+from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -302,19 +303,23 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    argv = with_positional_taskset(list(sys.argv[1:]) if argv is None else list(argv))
+    argv = with_positional_taskset(
+        list(sys.argv[1:]) if argv is None else list(argv), flag="--taskset.id"
+    )
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(_narrow(argv))
+        with plugin_errors():
+            cli(_narrow(argv))
         return
     if not extract_id(argv, "taskset") and not references_config_file(argv):
         raise SystemExit(USAGE)
 
-    config_type = _narrow(argv)
-    sys.argv = [sys.argv[0], *argv]
-    config = cli(config_type)
+    with plugin_errors():
+        config_type = _narrow(argv)
+        sys.argv = [sys.argv[0], *argv]
+        config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
     # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`;
     # a second is swallowed so it can't orphan containers/sandboxes mid-cleanup.

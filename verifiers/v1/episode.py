@@ -1,55 +1,53 @@
-"""Run and group-score all rollouts for one task."""
+"""The episode — one env-rollout's traces plus their shared standing, whole."""
 
-from __future__ import annotations
+import uuid
+from typing import Generic
 
-import asyncio
-from collections.abc import Awaitable, Callable
-from contextlib import nullcontext
-from typing import TYPE_CHECKING
+from pydantic import Field
 
-from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.retries import run_with_retry
-from verifiers.v1.rollout import Phase, Rollout
-from verifiers.v1.trace import Trace
-from verifiers.v1.utils.memory import trim_memory_periodically
-
-if TYPE_CHECKING:
-    from verifiers.v1.retries import RolloutRetryConfig
+from verifiers.v1.state import State, StateT
+from verifiers.v1.task import DataT, WireTaskData
+from verifiers.v1.trace import Error, Trace
+from verifiers.v1.types import StrictBaseModel
 
 
-class Episode:
-    def __init__(self, rollouts: list[Rollout], retry: RolloutRetryConfig) -> None:
-        if not rollouts:
-            raise ValueError("an episode needs at least one rollout (n >= 1)")
-        self.rollouts = rollouts
-        self.task = rollouts[0].task
-        self.retry = retry
+class Episode(StrictBaseModel, Generic[DataT, StateT]):
+    """One env-rollout, whole: its identity and standing (`id`, `env`, `errors`)
+    next to its flat `traces` — the object `finalize()` receives, the engine
+    returns, and the durability envelope: one episode is one `traces.jsonl` line
+    and one serve reply, so it persists and arrives whole or not at all — a torn
+    line is the whole episode owed again, and a failure before any trace minted
+    still leaves its errors here. Episode standing lives ONLY here (zero
+    redundancy on the traces); per-trace facts (`agent`, per-trace errors) stay
+    on the traces, which remain the atomic unit.
 
-    async def run(
-        self,
-        semaphore: asyncio.Semaphore | None = None,
-        on_complete: Callable[[Trace], Awaitable[None]] | None = None,
-    ) -> list[Trace]:
-        """Run rollouts; delay completion callbacks only when group scoring needs all of them."""
-        group_scored = bool(discover_decorated(self.task, "group_reward"))
+    `errors` are failures not attributable to any one trace (the env's
+    `run`/`finalize` hooks, plus prior attempts' when retried).
 
-        async def run_one(rollout: Rollout) -> Trace:
-            async with semaphore or nullcontext():
-                trace = await run_with_retry(rollout, self.retry)
-            if not group_scored:  # reward already final → don't wait for the group
-                rollout.phase = Phase.DONE
-                if on_complete is not None:
-                    await on_complete(trace)
-            # hand freed per-turn request bodies (base64 images) back to the OS
-            await trim_memory_periodically()
-            return trace
+    The type parameters serve the wire loaders: `WireEpisode` reads any taskset's
+    episodes without importing the taskset."""
 
-        traces = await asyncio.gather(*(run_one(r) for r in self.rollouts))
-        if group_scored:
-            await self.task.score_group(traces)  # cross-rollout @group_rewards
-            for rollout in self.rollouts:
-                rollout.phase = Phase.DONE
-            for trace in traces:
-                if on_complete is not None:
-                    await on_complete(trace)
-        return traces
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    env: str = ""
+    """The env that ran the episode (`EnvConfig.env_id`, e.g.
+    `agentic-judge+gsm8k-v1`)."""
+    ok: bool = False
+    """THE success sentinel — the resume unit's keep-verdict, stamped by the
+    engine when the final attempt's hooks and every trace concluded clean.
+    Distinct from `errors` emptiness: a retried-and-recovered episode is `ok`
+    and still keeps its earlier attempts' errors."""
+    errors: list[Error] = Field(default_factory=list)
+    traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
+
+    @property
+    def error(self) -> Error | None:
+        return self.errors[-1] if self.errors else None
+
+    @classmethod
+    def of(cls, trace: Trace, env: str = "") -> "Episode":
+        """The single-agent record: one trace as its own episode."""
+        return cls(env=env, traces=[trace], ok=trace.ok)
+
+
+WireEpisode = Episode[WireTaskData, State]
+"""Record loader that preserves unknown task fields in `task.model_extra`."""

@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
 from pydantic import Field, PrivateAttr
@@ -123,11 +123,6 @@ class Branch(StrictBaseModel):
     index: int
     nodes: list[MessageNode]
     calls: list[ModelCall] = Field(default_factory=list)
-
-    @property
-    def num_turns(self) -> int:
-        """Model-sampled turns; prompt-supplied assistant messages do not count."""
-        return sum(1 for n in self.nodes if n.sampled)
 
     @property
     def messages(self) -> Messages:
@@ -312,7 +307,8 @@ class VersionInfo(StrictBaseModel):
 
 
 class AgentInfo(StrictBaseModel):
-    """The agent that produced this trace's sampled turns."""
+    """The agent that produced this trace's sampled turns — its resolved identity
+    plus its standing in the episode; the `Episode` envelope links siblings."""
 
     model: str
     """The model identifier requested from the client."""
@@ -321,19 +317,23 @@ class AgentInfo(StrictBaseModel):
     harness: HarnessConfig | None = None
     """The driving harness's config. Typed as the base config, so a custom harness's
     extra fields don't serialize — records round-trip without importing the harness."""
+    name: str = "agent"
+    """The env agent that produced this trace — the config field name (`solver`,
+    `judge`); the default outside an env and for `SingleAgentEnv`'s sole agent.
+    First-class so training can filter and baseline per agent."""
+    trainable: bool = True
+    """Whether this trace's tokens are training data for the run's policy. An env's
+    `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):
-    """The task as recorded on the trace: the row (`data`, the wire half — fully typed,
-    flows into scoring) plus the Task class name that produced the rollout (`type`) —
-    provenance, so a bare trace is self-describing: a `from_trace` implementer or an
-    offline re-scorer can tell which behavior class made it without the run's config
-    (replay warns when it disagrees with the taskset's declared type). Only data and a
-    name ride the wire — behavior still re-attaches by construction."""
+    """The task as recorded on the trace: the row (`data`, fully typed, flows into
+    scoring) plus the Task class name that produced the rollout (`type`) — so a bare
+    trace is self-describing without the run's config. Only data and a name ride
+    the wire; behavior re-attaches by construction."""
 
     type: str
-    """The Task class name (`type(task).__name__`), resolution stays anchored to the
-    taskset id like everything else."""
+    """The Task class name (`type(task).__name__`)."""
     data: DataT
     """The (immutable) row being solved."""
 
@@ -366,7 +366,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
-    """Weighted contributions from task rewards, group rewards, and judges."""
+    """Weighted contributions from task rewards, judges, and the env's `score()`."""
     metrics: dict[str, float] = Field(default_factory=dict)
     """Unweighted metrics from tasks, harnesses, and judges."""
     info: dict[str, Any] = Field(default_factory=dict)
@@ -378,10 +378,16 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """Usage from judges and other calls outside the agent's message graph."""
 
     is_completed: bool = False
+    ok: bool = False
+    """THE success sentinel, stamped by the engine when the rollout ran to
+    completion without its final attempt failing. Distinct from `errors`
+    emptiness: a rollout that recovered on retry is `ok` and still keeps its
+    earlier attempts' errors."""
     stop_condition: str | None = None
     errors: list[Error] = Field(default_factory=list)
-    """Every error captured across attempts, oldest first (more than one only when the
-    rollout was retried). `error` exposes the most recent."""
+    """Every error captured across attempts, oldest first (more than one only when
+    the rollout was retried). `error` exposes the most recent; success is `ok`,
+    never errors-emptiness."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
@@ -398,7 +404,18 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def has_error(self) -> bool:
-        return bool(self.errors)
+        return not self.ok
+
+    @property
+    def agent_name(self) -> str | None:
+        """The agent that produced this trace (`agent.name`); None only on traces
+        with no agent info (the legacy bridge)."""
+        return self.agent.name if self.agent is not None else None
+
+    @property
+    def trainable(self) -> bool:
+        """Whether this trace's tokens train the run's policy (`agent.trainable`)."""
+        return self.agent.trainable if self.agent is not None else True
 
     def _last_assistant(self) -> MessageNode | None:
         """Most recent model-produced node, ignoring prompt-supplied assistant messages."""
@@ -423,11 +440,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
         return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
-
-    @property
-    def has_response(self) -> bool:
-        last = self._last_assistant()
-        return bool(last and last.message.content)
 
     @property
     def branches(self) -> list[Branch]:
@@ -581,14 +593,13 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 else traceback.format_exc(),
             )
         )
+        self.ok = False
         self.stop("error")
 
     def to_record(self) -> dict[str, Any]:
         """JSON record without raw tensors, which remain available on the msgpack wire."""
         return self.model_dump(mode="json", exclude=_NODE_DUMP_EXCLUDE)
 
-
-TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
 
 WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""

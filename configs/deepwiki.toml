@@ -3,5 +3,5 @@
 #   uv run eval @ configs/deepwiki.toml
 num_tasks = 1
 
-[taskset]
+[env.taskset]
 id = "deepwiki-v1"
