@@ -27,14 +27,14 @@ from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
 from verifiers.v1.trace import (
     Error,
-    Episode,
+    EpisodeInfo,
     GenerationSpan,
     ModelCall,
     TimeSpan,
@@ -242,7 +242,7 @@ def _v1_stop_condition(out: dict) -> str | None:
     return _V0_TO_V1_TRUNCATION_STOP.get(stop, "max_output_tokens")
 
 
-def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
+def rollout_output_to_trace(out: dict, task_idx: int, env: str = "") -> Trace:
     """Map a v0 ``RolloutOutput`` into a v1 ``Trace``, preserving the meta a native v1
     trace carries: per-turn prompt messages, the response message (content / reasoning /
     tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, the rollout's
@@ -298,6 +298,8 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
                 usage=response.usage,
             )
         )
+    # Each legacy rollout is its own single-trace episode.
+    trace.episode = EpisodeInfo(env=env)
     return trace
 
 
@@ -428,13 +430,11 @@ class LegacyEnvServer(EnvServer):
             state_columns=["trajectory"],
         )
 
-    async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
+    async def _run(self, req: RunRequest) -> RunResponse:
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-        # Trust the bridge-minted episode; serialize it once (mirrors `EnvServer`).
-        return RunRolloutResponse.model_construct(
-            episode=Episode.of(
-                rollout_output_to_trace(out, req.task_idx), env=self.taskset_id
-            )
+        # Trust the bridge-minted trace; serialize it once (mirrors `EnvServer`).
+        return RunResponse.model_construct(
+            traces=[rollout_output_to_trace(out, req.task_idx, env=self.taskset_id)]
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
@@ -448,7 +448,8 @@ class LegacyEnvServer(EnvServer):
             state_columns=["trajectory"],
         )
         traces = [
-            rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
+            rollout_output_to_trace(out, req.task_idx, env=self.taskset_id).model_dump()
+            for out in outs
         ]
         return RunGroupResponse(traces=traces)
 
@@ -528,8 +529,8 @@ async def run_legacy_eval(config) -> list[Trace]:
                 sampling_args=sampling_args,
                 state_columns=["trajectory"],
             )
-            trace = rollout_output_to_trace(out, task_idx)
-            await append_trace(out_dir, trace, write_lock, env=taskset_id)
+            trace = rollout_output_to_trace(out, task_idx, env=taskset_id)
+            await append_trace(out_dir, trace, write_lock)
             return trace
 
         if sem is None:

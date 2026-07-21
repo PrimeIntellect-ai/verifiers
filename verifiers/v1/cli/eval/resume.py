@@ -3,7 +3,8 @@
 `--resume <dir>` reloads the run's saved config verbatim (so it takes no other
 flags) and writes back into the same dir. `load` keeps the good saved rollouts and
 re-runs what's owed: missing rollouts (never written) and errored ones (dropped and
-redone).
+redone). The unit is the episode — traces sharing an `episode.id` stamp are kept or
+redone together.
 """
 
 import json
@@ -14,9 +15,9 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.trace import Episode, WireEpisode, WireTrace
+from verifiers.v1.trace import Trace, WireTrace, episode_ok
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -52,34 +53,32 @@ def load(
     resume_dir: Path,
     selected_idxs: list[int],
     num_rollouts: int,
-    complete: Callable[[Episode], bool] | None = None,
+    complete: Callable[[list[Trace]], bool] | None = None,
     *,
     whole_task: bool = False,
-) -> tuple[list[Episode], dict[int, int]]:
-    """Load the good saved rollouts as finished episodes and diff them against the
-    run's target: returns (kept episodes, rollouts owed per task idx). A rollout is
-    kept or redone as a unit — the episode — so a multi-trace rollout interrupted
-    mid-write is simply owed again. `complete` is the environment's keep-verdict
+) -> tuple[list[list[Trace]], dict[int, int]]:
+    """Load the good saved rollouts as finished episodes (trace lists) and diff
+    them against the run's target: returns (kept episodes, rollouts owed per task
+    idx). A rollout is kept or redone as a unit — the traces sharing an
+    `episode.id` stamp (a stampless pre-episode line is its own single-trace
+    episode). `complete` is the environment's keep-verdict
     (`Environment.complete`); without it (the server path) the default is
-    `episode.ok`, so an errored rollout is dropped and re-run. `whole_task` redoes
+    `episode_ok`, so an errored rollout is dropped and re-run. `whole_task` redoes
     a partially-kept task as a unit — the legacy group-scored path, where
     `run_group` always serves the full n. Rewrites `traces.jsonl` to just the kept
     rows via a temp file + atomic rename, so an interrupted resume can't corrupt
-    the prior results; the resumed rollouts then append. Pre-episode files (one
-    bare trace per line) load each trace as a single-trace episode."""
+    the prior results; the resumed rollouts then append."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
+    verdict = complete if complete is not None else episode_ok
 
-    def parse(row: dict) -> Episode:
-        if sniff_episode(row):
-            return WireEpisode.model_validate(row)
-        return Episode.of(WireTrace.model_validate(row))
-
-    verdict = complete if complete is not None else (lambda episode: episode.ok)
-    good: dict[int, list[tuple[bytes, Episode]]] = defaultdict(list)
+    # episode key -> [(line, trace)], insertion order; all lines of one episode
+    # share its fate (kept or redone) even if interleaved on disk.
+    grouped: dict[str, list[tuple[bytes, Trace]]] = defaultdict(list)
+    order: list[str] = []
     if path.exists():
         with path.open("rb") as results:
-            for line in results:
+            for i, line in enumerate(results):
                 if not line.strip():
                     continue
                 try:
@@ -87,32 +86,37 @@ def load(
                         row = from_json(line)
                     except ValueError:
                         row = json.loads(line)
-                    idx = row["task"]["data"]["idx"]
-                except (ValueError, KeyError, TypeError):
+                    trace = WireTrace.model_validate(row)
+                except Exception:
                     # A torn final line (the run died mid-write) or a foreign shape
-                    # is not a keepable rollout — it's owed again, never a crash.
+                    # is not a keepable trace — it's owed again, never a crash.
                     continue
-                if idx not in selected or len(good[idx]) >= num_rollouts:
-                    continue
-                try:
-                    episode = parse(row)
-                    if not verdict(episode):
-                        continue
-                except Exception:  # malformed row: redo it
-                    continue
-                good[idx].append(
-                    (line if line.endswith(b"\n") else line + b"\n", episode)
+                key = trace.episode.id if trace.episode is not None else f"trace-{i}"
+                if key not in grouped:
+                    order.append(key)
+                grouped[key].append(
+                    (line if line.endswith(b"\n") else line + b"\n", trace)
                 )
+    # Episodes by task idx, capped at the run's target per task.
+    good: dict[int, list[list[tuple[bytes, Trace]]]] = defaultdict(list)
+    for key in order:
+        rows = grouped[key]
+        idx = rows[0][1].task.data.idx
+        if idx not in selected or len(good[idx]) >= num_rollouts:
+            continue
+        if not verdict([trace for _, trace in rows]):
+            continue
+        good[idx].append(rows)
     keep: list[bytes] = []
-    episodes: list[Episode] = []
+    episodes: list[list[Trace]] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
-        rows = good.get(idx, [])
-        if whole_task and len(rows) < num_rollouts:
-            rows = []  # a partial unit redoes whole — its kept rows are dropped
-        keep.extend(line for line, _ in rows)
-        episodes.extend(episode for _, episode in rows)
-        if missing := num_rollouts - len(rows):
+        kept = good.get(idx, [])
+        if whole_task and len(kept) < num_rollouts:
+            kept = []  # a partial unit redoes whole — its kept rows are dropped
+        keep.extend(line for rows in kept for line, _ in rows)
+        episodes.extend([trace for _, trace in rows] for rows in kept)
+        if missing := num_rollouts - len(kept):
             owed[idx] = missing
     tmp = path.with_suffix(".jsonl.tmp")
     tmp.write_bytes(b"".join(keep))

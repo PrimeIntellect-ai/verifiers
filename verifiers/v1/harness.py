@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 class HarnessConfig(BaseConfig):
     id: ID = "bash"
-    """Local package or Hub `org/name[@version]`, set through the seat's
-    `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env)."""
+    """Local package or Hub `org/name[@version]`, set through the agent's
+    `--env.<agent>.harness.id` (`--env.agent.harness.id` on the single-agent env)."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Runtime for the harness program; tool servers choose their placement separately."""
     env: dict[str, str] = Field(default_factory=dict)

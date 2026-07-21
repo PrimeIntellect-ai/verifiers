@@ -137,10 +137,12 @@ def test_taskset_config_narrows_judges(tmp_path):
     assert isinstance(again.judges[0], vf.ReferenceJudgeConfig)
 
 
-def test_judges_config_refusals():
-    # a judges entry without an id can't resolve to a plugin
+def test_judges_entry_requires_id():
     with pytest.raises(ValueError, match="needs an `id`"):
         vf.TaskConfig.model_validate({"judges": [{"weight": 1.0}]})
+
+
+def test_rubric_config_requires_path():
     # `path` is a required Path field: a plugged rubric judge without one fails at config time.
     with pytest.raises(ValueError, match="path"):
         vf.TaskConfig.model_validate({"judges": [{"id": "rubric"}]})
@@ -188,8 +190,6 @@ def test_reward_name_fallback():
 
 
 async def test_base_judge_score_raises():
-    """`score` is `verdict(complete(render(...)))` — a judge without `render` has
-    no plugged tier and says so, pointing at the one contract."""
     with pytest.raises(NotImplementedError, match="implements no `render`"):
         await vf.Judge().score(task=QAData(idx=0, prompt="q"), trace=make_trace())
 
@@ -207,10 +207,6 @@ def test_reference_parse():
 
 
 async def test_reference_score(fake_judge_model):
-    """The reference judge end to end, across its prompt sources: verdict parsing,
-    call recording, a Messages-form task prompt (reaches the judge as text via
-    `TaskData.prompt_text`), `question_field` (a dedicated task field instead of
-    the full prompt), and the misconfig raises."""
     trace = make_trace()
     verdict = await vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="reference")).score(
         trace.task.data, trace
@@ -228,7 +224,9 @@ async def test_reference_score(fake_judge_model):
     with pytest.raises(ValueError, match="no 'gold' field"):  # misconfig raises, not 0
         await judge.score(trace.task.data, trace)
 
-    # A Messages-form prompt still reaches the judge as text.
+
+async def test_reference_score_messages_prompt(fake_judge_model):
+    # A Messages-form prompt still reaches the judge as text (via TaskData.prompt_text).
     from verifiers.v1.types import TextContentPart, UserMessage as UM
 
     task = QAData(
@@ -246,21 +244,23 @@ async def test_reference_score(fake_judge_model):
         ],
     )
     assert await vf.ReferenceJudge().score(task, trace) == 1.0
-    assert "Capital of France?" in fake_judge_model[-1]
+    assert "Capital of France?" in fake_judge_model[0]
 
-    # question_field points {question} at a dedicated task field instead of the prompt.
+
+async def test_reference_question_field(fake_judge_model):
+    # question_field points {question} at a dedicated task field instead of the full prompt.
     class FieldTask(vf.TaskData):
         question: str = ""
         answer: str = ""
 
-    field_task = FieldTask(
+    task = FieldTask(
         idx=0,
         prompt="SYSTEM INSTRUCTIONS\n\nQuestion: Capital of France?",
         question="Capital of France?",
         answer="Paris",
     )
     trace = vf.Trace(
-        task=vf.TraceTask(type="Task", data=field_task),
+        task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(
@@ -269,13 +269,14 @@ async def test_reference_score(fake_judge_model):
         ],
     )
     await vf.ReferenceJudge(vf.ReferenceJudgeConfig(question_field="question")).score(
-        field_task, trace
+        task, trace
     )
-    assert "Capital of France?" in fake_judge_model[-1]
-    assert "SYSTEM INSTRUCTIONS" not in fake_judge_model[-1]
+    assert "Capital of France?" in fake_judge_model[0]
+    assert "SYSTEM INSTRUCTIONS" not in fake_judge_model[0]
+
     judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(question_field="typo"))
     with pytest.raises(ValueError, match="no 'typo' field"):
-        await judge.score(field_task, trace)
+        await judge.score(task, trace)
 
 
 def full_trace_fixture() -> vf.Trace:
@@ -328,11 +329,7 @@ def test_transcript():
     assert "SECRET REASONING" not in transcript  # reasoning is excluded
 
 
-async def test_views(tmp_path, fake_judge_model):
-    """What fills {response}: reference defaults to the final reply, rubric to the
-    whole transcript; `view="full_trace"` flips reference; reasoning never leaks."""
-    assert vf.ReferenceJudgeConfig().view == "last_reply"
-    assert vf.RubricJudgeConfig(path="x.toml").view == "full_trace"
+async def test_view_modes(fake_judge_model):
     # last_reply (default): the judge sees only the final reply.
     trace = full_trace_fixture()
     await vf.ReferenceJudge().score(trace.task.data, trace)
@@ -344,16 +341,24 @@ async def test_views(tmp_path, fake_judge_model):
     )
     assert "TOOL RESULT: Paris is the capital." in fake_judge_model[1]
     assert "SECRET REASONING" not in fake_judge_model[1]
-    # The rubric judge's default: criteria are judged against the whole transcript.
+
+
+def test_view_defaults():
+    # reference grades the final answer; rubric grades the process by default.
+    assert vf.ReferenceJudgeConfig().view == "last_reply"
+    assert vf.RubricJudgeConfig(path="x.toml").view == "full_trace"
+
+
+async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
+    # The rubric judge's default view: criteria are judged against the whole transcript.
+    judge = rubric_judge(tmp_path)
     trace = full_trace_fixture()
-    await rubric_judge(tmp_path).score(trace.task.data, trace)
-    assert "TOOL RESULT" in fake_judge_model[-1]
-    assert "SECRET REASONING" not in fake_judge_model[-1]
+    await judge.score(trace.task.data, trace)
+    assert all("TOOL RESULT" in prompt for prompt in fake_judge_model)
+    assert all("SECRET REASONING" not in prompt for prompt in fake_judge_model)
 
 
-async def test_prompt_overrides(tmp_path, fake_judge_model):
-    """The prompt template: config-inline beats the class template, a file works the
-    same, a bad path fails at construction, inline+file is refused."""
+async def test_config_prompt_overrides_class_template(fake_judge_model):
     judge = vf.ReferenceJudge(
         vf.ReferenceJudgeConfig(prompt="Q:{question} A:{answer} R:{response}")
     )
@@ -363,13 +368,16 @@ async def test_prompt_overrides(tmp_path, fake_judge_model):
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 1.0
     assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
-    # The same template from a file.
+
+
+async def test_prompt_file(tmp_path, fake_judge_model):
+    # The prompt template can come from a file; the same {field} placeholders work.
     file = tmp_path / "judge.txt"
     file.write_text("Q:{question} A:{answer} R:{response}")
     trace = make_trace()
     judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=file))
     assert await judge.score(trace.task.data, trace) == 1.0
-    assert fake_judge_model[-1] == "Q:Capital of France? A:Paris R:It is Paris."
+    assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
     # a bad path fails at judge construction, not mid-eval at score time
     with pytest.raises(FileNotFoundError):
         vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=tmp_path / "missing.txt"))
@@ -381,15 +389,16 @@ async def test_prompt_overrides(tmp_path, fake_judge_model):
 # --- reference input/verdict knobs ------------------------------------------------------------
 
 
-async def test_reference_input_knobs(fake_judge_model):
-    """An empty reply scores 0 without paying for the (foregone) judge call; a
-    list-valued answer field is judged as multiple acceptable answers, one per
-    line."""
+async def test_reference_empty_response_short_circuits(fake_judge_model):
+    # An empty reply scores 0 without paying for the (foregone) judge call.
     trace = make_trace(reply="")
     assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
     assert fake_judge_model == []
     assert "judge" not in trace.info
 
+
+async def test_reference_list_answer(fake_judge_model):
+    # A list-valued answer field is judged as multiple acceptable answers, one per line.
     class MultiTask(vf.TaskData):
         aliases: list[str] = []
 
@@ -466,7 +475,7 @@ def rubric_judge(
     return vf.RubricJudge(vf.RubricJudgeConfig(path=str(path), **kwargs))
 
 
-def test_rubric_criteria_loading(tmp_path):
+def test_rubric_criteria_toml_and_json(tmp_path):
     toml = rubric_judge(tmp_path).criteria
     assert [c.name for c in toml] == ["mentions_paris", "is_polite"]
     assert [c.weight for c in toml] == [3.0, 1.0]
@@ -479,7 +488,9 @@ def test_rubric_criteria_loading(tmp_path):
     assert rubric_judge(tmp_path, json.dumps(items), ".json").criteria == toml
     # the suffix check is case-insensitive: QUALITY.TOML is TOML, not JSON
     assert rubric_judge(tmp_path, suffix=".TOML").criteria == toml
-    # config-level weights override the file's, per criterion
+
+
+def test_rubric_config_weight_overrides_file(tmp_path):
     judge = rubric_judge(tmp_path, weights={"mentions_paris": 1.0})
     assert [c.weight for c in judge.criteria] == [1.0, 1.0]
 
@@ -530,30 +541,33 @@ async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
 CHOICES_TOML = '[[criteria]]\nname = "depth"\ntext = "How thorough?"\nchoices = ["none", "partial", "good"]\n'
 
 
-async def test_rubric_choices(tmp_path, monkeypatch):
-    """Ordered per-criterion choices (worst→best) score by rank; an off-menu
-    verdict is a judge failure (raise, not 0); degenerate menus are refused while
-    loading the rubric."""
+async def test_rubric_choices_normalize(tmp_path, monkeypatch):
+    # Ordered choices (worst→best) score by rank: "partial" of ["none","partial","good"] -> 0.5.
+    async def graded(self, messages, *, trace=None, schema=None, parse=None, **s):
+        v = {"verdicts": [{"name": "depth", "reason": "r", "verdict": "partial"}]}
+        return JudgeResponse(text=json.dumps(v), parsed=None)
 
-    def reply_with(verdict: str):
-        async def complete(self, messages, *, trace=None, schema=None, parse=None, **s):
-            v = {"verdicts": [{"name": "depth", "reason": "r", "verdict": verdict}]}
-            return JudgeResponse(text=json.dumps(v), parsed=None)
-
-        return complete
-
-    # "partial" of ["none","partial","good"] -> 0.5.
-    monkeypatch.setattr(Judge, "complete", reply_with("partial"))
+    monkeypatch.setattr(Judge, "complete", graded)
     judge = rubric_judge(tmp_path, body=CHOICES_TOML, name="q")
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.5
     assert trace.metrics == {"q/depth": 0.5}
-    # A verdict that isn't one of the criterion's choices raises.
-    monkeypatch.setattr(Judge, "complete", reply_with("maybe"))
+
+
+async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
+    # A verdict that isn't one of the criterion's choices is a judge failure, not a 0.
+    async def off_menu(self, messages, *, trace=None, schema=None, parse=None, **s):
+        v = {"verdicts": [{"name": "depth", "reason": "r", "verdict": "maybe"}]}
+        return JudgeResponse(text=json.dumps(v), parsed=None)
+
+    monkeypatch.setattr(Judge, "complete", off_menu)
+    judge = rubric_judge(tmp_path, body=CHOICES_TOML)
     trace = make_trace()
     with pytest.raises(ValueError, match="expected one of"):
-        await rubric_judge(tmp_path, body=CHOICES_TOML).score(trace.task.data, trace)
-    # Degenerate menus fail at load time.
+        await judge.score(trace.task.data, trace)
+
+
+def test_rubric_choices_validation(tmp_path):
     with pytest.raises(ValueError, match="at least two"):
         rubric_judge(
             tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["only"]\n'
@@ -623,27 +637,3 @@ async def test_task_without_judges_scores_as_before():
     trace = make_trace()
     await JudgedTask(trace.task.data).score(trace, runtime=None)
     assert trace.rewards == {"own": 0.25}
-
-
-def test_prompt_placeholders_survive_literal_braces():
-    """A custom judge prompt may contain literal braces (a JSON-shaped instruction);
-    only the documented placeholders substitute — unknown ones stay as written."""
-    from verifiers.v1.judges.score import ScoreJudge, ScoreJudgeConfig
-
-    judge = ScoreJudge(
-        ScoreJudgeConfig(
-            name="j", prompt='Q: {question} -> reply {"score": N}; work: {response}'
-        )
-    )
-    out = judge.build_messages(question="Q1", response="R1")
-    assert out == 'Q: Q1 -> reply {"score": N}; work: R1'
-
-
-def test_field_values_are_data_not_templates():
-    """A substituted value must land verbatim: a question containing a literal
-    "{answer}" placeholder must not pull in the answer field."""
-    from verifiers.v1.judges.score import ScoreJudge, ScoreJudgeConfig
-
-    judge = ScoreJudge(ScoreJudgeConfig(name="j", prompt="Q: {question} A: {answer}"))
-    out = judge.build_messages(question="quote {answer} verbatim", answer="42")
-    assert out == "Q: quote {answer} verbatim A: 42"

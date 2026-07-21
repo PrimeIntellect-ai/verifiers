@@ -1,0 +1,28 @@
+# Any taskset graded by the bundled solver-grader env — the multi-agent TOML shape:
+# `env.id` pairs a reusable env with the taskset, and each agent is its own
+# [env.<agent>] block (a partial override deep-merges into the agent's declared
+# default; there is no run-level harness). The grader pins what makes it a
+# different actor: a container runtime — it verifies the solver's attempt with
+# real execution, never on the host — and, here, its own model off the run's.
+#
+#   uv run eval @ configs/solver_grader.toml --model <model>
+#
+# The grading criteria are a judge plugin (`[env.spec]`, shared with the
+# plugged `env.taskset.task.judges` tier); the default `score` spec asks for a
+# SCORE: 0-10 verdict, recorded on the solver's trace as the `grader` reward.
+num_tasks = 2
+
+[env]
+id = "solver-grader"
+
+[env.taskset]
+id = "gsm8k-v1"
+
+[env.solver.harness]
+id = "null"
+
+[env.grader]
+model = "z-ai/glm-5.2"
+
+[env.grader.harness.runtime]
+type = "docker"

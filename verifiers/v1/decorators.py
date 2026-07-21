@@ -99,7 +99,7 @@ def metric(
     """Mark a metric `(self, trace) -> float` (recorded, not summed). On an
     `Environment` it's a cross-agent signal: run once per episode trace with the
     finished sibling set in reach (`trace` = the target, `traces` = all of them);
-    `agent=` narrows the targets to one seat's traces (env-only — a task has no
+    `agent=` narrows the targets to one agent's traces (env-only — a task has no
     agents)."""
 
     def decorator(f: F) -> F:

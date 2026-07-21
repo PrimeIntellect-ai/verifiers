@@ -23,7 +23,7 @@ from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
 from verifiers.v1.cli.output import (
     CONFIG_FILE,
     append_trace,
-    read_episodes,
+    read_traces,
     save_config,
     write_config,
 )
@@ -83,14 +83,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     task_cls = vf.task_type(config.taskset.id)
     data_cls = task_data_cls(task_cls)
     # `WireTaskData` reads any taskset's saved task without importing its Task type.
-    # An episode may hold no traces (its env hooks failed before any agent ran);
-    # there's nothing to re-score, so it drops out in the flatten. Each kept trace
-    # remembers its episode's env identity — the replay output re-stamps it.
-    episodes = read_episodes(source, Trace[WireTaskData, state_cls(task_cls)])
-    sourced = [(trace, e.env) for e in episodes for trace in e.traces]
+    # Each trace keeps its own episode stamp through the copy, so the replay output
+    # stays linkable to the source run's episodes.
+    traces = read_traces(source, Trace[WireTaskData, state_cls(task_cls)])
     if config.num_traces is not None:
-        sourced = sourced[: config.num_traces]
-    traces = [trace for trace, _ in sourced]
+        traces = traces[: config.num_traces]
 
     # Re-scoring with the taskset's behavior needs the declared `TaskData` type, but
     # the rebuilt row feeds ONLY the behavior wrapper: `trace.task` keeps its wire
@@ -124,8 +121,8 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # config's `taskset.task.judges`, so a re-tuned judge overrides the recorded
     # run's with no trace surgery. `num_rescores` copies each trace per re-score.
     work = [
-        (t.model_copy(deep=True), row, env)
-        for (t, env), row in zip(sourced, rows)
+        (t.model_copy(deep=True), row)
+        for t, row in zip(traces, rows)
         for _ in range(config.num_rescores)
     ]
 
@@ -141,13 +138,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     states = [
-        ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _, _ in work
+        ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _ in work
     ]
     lock = asyncio.Lock()
 
-    async def rescore(
-        trace: Trace, row: vf.TaskData, env: str, st: ReplayProgress
-    ) -> None:
+    async def rescore(trace: Trace, row: vf.TaskData, st: ReplayProgress) -> None:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             # Generation failures have no complete transcript to score.
@@ -181,7 +176,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 "idx=%s %s (%.1fs)", trace.task.data.idx, st.state, st.end - st.start
             )
         # Persist each result as it lands so an interrupted replay keeps its progress.
-        await append_trace(out, trace, lock, env=env)
+        await append_trace(out, trace, lock)
 
     display = (
         replay_dashboard(states, config.name, str(source), str(out), start)
@@ -189,11 +184,9 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         else contextlib.nullcontext()
     )
     async with display:
-        await asyncio.gather(
-            *(rescore(t, row, env, s) for (t, row, env), s in zip(work, states))
-        )
+        await asyncio.gather(*(rescore(t, row, s) for (t, row), s in zip(work, states)))
     logger.info("replay: done in %.1fs -> %s", time.time() - start, out)
-    return [t for t, _, _ in work]
+    return [t for t, _ in work]
 
 
 def main(argv: list[str] | None = None) -> None:

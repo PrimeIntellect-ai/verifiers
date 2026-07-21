@@ -20,8 +20,8 @@ from verifiers.v1.serve.types import (
     InfoResponse,
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 from verifiers.v1.types import SamplingConfig
 
@@ -122,21 +122,22 @@ class EnvServer:
         reused across requests. The legacy v0 bridge overrides this (no v1 serving)."""
         return self.env.serving()
 
-    async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
+    async def _run(self, req: RunRequest) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        (slot,) = self.env.slots(self._task(req.task_idx))
         # The gate spans requests: `--env.max-concurrent` bounds this worker's
         # agent runs the same way the in-process eval's semaphore does.
-        episode = await self.env.run_slot(slot, ctx, self._gate)
-        # Trust the env-minted episode; serialize it once before client-side re-typing.
-        return RunRolloutResponse.model_construct(episode=episode)
+        traces = await self.env.run_episode(
+            self._task(req.task_idx), ctx, gate=self._gate
+        )
+        # Trust the env-minted traces; serialize once before client-side re-typing.
+        return RunResponse.model_construct(traces=traces)
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         # The route survives for the legacy (v0) bridge (`LegacyEnvServer` overrides
         # this); a dispatcher calling it on a v1 env gets a loud error.
         raise RuntimeError(
             "run_group is a legacy (v0) route; v1 envs score sibling-dependent "
-            "signals inside their own rollout — request run_rollout instead"
+            "signals inside their own rollout — request run instead"
         )
 
     async def _handle(
@@ -153,10 +154,8 @@ class EnvServer:
                     requires_group_scoring=self.requires_group_scoring,
                     protocol=PROTOCOL_VERSION,
                 )
-            elif route == "run_rollout":
-                response = await self._run_rollout(
-                    RunRolloutRequest.model_validate(raw)
-                )
+            elif route == "run":
+                response = await self._run(RunRequest.model_validate(raw))
             elif route == "run_group":
                 response = await self._run_group(RunGroupRequest.model_validate(raw))
             else:

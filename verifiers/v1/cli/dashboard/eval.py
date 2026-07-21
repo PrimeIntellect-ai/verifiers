@@ -17,7 +17,7 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.env import RunSlot
+from verifiers.v1.cli.eval.slots import RunSlot
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import (
@@ -70,49 +70,49 @@ _MARK = {
 }
 
 
-def _seat_value(config: EvalConfig, read):
-    """A cap as the overview shows it: the declared seats' shared value, the
-    string 'per-seat' when they disagree (caps live on the seats)."""
-    from verifiers.v1.env import _declared_agent_configs
+def _agent_value(config: EvalConfig, read):
+    """A cap as the overview shows it: the declared agents' shared value, the
+    string 'per-agent' when they disagree (caps live on the agents)."""
+    from verifiers.v1.agents import agent_config_fields
 
-    values = {read(spec) for spec in _declared_agent_configs(config.env).values()}
-    return values.pop() if len(values) == 1 else "per-seat"
+    values = {read(spec) for spec in agent_config_fields(config.env).values()}
+    return values.pop() if len(values) == 1 else "per-agent"
 
 
 def _limits(config: EvalConfig) -> list[str]:
     """Per-run caps for the overview (concurrency first, then turns, tokens), read
-    off the declared seats. An unset cap reads as 'no ...' rather than being hidden."""
+    off the declared agents. An unset cap reads as 'no ...' rather than being hidden."""
     toks = []
     for label, field in (
         ("in", "max_input_tokens"),
         ("out", "max_output_tokens"),
         ("total", "max_total_tokens"),
     ):
-        v = _seat_value(config, lambda spec, field=field: getattr(spec, field))
-        if v == "per-seat":
-            toks.append(f"{label} per-seat")
+        v = _agent_value(config, lambda spec, field=field: getattr(spec, field))
+        if v == "per-agent":
+            toks.append(f"{label} per-agent")
         elif v:
             toks.append(f"{label}≤{v}")
-    turns = _seat_value(config, lambda spec: spec.max_turns)
+    turns = _agent_value(config, lambda spec: spec.max_turns)
     return [
         f"≤{config.max_concurrent} concurrent"
         if config.max_concurrent
         else "no concurrency cap",
-        "per-seat turn caps"
-        if turns == "per-seat"
+        "per-agent turn caps"
+        if turns == "per-agent"
         else (f"{turns} turns" if turns else "no turn cap"),
         f"{', '.join(toks)} tokens" if toks else "no token cap",
     ]
 
 
 def _timeouts(config: EvalConfig) -> list[str]:
-    """Per-stage run timeouts for the overview (each seat's own), plus the env's
+    """Per-stage run timeouts for the overview (each agent's own), plus the env's
     score() bound (unset → 'no <stage> timeout')."""
     rows = []
     for stage in ("setup", "rollout", "finalize", "scoring"):
-        v = _seat_value(config, lambda spec, stage=stage: getattr(spec.timeout, stage))
-        if v == "per-seat":
-            rows.append(f"{stage} per-seat")
+        v = _agent_value(config, lambda spec, stage=stage: getattr(spec.timeout, stage))
+        if v == "per-agent":
+            rows.append(f"{stage} per-agent")
         elif v:
             rows.append(f"{stage} {v:g}s")
         else:
@@ -155,14 +155,14 @@ def _interrupt_footer() -> Group | None:
 
 
 def _warning(config: EvalConfig) -> Text | None:
-    """A local-runtime caution when any code-running seat resolves to the subprocess
+    """A local-runtime caution when any code-running agent resolves to the subprocess
     runtime (the tool-less chat loops are exempt), shown above the overview rather
     than as a row in it."""
     from verifiers.v1.loaders import harness_class
 
     if any(
         h.runtime.type == "subprocess" and harness_class(h.id).EXECUTES_CODE
-        for h in config.env.seat_harnesses().values()
+        for h in config.env.agent_harnesses().values()
     ):
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
@@ -228,24 +228,24 @@ def Overview(config: EvalConfig) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
-    seats = config.env.seat_harnesses()
+    agents = config.env.agent_harnesses()
     taskset = config.env.taskset
     env_label = taskset.name if taskset is not None else "no taskset"
     if config.env.id:
         env_label = f"{env_name(config.env.id)}+{env_label}"
-    # One seat story when every seat resolves the same way (the common case); one
-    # row per seat when they diverge (a judge on its own harness/runtime).
+    # One story when every agent resolves the same way (the common case); one
+    # row per agent when they diverge (a grader on its own harness/runtime).
     stories = list(
         dict.fromkeys(
-            f"{h.name} harness  ·  {h.runtime.type} runtime" for h in seats.values()
+            f"{h.name} harness  ·  {h.runtime.type} runtime" for h in agents.values()
         )
     )
     if len(stories) == 1:
         grid.add_row("env", f"{env_label}  ·  {stories[0]}")
     else:
         grid.add_row("env", env_label)
-        for role, h in seats.items():
-            grid.add_row(f"  {role}", f"{h.name} harness  ·  {h.runtime.type} runtime")
+        for agent, h in agents.items():
+            grid.add_row(f"  {agent}", f"{h.name} harness  ·  {h.runtime.type} runtime")
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
     # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
@@ -256,9 +256,9 @@ def Overview(config: EvalConfig) -> Table:
         taskset_over := overrides(taskset, skip=frozenset({"id"}))
     ):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
-    for role, h in seats.items():
+    for agent, h in agents.items():
         if harness_over := overrides(h, skip=frozenset({"id", "runtime.type"})):
-            label = f"{role}.harness" if len(seats) > 1 else "harness"
+            label = f"{agent}.harness" if len(agents) > 1 else "harness"
             grid.add_row(label, escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
@@ -291,21 +291,17 @@ def Progress(
     # progress, reward, err, and the breakdown cover the whole run, not just this session's.
     done = [s for s in slots if s.done]  # fully scored env-rollouts
     done_traces = [t for s in done for t in s.traces]
-    # Score aggregates read the policy's traces: auxiliary roles (a judge's verdict
+    # Score aggregates read the policy's traces: auxiliary agents (a grader's verdict
     # run, a modeled user) are `trainable=False` and carry no rewards, so counting
     # them dilutes every mean with structural zeros. An all-untrainable run (every
-    # role frozen) falls back to all traces rather than showing nothing.
+    # agent frozen) falls back to all traces rather than showing nothing.
     scored = [t for t in done_traces if t.trainable] or done_traces
     total = len(slots)
     # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
     # the global avg (errored count as 0) in parens. `err` is the share of env-rollouts that
     # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
     reward = format_mean(scored, lambda t: t.reward)
-    err = (
-        f"{sum(s.episode is None or not s.episode.ok for s in done) / len(done):.2f}"
-        if done
-        else "—"
-    )
+    err = f"{sum(not s.ok for s in done) / len(done):.2f}" if done else "—"
     stats = (
         f"{len(done)}/{total} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
@@ -343,9 +339,9 @@ def _score_segments(traces: list[Trace], source: str) -> str | None:
 
 def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     """Score rows read the policy view (`scored` — trainable traces); with several
-    roles in play they split per role, each role averaging over its OWN traces (no
-    dilution, so the split covers every role — an untrainable seat's received
-    rewards stay visible). Resource rows read every completed trace: a judge's
+    agents in play they split per agent, each averaging over its OWN traces (no
+    dilution, so the split covers every agent — an untrainable agent's received
+    rewards stay visible). Resource rows read every completed trace: a grader's
     tokens were spent regardless of trainability."""
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim", min_width=_LABEL_WIDTH)
@@ -529,7 +525,7 @@ def _brace(i: int, size: int) -> str:
 
 def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
     # (brace, state, left sections, result, time); a slot contributes one row per live
-    # trace (a multi-agent env-rollout shows each role's trace), braced per task.
+    # trace (a multi-agent env-rollout shows each agent's trace), braced per task.
     rows: list[tuple[str, str, list[str], str, str]] = []
     for group in groups:
         group_rows: list[tuple[str, list[str], str, str]] = []
@@ -537,8 +533,8 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
             task = slot.task.data
             base = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
             if not slot.traces:
-                if slot.done:  # the env's rollout() itself failed before any trace
-                    error = slot.episode.error if slot.episode is not None else None
+                if slot.done:  # the env's run() itself failed before any trace
+                    error = slot.errors[-1] if slot.errors else None
                     group_rows.append(
                         (
                             "error",
@@ -555,7 +551,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                 if slot.done:  # fully scored — reward is final
                     state = "error" if t.has_error else "success"
                     # A trace that recorded nothing shows no reward: a judge or
-                    # modeled-user seat's `reward=0.00` would read as a score.
+                    # modeled-user agent's `reward=0.00` would read as a score.
                     result = (
                         t.error.type
                         if t.has_error
@@ -576,9 +572,9 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     state, result, stop = "error", err.type, ""
                 else:
                     state, result, stop = _stage(t), "", ""
-                # The trace's own stamp, not the run-level runtime: a role's harness
-                # may resolve elsewhere (the judge env's sandboxed judge on a
-                # subprocess run).
+                # The trace's own stamp, not the run-level runtime: an agent's harness
+                # may resolve elsewhere (the solver-grader env's sandboxed grader on
+                # a subprocess run).
                 if t.runtime is not None:
                     runtime = (
                         f"{t.runtime.type}({t.runtime.id})"
@@ -753,7 +749,7 @@ def _render(
             now,
             "/".join(
                 dict.fromkeys(
-                    h.runtime.type for h in config.env.seat_harnesses().values()
+                    h.runtime.type for h in config.env.agent_harnesses().values()
                 )
             )
             or "subprocess",

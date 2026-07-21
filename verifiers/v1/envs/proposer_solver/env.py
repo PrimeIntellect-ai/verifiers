@@ -1,22 +1,22 @@
-"""proposer_solver: a proposer invents a verified math problem; n solvers race it.
+"""proposer-solver: a proposer invents a verified math problem; n solvers race it.
 
-The task-generation recipe env. The "proposer" seat plays the dataset (a topic
-seed), uses its tools to CONSTRUCT and verify a hard integer-answer problem, and
-ends with a JSON contract. The env mints a typed `SolveTask` from that trace and
-fans it out to `--env.n` independent runs of the "solver" seat. Each solve is judged by the minted
-task's own reward (exact final integer, against the proposer's verified answer);
-the proposer is judged by what its problem DOES to the solvers — `learnability`
-peaks when half of them crack it (4p(1-p), the automatic-curriculum signal) — plus
-a `solve_rate` metric.
+The task-generation recipe env. The "proposer" plays the dataset (a topic seed),
+uses its tools to CONSTRUCT and verify a hard integer-answer problem, and ends
+with a JSON contract. The env mints a typed `SolveTask` from that trace and fans
+it out to `--env.n` independent runs of the "solver". Each solve is judged by the
+minted task's own reward (exact final integer, against the proposer's verified
+answer); the proposer is judged by what its problem DOES to the solvers —
+`learnability` peaks when half of them crack it (4p(1-p), the automatic-curriculum
+signal) — plus a `solve_rate` metric.
 
-Seats are deliberately heterogeneous: point the proposer at a code-running harness
-in a real sandbox and keep the solvers on a cheap tool-less chat loop —
+Agents are deliberately heterogeneous: point the proposer at a code-running
+harness in a real sandbox and keep the solvers on a cheap tool-less chat loop —
 
-    uv run eval proposer-solver-v1 -n 4 \
+    uv run eval proposer-solver -n 4 \
       --env.proposer.harness.id codex --env.proposer.harness.runtime.type prime \
       --env.solver.harness.id null
 
-Train-side, the seats flip independently per run (`--env.train_solver false`
+Train-side, the agents flip independently per run (`--env.train_solver false`
 trains only on proposer rollouts; both default trainable, late-bound to the run's
 model). The flip is this env's own config — trainability is env truth, not a
 per-agent knob.
@@ -45,8 +45,8 @@ class SeedData(vf.TaskData):
 
 
 class ProposeTask(vf.Task[SeedData]):
-    """The proposer's seat task: no per-trace judgement — the proposer is judged
-    cross-agent, by what its problem does to the solvers."""
+    """The proposer's task: no per-trace judgement — the proposer is judged
+    cross-trace, by what its problem does to the solvers."""
 
 
 class SolveData(vf.TaskData):
@@ -78,7 +78,7 @@ class SolveTask(vf.Task[SolveData]):
     @classmethod
     def from_trace(cls, proposer: vf.Trace) -> "SolveTask":
         """trace -> Task: the proposer's JSON contract becomes the solvers' task.
-        Off-contract output raises — the env-rollout fails (retryable) instead of
+        Off-contract output raises — the episode fails (retryable) instead of
         scoring solvers against garbage."""
         reply = proposer.last_reply or ""
         greedy = re.search(r"\{.*\}", reply, re.DOTALL)
@@ -134,17 +134,17 @@ class ProposerSolverEnvConfig(vf.EnvConfig):
 
 
 class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
-    def brief(self, agents):
-        # Both seats CAN train (same underlying policy); which one does this run
+    def setup(self, agents):
+        # Both agents CAN train (same underlying policy); which one does this run
         # is this env's explicit choice to expose.
-        agents["proposer"].trainable = self.config.train_proposer
-        agents["solver"].trainable = self.config.train_solver
+        agents.proposer.trainable = self.config.train_proposer
+        agents.solver.trainable = self.config.train_solver
 
-    async def rollout(self, task, agents):
-        proposed = await agents["proposer"].run(task)
+    async def run(self, task, agents):
+        proposed = await agents.proposer.run(task)
         solve_task = SolveTask.from_trace(proposed)
         await asyncio.gather(
-            *(agents["solver"].run(solve_task) for _ in range(self.config.n))
+            *(agents.solver.run(solve_task) for _ in range(self.config.n))
         )
 
     @staticmethod

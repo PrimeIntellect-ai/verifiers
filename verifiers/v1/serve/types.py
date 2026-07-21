@@ -4,13 +4,14 @@ from pydantic import BaseModel, Field, field_serializer
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTaskData
-from verifiers.v1.trace import Trace, WireEpisode
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import SamplingConfig
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 """The serve wire protocol: bumped when response shapes change (consumers —
 prime-rl's orchestrator — read it off `info` to detect a mismatched server). In
-protocol 1, `run_rollout` answers with an `Episode` (the multi-agent atom)."""
+protocol 2, `run` answers one env-rollout with its `list[Trace]` — the traces
+link into their episode through each trace's `episode` stamp."""
 
 
 class BaseRequest(BaseModel):
@@ -43,26 +44,28 @@ class InfoResponse(BaseResponse):
     """Whether tasks must be run as whole groups — legacy (v0) envs only; a v1
     server always reports False (sibling-dependent signals run inside the env's
     own rollout)."""
-    protocol: int = 1
+    protocol: int = PROTOCOL_VERSION
     """The server's wire protocol version (`PROTOCOL_VERSION`)."""
 
 
-class RunRolloutRequest(BaseRequest):
-    method: ClassVar[str] = "run_rollout"
+class RunRequest(BaseRequest):
+    method: ClassVar[str] = "run"
     task_idx: int = Field(ge=0)
     client: ClientConfig
     model: str
     sampling: SamplingConfig
 
 
-class RunRolloutResponse(BaseResponse):
-    episode: WireEpisode | None = None
-    """The rollout's episode — trace(s) nested, task-specific data preserved in
-    `model_extra`."""
+class RunResponse(BaseResponse):
+    traces: list[Trace[WireTaskData]] | None = None
+    """The env-rollout's traces (task-specific data preserved in `model_extra`),
+    completion order, linked through each trace's `episode` stamp."""
 
-    @field_serializer("episode")
-    def _ser_episode(self, episode: "WireEpisode | None") -> dict | None:
-        return episode.model_dump() if episode is not None else None
+    @field_serializer("traces")
+    def _ser_traces(
+        self, traces: "list[Trace[WireTaskData]] | None"
+    ) -> list[dict] | None:
+        return [t.model_dump() for t in traces] if traces is not None else None
 
 
 class RunGroupRequest(BaseRequest):

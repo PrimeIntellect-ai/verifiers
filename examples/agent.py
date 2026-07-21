@@ -12,14 +12,13 @@ import verifiers.v1 as vf
 
 
 async def main() -> None:
-    # A bare harness id and the default eval client; pass a built Harness or a
-    # shared Client to pin more.
-    solver = vf.Agent("bash", "z-ai/glm-5.2")
+    # An agent is built from its config alone; pass a live Client to share a
+    # connection pool across agents.
+    solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"))
     task = vf.Task(
         vf.TaskData(idx=0, prompt="What is 2+2? Answer with just the number.")
     )
-    async with solver:
-        trace = await solver.run(task)
+    trace = await solver.run(task)
     print("stop:", trace.stop_condition)
     print("error:", trace.error)
     print("turns:", trace.num_turns)

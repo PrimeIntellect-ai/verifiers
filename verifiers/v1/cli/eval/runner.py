@@ -8,6 +8,7 @@ import time
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
+from verifiers.v1.cli.eval.slots import RunSlot
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import (
     append_episode,
@@ -15,8 +16,8 @@ from verifiers.v1.cli.output import (
     output_path,
     save_config,
 )
-from verifiers.v1.env import Environment, RunSlot
-from verifiers.v1.trace import Episode, EvalRunInfo, Trace
+from verifiers.v1.env import Environment
+from verifiers.v1.trace import EvalRunInfo, Trace
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     out = output_path(config)
     owed: dict[str, int] | None = None
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
-    finished: list[Episode] = []
+    finished: list[list[Trace]] = []
     if config.resume is not None:
         finished, owed = resume.load(
             out, [t.data.idx for t in tasks], config.num_rollouts, env.complete
@@ -61,22 +62,26 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
 
     write_lock = asyncio.Lock()
 
-    async def on_complete(episode: Episode) -> None:
-        for trace in episode.traces:
+    async def run_slot(slot: RunSlot) -> list[Trace]:
+        traces = await env.run_episode(
+            slot.task, ctx, on_trace=slot.traces.append, gate=semaphore
+        )
+        slot.traces = list(traces)
+        slot.done = True
+        for trace in traces:
             trace.stamp(EvalRunInfo(id=config.uuid))
-        await append_episode(out, episode, write_lock)
+        await append_episode(out, traces, write_lock)
+        return traces
 
     # Serving resources (shared tool servers, interception) come up once for the
-    # run; plan slots inside so the env's agents borrow them.
+    # run; the env's agents borrow them.
     async with env.serving():
         planned = [
-            slot
+            RunSlot(task)
             for task in tasks
-            for slot in env.slots(
-                task, n=owed[task.data.idx] if owed else config.num_rollouts
-            )
+            for _ in range(owed[task.data.idx] if owed else config.num_rollouts)
         ]
-        slots = [RunSlot.finished(episode) for episode in finished] + planned
+        slots = [RunSlot.finished(episode) for episode in finished if episode] + planned
         push_state = None
         if config.push and config.rich:
             from verifiers.v1.push import PushState
@@ -88,11 +93,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             else contextlib.nullcontext()
         )
         async with display:
-            results = await asyncio.gather(
-                *(env.run_slot(slot, ctx, semaphore, on_complete) for slot in planned)
-            )
+            results = await asyncio.gather(*(run_slot(slot) for slot in planned))
             episodes = finished + list(results)
-            traces = [trace for episode in episodes for trace in episode.traces]
+            traces = [trace for episode in episodes for trace in episode]
             if (
                 push_state is not None
             ):  # upload off the event loop so the view keeps refreshing
@@ -110,7 +113,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     from functools import partial
 
     from verifiers.v1.utils.logging import setup_logging
-    from verifiers.v1.env import pool_serve_kwargs
+    from verifiers.v1.configs.env import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
 
     legacy = config.is_legacy
@@ -177,7 +180,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             episodes, owed = resume.load(
                 out, idxs, config.num_rollouts, whole_task=group_scored
             )
-            finished = [trace for episode in episodes for trace in episode.traces]
+            finished = [trace for episode in episodes for trace in episode]
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
@@ -220,29 +223,29 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                 )
             for trace in traces:
                 trace.stamp(EvalRunInfo(id=config.uuid))
-                await append_trace(out, trace, write_lock, env=config.env_id)
+                await append_trace(out, trace, write_lock)
             return traces
 
-        async def run_rollout_unit(idx: int) -> list[Trace]:
+        async def run_unit(idx: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
-                episode = await client.run_rollout(
+                traces = await client.run(
                     task_idx=idx,
                     client=config.client,
                     model=config.model,
                     sampling=config.sampling,
                 )
-            for trace in episode.traces:
+            for trace in traces:
                 trace.stamp(EvalRunInfo(id=config.uuid))
-            await append_episode(out, episode, write_lock)
-            return list(episode.traces)
+            await append_episode(out, traces, write_lock)
+            return traces
 
         # A group-scored legacy task runs its rollouts together (one `run_group`
-        # request, one worker); otherwise each rollout is its own `run_rollout`
-        # request, dispatched least-busy across workers.
+        # request, one worker); otherwise each rollout is its own `run` request,
+        # dispatched least-busy across workers.
         units = (
             [run_group_unit(i) for i in idxs]
             if group_scored
-            else [run_rollout_unit(i) for i in idxs for _ in range(owed[i])]
+            else [run_unit(i) for i in idxs for _ in range(owed[i])]
         )
         results = await asyncio.gather(*units)
         await client.close()

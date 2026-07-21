@@ -118,7 +118,7 @@ class RolloutRun:
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
             verifiers=VersionInfo(version=__version__, commit=verifiers_commit()),
-            # The seat's resolved identity, role overrides included.
+            # The agent's resolved identity, per-agent overrides included.
             agent=AgentInfo(
                 model=ctx.model,
                 sampling=ctx.sampling,

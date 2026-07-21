@@ -145,9 +145,9 @@ def _eval_config(
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward).
 
-    `harness=None` leaves every seat on its own story — the multi-agent case: there
+    `harness=None` leaves every agent on its own story — the multi-agent case: there
     is no run-level harness, so a single-agent test's `harness` lands on the `agent`
-    seat and a multi-agent test pins its seats through `env` role fields instead."""
+    field and a multi-agent test pins its agents through `env` fields instead."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
     env_cfg = dict(env or {})
     _configure_prime_runtimes(taskset_cfg)
@@ -155,19 +155,19 @@ def _eval_config(
         harness_cfg = {"id": harness, **(harness_overrides or {})}
         _configure_prime_runtimes(harness_cfg)
         env_cfg.setdefault("agent", {})["harness"] = harness_cfg
-    # Per-run caps live on the seats: resolve the env's declared roles and cap
-    # each one (a test's own seat dict wins over the shared defaults).
+    # Per-run caps live on the agents: resolve the env's declared agent fields and
+    # cap each one (a test's own agent dict wins over the shared defaults).
     config_cls = vf.env_config_type(taskset, env_cfg.get("id", ""))
-    seats = [
+    agent_names = [
         name
         for name, field in config_cls.model_fields.items()
         if isinstance(field.default, vf.AgentConfig)
     ]
-    for seat in seats:
-        seat_cfg = env_cfg.setdefault(seat, {})
-        seat_cfg.setdefault("max_turns", max_turns)
-        seat_cfg.setdefault("max_output_tokens", max_tokens)
-        seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
+    for name in agent_names:
+        agent_cfg = env_cfg.setdefault(name, {})
+        agent_cfg.setdefault("max_turns", max_turns)
+        agent_cfg.setdefault("max_output_tokens", max_tokens)
+        agent_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
     return EvalConfig(
         env={
             "taskset": taskset_cfg,

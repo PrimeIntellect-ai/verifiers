@@ -4,7 +4,13 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent
+from verifiers.v1.agents import (
+    Agent,
+    AgentConfig,
+    Agents,
+    TimeoutConfig,
+    make_agent,
+)
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -15,17 +21,17 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.decorators import metric, reward, stop, tool
-from verifiers.v1.env import (
-    AgentConfig,
+from verifiers.v1.configs.env import (
     ElasticPoolConfig,
-    EnvConfig,
     EnvServerConfig,
-    Environment,
     StaticPoolConfig,
-    EnvTimeoutConfig,
-    TimeoutConfig,
-    default_seat_harness,
     pool_serve_kwargs,
+)
+from verifiers.v1.env import (
+    EnvConfig,
+    EnvTimeoutConfig,
+    Environment,
+    default_agent_harness,
 )
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
@@ -119,7 +125,7 @@ from verifiers.v1.trace import (
     TRACE_VERSION,
     AgentInfo,
     Branch,
-    Episode,
+    EpisodeInfo,
     Error,
     EvalRunInfo,
     GenerationSpan,
@@ -132,8 +138,8 @@ from verifiers.v1.trace import (
     TraceTask,
     TrainRunInfo,
     VersionInfo,
-    WireEpisode,
     WireTrace,
+    episode_ok,
 )
 from verifiers.v1.types import (
     AssistantMessage,
@@ -189,8 +195,8 @@ __all__ = [
     "Trace",
     "TraceTask",
     "WireTrace",
-    "Episode",
-    "WireEpisode",
+    "EpisodeInfo",
+    "episode_ok",
     "TRACE_VERSION",
     "AgentInfo",
     "RunInfo",
@@ -252,10 +258,9 @@ __all__ = [
     "EnvConfig",
     "EnvServerConfig",
     "SingleAgentEnvConfig",
-    "AgentConfig",
     "StaticPoolConfig",
     "ElasticPoolConfig",
-    "default_seat_harness",
+    "default_agent_harness",
     "pool_serve_kwargs",
     "RetryConfig",
     "RolloutRetryConfig",
@@ -263,6 +268,9 @@ __all__ = [
     "EnvTimeoutConfig",
     # agent
     "Agent",
+    "AgentConfig",
+    "Agents",
+    "make_agent",
     # loaders
     "import_taskset",
     "import_harness",

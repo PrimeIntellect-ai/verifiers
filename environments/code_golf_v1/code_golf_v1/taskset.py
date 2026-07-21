@@ -1,7 +1,7 @@
 """code_golf: write a short, fast Python program — the sibling-comparison recipe env.
 
 Each task asks for a tiny program with a known output. The env fans one env-rollout
-into `--env.attempts` independent attempts by the same "golfer" role and scores them
+into `--env.attempts` independent attempts by the same "golfer" agent and scores them
 against each other. Anything that needs the runtime is measured per attempt, box-live,
 into that attempt's trace; the env's `score()` then just compares the recorded
 metadata across the finished siblings:
@@ -73,9 +73,9 @@ class CodeGolfEnvConfig(vf.EnvConfig):
 
 
 class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
-    async def rollout(self, task, agents):
+    async def run(self, task, agents):
         await asyncio.gather(
-            *(agents["golfer"].run(task) for _ in range(self.config.attempts))
+            *(agents.golfer.run(task) for _ in range(self.config.attempts))
         )
 
     @vf.reward(weight=0.5)

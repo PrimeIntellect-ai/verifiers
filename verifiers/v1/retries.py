@@ -26,7 +26,7 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.trace import Error, Episode
+    from verifiers.v1.trace import EpisodeInfo, Error, Trace
 
 logger = logging.getLogger(__name__)
 
@@ -96,61 +96,63 @@ def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
     return True
 
 
-def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
+def episode_should_retry(
+    episode: EpisodeInfo, traces: list[Trace], retry: RolloutRetryConfig
+) -> bool:
     """Whether a finished env-rollout should be retried: any captured error —
     episode-level or on any trace — is retryable. All captures count, not just the
     most recent: a retryable failure followed by a teardown error would otherwise
     never retry. Episode-atomic — a half-played sibling context isn't reproducible."""
     return any(_retryable(e, retry) for e in episode.errors) or any(
-        _retryable(e, retry) for t in episode.traces for e in t.errors
+        _retryable(e, retry) for t in traces for e in t.errors
     )
 
 
 async def run_episode_with_retry(
-    run: Callable[[], Awaitable[Episode]],
+    run: Callable[[], Awaitable[tuple[EpisodeInfo, list[Trace]]]],
     retry: RolloutRetryConfig,
-) -> Episode:
-    """Run one env-rollout (`run` must mint a fresh episode per call), retrying while
-    it ends with a retryable error. When the final attempt fails too, the earlier
-    attempts' errors are prepended so the episode shows the full history; a final
-    good attempt returns clean."""
+) -> list[Trace]:
+    """Run one env-rollout (`run` must mint a fresh `EpisodeInfo` + traces per
+    call), retrying while it ends with a retryable error; returns the final
+    attempt's traces. When the final attempt fails too, the earlier attempts'
+    errors are prepended onto its `EpisodeInfo` so the episode shows the full
+    history; a final good attempt returns clean."""
     if retry.max_retries < 1:
-        return await run()
+        return (await run())[1]
 
     history: list = []
 
     def note(state: RetryCallState) -> None:
         # before_sleep fires only between attempts (a retry is imminent), so this
         # collects exactly the errors that caused a retry — never the final attempt's.
-        attempt_episode = state.outcome.result()
-        cause = attempt_episode.error or next(
-            (t.error for t in attempt_episode.traces if t.error), None
-        )
+        episode, traces = state.outcome.result()
+        cause = episode.error or next((t.error for t in traces if t.error), None)
         logger.warning(
             "retrying env-rollout %s (retry %d/%d) after error: %s",
-            attempt_episode.id,
+            episode.id,
             state.attempt_number,
             retry.max_retries,
             cause.type if cause else "?",
         )
-        history.extend(attempt_episode.errors)
-        for trace in attempt_episode.traces:
+        history.extend(episode.errors)
+        for trace in traces:
             history.extend(trace.errors)
 
     retrying = AsyncRetrying(
         stop=stop_after_attempt(retry.max_retries + 1),
         wait=wait_exponential_jitter(initial=0.5, max=30),
-        retry=retry_if_result(lambda rec: episode_should_retry(rec, retry)),
+        retry=retry_if_result(lambda result: episode_should_retry(*result, retry)),
         before_sleep=note,
         retry_error_callback=lambda state: state.outcome.result(),
     )
 
-    async def attempt() -> Episode:
+    async def attempt() -> tuple[EpisodeInfo, list[Trace]]:
         # tenacity only awaits a coroutine *function*; adapt so a plain callable
         # returning an awaitable works too.
         return await run()
 
-    final = await retrying(attempt)
-    if history and not final.ok:  # final attempt failed too → prepend the history
-        final.errors = history + final.errors
-    return final
+    episode, traces = await retrying(attempt)
+    if history and (episode.errors or any(t.errors for t in traces)):
+        # final attempt failed too → prepend the history
+        episode.errors = history + episode.errors
+    return traces

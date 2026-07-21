@@ -3,7 +3,7 @@
 GEPA optimizes one taskset's `Task.system_prompt` by alternating rollouts (`evaluate`) with a
 teacher LM reflecting on the reflective dataset (`make_reflective_dataset`) — see
 `verifiers.v1.gepa.adapter.GEPAAdapter`. Like `EvalConfig`, it owns an `env` field (the
-environment: its taskset, seats, limits) and adds the optimization loop's own knobs (model,
+environment: its taskset, agents, limits) and adds the optimization loop's own knobs (model,
 reflection model, train/val split, budget). There is no worker pool here (`EnvServerConfig`
 is not a base) — GEPA always runs in-process, since its adapter protocol is itself
 synchronous (see `GEPAAdapter`)."""
@@ -15,11 +15,8 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import EvalClientConfig
-from verifiers.v1.env import (
-    EnvConfig,
-    _narrowed_env_annotation,
-    resolve_env_field,
-)
+from verifiers.v1.configs.env import narrowed_env_annotation, resolve_env_field
+from verifiers.v1.env import EnvConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -31,12 +28,12 @@ class GEPAConfig(BaseConfig):
 
     env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
     """The environment under optimization — the same `[env]` block as an eval's
-    (`--env.taskset.*`, seats, limits), narrowed to the selected env's config class."""
+    (`--env.taskset.*`, agents, limits), narrowed to the selected env's config class."""
 
     @model_validator(mode="before")
     @classmethod
     def _resolve_env(cls, data):
-        return resolve_env_field(data, _narrowed_env_annotation(cls))
+        return resolve_env_field(data, narrowed_env_annotation(cls))
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.

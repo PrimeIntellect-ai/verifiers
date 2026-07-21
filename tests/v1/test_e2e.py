@@ -98,7 +98,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns == 1
     assert trace.reward == 1.0
-    # The seat's resolved identity rides the trace (policy metadata for trainers).
+    # The agent's resolved identity rides the trace (policy metadata for trainers).
     assert trace.agent is not None and trace.agent.sampling.temperature == 0
     # Every sampled turn has one per-call record, linked to its assistant node.
     sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
@@ -264,31 +264,34 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
 
 @pytest.mark.e2e
 async def test_multi_agent_env(run_v1, tmp_path):
-    """An `Environment` subclass shipped with its taskset (duet-v1): two roles run the
-    task, `score()` episodes a sibling-dependent metric, and one eval rollout lands one
-    episode carrying two role-stamped traces."""
+    """An `Environment` subclass shipped with its taskset (duet-v1): two agents run
+    the task, `score()` records a sibling-dependent metric, and one eval rollout
+    lands two agent-stamped traces sharing one episode id."""
     import json
 
     traces = await run_v1(
         "duet-v1",
-        harness=None,  # both duet seats pin their own harness
+        harness=None,  # both duet agents pin their own harness
         output_dir=tmp_path,
         max_turns=2,
     )
-    assert len(traces) == 2  # one env-rollout, one trace per role
+    assert len(traces) == 2  # one env-rollout, one trace per agent
     assert sorted(t.agent_name for t in traces) == ["a", "b"]
     (b,) = [t for t in traces if t.agent_name == "b"]
     assert b.trainable is False
     for trace in traces:
         assert trace.errors == []
-        assert trace.reward == 1.0  # each seat's own task reward
+        assert trace.reward == 1.0  # each agent's own task reward
         assert trace.metrics["duet"] == 1.0  # the sibling-dependent signal
-    # On disk: one episode line carrying both traces, role-stamped.
-    (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
-    row = json.loads(line)
-    assert row["env"] == "duet-v1"
-    assert [t["agent"]["name"] for t in row["traces"]] == ["a", "b"]
-    assert [t["agent"]["trainable"] for t in row["traces"]] == [True, False]
+    # On disk: one line per trace, agent-stamped, linked by the shared episode id.
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "traces.jsonl").read_text().splitlines()
+    ]
+    assert [row["agent"]["name"] for row in rows] == ["a", "b"]
+    assert [row["agent"]["trainable"] for row in rows] == [True, False]
+    assert all(row["episode"]["env"] == "duet-v1" for row in rows)
+    assert len({row["episode"]["id"] for row in rows}) == 1
 
 
 @pytest.mark.e2e
@@ -304,46 +307,47 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
     )
     assert len(traces) == 2  # one env-rollout, two attempts
     assert all(t.agent_name == "agent" and t.errors == [] for t in traces)
+    assert len({t.episode.id for t in traces}) == 1  # one shared episode stamp
     assert any(t.metrics["best"] == 1.0 for t in traces)
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes
 
 
 @pytest.mark.e2e
-async def test_env_id_agentic_judge(run_v1, tmp_path):
-    """The agentic judge over the echo taskset (needs docker): the judge lands in
-    its own box with the graded transcript uploaded, investigates with real
+async def test_env_id_solver_grader(run_v1, tmp_path):
+    """The solver-grader env over the echo taskset (needs docker): the grader lands
+    in its own box with the graded transcript uploaded, investigates with real
     execution, and its parsed verdict lands on the solver's trace under the spec's
-    reward key. Wiring, not taste: the judge followed the default `score` spec's
+    reward key. Wiring, not taste: the grader followed the default `score` spec's
     output contract — the grade itself is the model's call."""
     traces = await run_v1(
         "echo-v1",
-        harness=None,  # seats pin their own harness; there is no run-level one
+        harness=None,  # agents pin their own harness; there is no run-level one
         env={
-            "id": "agentic-judge",
+            "id": "solver-grader",
             "solver": {"harness": {"id": "null"}},
-            "judge": {"harness": {"runtime": {"type": "docker"}}},
+            "grader": {"harness": {"runtime": {"type": "docker"}}},
         },
         output_dir=tmp_path,
         max_turns=10,
         rollout_timeout=600,
     )
-    assert sorted(t.agent_name for t in traces) == ["judge", "solver"]
+    assert sorted(t.agent_name for t in traces) == ["grader", "solver"]
     (solver,) = [t for t in traces if t.agent_name == "solver"]
-    (judge,) = [t for t in traces if t.agent_name == "judge"]
-    assert solver.errors == [] and judge.errors == []
-    assert judge.trainable is False
+    (grader,) = [t for t in traces if t.agent_name == "grader"]
+    assert solver.errors == [] and grader.errors == []
+    assert grader.trainable is False
     assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
-    assert "SCORE:" in (judge.last_reply or "")
-    assert 0.0 <= solver.rewards["judge"] <= 1.0
+    assert "SCORE:" in (grader.last_reply or "")
+    assert 0.0 <= solver.rewards["grader"] <= 1.0
 
 
 @pytest.mark.e2e
 async def test_multi_agent_env_server(run_v1_server, tmp_path):
-    """The same env through the env-server pool: the worker rebuilds the role-typed
+    """The same env through the env-server pool: the worker rebuilds the agent-typed
     config from wire data, and the multi-trace episode rides the serve protocol."""
     traces = await run_v1_server(
         "duet-v1",
-        harness=None,  # both duet seats pin their own harness
+        harness=None,  # both duet agents pin their own harness
         output_dir=tmp_path,
         max_turns=2,
     )

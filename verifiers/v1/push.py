@@ -38,7 +38,7 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
     """One trace -> the platform's sample dict (the v0 eval-sample format).
 
     The hub table stays flat — one row per trace, and the trace itself carries its
-    episode standing (`agent.episode`/`agent.name`/`agent.trainable`), so a
+    episode standing (`episode.id`/`agent.name`/`agent.trainable`), so a
     multi-trace rollout's grouping is reconstructable without a nested schema. No
     prompt/completion split (meaningless mid-branch): `completion` is the final
     branch's messages, `trajectory` one message list per branch."""
@@ -52,7 +52,7 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "sample_id": trace.id,
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
-        "episode_id": trace.agent.episode if trace.agent is not None else None,
+        "episode_id": trace.episode.id if trace.episode is not None else None,
         "agent": trace.agent_name,
         "trainable": trace.trainable,
         "task": task,
@@ -114,18 +114,17 @@ def _creds() -> tuple[str | None, str, str, str | None]:
 @dataclass
 class _EpisodeIndex:
     """The episode grouping read off the run's traces.jsonl: which episode each
-    trace belongs to, and every episode's task and outcome — including zero-trace
-    failures, which the in-memory trace list can't see. Empty when the file
-    doesn't exist; pre-episode lines aren't indexed."""
+    trace belongs to, and every episode's task and outcome. Empty when the file
+    doesn't exist; unstamped (pre-episode) lines aren't indexed."""
 
     ok: dict[str, bool]
-    """episode id -> `Episode.ok` (no episode-level error, no trace errors)."""
+    """episode id -> `episode_ok` (no episode-level error, no trace errors)."""
     idx: dict[str, int]
     """episode id -> its task's `idx`."""
 
 
 def _episode_index(config: EvalConfig) -> _EpisodeIndex:
-    from verifiers.v1.cli.output import TRACES_FILE, output_path, sniff_episode
+    from verifiers.v1.cli.output import TRACES_FILE, output_path
 
     index = _EpisodeIndex(ok={}, idx={})
     path = output_path(config) / TRACES_FILE
@@ -136,24 +135,27 @@ def _episode_index(config: EvalConfig) -> _EpisodeIndex:
             if not line.strip():
                 continue
             row = json.loads(line)
-            if not sniff_episode(row):
+            episode = row.get("episode")
+            if not isinstance(episode, dict) or not episode.get("id"):
                 continue
-            traces = row.get("traces") or []
-            index.ok[row["id"]] = not row.get("errors") and not any(
-                t.get("errors") for t in traces
+            eid = episode["id"]
+            index.ok[eid] = (
+                index.ok.get(eid, True)
+                and not episode.get("errors")
+                and not row.get("errors")
             )
-            index.idx[row["id"]] = row["task"]["data"]["idx"]
+            index.idx[eid] = row["task"]["data"]["idx"]
     return index
 
 
 def _run_metrics(traces: list[Trace], index: _EpisodeIndex) -> dict[str, Any]:
     """Run-level aggregates as v0's `GenerateMetadata`. Rewards/metrics aggregate
-    over the trainable traces only — fixed seats (a judge, a modeled user) often
+    over the trainable traces only — fixed agents (a grader, a modeled user) often
     carry no rewards and would dilute every mean with structural zeros — falling
     back to all traces when none are trainable (same rule as the dashboard).
     `avg_error` is the share of EPISODES that aren't ok: a hook failure counts even
-    when its traces are clean or it left none (invisible to the flattened trace
-    list; read off traces.jsonl, per-trace fallback when the file is absent)."""
+    when its traces are clean (read off traces.jsonl, per-trace fallback when the
+    file is absent)."""
     scored = [t for t in traces if t.trainable] or traces
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
@@ -176,14 +178,14 @@ def _run_metrics(traces: list[Trace], index: _EpisodeIndex) -> dict[str, Any]:
 
 def _build_samples(traces: list[Trace]) -> list[dict[str, Any]]:
     """One platform sample per trace, with one `rollout_number` per EPISODE: a
-    multi-agent rollout's seats are the same attempt at the task, not attempts
-    1..n. The grouping is each trace's own episode stamp (`agent.episode`); an
+    multi-agent rollout's agents are the same attempt at the task, not attempts
+    1..n. The grouping is each trace's own episode stamp (`episode.id`); an
     unstamped trace counts as an attempt of its own."""
     counts: dict[int, int] = {}
     episode_numbers: dict[str, int] = {}
     samples = []
     for trace in traces:
-        episode_id = trace.agent.episode if trace.agent is not None else None
+        episode_id = trace.episode.id if trace.episode is not None else None
         number = episode_numbers.get(episode_id) if episode_id else None
         if number is None:
             idx = trace.task.data.idx

@@ -202,11 +202,11 @@ class Judge(Generic[ParsedT, ConfigT]):
     def render(self, task: "TaskData", trace: "Trace") -> str | Messages:
         """The complete judging prompt for one finished trace. `score` is
         `verdict(complete(render(...)))` — implement `render` + `verdict` and the
-        same spec is also agent-executable: the `agentic-judge` env runs `render`'s
-        prompt as its judge role's task and hands the final reply to `verdict`."""
+        same spec is also agent-executable: the `solver-grader` env runs `render`'s
+        prompt as its grader's task and hands the final reply to `verdict`."""
         raise NotImplementedError(
             f"{type(self).__name__} implements no `render`, so it can't drive a judge "
-            "agent (the `agentic-judge` env); implement `render` + `verdict`, or plug it via "
+            "agent (the `solver-grader` env); implement `render` + `verdict`, or plug it via "
             "`taskset.task.judges` instead."
         )
 
@@ -218,7 +218,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         rollout, never score the model."""
         raise NotImplementedError(
             f"{type(self).__name__} implements no `verdict`; implement `render` + "
-            "`verdict` to make it agent-executable (the `agentic-judge` env)."
+            "`verdict` to make it agent-executable (the `solver-grader` env)."
         )
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
