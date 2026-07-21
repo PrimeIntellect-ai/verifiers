@@ -1,4 +1,4 @@
-"""The eval runner: fan rollouts out (one episode per task) with bounded concurrency."""
+"""The eval runner: fan env-rollouts out with bounded concurrency."""
 
 import asyncio
 import contextlib
@@ -9,10 +9,14 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
-from verifiers.v1.cli.output import append_trace, output_path, save_config
-from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.env import Environment
-from verifiers.v1.trace import EvalRunInfo, Trace
+from verifiers.v1.cli.output import (
+    append_episode,
+    append_trace,
+    output_path,
+    save_config,
+)
+from verifiers.v1.env import Environment, RunSlot
+from verifiers.v1.trace import Episode, EvalRunInfo, Trace
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
@@ -23,25 +27,16 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     client = resolve_client(config.client)
     tasks = env.taskset.select(config.num_tasks, config.shuffle)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
-    # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
-    # concurrent rollouts (across episodes), so group rewards still see their whole episode.
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     out = output_path(config)
-    # Write config.toml up front, then persist each trace as it completes (so the results are
-    # durable mid-run, not only at the end). One lock serializes worker-thread appends from
-    # concurrent rollouts while keeping large trace serialization off the event loop.
     owed: dict[str, int] | None = None
-    # On resume, the kept (good) on-disk rollouts rejoin the run as finished traces: displayed,
-    # returned, pushed, and printed alongside this session's, with only the owed rollouts re-run
-    # — so the resumed run is indistinguishable from one that was never interrupted.
-    finished: list[Trace] = []
+    # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
+    finished: list[Episode] = []
     if config.resume is not None:
-        # Resume incomplete group-reward tasks whole so every rollout is present.
-        group = bool(tasks) and bool(discover_decorated(tasks[0], "group_reward"))
         finished, owed = resume.load(
-            out, [t.data.idx for t in tasks], config.num_rollouts, group
+            out, [t.data.idx for t in tasks], config.num_rollouts, env.complete
         )
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
@@ -66,41 +61,38 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
 
     write_lock = asyncio.Lock()
 
-    async def on_complete(trace: Trace) -> None:
-        trace.stamp(EvalRunInfo(id=config.uuid))
-        await append_trace(out, trace, write_lock)
+    async def on_complete(episode: Episode) -> None:
+        for trace in episode.traces:
+            trace.stamp(EvalRunInfo(id=config.uuid))
+        await append_episode(out, episode, write_lock)
 
-    # Shared tool servers (if any) come up once here and their URLs flow into every rollout
-    # (non-shared ones start per rollout inside the episodes); the interception comes up
-    # here too, so concurrent rollouts share its servers + tunnels rather than one each. Build
-    # episodes inside `serving` so each rollout is wired to those resources at construction.
+    # Serving resources (shared tool servers, interception) come up once for the
+    # run; plan slots inside so the env's agents borrow them.
     async with env.serving():
-        episodes = [
-            env.episode(
-                task, ctx, n=owed[task.data.idx] if owed else config.num_rollouts
-            )
+        planned = [
+            slot
             for task in tasks
+            for slot in env.slots(
+                task, n=owed[task.data.idx] if owed else config.num_rollouts
+            )
         ]
-        rollouts = [resume.Finished(trace) for trace in finished] + [
-            rollout for episode in episodes for rollout in episode.rollouts
-        ]
+        slots = [RunSlot.finished(episode) for episode in finished] + planned
         push_state = None
         if config.push and config.rich:
             from verifiers.v1.push import PushState
 
             push_state = PushState()
         display = (
-            dashboard(rollouts, config, start, push=push_state)
+            dashboard(slots, config, start, push=push_state)
             if config.rich
             else contextlib.nullcontext()
         )
         async with display:
             results = await asyncio.gather(
-                *(episode.run(semaphore, on_complete) for episode in episodes)
+                *(env.run_slot(slot, ctx, semaphore, on_complete) for slot in planned)
             )
-            traces = finished + [
-                trace for episode_traces in results for trace in episode_traces
-            ]
+            episodes = finished + list(results)
+            traces = [trace for episode in episodes for trace in episode.traces]
             if (
                 push_state is not None
             ):  # upload off the event loop so the view keeps refreshing
@@ -129,18 +121,16 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             "extra_env_kwargs": config.extra_env_kwargs,
         }
         if legacy
-        else {"config_data": env_config_data(config)}  # picklable across the spawn
+        else {"config_data": env_config_data(config.env)}  # picklable across the spawn
     )
-    # The pool broker + workers are spawned (fresh interpreters, no logging) — hand them
-    # the same loguru setup the main process uses (stderr + the run's log file) so their
-    # rollout logs come back and land in the output dir.
+    # Spawned processes inherit no logging — hand them the main process's setup so
+    # their rollout logs land in the output dir.
     level = "DEBUG" if config.verbose else "INFO"
     log_file = str(output_path(config) / "eval.log")
     mpctx = mp.get_context("spawn")
     address_queue: mp.Queue = mpctx.Queue()
-    # Death pipe: serve_env (and, transitively, its workers/tunnels/sandboxes) self-terminates
-    # if this main process dies abruptly. We keep parent_conn; its close — even on our SIGKILL —
-    # signals death to the child's watch (see _arm_teardown). Mirrors the broker -> worker pipe.
+    # Death pipe: serve_env self-terminates if this process dies abruptly — we keep
+    # parent_conn, whose close (even on our SIGKILL) signals the child's watch.
     parent_conn, child_conn = mpctx.Pipe()
     proc = mpctx.Process(
         target=serve_env,
@@ -162,6 +152,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
+        # Only a legacy (v0) env group-scores; a v1 env scores siblings in its own
+        # rollout.
         group_scored = info.requires_group_scoring
         if info.num_tasks is None:  # infinite taskset - the run must be bounded
             if config.num_tasks is None:
@@ -180,7 +172,12 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:
-            finished, owed = resume.load(out, idxs, config.num_rollouts, group_scored)
+            # (legacy only) a group is served and scored together, so a partially-kept
+            # task redoes as a whole group — whole_task drops its kept rows.
+            episodes, owed = resume.load(
+                out, idxs, config.num_rollouts, whole_task=group_scored
+            )
+            finished = [trace for episode in episodes for trace in episode.traces]
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
@@ -204,8 +201,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         logger.info("results: %s", out)
         request_concurrency = config.max_concurrent
         if request_concurrency and group_scored:
-            # max_concurrent is a rollout resource bound, not a request-throughput target.
-            # A group is indivisible, so one oversized group must still be allowed to run.
+            # (legacy only) max_concurrent bounds rollouts, not requests; a group is
+            # indivisible, so one oversized group must still be allowed to run.
             request_concurrency = max(1, request_concurrency // config.num_rollouts)
         semaphore = (
             asyncio.Semaphore(request_concurrency) if request_concurrency else None
@@ -223,25 +220,25 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                 )
             for trace in traces:
                 trace.stamp(EvalRunInfo(id=config.uuid))
-                await append_trace(out, trace, write_lock)
+                await append_trace(out, trace, write_lock, env=config.env_id)
             return traces
 
         async def run_rollout_unit(idx: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
-                trace = await client.run_rollout(
+                episode = await client.run_rollout(
                     task_idx=idx,
                     client=config.client,
                     model=config.model,
                     sampling=config.sampling,
                 )
-            trace.stamp(EvalRunInfo(id=config.uuid))
-            await append_trace(out, trace, write_lock)
-            return [trace]
+            for trace in episode.traces:
+                trace.stamp(EvalRunInfo(id=config.uuid))
+            await append_episode(out, episode, write_lock)
+            return list(episode.traces)
 
-        # A group-scored task must run its rollouts together (cross-rollout scoring) →
-        # one `run_group` request per task (one worker); otherwise rollouts are
-        # independent → one `run_rollout` request each, which the broker round-robins
-        # (least-busy) across workers — mirrors the prime-rl dispatcher.
+        # A group-scored legacy task runs its rollouts together (one `run_group`
+        # request, one worker); otherwise each rollout is its own `run_rollout`
+        # request, dispatched least-busy across workers.
         units = (
             [run_group_unit(i) for i in idxs]
             if group_scored

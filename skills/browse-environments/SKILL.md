@@ -42,7 +42,7 @@ Inspect the taskset, task, data, and configs:
 
 - `Taskset.load()` constructs the tasks.
 - `TaskData` contains each serializable row.
-- `Task` contains hooks, scoring, task-scoped tools, and user simulation.
+- `Task` contains hooks, scoring, task-scoped tools, and user simulation. An exported `Environment` subclass (if any) holds multi-agent control flow.
 - `TasksetConfig` contains load-time settings; task-facing settings live under its nested `task` config.
 - Check custom harness and runtime requirements explicitly.
 

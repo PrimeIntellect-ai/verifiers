@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
 from pydantic import Field, PrivateAttr
@@ -123,11 +123,6 @@ class Branch(StrictBaseModel):
     index: int
     nodes: list[MessageNode]
     calls: list[ModelCall] = Field(default_factory=list)
-
-    @property
-    def num_turns(self) -> int:
-        """Model-sampled turns; prompt-supplied assistant messages do not count."""
-        return sum(1 for n in self.nodes if n.sampled)
 
     @property
     def messages(self) -> Messages:
@@ -312,7 +307,9 @@ class VersionInfo(StrictBaseModel):
 
 
 class AgentInfo(StrictBaseModel):
-    """The agent that produced this trace's sampled turns."""
+    """The agent that produced this trace's sampled turns — its resolved identity
+    plus its standing in the episode, so a bare trace carries everything needed to
+    reconstruct a multi-agent episode (flat, trace-native ingestion)."""
 
     model: str
     """The model identifier requested from the client."""
@@ -321,19 +318,28 @@ class AgentInfo(StrictBaseModel):
     harness: HarnessConfig | None = None
     """The driving harness's config. Typed as the base config, so a custom harness's
     extra fields don't serialize — records round-trip without importing the harness."""
+    name: str | None = None
+    """The env seat this agent played — the config field name (`solver`, `judge`).
+    None outside an env and for `SingleAgentEnv`'s sole implicit seat; first-class
+    so training can filter and baseline per role."""
+    trainable: bool = True
+    """Whether this trace's tokens are training data for the run's policy. An env's
+    `brief()` marks fixed-model seats (a frozen judge, a pinned user sim) untrainable."""
+    episode: str | None = None
+    """The `Episode.id` this trace belongs to, stamped at mint (None outside an env)."""
+    env: str | None = None
+    """The env that ran the episode (`EnvConfig.env_id`, e.g.
+    `agentic-judge+gsm8k-v1`), stamped at mint (None outside an env)."""
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):
-    """The task as recorded on the trace: the row (`data`, the wire half — fully typed,
-    flows into scoring) plus the Task class name that produced the rollout (`type`) —
-    provenance, so a bare trace is self-describing: a `from_trace` implementer or an
-    offline re-scorer can tell which behavior class made it without the run's config
-    (replay warns when it disagrees with the taskset's declared type). Only data and a
-    name ride the wire — behavior still re-attaches by construction."""
+    """The task as recorded on the trace: the row (`data`, fully typed, flows into
+    scoring) plus the Task class name that produced the rollout (`type`) — so a bare
+    trace is self-describing without the run's config. Only data and a name ride
+    the wire; behavior re-attaches by construction."""
 
     type: str
-    """The Task class name (`type(task).__name__`), resolution stays anchored to the
-    taskset id like everything else."""
+    """The Task class name (`type(task).__name__`)."""
     data: DataT
     """The (immutable) row being solved."""
 
@@ -366,7 +372,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
-    """Weighted contributions from task rewards, group rewards, and judges."""
+    """Weighted contributions from task rewards, judges, and the env's `score()`."""
     metrics: dict[str, float] = Field(default_factory=dict)
     """Unweighted metrics from tasks, harnesses, and judges."""
     info: dict[str, Any] = Field(default_factory=dict)
@@ -400,6 +406,17 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def has_error(self) -> bool:
         return bool(self.errors)
 
+    @property
+    def agent_name(self) -> str | None:
+        """The env seat that produced this trace (`agent.name`); None for the
+        single-agent default and outside an env."""
+        return self.agent.name if self.agent is not None else None
+
+    @property
+    def trainable(self) -> bool:
+        """Whether this trace's tokens train the run's policy (`agent.trainable`)."""
+        return self.agent.trainable if self.agent is not None else True
+
     def _last_assistant(self) -> MessageNode | None:
         """Most recent model-produced node, ignoring prompt-supplied assistant messages."""
         return next((n for n in reversed(self.nodes) if n.sampled), None)
@@ -423,11 +440,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
         return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
-
-    @property
-    def has_response(self) -> bool:
-        last = self._last_assistant()
-        return bool(last and last.message.content)
 
     @property
     def branches(self) -> list[Branch]:
@@ -588,7 +600,57 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         return self.model_dump(mode="json", exclude=_NODE_DUMP_EXCLUDE)
 
 
-TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
-
 WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""
+
+
+class Episode(StrictBaseModel, Generic[DataT, StateT]):
+    """One run of the env — the global view, each trace one agent's local view. The
+    atom of `traces.jsonl` and of the serve protocol: an episode's traces succeed,
+    resume, and score as a unit. `errors` are failures not attributable to any one
+    trace (the env's `rollout`/`score` hooks, plus prior attempts' when retried);
+    per-trace failures stay on the traces.
+
+    The type parameters serve the wire loaders, not authoring: `WireEpisode` reads
+    any taskset's episodes without importing the taskset. An authored episode is
+    typically heterogeneous and uses bare `Episode`."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    env: str = ""
+    """The env (taskset) id that produced this episode — provenance for mixed files."""
+    task: TraceTask[DataT]
+    """The task rolled out, as recorded on its traces (class name + row)."""
+    errors: list[Error] = Field(default_factory=list)
+    """Episode-level errors, oldest first (more than one only when the episode was
+    retried). `error` exposes the most recent."""
+    traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
+
+    @property
+    def error(self) -> Error | None:
+        return self.errors[-1] if self.errors else None
+
+    @property
+    def views(self) -> dict[str, list["Trace[DataT, StateT]"]]:
+        """The episode's local views by agent name, reconstituted from the trace
+        stamps (completion order; a fanned-out seat is its list). `SingleAgentEnv`
+        episodes carry no seat names and show no views — read `traces` there."""
+        views: dict[str, list[Trace[DataT, StateT]]] = {}
+        for trace in self.traces:
+            if trace.agent_name is not None:
+                views.setdefault(trace.agent_name, []).append(trace)
+        return views
+
+    @property
+    def ok(self) -> bool:
+        """Whether the whole episode is good — no episode-level error and no trace
+        errors. The resume unit: anything less is redone."""
+        return not self.errors and not any(t.errors for t in self.traces)
+
+    @classmethod
+    def of(cls, trace: Trace, env: str = "") -> "Episode":
+        """The single-agent episode: one trace, task lifted off it."""
+        return cls(env=env, task=trace.task, traces=[trace])
+
+
+WireEpisode = Episode[WireTaskData, State]
+"""Episode loader that preserves unknown task fields in `task.model_extra`."""

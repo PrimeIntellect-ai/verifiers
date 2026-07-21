@@ -16,6 +16,14 @@ A taskset is the collection and loader for the work to evaluate or train on. Eac
 
 A harness is the program the model is run in, e.g. Claude Code, Codex or mini-swe-agent.
 
+## Environment
+
+The control flow between agents: how many run on one task, in what order, judged how across the finished set. The default is the single-agent case; `--env.id` pairs a reusable interaction (best-of-n, a judge) with any taskset. One env-rollout mints one `Episode` — the task, a rollout-level error list, and one role-stamped trace per agent run.
+
+## Agent
+
+An `Agent` is a reusable (harness × model × runtime policy) value with one executable arrow — `agent.run(task) -> Trace` — the building block environments hand to `rollout()`, and a scripting surface of its own (see [Agent](agent.md)).
+
 ## Toolset
 
 A set of tools defined by the taskset that are installed as MCP servers into the harnesses that support them.
@@ -30,7 +38,9 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Architecture](architecture.md) — An overview about the architecture and runtime of verifiers
 - [Tasksets](tasksets.md) — How to create tasksets
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
+- [Multi-agent environments](environments.md) — Roles, the control flow between agents, and cross-agent rewards
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Harnesses](harnesses.md) — How to build custom harnesses
+- [Agent](agent.md) — run tasks, place runs into shared sandboxes, chain traces into new tasks
 
 For the documentation for legacy environments, go to [the v0 documentation](../v0/overview.md).

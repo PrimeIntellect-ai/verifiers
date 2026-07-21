@@ -4,25 +4,32 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.agent import Agent
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
+    EvalClientConfig,
     ModelContext,
+    TrainClientConfig,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.decorators import metric, reward, stop, tool
 from verifiers.v1.env import (
+    AgentConfig,
     ElasticPoolConfig,
     EnvConfig,
     EnvServerConfig,
     Environment,
     StaticPoolConfig,
+    EnvTimeoutConfig,
     TimeoutConfig,
+    default_seat_harness,
     pool_serve_kwargs,
 )
-from verifiers.v1.episode import Episode
+from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
+    EnvError,
     HarnessError,
     InterceptionError,
     ProviderError,
@@ -51,11 +58,16 @@ from verifiers.v1.judges import (
 )
 from verifiers.v1.loaders import (
     default_harness_id,
+    env_config_type,
+    resolve_env_config,
+    environment_class,
     harness_config_type,
+    import_environment,
     import_harness,
     import_judge,
     import_taskset,
     judge_config_type,
+    load_environment,
     load_harness,
     load_judge,
     load_taskset,
@@ -71,7 +83,6 @@ from verifiers.v1.scoring import (
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
-from verifiers.v1.rollout import Rollout
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
     capture_patch as capture_patch,
@@ -108,6 +119,7 @@ from verifiers.v1.trace import (
     TRACE_VERSION,
     AgentInfo,
     Branch,
+    Episode,
     Error,
     EvalRunInfo,
     GenerationSpan,
@@ -120,6 +132,7 @@ from verifiers.v1.trace import (
     TraceTask,
     TrainRunInfo,
     VersionInfo,
+    WireEpisode,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -176,6 +189,8 @@ __all__ = [
     "Trace",
     "TraceTask",
     "WireTrace",
+    "Episode",
+    "WireEpisode",
     "TRACE_VERSION",
     "AgentInfo",
     "RunInfo",
@@ -199,9 +214,9 @@ __all__ = [
     "tool",
     "metric",
     "reward",
-    "group_reward",
     # errors
     "RolloutError",
+    "EnvError",
     "ProviderError",
     "HarnessError",
     "ToolsetError",
@@ -214,6 +229,8 @@ __all__ = [
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",
@@ -231,27 +248,37 @@ __all__ = [
     "DockerConfig",
     "PrimeConfig",
     "Environment",
+    "SingleAgentEnv",
     "EnvConfig",
     "EnvServerConfig",
+    "SingleAgentEnvConfig",
+    "AgentConfig",
     "StaticPoolConfig",
     "ElasticPoolConfig",
+    "default_seat_harness",
     "pool_serve_kwargs",
     "RetryConfig",
     "RolloutRetryConfig",
     "TimeoutConfig",
-    "Episode",
-    "Rollout",
+    "EnvTimeoutConfig",
+    # agent
+    "Agent",
     # loaders
     "import_taskset",
     "import_harness",
     "import_judge",
+    "import_environment",
+    "load_environment",
     "load_taskset",
     "load_harness",
     "load_judge",
+    "environment_class",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
     "judge_config_type",
+    "env_config_type",
+    "resolve_env_config",
     "default_harness_id",
     # judge
     "Judge",

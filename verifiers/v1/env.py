@@ -1,17 +1,28 @@
-"""Compose a taskset and harness into runnable episodes."""
+"""Compose a taskset, its agents, and how one task becomes one env-rollout."""
 
+import asyncio
 import contextlib
 import logging
-from typing import Annotated, Literal
+import traceback
+from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable, Collection, Mapping
+from dataclasses import dataclass, field
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    ClassVar,
+    Generic,
+    Literal,
+    TypeVar,
+    get_args,
+)
 
-from pydantic import Field, SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, ValidationError, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.episode import Episode
-from verifiers.v1.types import ID
+from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
+from verifiers.v1.types import ID, SamplingConfig
 from verifiers.v1.interception import (
     ElasticInterceptionPoolConfig,
     Interception,
@@ -20,23 +31,30 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.session import RolloutLimits
-from verifiers.v1.retries import RetryConfig
-from verifiers.v1.rollout import Rollout
+from verifiers.v1.retries import RetryConfig, run_episode_with_retry
 from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
 )
-from verifiers.v1.task import Task, resolve_server_config
+from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.errors import EnvError, boundary
+from verifiers.v1.task import Task, _record_result, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.trace import Error, Episode, Trace, TraceTask
 from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.mcp import SharedToolServer, serve_shared
+
+if TYPE_CHECKING:
+    from verifiers.v1.agent import Agent
 
 
 class TimeoutConfig(BaseConfig):
-    """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit). Each bounds one stage of `Rollout.run`: task and harness setup, the harness
-    run, the task's `finalize` hook, then scoring."""
+    """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None =
+    no limit). A per-seat cap: every agent run is bounded by its own seat's
+    stages (`--env.<role>.timeout.rollout`); each stage falls back to the task's
+    own `TaskTimeout` when unset."""
 
     setup: float | None = None
     """Shared wall-clock budget for task setup and harness provisioning."""
@@ -46,6 +64,249 @@ class TimeoutConfig(BaseConfig):
     """Max wall-clock for the task's `finalize` hook (post-run work, before scoring)."""
     scoring: float | None = None
     """Max wall-clock for task and harness scoring."""
+
+
+class EnvTimeoutConfig(BaseConfig):
+    """Wall-clock timeouts for the env's own hooks, in seconds (None = no limit).
+    Per-run stage timeouts are each seat's (`--env.<role>.timeout.*`)."""
+
+    score: float | None = None
+    """Max wall-clock for the env's cross-trace `score()` hook, run once per
+    env-rollout (per-trace scoring is bounded by each seat's `timeout.scoring`)."""
+
+
+class AgentConfig(BaseConfig):
+    """One env role: who plays it, and its per-run caps. A role pins only what
+    makes it a different actor; everything unpinned falls back — the model context
+    to the run's own, the harness to the taskset's default."""
+
+    harness: SerializeAsAny[HarnessConfig] | None = None
+    """The role's program + runtime policy (None = the taskset's default harness)."""
+    model: str | None = None
+    """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
+    client: ClientConfig | None = None
+    """Endpoint override (None = the run's client) — routes a fixed role (a frozen
+    judge, a pinned user sim) off the training endpoint."""
+    sampling: SamplingConfig | None = None
+    """Sampling override (None = the run's sampling)."""
+    timeout: TimeoutConfig = TimeoutConfig()
+    """Per-stage wall-clock timeouts for this seat's runs (each stage falls back
+    to the task's own)."""
+    max_turns: int | None = None
+    """Max model turns per run (None = no limit). Framework-enforced (the
+    interception server refuses turns past it), so it applies to any harness."""
+    max_input_tokens: int | None = None
+    """Max input (prompt) tokens per run (None = no limit); framework-enforced
+    between turns."""
+    max_output_tokens: int | None = None
+    """Max output (completion) tokens per run (None = no limit); framework-enforced
+    between turns."""
+    max_total_tokens: int | None = None
+    """Max total (prompt + completion) tokens per run (None = no limit);
+    framework-enforced between turns."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_harness(cls, data):
+        """Narrow a pinned `harness` to its concrete config type by `id`; an absent
+        harness stays None (the taskset's default, resolved at env construction).
+        The lazy import keeps class-body `AgentConfig()` defaults constructible
+        while this module is still initializing."""
+        if isinstance(data, dict) and data.get("harness") is not None:
+            from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
+
+            narrow_plugin_field(data, "harness", harness_config_type, "bash")
+        return data
+
+
+def _mentions_agent_config(annotation) -> bool:
+    """Whether `annotation` names an `AgentConfig` — directly or inside
+    Optional/union/Annotated/container forms — i.e. anything an author plausibly
+    meant as a role declaration."""
+    if isinstance(annotation, type):
+        return issubclass(annotation, AgentConfig)
+    return any(_mentions_agent_config(arg) for arg in get_args(annotation))
+
+
+def prefix_validation_error(e: ValidationError, prefix: tuple) -> ValidationError:
+    """`e` with `prefix` prepended to every error's loc. A sub-model validated
+    inside a `mode="before"` validator surfaces its errors at the validator's own
+    loc, so without re-raising prefixed the CLI renders a flag path missing the
+    segments the user actually typed."""
+    return ValidationError.from_exception_data(
+        e.title,
+        [
+            {**err, "loc": prefix + tuple(err["loc"])}
+            for err in e.errors(include_url=False)
+        ],
+    )
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """`override` onto `base`, recursing into dicts, so a partial nested override
+    keeps the untouched keys of the declared default. An override that switches a
+    subtree's discriminator (`id`/`type`) replaces the subtree wholesale — the old
+    plugin's fields must not leak into the new type's validation."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            switched = any(
+                k in value and k in merged[key] and value[k] != merged[key][k]
+                for k in ("id", "type")
+            )
+            merged[key] = value if switched else _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+class EnvConfig(BaseConfig):
+    """An environment's config — the run's single `[env]` block. One subclass per
+    `Environment` class (bound via `Environment[YourConfig]`, available as
+    `self.config`): declare each role as an `AgentConfig` field with a default
+    instance, plus any env-level knobs. The run's `env` field narrows to it by the
+    env `id` (else the taskset id), which is what gives `--env.<role>.model`-style
+    CLI/TOML addressing. The base carries what every environment has: which env
+    and the seed taskset — per-run caps (turns, tokens, stage timeouts) are each
+    seat's own (`--env.<role>.max_turns`)."""
+
+    id: ID = ""
+    """Which `Environment` runs. Empty = the taskset's own: the subclass its package
+    exports, else `SingleAgentEnv`. Set it to pair a reusable env with any taskset
+    (`--env.id best-of-n`): a bundled env, a local package, or a Hub
+    `org/name[@version]`. An explicit id wins over the taskset's bundled env."""
+    # SerializeAsAny: keep the resolved subclass's fields in model_dump(); the
+    # env-server wire would otherwise drop them.
+    taskset: SerializeAsAny[TasksetConfig] | None = None
+    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`,
+    positional shorthand `uv run eval <taskset-id>`). None only for an env that
+    mints its tasks without a dataset; every bundled env requires one."""
+    timeout: EnvTimeoutConfig = EnvTimeoutConfig()
+    retries: RetryConfig = RetryConfig()
+    max_concurrent: int | None = None
+    """Bounds concurrent agent runs on a SERVED env, per worker — an env's internal
+    fan-out counts, so best-of-n under many requests can't run unbounded (None = no
+    limit). The in-process eval CLI gates with its run-level `--max-concurrent`
+    instead."""
+    interception: InterceptionConfig = ElasticInterceptionPoolConfig()
+    """The interception shape (see `verifiers.v1.interception`): `elastic` (default —
+    servers grown on demand), `server` (one server, with a tunnel choice), or
+    `static` (a fixed list of servers)."""
+
+    @property
+    def env_id(self) -> str:
+        """The run's identifier — the taskset id, prefixed by the paired env id
+        (`best-of-n+gsm8k-v1`), so paired and plain runs stay distinguishable on
+        episodes and output dirs."""
+        taskset_id = self.taskset.id if self.taskset is not None else ""
+        if taskset_id and self.id:
+            return f"{self.id}+{taskset_id}"
+        return taskset_id or self.id
+
+    def seat_harnesses(self) -> dict[str, HarnessConfig]:
+        """Each declared role's resolved harness config (pin, else the taskset's
+        default) — known without constructing the env, for output naming and the
+        dashboard."""
+        default = default_seat_harness(
+            self.taskset.id if self.taskset is not None else ""
+        )
+        return {
+            name: cfg.harness if cfg.harness is not None else default
+            for name, cfg in _declared_agent_configs(self).items()
+        }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_env_level_harness(cls, data):
+        """Point an env-level `harness` key (the v0 muscle-memory spelling) at the
+        seat that owns it, instead of a bare `extra_forbidden`. A subclass that
+        declares a role named `harness` keeps the key."""
+        if (
+            isinstance(data, dict)
+            and "harness" in data
+            and "harness" not in cls.model_fields
+        ):
+            raise ValueError(
+                "a harness belongs to a seat: --env.agent.harness.* on the "
+                "single-agent env, --env.<role>.harness.* on a multi-agent role "
+                "(TOML: [env.agent.harness])"
+            )
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_taskset(cls, data):
+        """Narrow `taskset` to its concrete config type by `id`, so taskset-specific
+        fields validate typed. Lazy import for the same reason as
+        `AgentConfig._resolve_harness`."""
+        if isinstance(data, dict) and data.get("taskset") is not None:
+            from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
+
+            narrow_plugin_field(data, "taskset", taskset_config_type)
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_role_defaults(cls, data):
+        """Deep-merge partial role data over the field's declared default instance.
+        Plain validation would replace the instance wholesale, so a partial override
+        (`--env.user.sampling.temperature`) would silently reset the role's other
+        pins (model, trainability)."""
+        if isinstance(data, dict):
+            for name, field in cls.model_fields.items():
+                if isinstance(field.default, AgentConfig) and isinstance(
+                    data.get(name), dict
+                ):
+                    data[name] = _deep_merge(
+                        field.default.model_dump(exclude_none=True), data[name]
+                    )
+        return data
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs):
+        """A role field must carry a default *instance* (the deep-merge and the
+        role machinery read it) and must not shadow a base field; refuse both at
+        class definition rather than silently dropping the role. Membership is the
+        role machinery's (`_merge_role_defaults`/`_declared_agent_configs`): the
+        default instance, not the annotation form, is what makes a field a role."""
+        super().__pydantic_init_subclass__(**kwargs)
+        for name, info in cls.model_fields.items():
+            is_role = isinstance(info.default, AgentConfig)
+            if not is_role and not _mentions_agent_config(info.annotation):
+                continue
+            if is_role and name in EnvConfig.model_fields:
+                raise TypeError(
+                    f"{cls.__name__}.{name}: a role can't shadow the base EnvConfig "
+                    f"field {name!r}; pick another role name"
+                )
+            if not is_role:
+                raise TypeError(
+                    f"{cls.__name__}.{name}: declare the role with a default "
+                    f"instance (`{name}: vf.AgentConfig = vf.AgentConfig(...)`), "
+                    "not default_factory or a bare annotation — the declared "
+                    "instance is the role's author default (CLI overrides "
+                    "deep-merge onto it, and the seat plays under the field's name)"
+                )
+
+
+def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
+    """The `AgentConfig` fields declared on an env's config, in declaration order —
+    the env's roles, each seat keyed by its field name (the only naming site).
+    Membership test (a default instance) matches `_merge_role_defaults`."""
+    return {
+        name: getattr(config, name)
+        for name, field in type(config).model_fields.items()
+        if isinstance(field.default, AgentConfig)
+    }
+
+
+def default_seat_harness(taskset_id: str) -> HarnessConfig:
+    """What an unpinned role's `harness=None` resolves to: the taskset's bundled
+    harness when it ships one, else the built-in `bash`."""
+    from verifiers.v1.loaders import default_harness_id, harness_config_type
+
+    ident = default_harness_id(taskset_id)
+    return harness_config_type(ident).model_validate({"id": ident})
 
 
 class StaticPoolConfig(BaseConfig):
@@ -84,39 +345,87 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
     return {"max_workers": pool.num_workers, "elastic": False}
 
 
-class EnvConfig(BaseConfig):
-    """The taskset that loads tasks and the harness that runs them."""
+def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> dict:
+    """Shared `mode="before"` body for every run config owning an `env` field
+    (`EnvServerConfig`, `GEPAConfig`): refuse the retired top-level axes with a
+    pointer home, and narrow `env` to the concrete env's config class. `narrowed`
+    is the annotation the CLI pre-resolved (`narrow_config`) — its id is
+    authoritative, so validate against it directly."""
+    if not isinstance(data, dict):
+        return data
+    if "taskset" in data:
+        raise ValueError(
+            "the taskset lives on the env now: --env.taskset.id <id> "
+            "(TOML: [env.taskset]), or the positional `eval <taskset-id>`"
+        )
+    if "harness" in data:
+        raise ValueError(
+            "a harness belongs to a seat now: --env.agent.harness.* on the "
+            "single-agent env, --env.<role>.harness.* on a multi-agent role "
+            "(TOML: [env.agent.harness])"
+        )
+    raw = data.get("env")
+    if raw is None:
+        return data
+    try:
+        if narrowed is not None:
+            if not isinstance(raw, narrowed):
+                data["env"] = narrowed.model_validate(
+                    raw.model_dump() if isinstance(raw, BaseConfig) else raw
+                )
+            return data
+        from verifiers.v1.loaders import resolve_env_config
 
-    # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, BashHarnessConfig);
-    # without it model_dump() narrows to the base type and drops the subclass fields, so the
-    # env-server subconfig the orchestrator writes would lose taskset/harness-specific knobs.
-    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="bash")
-    timeout: TimeoutConfig = TimeoutConfig()
-    retries: RetryConfig = RetryConfig()
-    max_turns: int | None = None
-    """Max model turns per rollout (None = no limit). Enforced by the framework (the
-    interception server refuses turns past it), so it applies to any harness — turn
-    capping is a framework concern, never an harness or task field."""
-    max_input_tokens: int | None = None
-    """Max input (prompt) tokens per rollout (None = no limit). Caps the trace's
-    `num_input_tokens`; framework-enforced between turns."""
-    max_output_tokens: int | None = None
-    """Max output (completion) tokens per rollout (None = no limit). Caps the trace's
-    `num_output_tokens`; framework-enforced between turns."""
-    max_total_tokens: int | None = None
-    """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
-    trace's `num_total_tokens`; framework-enforced between turns."""
-    interception: InterceptionConfig = ElasticInterceptionPoolConfig()
-    """The interception shape (see `verifiers.v1.interception`): `elastic` (the
-    default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
-    with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
-    such servers)."""
+        data["env"] = resolve_env_config(raw)
+    except ValidationError as e:
+        # Validating here (inside the owner's mode="before" validator) would
+        # surface the errors without their `env` segment — the CLI would render
+        # `--agent.model` for the `--env.agent.model` the user typed.
+        raise prefix_validation_error(e, ("env",)) from None
+    return data
+
+
+def _narrowed_env_annotation(cls) -> "type[EnvConfig] | None":
+    """The env field's annotation when the CLI pre-narrowed it (`narrow_config`
+    swaps in a concrete subclass). The base declaration reads as `EnvConfig` itself
+    (SerializeAsAny unwraps), so only a proper subclass counts."""
+    annotation = cls.model_fields["env"].annotation
+    if (
+        isinstance(annotation, type)
+        and issubclass(annotation, EnvConfig)
+        and annotation is not EnvConfig
+    ):
+        return annotation
+    return None
+
+
+def _single_agent_env_config() -> EnvConfig:
+    """The default `env` block: the single-agent shape. Lazy — the concrete env
+    lives in `envs/`, which imports this module."""
+    from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
+
+    return SingleAgentEnvConfig()
+
+
+class EnvServerConfig(BaseConfig):
+    """A run's environment plus how it's *served*: the `env` block and the worker-pool
+    sizing. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator, so
+    they all configure the pool the same way (`--pool.type elastic|static`)."""
+
+    # SerializeAsAny: see EnvConfig.taskset — model_dump() must keep the subclass's
+    # role fields and knobs.
+    env: SerializeAsAny[EnvConfig] = Field(default_factory=_single_agent_env_config)
+    """The environment — the run's `[env]` block: which env, its seed taskset, each
+    seat, its knobs, and the run limits. Narrowed to the selected env's config
+    class by the env id, else the taskset id."""
+    pool: PoolConfig = ElasticPoolConfig()
+    """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
+    scales up on demand; `static` pre-spawns a fixed `num_workers`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
     hub on demand), loaded via `verifiers.load_environment` and run through the legacy
-    bridge. Set this *instead of* `taskset` to run a v0 environment."""
+    bridge. Set this *instead of* `env.taskset` to run a v0 environment."""
     args: dict = {}
     """Construction kwargs forwarded to `load_environment(id, **args)`."""
     extra_env_kwargs: dict = {}
@@ -126,51 +435,36 @@ class EnvConfig(BaseConfig):
 
     @property
     def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): a legacy `id` is set and no v1 `taskset`."""
-        return self.id is not None and not self.taskset.id
+        """A v0/legacy env (run via the bridge): a legacy `id` is set and no v1 taskset."""
+        return self.id is not None and (
+            self.env.taskset is None or not self.env.taskset.id
+        )
 
     @property
     def env_id(self) -> str:
-        """The env identifier — the v1 taskset id, else the legacy v0 env id."""
-        return self.taskset.id or self.id or ""
+        """The run's identifier: the v1 env's (`EnvConfig.env_id`), else the legacy
+        v0 env id."""
+        return self.env.env_id or self.id or ""
+
+    @model_validator(mode="after")
+    def _refuse_legacy_id_with_taskset(self):
+        """A legacy `id` next to a v1 `env.taskset` would be silently inert
+        (`is_legacy` is False and the v0 env never loads); refuse the mix."""
+        if self.id is not None and self.env.taskset is not None and self.env.taskset.id:
+            raise ValueError(
+                f"--id {self.id!r} is the legacy (v0) env id and can't combine with "
+                f"the v1 taskset {self.env.taskset.id!r}. Pairing an env with a "
+                f"taskset is --env.id {self.id!r} (TOML: id under [env]); to run the "
+                "v0 env instead, drop the taskset."
+            )
+        return self
 
     # --- end legacy -----------------------------------------------------------
 
     @model_validator(mode="before")
     @classmethod
-    def _resolve_plugins(cls, data):
-        """Resolve the generic `taskset` / `harness` to its specific config type by `id`, so
-        env-specific fields validate against the real plugin config (no untyped args dict)."""
-        from verifiers.v1.loaders import (
-            default_harness_id,
-            harness_config_type,
-            narrow_plugin_field,
-            taskset_config_type,
-        )
-
-        narrow_plugin_field(data, "taskset", taskset_config_type)
-        taskset = data.get("taskset")
-        taskset_id = (
-            taskset.get("id")
-            if isinstance(taskset, dict)
-            else getattr(taskset, "id", None)
-        )
-        # A taskset that bundles its own harness runs with it by default; an explicit
-        # `--harness.id` / toml id (already on the field) takes precedence.
-        narrow_plugin_field(
-            data, "harness", harness_config_type, default_harness_id(taskset_id or "")
-        )
-        return data
-
-
-class EnvServerConfig(EnvConfig):
-    """An env plus how it's *served*: the env definition (`EnvConfig`) and the worker-pool
-    sizing. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator, so
-    they all configure the pool the same way (`--pool.type elastic|static`)."""
-
-    pool: PoolConfig = ElasticPoolConfig()
-    """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
-    scales up on demand; `static` pre-spawns a fixed `num_workers`."""
+    def _resolve_env(cls, data):
+        return resolve_env_field(data, _narrowed_env_annotation(cls))
 
 
 logger = logging.getLogger(__name__)
@@ -179,11 +473,10 @@ logger = logging.getLogger(__name__)
 def resolve_runtime_config(
     base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
 ) -> RuntimeConfig:
-    """Resolve a task's runtime config from a `base`: inject the task's `image` (a task with
-    an image must run in a container — refuse subprocess), and apply its `workdir` and
-    requested `resources` to the fields the runtime supports. Precedence is cli/toml > task >
-    default; a resource the runtime doesn't support warns once (deduped via `warned`). Shared
-    by `Environment.runtime_for` (rollouts) and the `validate` entrypoint."""
+    """Resolve a task's runtime config from `base`: inject the task's `image` (an
+    image needs a container — refuse subprocess), apply its `workdir` and requested
+    `resources` where the runtime supports them. Precedence: cli/toml > task >
+    default; an unsupported resource warns once (deduped via `warned`)."""
     config = base
     updates: dict = {}
     if task.data.image is not None:
@@ -200,176 +493,477 @@ def resolve_runtime_config(
         and getattr(config, "workdir") == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
-    for field, value in task.data.resources.model_dump(exclude_none=True).items():
-        spec = type(config).model_fields.get(field)
+    for resource, value in task.data.resources.model_dump(exclude_none=True).items():
+        spec = type(config).model_fields.get(resource)
         if spec is None:
-            key = (config.type, field)
+            key = (config.type, resource)
             if warned is not None and key not in warned:
                 warned.add(key)
                 logger.warning(
                     "runtime %r doesn't support resource %r; ignoring it",
                     config.type,
-                    field,
+                    resource,
                 )
         elif (
-            getattr(config, field) == spec.default
+            getattr(config, resource) == spec.default
         ):  # still the default → task may set it
-            updates[field] = value
+            updates[resource] = value
         # else: cli/toml changed it from the default → it wins over the task
     return config.model_copy(update=updates) if updates else config
 
 
-def validate_pairing(harness: Harness, taskset: Taskset) -> None:
-    """Reject an impossible harness/taskset pairing at construction — before any dataset
-    load, shared-server launch, or first episode. Every check reads class-level facts
-    (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`, `Taskset.tools` — one task type per
-    taskset, read off the `Taskset[TaskT, ...]` generic), so a failure here holds for
-    every row the taskset can produce; on the env server it fails worker startup instead
-    of every request."""
-    task_cls = generic_type(type(taskset), Task, origin=Taskset) or Task
-    if not harness.SUPPORTS_MCP and (task_cls.tools or type(taskset).tools):
+def validate_pairing(
+    harness: Harness,
+    task_cls: type[Task],
+    runtime_config: RuntimeConfig,
+    *,
+    shared_tools: Collection = (),
+) -> None:
+    """Reject an impossible harness/task/runtime combination before any work happens.
+    Every check reads class-level facts, so a failure holds for every row the task
+    class can carry. `Agent.run` runs this per run as the backstop; an `Environment`
+    applies the same rules role-need-aware at construction. For `shared_tools` only
+    emptiness matters — declarations and live servers alike mean MCP is in play."""
+    if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
             f"{task_cls.__name__} exposes tool servers (MCP). Run it with a harness that "
-            f"supports MCP (e.g. --harness.id default), or use tasks without tools."
+            f"supports MCP (e.g. --env.agent.harness.id bash), or use tasks without tools."
         )
     if not harness.SUPPORTS_USER_SIM and task_cls.user is not None:
         raise ValueError(
             f"Harness {harness.config.id!r} does not drive a user simulator, but "
             f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
-            f"supports user simulation (e.g. --harness.id default), or use tasks without one."
+            f"supports user simulation (e.g. --env.agent.harness.id bash), or use tasks "
+            "without one."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(
-        harness.config.runtime, SubprocessConfig
-    ):
+    if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
         raise ValueError(
-            f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but the "
-            "harness runs on the subprocess runtime; use --harness.runtime.type docker or prime."
+            f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
+            "this run resolves to the subprocess runtime; use "
+            "--env.<role>.harness.runtime.type docker or prime."
         )
 
 
-class Environment:
-    def __init__(self, config: EnvConfig) -> None:
+def cap_remote_harness_timeout(
+    harness_timeout: float | None, runtime_config: RuntimeConfig, task: Task
+) -> float | None:
+    """Remote sandboxes live at most 24 hours: cap the harness timeout there (with a
+    warning) so a long run times out cleanly instead of the provider killing the box
+    mid-run."""
+    if (
+        harness_timeout is not None
+        and harness_timeout > 24 * 60 * 60
+        and not runtime_is_local(runtime_config)
+    ):
+        logger.warning(
+            "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
+            "maximum lifetime of 24 hours; capping it at 24 hours",
+            task.data.idx,
+            harness_timeout / (60 * 60),
+            runtime_config.type,
+        )
+        return 24 * 60 * 60
+    return harness_timeout
+
+
+def _as_error(e: Exception) -> Error:
+    """`e` as an episode-level `Error`. Call inside the `except` handling `e` — the
+    traceback comes from the active exception context."""
+    return Error(
+        type=type(e).__name__, message=str(e), traceback=traceback.format_exc()
+    )
+
+
+@dataclass
+class RunSlot:
+    """One planned env-rollout of a task, observable while it happens: `traces`
+    collects the current attempt's live traces (a retry restarts the list),
+    `episode`/`done` land when the rollout is final. The dashboard renders slots;
+    `--resume` preloads kept episodes as `finished` slots."""
+
+    task: Task
+    traces: list[Trace] = field(default_factory=list)
+    episode: Episode | None = None
+    done: bool = False
+
+    @classmethod
+    def finished(cls, episode: Episode) -> "RunSlot":
+        return cls(
+            task=Task(episode.task.data),
+            traces=list(episode.traces),
+            episode=episode,
+            done=True,
+        )
+
+
+ConfigT = TypeVar("ConfigT", bound=EnvConfig)
+
+
+class Environment(ABC, Generic[ConfigT]):
+    """A taskset, the agents that play it, and how one task becomes one env-rollout.
+
+    Abstract: every run gets a concrete subclass — `SingleAgentEnv` for every plain
+    taskset. A multi-agent env declares each role as an `AgentConfig` field on an
+    `EnvConfig` subclass (bound via `Environment[YourConfig]`, available as
+    `self.config`) and writes
+
+      - `rollout(task, agents)` — how the agents interact on one task. It returns
+        nothing: every finished run joins the episode automatically, stamped with
+        its seat's standing.
+
+    Optional overrides: `brief(agents)` (per-agent standing the env hardcodes —
+    a frozen judge opts out of training), `score(task, traces)` (sibling-dependent
+    judgement), and `setup()`/`teardown()` (env-owned shared resources). The base
+    owns everything else: agent construction, episodes, retries, persistence/
+    resume, serving. Task x agent fit is validated per run, on the task the agent
+    actually receives — an env-minted task carries its own needs (`tools`,
+    `NEEDS_CONTAINER`), so there is nothing to declare here."""
+
+    _stamp_roles: ClassVar[bool] = True
+    """Whether traces are stamped with their seat name at mint. True for every env
+    but `SingleAgentEnv`, whose sole implicit seat stays nameless — a plain eval's
+    trace carries no role."""
+
+    def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
 
-        self.config = config
-        self.taskset = load_taskset(config.taskset)
-        self.harness = load_harness(config.harness)
-        validate_pairing(self.harness, self.taskset)
-        # The warning is about the *agent* running arbitrary code on the host: every harness hands
-        # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
-        # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
-        # rest. (`null` still runs its fixed chat-loop program locally, but nothing agent-authored.)
-        if self.harness.config.id != "null" and isinstance(
-            self.harness.config.runtime, SubprocessConfig
-        ):
-            logger.warning(
-                "Harness %r is running in the subprocess runtime on the local system. "
-                "Local files and settings may affect the evaluation; use subprocess only "
-                "for debugging. Use --harness.runtime.type docker or prime for an isolated "
-                "run.",
-                self.harness.config.id,
-            )
-        self.setup_timeout = config.timeout.setup
-        self.harness_timeout = config.timeout.rollout
-        self.finalize_timeout = config.timeout.finalize
-        self.scoring_timeout = config.timeout.scoring
-        self.limits = RolloutLimits(
-            max_turns=config.max_turns,
-            max_input_tokens=config.max_input_tokens,
-            max_output_tokens=config.max_output_tokens,
-            max_total_tokens=config.max_total_tokens,
+        config_cls = (
+            generic_type(type(self), EnvConfig, origin=Environment) or EnvConfig
         )
-        self._warned_resources: set[tuple[str, str]] = set()
+        if not isinstance(config, config_cls):
+            raise TypeError(
+                f"{type(self).__name__} declares Environment[{config_cls.__name__}], "
+                f"but was handed a {type(config).__name__}; build the run config "
+                "naming this env (its `env` field narrows to it), or pass "
+                f"{config_cls.__name__}(...) explicitly"
+            )
+        self.config: ConfigT = config
+        if config.taskset is None:
+            raise ValueError(
+                f"{type(self).__name__} needs a seed taskset — every rollout starts "
+                "from one of its tasks: set --env.taskset.id (or the positional "
+                "`eval <taskset-id>`)"
+            )
+        self.taskset = load_taskset(config.taskset)
+        self._default_harness = default_seat_harness(config.taskset.id)
+        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
+        self._task_cls: type[Task] = task_cls
+        self._roles: dict[str, AgentConfig] = _declared_agent_configs(self.config)
+        if not self._roles:
+            raise ValueError(
+                f"{type(self).__name__} declares no roles; declare each seat as an "
+                "AgentConfig field on the env's config "
+                "(`solver: vf.AgentConfig = vf.AgentConfig()`) — the field name is "
+                "the role. The single-agent case is SingleAgentEnv."
+            )
+        for fn in (
+            *discover_decorated(self, "metric"),
+            *discover_decorated(self, "reward"),
+        ):
+            agent = getattr(fn, "_vf_agent", None)
+            if agent is not None and agent not in self._roles:
+                name = getattr(fn, "__name__", repr(fn))
+                raise ValueError(
+                    f"{type(self).__name__}.{name} is decorated with "
+                    f"agent={agent!r}, but the env's config declares agents "
+                    f"{sorted(self._roles)}"
+                )
+        # Seats resolving to the same harness config share the loaded object
+        # (harnesses are stateless values).
+        loaded: dict[str, Harness] = {}
+        self._harnesses: dict[str, Harness] = {}
+        for name, spec in self._roles.items():
+            cfg = self._seat_harness(spec)
+            key = cfg.model_dump_json()
+            if key not in loaded:
+                loaded[key] = load_harness(cfg)
+            self._harnesses[name] = loaded[key]
+        warned: set[str] = set()
+        for name, harness in self._harnesses.items():
+            # Warn once per distinct harness; tool-less chat loops are exempt.
+            if (
+                harness.EXECUTES_CODE
+                and isinstance(harness.config.runtime, SubprocessConfig)
+                and harness.config.id not in warned
+            ):
+                warned.add(harness.config.id)
+                logger.warning(
+                    "Harness %r is running in the subprocess runtime on the local system. "
+                    "Local files and settings may affect the evaluation; use subprocess only "
+                    "for debugging. Use --env.<role>.harness.runtime.type docker or prime "
+                    "for an isolated run.",
+                    harness.config.id,
+                )
+        # Eval-level serving resources, live only inside `serving()`; the env's
+        # agents borrow them, so runners never thread them through `run_slot`.
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
-        """Eval-level serving resources, live only inside `serving()`: shared tool servers
-        ({name: SharedToolServer}) and the interception. `episode()` injects them into every rollout
-        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
+        # Clients for endpoint-pinning roles, cached by config, closed with serving().
+        self._role_clients: dict[str, Client] = {}
+        # Resource warnings dedupe env-wide (agents are per-episode).
+        self._warned_resources: set = set()
 
-    def runtime_for(self, task: Task) -> RuntimeConfig:
-        """Resolve the runtime config for a task off the harness's runtime (see
-        `resolve_runtime_config`)."""
-        return resolve_runtime_config(
-            self.harness.config.runtime, task, self._warned_resources
-        )
+    # --- the multi-agent surface (override these) ------------------------------
 
-    def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
-        """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
-        (image + resources) and its
-        timeouts (cli/toml > task > default, None = no limit), build one `Rollout` per
-        sample sharing them, and wrap them in an `Episode` (which runs them and applies
-        the task's `@group_reward`s across their traces).
+    def brief(self, agents: Mapping[str, "Agent"]) -> None:
+        """Brief this rollout's agents before `rollout()` sees them — the in-place
+        spot for per-agent standing the env hardcodes rather than exposes as
+        config. Today that is `trainable` (every agent defaults True; a fixed seat
+        opts out: `agents["judge"].trainable = False`). Agents are built fresh per
+        env-rollout, so this runs once per episode — keep it cheap and in-place.
+        Single-agent envs never write this."""
 
-        A task with `@group_reward`s compares its rollouts, so it needs >=2 of
-        them — refuse `n < 2` there (rather than silently scoring a group of one).
-        Harness capability (tools / user sim / container) is class-level and already
-        checked at construction (`validate_pairing`)."""
-        if n < 2 and discover_decorated(task, "group_reward"):
-            raise ValueError(
-                f"task {task.data.idx!r} defines @group_reward(s), which compare a task's rollouts "
-                f"and need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
+    @abstractmethod
+    async def rollout(self, task: Task, agents: Mapping[str, "Agent"]) -> None:
+        """One env-rollout: how the agents interact on `task` — imperative Python
+        over the handed-in agents, returning nothing. Every finished run is
+        captured as the episode's traces automatically, each stamped with its
+        seat's standing (`agent.name`/`trainable`/`episode`/`env`). An agent-run
+        failure is data on its trace (this hook decides what it means); an
+        exception raised here is the env-rollout itself failing."""
+
+    async def score(self, task: Task, traces: list[Trace]) -> None:
+        """Sibling-dependent judgement over one env-rollout's finished traces
+        (per-trace judgement already ran on each trace's own task). The flat list
+        is the episode, completion order; each trace's `agent_name` stamp names
+        its seat. The default runs the env's decorated `@vf.reward`/`@vf.metric`
+        methods, each invoked once per target trace and recorded there, with
+        `task`, `trace` (the target), and `traces` (all of them) in reach —
+        `agent=` narrows the targets, unset means every trace. Override it for
+        imperative control; `await super().score(task, traces)` keeps the
+        decorated ones. Bounded by `timeout.score`."""
+        metrics = discover_decorated(self, "metric")
+        rewards = discover_decorated(self, "reward")
+
+        async def run(fns) -> list[tuple]:
+            pairs = [
+                (fn, target)
+                for fn in fns
+                for target in self._signal_targets(fn, traces)
+            ]
+            results = await asyncio.gather(
+                *(
+                    invoke(
+                        fn,
+                        {
+                            "task": task,
+                            "trace": target,
+                            "traces": traces,
+                        },
+                    )
+                    for fn, target in pairs
+                )
             )
-        runtime_config = self.runtime_for(task)
-        setup_timeout = (
-            self.setup_timeout
-            if self.setup_timeout is not None
-            else task.data.timeout.setup
-        )
-        harness_timeout = (
-            self.harness_timeout
-            if self.harness_timeout is not None
-            else task.data.timeout.harness
-        )
-        if (
-            harness_timeout is not None
-            and harness_timeout > 24 * 60 * 60
-            and not runtime_is_local(runtime_config)
-        ):
-            logger.warning(
-                "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
-                "maximum lifetime of 24 hours; capping it at 24 hours",
-                task.data.idx,
-                harness_timeout / (60 * 60),
-                runtime_config.type,
-            )
-            harness_timeout = 24 * 60 * 60
-        finalize_timeout = (
-            self.finalize_timeout
-            if self.finalize_timeout is not None
-            else task.data.timeout.finalize
-        )
-        scoring_timeout = (
-            self.scoring_timeout
-            if self.scoring_timeout is not None
-            else task.data.timeout.scoring
-        )
-        retries = self.config.retries
-        rollouts = [
-            Rollout(
-                task=task,
-                harness=self.harness,
-                ctx=ctx,
-                runtime_config=runtime_config,
-                setup_timeout=setup_timeout,
-                harness_timeout=harness_timeout,
-                finalize_timeout=finalize_timeout,
-                scoring_timeout=scoring_timeout,
-                limits=self.limits,
-                shared_tools=self._shared_tools,
+            return list(zip(pairs, results))
+
+        # Metrics record before rewards run, so a reward may read `trace.metrics`
+        # (the same staging as task scoring).
+        for (fn, target), result in await run(metrics):
+            _record_result(target, fn.__name__, result)
+        for (fn, target), result in await run(rewards):
+            _record_result(target, fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
+
+    def complete(self, episode: Episode) -> bool:
+        """Whether a finished env-rollout is a valid result — what `--resume` keeps
+        vs. redoes. Default: `episode.ok`. An env whose `rollout()` deliberately
+        tolerates a failed participant (a forfeited player) overrides this —
+        typically `not episode.errors` — else resume re-runs rollouts it already
+        accepted. The server eval path keeps the strict default (its env lives in
+        the workers)."""
+        return episode.ok
+
+    async def setup(self) -> None:
+        """Bring up env-owned shared resources. Runs inside `serving()`, after the
+        framework's resources (shared tool servers, interception) are live and before
+        any rollout. Default: no-op."""
+
+    async def teardown(self) -> None:
+        """Tear down what `setup()` built. Runs when `serving()` exits, even when
+        `setup()` failed partway — so it must tolerate partial state. Default: no-op."""
+
+    # --- machinery (the base owns everything below) -----------------------------
+
+    def _seat_harness(self, agent: AgentConfig) -> HarnessConfig:
+        """The harness config a role resolves to: its own pin, else the taskset's
+        default (`default_seat_harness`)."""
+        return agent.harness if agent.harness is not None else self._default_harness
+
+    def _signal_targets(self, fn: Callable, traces: list[Trace]) -> list[Trace]:
+        """Which traces a decorated env signal records onto: every trace unless
+        `agent=` narrows it. Membership is the trace's agent-name stamp — except
+        in `SingleAgentEnv`'s nameless shape, where every trace belongs to the
+        sole implicit seat."""
+        agent = getattr(fn, "_vf_agent", None)
+        if agent is None or not self._stamp_roles:
+            return list(traces)
+        return [t for t in traces if t.agent_name == agent]
+
+    def _episode_agents(
+        self,
+        ctx: ModelContext,
+        episode_id: str,
+        gate: "asyncio.Semaphore | None",
+        completed: list[Trace],
+        on_trace: Callable[[Trace], None] | None,
+    ) -> dict[str, "Agent"]:
+        """One env-rollout's agents, one per role — fresh value objects riding the
+        live serving resources (everything expensive is env-owned and borrowed, so
+        construction is cheap and no state is shared across concurrent episodes),
+        briefed before `rollout()` sees them."""
+        from verifiers.v1.agent import _EpisodeAgent  # env <-> agent import cycle
+
+        agents: dict[str, Agent] = {}
+        for name, spec in self._roles.items():
+            role_ctx = self._role_ctx(spec, ctx)
+            agents[name] = _EpisodeAgent(
+                self._harnesses[name],
+                role_ctx.model,
+                role_ctx.client,
+                sampling=role_ctx.sampling,
                 interception=self._interception,
+                limits=self._role_limits(spec),
+                timeout=spec.timeout,
+                name=name,
+                role=name if self._stamp_roles else None,
+                episode=episode_id,
+                env=self.config.env_id,
+                shared_tools=self._shared_tools,
+                task_cls=self._task_cls,
+                gate=gate,
+                completed=completed,
+                on_trace=on_trace,
+                warned_resources=self._warned_resources,
             )
-            for _ in range(n)
-        ]
-        return Episode(rollouts, retry=retries.rollout)
+        self.brief(agents)
+        return agents
+
+    def _role_ctx(self, spec: AgentConfig, ctx: ModelContext) -> ModelContext:
+        """The role's model context: the run's `ctx` unless the role pins its own model,
+        endpoint, or sampling (each falls back to the run's independently)."""
+        if spec.model is None and spec.client is None and spec.sampling is None:
+            return ctx
+        return ModelContext(
+            model=spec.model if spec.model is not None else ctx.model,
+            client=self._client_for(spec.client)
+            if spec.client is not None
+            else ctx.client,
+            sampling=spec.sampling if spec.sampling is not None else ctx.sampling,
+        )
+
+    def _client_for(self, config: ClientConfig) -> Client:
+        """Resolve (and cache by config) a role-pinned endpoint's client; closed when
+        `serving()` exits."""
+        key = config.model_dump_json()
+        if key not in self._role_clients:
+            self._role_clients[key] = resolve_client(config)
+        return self._role_clients[key]
+
+    def _role_limits(self, spec: AgentConfig) -> RolloutLimits:
+        """The role's per-run limits — the seat's own caps, nothing env-level."""
+        return RolloutLimits(
+            max_turns=spec.max_turns,
+            max_input_tokens=spec.max_input_tokens,
+            max_output_tokens=spec.max_output_tokens,
+            max_total_tokens=spec.max_total_tokens,
+        )
+
+    async def run_episode(
+        self,
+        task: Task,
+        ctx: ModelContext,
+        *,
+        on_trace: Callable[[Trace], None] | None = None,
+        gate: asyncio.Semaphore | None = None,
+    ) -> Episode:
+        """One env-rollout of `task`, minted as the wire atom: run `rollout()` over the
+        role agents, then `score()` over its traces (bounded by `timeout.score`).
+        `gate` bounds the agent runs themselves — every run acquires it, so an env's
+        internal fan-out counts against `--max-concurrent` too.
+
+        The agents are built fresh for this episode (`_episode_agents`, briefed by
+        `brief()`): every trace gets its episode standing written the moment it's
+        created and joins the episode the moment its run completes (completion
+        order) — `rollout()` returns nothing, and a hook that raises after some
+        runs finished still yields an episode with the completed subset. A hook
+        exception lands on the episode's `errors`, never on a trace."""
+        episode: Episode = Episode(
+            env=self.config.env_id,
+            task=TraceTask(type=type(task).__name__, data=task.data),
+        )
+        completed: list[Trace] = []
+        agents = self._episode_agents(ctx, episode.id, gate, completed, on_trace)
+        try:
+            async with boundary(EnvError, f"{type(self).__name__}.rollout()"):
+                await self.rollout(task, agents)
+                if not completed:
+                    raise ValueError(
+                        f"{type(self).__name__}.rollout() ran no agent — every "
+                        "episode must carry at least one run"
+                    )
+        except Exception as e:
+            episode.errors.append(_as_error(e))
+            # The completed subset is the crash-safe episode.
+            episode.traces = list(completed)
+            return episode
+        episode.traces = list(completed)
+        try:
+            async with asyncio.timeout(self.config.timeout.score):
+                async with boundary(EnvError, f"{type(self).__name__}.score()"):
+                    await self.score(task, list(completed))
+        except Exception as e:
+            # A TimeoutError here can only be the deadline's own expiry — one
+            # raised inside score() became an EnvError at the boundary.
+            if isinstance(e, TimeoutError):
+                e = TimeoutError(
+                    f"{type(self).__name__}.score() exceeded its "
+                    f"{self.config.timeout.score:g}s deadline (--env.timeout.score)"
+                )
+            episode.errors.append(_as_error(e))
+        return episode
+
+    def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
+        """Plan `n` independent env-rollouts of `task` — one observable `RunSlot`
+        each, run to an episode by `run_slot`. `-r n` means exactly this: n episodes
+        per task, nothing coupling them."""
+        if n < 1:
+            raise ValueError("a task needs at least one rollout (n >= 1)")
+        return [RunSlot(task) for _ in range(n)]
+
+    async def run_slot(
+        self,
+        slot: RunSlot,
+        ctx: ModelContext,
+        semaphore: asyncio.Semaphore | None = None,
+        on_complete: Callable[[Episode], Awaitable[None]] | None = None,
+    ) -> Episode:
+        """Run one planned env-rollout to its finished episode, with whole-episode
+        retries per `retries.rollout`. `semaphore` gates the agent RUNS, not the
+        episode — `--max-concurrent` holds even when `rollout()` fans out
+        internally. `on_complete` fires the moment the episode is final — the
+        runners' persistence hook."""
+
+        async def attempt() -> Episode:
+            slot.traces = []  # a retry shows the fresh attempt's traces
+            return await self.run_episode(
+                slot.task, ctx, on_trace=slot.traces.append, gate=semaphore
+            )
+
+        episode = await run_episode_with_retry(attempt, self.config.retries.rollout)
+        slot.traces = list(episode.traces)
+        slot.episode = episode
+        slot.done = True
+        if on_complete is not None:
+            await on_complete(episode)
+        # hand freed per-turn request bodies (base64 images) back to the OS
+        await trim_memory_periodically()
+        return episode
 
     @contextlib.asynccontextmanager
     async def serving(self):
-        """Hold the env-level serving resources for the duration of an eval: the shared tool
-        servers (built once, see `shared_tools`) and the interception. Stash them so
-        every `episode()` built inside this context injects them into its rollouts — that's
-        what keeps both eval runners (in-process and env-server) on one serving path. Build
-        episodes inside this context; the resources are torn down on exit."""
+        """Hold the env-level serving resources for the duration of an eval — shared
+        tool servers, interception, and whatever `setup()` brings up. Plan and run
+        slots inside; torn down on exit (`teardown()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(
                 self.config.interception, requires_tunnel=self._requires_tunnel(shared)
@@ -378,18 +972,36 @@ class Environment:
                 self._shared_tools = shared
                 self._interception = interception
                 try:
+                    await self.setup()
                     yield
                 finally:
-                    self._shared_tools = {}
-                    self._interception = None
+                    try:
+                        # teardown() sees the same live resources setup() saw;
+                        # the framework's own unwind comes after.
+                        await self.teardown()
+                    finally:
+                        self._shared_tools = {}
+                        self._interception = None
+                        clients, self._role_clients = self._role_clients, {}
+                        for client in clients.values():
+                            with contextlib.suppress(Exception):
+                                await client.close()
+
+    def _runs_local(self) -> bool:
+        """Whether every role's runtime policy is local — the env-level stand-in for
+        the single harness's `runtime_is_local` (any remote role means tunnels)."""
+        return all(
+            runtime_is_local(harness.config.runtime)
+            for harness in self._harnesses.values()
+        )
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
-        """`requires_tunnel` over the consumers known before any rollout: the harness
-        runtime (by config), the live `shared` servers, and the task class's tool/user
-        servers — read class-level (like `validate_pairing`) with their configs resolved
-        the way `Task.server_config` resolves them. A task that *overrides* that pairing
-        isn't statically knowable, so it conservatively counts as remote (the tunnel then
-        reaches everything; a wrongly-assumed localhost would reach nothing remote)."""
+        """`requires_tunnel` over the consumers known before any rollout: role
+        runtimes, live `shared` servers, and the task class's tool/user servers with
+        their configs resolved the way `Task.server_config` resolves them. A task
+        class that overrides `server_config` isn't statically knowable, so it
+        conservatively counts as remote — a wrongly-assumed localhost would reach
+        nothing."""
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
         server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
         if server_classes and task_cls.server_config is not Task.server_config:
@@ -401,9 +1013,7 @@ class Environment:
             )
             for server_cls in server_classes
         ]
-        return requires_tunnel(
-            runtime_is_local(self.harness.config.runtime), configs, shared.values()
-        )
+        return requires_tunnel(self._runs_local(), configs, shared.values())
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
@@ -411,6 +1021,5 @@ class Environment:
         if not servers:
             yield {}
             return
-        harness_is_local = runtime_is_local(self.harness.config.runtime)
-        async with serve_shared(servers, harness_is_local=harness_is_local) as shared:
+        async with serve_shared(servers, harness_is_local=self._runs_local()) as shared:
             yield shared

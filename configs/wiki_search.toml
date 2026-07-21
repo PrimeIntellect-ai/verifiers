@@ -3,5 +3,5 @@
 #   uv run eval @ configs/wiki_search.toml
 num_tasks = 1
 
-[taskset]
+[env.taskset]
 id = "wiki-search-v1"

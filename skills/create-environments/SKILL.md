@@ -1,6 +1,6 @@
 ---
 name: create-environments
-description: Create or migrate native verifiers.v1 taskset and harness packages. Use to build a taskset, port a benchmark, add task tools or user simulation, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
+description: Create or migrate native verifiers.v1 taskset, environment, and harness packages. Use to build a taskset, port a benchmark, add task tools or user simulation, build a multi-agent environment, package an agent harness, or migrate an existing v0 environment to the typed v1 trace model.
 ---
 
 # Create Tasksets
@@ -41,6 +41,7 @@ Before starting with the implementation, think about the following things:
 - What is the dataset about, which fields does it have?
 - Does it come with custom tools that are strictly necessary and not added by common harnesses? For example, a lot of harnesses come with bash or web search tools, which makes custom tools obsolete. Always prefer harnesses over custom tools
 - Does the taskset need a user simulator?
+- Does one rollout involve more than one agent run (attempts, a judge)? Then the package also exports an `Environment` subclass — or an existing bundled env (`--env.id best-of-n|agentic-judge`) already covers it.
 - Which rewards are needed for scoring? What additional metrics might be nice to have, either for debugging, training or potentially in the future?
 - How should the tasks be scored, is a judge needed?
 
@@ -50,7 +51,7 @@ Ask the user about unresolved semantic choices instead of inventing them. Presen
 
 ## Native package contract
 
-A package exports one `vf.Taskset` subclass and optionally one `vf.Harness` subclass through `__all__`. This happens automatically when you bootstrap a new taskset using `uv run init`.
+A package exports one `vf.Taskset` subclass — and optionally one `vf.Environment` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new taskset using `uv run init`.
 
 Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader
 resolves classes and their config types from `__all__` and generic bases.
@@ -115,7 +116,7 @@ Only `TaskData` is stored on the trace. Do not put live clients, runtime handles
 `Task` owns the behavior applied to that row:
 
 - `setup`, `finalize`, and model-free `validate` hooks;
-- stop conditions, metrics, rewards, and group rewards;
+- stop conditions, metrics, and rewards;
 - task-scoped tool and user-simulator declarations;
 - task-facing configuration read from `self.config`.
 
@@ -135,7 +136,7 @@ Runtime config chooses where code executes. Task hooks should use the `vf.Runtim
 - Prefer deterministic verification grounded in the task's actual artifact or answer.
 - Use an LLM judge only when semantic judgment is unavoidable.
 - Metrics are for observability and do not contribute to reward, but are useful. Use them deliberately and appropriately!
-- Group rewards receive all traces for one task but no live runtime.
+- Judgement that compares the sibling traces of one env-rollout (best-of-n selection, zero-sum payoffs) lives on `Environment.score(task, traces)` — attach via `trace.record_reward`/`record_metric`; no live runtime there.
 - Raise ordinary Python exceptions from rollout hooks and scoring. The rollout records them as `TaskError`.
 
 ## Validation and lifecycle
@@ -190,6 +191,10 @@ Choose placement from the tool's lifetime and filesystem needs:
 Use a `vf.User` when the taskset, not the harness, drives the conversation.
 
 The selected harness must support user simulation, which a lot of the built-in, especially the CLI-based ones, don't. The built-in `bash` harness does support user sim.
+
+## Multi-agent environments
+
+When one rollout is more than one agent run, export an `Environment` subclass next to the taskset: declare each role as a `vf.AgentConfig` field with a default instance on a `vf.EnvConfig` subclass (bound via `Environment[YourConfig]`, read as `self.config`, addressed as `--env.<role>.*`) — the field name is the role, the only naming site, and per-run caps (turns, tokens, stage timeouts) are seat fields. A role's declared pin is its author default; an unpinned role runs the taskset's default harness, and its model context defaults to the run's own. Task x agent fit validates per run, on the task each agent actually receives (an env-minted task carries its own `tools`/`NEEDS_CONTAINER`, so a bare verdict task pairs with any taskset). Then write `rollout(task, agents)` (imperative control flow, returning nothing — every finished run joins the episode automatically, stamped with its seat's standing), and optionally `brief(agents)` (env-hardcoded standing, e.g. `agents["judge"].trainable = False`) and `score(task, traces)` (sibling-dependent judgement; `trace.agent_name` names each seat). Before writing one, check the bundled envs (`--env.id best-of-n | agentic-judge`) and the reference implementation (`environments/code_golf_v1`). See docs/v1/environments.md.
 
 ## Custom harnesses
 

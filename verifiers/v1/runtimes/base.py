@@ -111,6 +111,10 @@ class Runtime(ABC):
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
+        self.stopped = False
+        """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
+        refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
+        borrowing program, caught up front instead of failing opaquely mid-harness."""
 
     @property
     def type(self) -> str:
@@ -126,6 +130,7 @@ class Runtime(ABC):
         and an interrupted teardown leaks the container / paid sandbox. Runs `teardown`
         to completion, then re-raises the cancellation. Framework method — override
         `teardown`, not this."""
+        self.stopped = True  # before the await: no new borrows once teardown begins
         await run_shielded(self.teardown())
 
     async def teardown(self) -> None:

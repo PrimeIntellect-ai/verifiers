@@ -4,8 +4,13 @@ from pydantic import BaseModel, Field, field_serializer
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTaskData
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Trace, WireEpisode
 from verifiers.v1.types import SamplingConfig
+
+PROTOCOL_VERSION = 1
+"""The serve wire protocol: bumped when response shapes change (consumers —
+prime-rl's orchestrator — read it off `info` to detect a mismatched server). In
+protocol 1, `run_rollout` answers with an `Episode` (the multi-agent atom)."""
 
 
 class BaseRequest(BaseModel):
@@ -35,7 +40,11 @@ class InfoResponse(BaseResponse):
     num_tasks: int | None = None
     """Task count; `None` means the taskset is infinite (bound runs with `num_tasks`)."""
     requires_group_scoring: bool = False
-    """Whether tasks must be run and resumed as whole groups."""
+    """Whether tasks must be run as whole groups — legacy (v0) envs only; a v1
+    server always reports False (sibling-dependent signals run inside the env's
+    own rollout)."""
+    protocol: int = 1
+    """The server's wire protocol version (`PROTOCOL_VERSION`)."""
 
 
 class RunRolloutRequest(BaseRequest):
@@ -47,15 +56,18 @@ class RunRolloutRequest(BaseRequest):
 
 
 class RunRolloutResponse(BaseResponse):
-    trace: Trace[WireTaskData] | None = None
-    """A trace whose task-specific data is preserved in `model_extra`."""
+    episode: WireEpisode | None = None
+    """The rollout's episode — trace(s) nested, task-specific data preserved in
+    `model_extra`."""
 
-    @field_serializer("trace")
-    def _ser_trace(self, trace: "Trace[WireTaskData] | None") -> dict | None:
-        return trace.model_dump() if trace is not None else None
+    @field_serializer("episode")
+    def _ser_episode(self, episode: "WireEpisode | None") -> dict | None:
+        return episode.model_dump() if episode is not None else None
 
 
 class RunGroupRequest(BaseRequest):
+    """Legacy (v0) route: group-scored v0 envs run a task's n rollouts together."""
+
     method: ClassVar[str] = "run_group"
     task_idx: int = Field(ge=0)
     n: int

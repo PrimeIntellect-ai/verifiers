@@ -1,7 +1,7 @@
 """Registered wire dialects for interception."""
 
 from verifiers.v1.dialects.anthropic import AnthropicDialect
-from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse
+from verifiers.v1.dialects.base import Dialect, StreamParser
 from verifiers.v1.dialects.chat import (
     FINISH_REASONS,
     ChatDialect,
@@ -23,7 +23,6 @@ __all__ = [
     "ChatDialect",
     "ResponsesDialect",
     "StreamParser",
-    "iter_sse",
     "parse_message",
     "parse_tools",
     "response_from_wire",

@@ -13,7 +13,7 @@ Four mechanisms, each in one place:
 3. Surfacing (`session.RolloutSession.error`): a model/tool/user call fails behind the harness
    subprocess and comes back as HTTP, so the interception server stashes the real error there and
    the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
-4. Capture (`Rollout.run`, mirrored by the env-server): the one place that records a failure (typed
+4. Capture (`RolloutRun`, mirrored by the env-server): the one place that records a failure (typed
    or not) onto the trace and never lets it cancel sibling rollouts. A bad rollout is data, not a
    crash.
 
@@ -60,6 +60,12 @@ class ToolsetError(RolloutError):
     """A task's `Toolset` could not be built or served."""
 
 
+class EnvError(RolloutError):
+    """The environment's own hooks failed — `rollout()` or `score()` raised (or
+    ran no agent at all). Episode-level: per-agent failures stay typed on their
+    traces. (Not `EnvironmentError` — that's a builtin alias of OSError.)"""
+
+
 class UserError(RolloutError):
     """A task's `User` simulator could not be served, or its `respond` raised."""
 
@@ -69,7 +75,7 @@ class SandboxError(RolloutError):
 
 
 class TaskError(RolloutError):
-    """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
+    """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
 
 class InterceptionError(RolloutError):

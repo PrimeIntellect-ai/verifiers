@@ -13,7 +13,7 @@ import pytest
 
 pytestmark = pytest.mark.e2e
 
-EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 2)
+EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
@@ -52,11 +52,9 @@ def test_eval(taskset: str):
         pytest.skip("no model API key configured")
 
     cmd = [
-        "uv", "run", "--no-sync", "eval",
-        "--taskset.id", taskset,
+        "uv", "run", "--no-sync", "eval", taskset,
         *model,
-        # -r 2: a task with @group_reward(s) needs >=2 rollouts to compare.
-        "-n", "1", "-r", "2", "--max-turns", "4",
+        "-n", "1", "-r", "1", "--env.max-turns", "4",
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:

@@ -1,23 +1,34 @@
 # REFERENCE.md
 
-A complete reference of every settable config field for **evaluating tasksets in `verifiers.v1`**. The config tree is parsed from CLI flags (dotted, e.g. `--harness.runtime.type docker`) and/or `@ file.toml` by `prime-pydantic-config`; every field below is settable either way unless noted.
+A complete reference of every settable config field for **evaluating tasksets in `verifiers.v1`**. The config tree is parsed from CLI flags (dotted, e.g. `--env.agent.harness.runtime.type docker`) and/or `@ file.toml` by `prime-pydantic-config`; every field below is settable either way unless noted.
 
-The root config the eval CLI parses is [`EvalConfig`](#evalconfig--the-run). It inherits the full environment config (taskset + harness + timeouts + token limits + worker pool), then adds the run knobs (model, sampling, counts). The tree:
+The root config the eval CLI parses is [`EvalConfig`](#evalconfig--the-run). It composes the environment (`env` — the whole `[env]` block: taskset, seats, limits) with the run knobs (model, sampling, counts) and the worker pool. The tree:
 
 ```
-EvalConfig                       (the run + the env)
+EvalConfig                          (the run)
 ├─ model, sampling, client, num_tasks, num_rollouts, shuffle, max_concurrent, …
-├─ taskset: TasksetConfig        (subclass resolved by --taskset.id)
-│  └─ task: TaskConfig           (judges, scoring knobs, task-scoped server config)
-├─ harness: HarnessConfig        (subclass resolved by --harness.id)
-│  └─ runtime: RuntimeConfig     (subprocess | docker | prime | modal)
-├─ timeout: TimeoutConfig
-├─ retries: RetryConfig
-│  └─ rollout: RolloutRetryConfig
-├─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
-├─ multiplex
-└─ pool: PoolConfig              (static | elastic) — env-server only
+├─ env: EnvConfig                   (subclass resolved by --env.id, else the taskset's env)
+│  ├─ id                            (which Environment — empty = the taskset's story)
+│  ├─ taskset: TasksetConfig | None (subclass resolved by --env.taskset.id / positional)
+│  │  └─ task: TaskConfig           (judges, scoring knobs, task-scoped server config)
+│  ├─ <role>: AgentConfig           (per-seat harness/model/client/sampling +
+│  │  │                              per-run caps; `agent` on the single-agent env)
+│  │  ├─ harness: HarnessConfig     (subclass resolved by --env.<role>.harness.id)
+│  │  │  └─ runtime: RuntimeConfig  (subprocess | docker | prime | modal)
+│  │  ├─ timeout: TimeoutConfig     (per-stage: setup/rollout/finalize/scoring)
+│  │  └─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
+│  ├─ timeout: EnvTimeoutConfig     (score — the env's own hook)
+│  ├─ retries: RetryConfig
+│  │  └─ rollout: RolloutRetryConfig
+│  └─ interception
+└─ pool: PoolConfig                 (static | elastic) — env-server only
 ```
+
+There is no run-level harness: each seat pins its own (`--env.agent.harness.*` on the
+single-agent env), an unpinned seat runs the taskset's default harness (its bundled
+one, else `bash`), and a seat's declared pin is the env author's default. The
+retired flat axes error with a pointer: `--taskset.*` → `--env.taskset.*`,
+`--harness.*` → `--env.<role>.harness.*`.
 
 Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-server-cli) (env server) and [`ValidateConfig`](#validateconfig--the-validate-cli) (per-task validation). All three live in `verifiers/v1/configs/`.
 
@@ -25,7 +36,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 
 ## EvalConfig — the run
 
-`verifiers/v1/configs/eval.py` — `EvalConfig(EnvServerConfig)`. The single config object the eval CLI parses. Inherits [`EnvConfig`](#envconfig--the-environment) + [`EnvServerConfig`](#envserverconfig--the-pool) (so `--taskset.*`, `--harness.*`, `--pool.*`, `--timeout.*`, etc. are all top-level flags with no `--env.` prefix) and adds the run knobs.
+`verifiers/v1/configs/eval.py` — `EvalConfig(EnvServerConfig)`. The single config object the eval CLI parses. Inherits [`EnvServerConfig`](#envserverconfig--the-pool) (the `env` block + `--pool.*` + the legacy v0 fields) and adds the run knobs. Everything environment-shaped lives under `--env.*` / `[env]`.
 
 | Field | Type | Default | Aliases | Notes |
 |---|---|---|---|---|
@@ -34,7 +45,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 | `client` | `ClientConfig` | `EvalClientConfig()` | — | The model client (discriminated union — see [Client config](#client-config)). |
 | `sampling` | `SamplingConfig` | `SamplingConfig()` | — | Per-request sampling knobs (see [Sampling config](#sampling-config)). |
 | `num_tasks` | `int \| None` | `None` | `batch_size`, `num_examples`, `num_tasks`, `n` | How many tasks to evaluate (None = all). |
-| `num_rollouts` | `int` | `1` | `group_size`, `rollouts_per_example`, `num_rollouts`, `r` | Rollouts per task. A task with `@group_reward`s requires ≥ 2. |
+| `num_rollouts` | `int` | `1` | `group_size`, `rollouts_per_example`, `num_rollouts`, `r` | Independent env-rollouts per task — the trainer's group size. Env-internal fan-out (e.g. best-of-n attempts) is the env's own knob, not `-r`. |
 | `shuffle` | `bool` | `False` | `shuffle`, `s` | Shuffle tasks before taking the first `num_tasks`. |
 | `max_concurrent` | `int \| None` | `128` | `max_concurrent`, `c` | Max rollouts in flight at once. |
 | `verbose` | `bool` | `False` | `verbose`, `v` | Log at debug level instead of info. |
@@ -43,12 +54,11 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 | `server` | `bool` | `False` | — | Drive rollouts through the env-server worker pool (sized by `pool`) instead of in-process — the path prime-rl trains through. Incompatible with `--rich`. |
 | `push` | `bool` | `True` | — | Upload the finished run to the private Evaluations tab. Disable with `--no-push`. |
 | `output_dir` | `Path \| None` | `None` | `output_dir`, `o` | Where to write the run (`config.toml` + `traces.jsonl`). None = a fresh per-run dir under `outputs/<env>--<model>--<harness>/<uuid>`. |
-| `resume` | `Path \| None` | `None` | — | Set by `--resume <dir>`: re-run missing/errored rollouts; an incomplete group-scored task is re-run as a whole group. Excluded from the saved config; takes no other args. |
+| `resume` | `Path \| None` | `None` | — | Set by `--resume <dir>`: re-run missing/errored rollouts, episode-atomically (a multi-trace rollout is kept or redone as a unit; `Environment.complete` is the keep verdict). Excluded from the saved config; takes no other args. |
 
 Validator: `--rich` + `--server` together is rejected (the dashboard is in-process only).
 
-Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`timeout`](#timeout-config), [`retries`](#retry-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, [`multiplex`](#envconfig--the-environment), the legacy `id` / `args` / `extra_env_kwargs`.
-Inherited from `EnvServerConfig`: [`pool`](#pool-config).
+Inherited from `EnvServerConfig`: [`env`](#envconfig--the-environment), [`pool`](#pool-config), and the legacy `id` / `args` / `extra_env_kwargs`.
 
 ---
 
@@ -93,43 +103,52 @@ A vLLM `/inference/v1/generate` endpoint with client-side tokenization (response
 
 ## EnvConfig — the environment
 
-`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`. The taskset and harness are the two reusable
-parts of the environment: the taskset loads typed tasks, while the harness provisions and drives
-the agent program for each rollout in `harness.runtime`. Each loaded `Task` supplies the row's
-behavior, tools, user simulator, and scoring; only its `TaskData` is stored on the trace.
+`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`, the run's whole `[env]` block. One subclass
+per `Environment` class (bound via `Environment[YourConfig]`): the base carries which env
+(`id`), the seed taskset, and the env-agnostic run limits; the subclass declares each role as
+an `AgentConfig` field plus the env's own knobs (`--env.n`, `--env.spec.*`, ...). The run's
+`env` field is narrowed to the selected env's config class by `--env.id` (else the taskset id,
+else `SingleAgentEnvConfig`), so everything renders typed in `-h`. Each loaded `Task` supplies
+the row's behavior, tools, user simulator, and scoring; only its `TaskData` is stored on the
+trace.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `taskset` | `TasksetConfig` | `TasksetConfig()` | Resolved to its concrete subclass by `--taskset.id` (see [Taskset config](#taskset-config)). `SerializeAsAny` so subclass fields survive `model_dump`. |
-| `harness` | `HarnessConfig` | `HarnessConfig(id="bash")` | Resolved to its concrete subclass by `--harness.id` (or the taskset's bundled harness). See [Harness config](#harness-config). |
-| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | See [Timeout config](#timeout-config). |
-| `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). |
-| `max_turns` | `int \| None` | `None` | Max model turns per rollout (None = no limit). Framework-enforced between turns. |
-| `max_input_tokens` | `int \| None` | `None` | Max input (prompt) tokens per rollout. Caps `trace.num_input_tokens`. |
-| `max_output_tokens` | `int \| None` | `None` | Max output (completion) tokens per rollout. Caps `trace.num_output_tokens`. |
-| `max_total_tokens` | `int \| None` | `None` | Max total (prompt + completion) tokens per rollout. Caps `trace.num_total_tokens`. |
-| `multiplex` | `int` | `32` (≥1) | Rollouts that share one interception server (and, behind a remote runtime, one tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels. 1 = a server per rollout. |
+| `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Environment` subclass, else `SingleAgentEnv`). |
+| `taskset` | `TasksetConfig \| None` | `None` | The seed taskset every rollout starts from; resolved to its concrete subclass by `--env.taskset.id` (positional shorthand: `eval <taskset-id>`). See [Taskset config](#taskset-config). `None` only for a taskset-less env; every bundled env requires one. |
+| *(roles)* | `AgentConfig` | env-declared | Each declared seat: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the agentic-judge env, the env's own names elsewhere. See [Agent config](#agent-config--the-seats). |
+| `timeout` | `EnvTimeoutConfig` | `EnvTimeoutConfig()` | The env's own hook bound: `--env.timeout.score`. Per-run stage timeouts are each seat's (`--env.<role>.timeout.*`). |
+| `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). Set via `--env.retries.*`. |
+| `interception` | `InterceptionConfig` | `ElasticInterceptionPoolConfig()` | The interception shape: `elastic` (default — servers grown on demand, `multiplex` rollouts each), `server` (one server, tunnel choice incl. bring-your-own endpoint), or `static` (a fixed list). |
 
-The four `max_*` limits map onto [`RolloutLimits`](#rollout-limits) (interception server); each caps a trace computed property, checked between turns (soft by one turn).
+Per-run caps (turns, tokens, stage timeouts) are seat fields, not env fields — see [Agent config](#agent-config--the-seats).
 
-Although the annotations use the generic `TasksetConfig` and `HarnessConfig` bases, the raw config
-is narrowed **before validation**:
+### Agent config — the seats
 
-1. `taskset.id` resolves the exported `Taskset` class and its concrete config type from the
-   `Taskset[TaskT, ConfigT]` generic.
-2. `harness.id` resolves the exported `Harness` class and its concrete config type. If no harness
-   id is supplied and the taskset package exports a bundled harness, that harness is selected;
-   otherwise the `default` harness is used.
-3. Validation then runs against those concrete config models, so plugin-specific fields remain
-   typed rather than being collected in an untyped `args` dictionary.
+`verifiers/v1/env.py` — `AgentConfig(BaseConfig)`. One per declared role, addressed
+`--env.<role>.*`. The **model context** defaults to the run's own (the serve protocol carries
+model/client/sampling per rollout request — what makes self-play trainable). The **harness**
+does not: an unpinned seat runs the taskset's default harness; a declared pin is the env
+author's per-seat default; partial overrides deep-merge onto it (an `id` switch replaces it).
 
-Both fields use `SerializeAsAny`, which preserves their resolved subclass fields when configs are
-saved or sent to env-server workers. An explicit harness id always wins over a taskset's bundled
-default. `ServeConfig` inherits the same resolution, while `ValidateConfig` performs the
-taskset-only half because validation has no harness.
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `harness` | `HarnessConfig \| None` | `None` | The seat's program + runtime policy; resolved to its concrete subclass by `--env.<role>.harness.id`. `None` = the taskset's default harness (its bundled one, else `bash`). See [Harness config](#harness-config). |
+| `model` | `str \| None` | `None` | Pin a model for this seat (None = the run's `--model`). |
+| `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
+| `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
+| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | Per-stage wall-clock timeouts for this seat's runs (`setup`/`rollout`/`finalize`/`scoring`; each stage falls back to the task's own). |
+| `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-seat caps (None = no limit); map onto [`RolloutLimits`](#rollout-limits), each checked between turns (soft by one turn). |
+
+Trainability is not a config field: it is env truth, set in place by the env's
+`brief(agents)` hook (default: every seat trains) and stamped on each trace. An env
+that wants the flip run-configurable exposes its own switch (e.g. proposer-solver's
+`--env.train_solver false`).
 
 ### Legacy (v0) backwards-compat fields
-Set `id` (leave `taskset` unset) to run a classic `verifiers.load_environment` env through the legacy bridge.
+
+On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a classic
+`verifiers.load_environment` env through the legacy bridge.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -137,21 +156,23 @@ Set `id` (leave `taskset` unset) to run a classic `verifiers.load_environment` e
 | `args` | `dict` | `{}` | Construction kwargs forwarded to `load_environment(id, **args)`. |
 | `extra_env_kwargs` | `dict` | `{}` | Post-load kwargs applied via `env.set_kwargs(**...)` (e.g. `max_total_completion_tokens`, `max_seq_len`, `timeout_seconds`). |
 
-`EnvConfig.is_legacy` → `id is not None and not taskset.id`.
+`EnvServerConfig.is_legacy` → `id is not None and no v1 taskset`.
 
 ### EnvServerConfig — the pool
 
-`EnvServerConfig(EnvConfig)`. Adds the env-server worker pool sizing. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator.
+`EnvServerConfig(BaseConfig)`. The `env` block plus the worker pool sizing and the legacy v0
+fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
+| `env` | `EnvConfig` | `SingleAgentEnvConfig()` | The environment (above). `SerializeAsAny`, so the resolved subclass's roles and knobs survive `model_dump` onto the wire. |
 | `pool` | `PoolConfig` | `ElasticPoolConfig()` | See [Pool config](#pool-config). |
 
 ---
 
 ## Timeout config
 
-`verifiers/v1/env.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). Precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default.
+`verifiers/v1/env.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). A **seat** field (`--env.<role>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -159,6 +180,8 @@ Set `id` (leave `taskset` unset) to run a classic `verifiers.load_environment` e
 | `rollout` | `float \| None` | `None` | Max wall-clock for the rollout (the harness run). |
 | `finalize` | `float \| None` | `None` | Max wall-clock for the task's `finalize` hook. |
 | `scoring` | `float \| None` | `None` | Max wall-clock for task rewards/metrics/judges and harness metrics. |
+
+`EnvTimeoutConfig` (the env's `--env.timeout.*`) keeps only `score` — the bound on the env's own cross-trace `score()` hook.
 
 > Remote sandboxes cap any harness timeout at 24 hours (provider max lifetime).
 
@@ -209,13 +232,13 @@ Elastic pool: start at one worker and scale up on demand.
 
 `verifiers/v1/taskset.py` — `TasksetConfig(BaseConfig)`. Subclass it for values used while
 `Taskset.load()` builds the task list: dataset id, split, seed, sample count, difficulty filters,
-and similar load-time choices. The concrete subclass is selected through `taskset.id`, so its
-fields become typed dotted flags such as `--taskset.split test`.
+and similar load-time choices. The concrete subclass is selected through `env.taskset.id`, so
+its fields become typed dotted flags such as `--env.taskset.split test`.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `id` | `ID` | `""` | Local package or Hub `org/name[@version]`; selects the taskset and its config type. Set via `--taskset.id`. |
-| `task` | `TaskConfig` | `TaskConfig()` | Task-facing config passed to every constructed task. `SerializeAsAny` preserves a narrowed subclass. Set through `--taskset.task.*`. |
+| `id` | `ID` | `""` | Local package or Hub `org/name[@version]`; selects the taskset and its config type. Set via `--env.taskset.id` or the positional `eval <taskset-id>`. |
+| `task` | `TaskConfig` | `TaskConfig()` | Task-facing config passed to every constructed task. `SerializeAsAny` preserves a narrowed subclass. Set through `--env.taskset.task.*`. |
 
 `.name` → the package name (id with org / version stripped).
 
@@ -231,19 +254,19 @@ that subclass. These are run-wide knobs, not per-row data; the row itself belong
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `judges` | `Judges` | `[]` | Judge plugins run by `Task.score`; set through `--taskset.task.judges`. |
+| `judges` | `Judges` | `[]` | Judge plugins run by `Task.score`; set through `--env.taskset.task.judges`. |
 
 ---
 
 ## Harness config
 
-`verifiers/v1/harness.py` — `HarnessConfig(BaseConfig)`. The base; **subclass per harness to add run knobs**. The concrete subclass is resolved by `--harness.id` (or a taskset's bundled harness). Mirrors `TasksetConfig`.
+`verifiers/v1/harness.py` — `HarnessConfig(BaseConfig)`. The base; **subclass per harness to add run knobs**. A harness belongs to a seat: the concrete subclass is resolved by the seat's `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env); an unpinned seat runs the taskset's bundled harness, else `bash`. Mirrors `TasksetConfig`.
 
 ### Base `HarnessConfig`
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `id` | `ID` | `"default"` | The harness id, which selects it. Set via `--harness.id`. |
-| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--harness.runtime.type docker\|prime\|modal`. |
+| `id` | `ID` | `"bash"` | The harness id, which selects it. Set via `--env.<role>.harness.id`. |
+| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--env.<role>.harness.runtime.type docker\|prime\|modal`. |
 | `env` | `dict[str, str]` | `{}` | Additional env vars for the harness program. Harness-owned endpoint/auth/model vars take precedence. |
 | `forward_env` | `list[str]` | `[]` | Names of env vars to forward from `os.environ` into the harness program's runtime (for secrets not in checked-in config). Absent names are skipped; explicit `env` wins. |
 | `disabled_tools` | `list[str] \| None` | `None` | Harness-specific tool names to disable. |
@@ -314,7 +337,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 ## Runtime configs
 
-`verifiers/v1/runtimes/`. Discriminated on `type`; selected with `--harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime` and `UserConfig.runtime`.
+`verifiers/v1/runtimes/`. Discriminated on `type`; selected with the seat's `--env.<role>.harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime` and `UserConfig.runtime`.
 
 ### `SubprocessConfig` — `type: "subprocess"` (default)
 Run on the host in a fresh `/tmp/<name>` workspace per rollout. **No extra fields.** Implicit
@@ -452,7 +475,7 @@ config to add knobs consumed by the tool's `@vf.tool` methods.
 ### `ToolsetConfig` — `Task.tools`
 
 A task-scoped server is launched per rollout. Its matching config field normally lives on
-`TaskConfig`, under `--taskset.task.*`.
+`TaskConfig`, under `--env.taskset.task.*`.
 
 The default placement is the toolset's own subprocess runtime on the host, where verifiers and the
 taskset package are already installed. The harness reaches that server over the host network
@@ -490,7 +513,7 @@ There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tool
 
 ## User config
 
-`UserConfig` controls a simulator declared on `Task.user`; its matching config field belongs on `TaskConfig` under `--taskset.task.*`.
+`UserConfig` controls a simulator declared on `Task.user`; its matching config field belongs on `TaskConfig` under `--env.taskset.task.*`.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -550,20 +573,20 @@ is supplied, billed judge usage is recorded even if parsing later fails. Plugin 
 
 ## Rollout limits
 
-`verifiers/v1/interception/server.py` — `RolloutLimits` (frozen dataclass). Not directly user-settable; built from the `max_*` fields of [`EnvConfig`](#envconfig--the-environment). Checked before each turn is served; the first limit reached refuses the turn (the same mechanism as a `@stop`) and becomes the trace's stop condition. Token caps are **soft by one turn** (the turn that crosses a cap still completes).
+`verifiers/v1/interception/server.py` — `RolloutLimits` (frozen dataclass). Not directly user-settable; built from the `max_*` fields of the run's seat ([`AgentConfig`](#agent-config--the-seats)). Checked before each turn is served; the first limit reached refuses the turn (the same mechanism as a `@stop`) and becomes the trace's stop condition. Token caps are **soft by one turn** (the turn that crosses a cap still completes).
 
 | Field | Type | Default | Maps from | Caps |
 |---|---|---|---|---|
-| `max_turns` | `int \| None` | `None` | `EnvConfig.max_turns` | `trace.num_turns` |
-| `max_input_tokens` | `int \| None` | `None` | `EnvConfig.max_input_tokens` | `trace.num_input_tokens` |
-| `max_output_tokens` | `int \| None` | `None` | `EnvConfig.max_output_tokens` | `trace.num_output_tokens` |
-| `max_total_tokens` | `int \| None` | `None` | `EnvConfig.max_total_tokens` | `trace.num_total_tokens` |
+| `max_turns` | `int \| None` | `None` | `AgentConfig.max_turns` | `trace.num_turns` |
+| `max_input_tokens` | `int \| None` | `None` | `AgentConfig.max_input_tokens` | `trace.num_input_tokens` |
+| `max_output_tokens` | `int \| None` | `None` | `AgentConfig.max_output_tokens` | `trace.num_output_tokens` |
+| `max_total_tokens` | `int \| None` | `None` | `AgentConfig.max_total_tokens` | `trace.num_total_tokens` |
 
 ---
 
 ## ServeConfig — the env-server CLI
 
-`verifiers/v1/configs/serve.py` — `ServeConfig(EnvServerConfig)`. The env-server CLI. Inherits the full env + pool, so `--taskset.*` / `--harness.*` / `--pool.*` are the same flags as eval. Adds only CLI-specific serving knobs.
+`verifiers/v1/configs/serve.py` — `ServeConfig(EnvServerConfig)`. The env-server CLI. Inherits the `env` block + pool, so `--env.*` / `--pool.*` are the same flags as eval. Adds only CLI-specific serving knobs.
 
 | Field | Type | Default | Aliases | Notes |
 |---|---|---|---|---|
@@ -571,7 +594,7 @@ is supplied, billed judge usage is recorded even if parsing later fails. Plugin 
 | `verbose` | `bool` | `False` | `verbose`, `v` | Log at debug level. |
 | `dry_run` | `bool` | `False` | — | Resolve + validate and dump, then exit. |
 
-Plus all inherited `EnvServerConfig` fields (`taskset`, `harness`, `timeout`, `retries`, `max_*`, `multiplex`, `pool`, legacy).
+Plus all inherited `EnvServerConfig` fields (`env`, `pool`, legacy).
 
 ---
 
@@ -617,16 +640,16 @@ log line per task.
 
 ## Notes & conventions
 
-- **Plugin resolution.** `taskset` and `harness` begin as generic base fields;
-  `EnvConfig._resolve_plugins` narrows each to the concrete config selected by `id` *before*
-  validation. `ValidateConfig` performs the taskset-only half and `ServeConfig` inherits both.
-  Entries in `TaskConfig.judges` are similarly narrowed by each judge `id`. This is why local and
-  Hub plugin fields remain typed and appear in CLI validation instead of living in an untyped
-  arguments dictionary.
+- **Plugin resolution.** The run's `env` field narrows to the selected env's config class
+  (`--env.id`, else the taskset's exported env, else `SingleAgentEnvConfig`) *before*
+  validation; inside it, `taskset` narrows by its id and each pinned seat `harness` by its id.
+  Entries in `TaskConfig.judges` are similarly narrowed by each judge `id`. This is why local
+  and Hub plugin fields remain typed and appear in CLI validation instead of living in an
+  untyped arguments dictionary.
 - **Dotted flags.** Every nested field is part of the same CLI tree
-  (`--harness.runtime.type docker`, `--taskset.split test`, `--pool.max_workers 8`,
-  `--retries.rollout.max_retries 2`). An `@ file.toml` describes the identical tree; explicit CLI
-  values layer over values loaded from the file.
+  (`--env.agent.harness.runtime.type docker`, `--env.taskset.split test`,
+  `--pool.max_workers 8`, `--env.retries.rollout.max_retries 2`). An `@ file.toml` describes
+  the identical tree; explicit CLI values layer over values loaded from the file.
 - **Runtime precedence.** An explicit, non-default CLI/TOML `workdir` or resource field wins over
   `TaskData`; otherwise a non-`None` row value fills it, and otherwise the runtime/provider default
   remains. `TaskData.image` is the required image for that row and replaces the runtime's base
@@ -636,8 +659,8 @@ log line per task.
   The setup value is one deadline shared by task setup and harness provisioning.
   Validate uses `CheckTimeoutConfig.setup`, then falls back to `TaskData.timeout.setup`, while
   `CheckTimeoutConfig.total` independently bounds `Task.validate`.
-- **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `harness.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
+- **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `env.<role>.harness.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
 - **Frozen models.** `TaskData`, `TaskResources`, and `TaskTimeout` are immutable wire input, not
   mutable runtime state. Put per-rollout coordination on typed `trace.state`. `RolloutLimits` is an
-  immutable framework limit derived from `EnvConfig`.
-- **Legacy v0.** Set `EnvConfig.id` (leave `taskset` unset) to run a classic `load_environment` env through the bridge. `--resume` is not supported for legacy evals.
+  immutable framework limit derived from the env's `max_*` fields.
+- **Legacy v0.** Set the run-level `id` (leave `env.taskset` unset) to run a classic `load_environment` env through the bridge. `--resume` is not supported for legacy evals.

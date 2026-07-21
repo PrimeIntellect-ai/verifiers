@@ -2,10 +2,15 @@
 """Compile AGENTS.md / CLAUDE.md files from modular docs sources."""
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
+
+# Compiled guides land outside docs/v1/, so a doc-relative link (`agent.md`) would
+# dangle there; point it at the source file on GitHub instead.
+DOCS_URL = "https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1"
 
 REPO_GENERATED_NOTE = (
     "<!-- Generated for repository development workflows. Do not edit directly. -->"
@@ -30,6 +35,17 @@ def read_without_title(path: Path) -> str:
 def read_markdown(path: Path) -> str:
     """Read markdown and trim outer whitespace."""
     return path.read_text().strip()
+
+
+def demote_headings(markdown: str) -> str:
+    """Push every heading down one level (`#` -> `##`), leaving code fences alone —
+    how a standalone docs page rides inside a compiled guide as a section."""
+    out, fenced = [], False
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        out.append("#" + line if not fenced and re.match(r"^#+ ", line) else line)
+    return "\n".join(out)
 
 
 def combine_sections(sections: list[str]) -> str:
@@ -109,12 +125,22 @@ def compile_agents(*, check: bool = False) -> bool:
 
 
 def compile_environment_guides(*, check: bool = False) -> bool:
-    envs_body = read_without_title(ROOT / "docs" / "v1" / "tasksets.md")
+    envs_body = combine_sections(
+        [
+            read_without_title(ROOT / "docs" / "v1" / "tasksets.md"),
+            demote_headings(read_markdown(ROOT / "docs" / "v1" / "environments.md")),
+        ]
+    )
+    envs_body = re.sub(r"\]\((\w[\w-]*\.md)\)", rf"]({DOCS_URL}/\1)", envs_body)
+    mirror_note = (
+        'This file mirrors the "Tasksets" and "Multi-agent environments" '
+        "documentation pages."
+    )
     repo_envs_agents = combine_sections(
         [
             "# environments/AGENTS.md",
             REPO_GENERATED_NOTE,
-            'This file mirrors the "Tasksets" documentation page.',
+            mirror_note,
             "---",
             envs_body,
         ]
@@ -123,7 +149,7 @@ def compile_environment_guides(*, check: bool = False) -> bool:
         [
             "# environments/AGENTS.md",
             LAB_GENERATED_NOTE,
-            'This file mirrors the "Tasksets" documentation page.',
+            mirror_note,
             "---",
             envs_body,
         ]

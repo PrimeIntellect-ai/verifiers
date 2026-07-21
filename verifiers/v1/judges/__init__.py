@@ -2,6 +2,7 @@
 
 from verifiers.v1.judges.reference import ReferenceJudge, ReferenceJudgeConfig
 from verifiers.v1.judges.rubric import Criterion, RubricJudge, RubricJudgeConfig
+from verifiers.v1.judges.score import ScoreJudge, ScoreJudgeConfig
 
 __all__ = [
     "ReferenceJudge",
@@ -9,4 +10,6 @@ __all__ = [
     "Criterion",
     "RubricJudge",
     "RubricJudgeConfig",
+    "ScoreJudge",
+    "ScoreJudgeConfig",
 ]

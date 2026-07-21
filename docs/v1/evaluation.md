@@ -14,10 +14,10 @@ model = "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
 [sampling]
 temperature = 1.0
 
-[taskset]
+[env.taskset]
 id = "primeintellect/terminal-bench-2"
 
-[harness]
+[env.agent.harness]
 id = "codex"
 version = "0.116.0"
 ```
@@ -26,13 +26,14 @@ Validate the config by using `uv run eval @ config.toml --dry-run`. To run the e
 
 Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0.5`. CLI arguments overwrite toml arguments when both are present.
 
-The output from evaluations are written into `outputs/<taskset>--<model>--<harness>/<uuid>/` by default (use `output_dir` to overwrite the folder). The folder contains the used `config.toml`, all the traces in `results.jsonl`, as well as logs of the run and workers in `eval.log`.
+The output from evaluations are written into `outputs/<env>--<model>--<harness>/<uuid>/` by default, where `<env>` is the taskset, prefixed by the paired env id when `--env.id` sets one (use `output_dir` to overwrite the folder). The folder contains the used `config.toml`, all the episodes in `traces.jsonl`, as well as logs of the run and workers in `eval.log`.
 
 ## Common config values
 
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
-- `taskset.id` / `harness.id` — pick the taskset and harness
+- `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
+- `env.agent.harness.id` — pick the agent seat's harness (`[env.agent.harness]` in TOML)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — rollouts per task
@@ -42,14 +43,14 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 
 ## Resuming evaluations
 
-`--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `results.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.
+`--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `traces.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.
 
 ## Disabling tools
 
 Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
 
 ```toml
-[harness]
+[env.agent.harness]
 disabled_tools = ["shell_tool"]
 ```
 

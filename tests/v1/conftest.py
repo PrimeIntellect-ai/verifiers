@@ -6,14 +6,18 @@ not unit tests of individual components. They need a model API key (`PRIME_API_K
 without one the `e2e`-marked tests skip (config parsing still runs).
 
 `run_v1` / `run_v0` mirror the eval CLI's two paths (`run_eval` for a v1 taskset,
-`run_legacy_eval` for a v0 env). The tests fan out over a matrix of where a rollout places
-things: the harness (`harness`) x the harness runtime (`harness_runtime`) x the user/tool server
-runtime (`user_runtime` / `tool_runtime`).
+`run_legacy_eval` for a v0 env). Placement coverage (harness x harness runtime x user/tool
+server runtime) is PAIRWISE, not a full cross product: each test carries a curated list of
+combinations (in test_e2e.py) that hits every axis value and the cross-boundary pairs with
+distinct networking. The full cross bought flake exposure and CI minutes, not coverage — add
+a combination to a test's list when it exercises a genuinely new reachability pair. The
+placement fixtures below are indirect-only: they translate a parametrized value, and using
+one without `indirect=True` fails loudly.
 
-Every matrix value carries a pytest mark, so subsets select with `-m`:
+Every combination carries its axes' pytest marks, so subsets select with `-m`:
 
-    uv run pytest tests/v1 -n auto                                # the whole matrix (needs modal setup)
-    uv run pytest tests/v1 -n auto -m "not prime and not modal"  # the CI matrix (host + docker only)
+    uv run pytest tests/v1 -n auto                                # everything (needs modal setup)
+    uv run pytest tests/v1 -n auto -m "not prime and not modal"  # the CI set (host + docker only)
     uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
     uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
@@ -32,8 +36,9 @@ from pathlib import Path
 
 import pytest
 
+import verifiers.v1 as vf
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.env import Environment
+from verifiers.v1.loaders import load_environment
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace
 
@@ -41,40 +46,17 @@ from verifiers.v1.trace import Trace
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
 
-# The harness runtime. Each value carries its runtime mark so a subset can be selected
-# (`-m docker`, `-m "not prime"`, ...). docker needs the daemon; prime/modal provision real remote
-# sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs `-m "not prime and
-# not modal"`. The `id`s make a test read like `<harness>-harness-in-<rt>` /
-# `harness-in-<rt>-with-<user|tool>-...`.
-HARNESS_RUNTIMES = [
-    pytest.param(
-        "subprocess", marks=pytest.mark.subprocess, id="harness-in-subprocess"
-    ),
-    pytest.param("docker", marks=pytest.mark.docker, id="harness-in-docker"),
-    pytest.param("prime", marks=pytest.mark.prime, id="harness-in-prime"),
-    pytest.param("modal", marks=pytest.mark.modal, id="harness-in-modal"),
-]
+# The placement fixtures translate one parametrized value each; the combinations live on
+# the tests (`indirect=True`), so coverage is a visible, curated list — never an implicit
+# cross product.
 
 
-@pytest.fixture(params=HARNESS_RUNTIMES)
+@pytest.fixture
 def harness_runtime(request) -> str:
     return request.param
 
 
-# The user simulator's runtime: inside the harness's runtime (`colocated`) or its own runtime; this
-# fans the user test across both, each carrying its placement/runtime mark.
-USER_RUNTIMES = [
-    pytest.param("colocated", marks=pytest.mark.colocated, id="with-user-colocated"),
-    pytest.param(
-        "subprocess", marks=pytest.mark.subprocess, id="with-user-in-subprocess"
-    ),
-    pytest.param("docker", marks=pytest.mark.docker, id="with-user-in-docker"),
-    pytest.param("prime", marks=pytest.mark.prime, id="with-user-in-prime"),
-    pytest.param("modal", marks=pytest.mark.modal, id="with-user-in-modal"),
-]
-
-
-@pytest.fixture(params=USER_RUNTIMES)
+@pytest.fixture
 def user_runtime(request) -> dict:
     """A `taskset.task.user` override placing the user simulator: `colocated` (inside the harness's
     runtime) or its own runtime, by type."""
@@ -83,19 +65,7 @@ def user_runtime(request) -> dict:
     return {"colocated": False, "runtime": {"type": request.param}}
 
 
-# Task-scoped and shared tool tests both use these runtime placements.
-TOOL_RUNTIMES = [
-    pytest.param("colocated", marks=pytest.mark.colocated, id="with-tool-colocated"),
-    pytest.param(
-        "subprocess", marks=pytest.mark.subprocess, id="with-tool-in-subprocess"
-    ),
-    pytest.param("docker", marks=pytest.mark.docker, id="with-tool-in-docker"),
-    pytest.param("prime", marks=pytest.mark.prime, id="with-tool-in-prime"),
-    pytest.param("modal", marks=pytest.mark.modal, id="with-tool-in-modal"),
-]
-
-
-@pytest.fixture(params=TOOL_RUNTIMES)
+@pytest.fixture
 def tool_runtime(request) -> dict:
     """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
     runtime) or its own runtime, by type."""
@@ -104,21 +74,10 @@ def tool_runtime(request) -> dict:
     return {"runtime": {"type": request.param}}
 
 
-# Harnesses, composed with the runtime fixtures, each carrying its harness mark (`-m bash`, ...).
-# Built-ins are bundled in the `harnesses` package; the agent CLIs (`rlm` / `kimi-code` / `codex` /
-# `claude-code`) install their dependencies at rollout. `compact` (an example harness) and
-# `terminus-2` (drives the host tmux) are excluded. `test_agentic` skips `null` (a chat loop with no
-# shell); `test_single_turn` skips the coding agents, which are unreliable on a no-op echo.
-@pytest.fixture(
-    params=[
-        pytest.param("null", marks=pytest.mark.null, id="null"),
-        pytest.param("bash", marks=pytest.mark.bash, id="bash"),
-        pytest.param("rlm", marks=pytest.mark.rlm, id="rlm"),
-        pytest.param("kimi-code", marks=pytest.mark.kimi_code, id="kimi-code"),
-        pytest.param("codex", marks=pytest.mark.codex, id="codex"),
-        pytest.param("claude-code", marks=pytest.mark.claude_code, id="claude-code"),
-    ]
-)
+# Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
+# `kimi-code` / `codex` / `claude-code`) install their dependencies at rollout. `compact` (an
+# example harness) and `terminus-2` (drives the host tmux) are excluded from e2e.
+@pytest.fixture
 def harness(request) -> str:
     return request.param
 
@@ -164,7 +123,7 @@ def _eval_config(
     taskset: str,
     *,
     output_dir: Path,
-    harness: str = "null",
+    harness: str | None = "null",
     n: int = 1,
     num_tasks: int = 1,
     max_tokens: int = 2048,
@@ -172,6 +131,7 @@ def _eval_config(
     rollout_timeout: float = 180,
     taskset_overrides: dict | None = None,
     harness_overrides: dict | None = None,
+    env: dict | None = None,
     pool: dict | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
@@ -183,25 +143,44 @@ def _eval_config(
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
-    risks truncating the reasoning before the answer (which tanks the reward)."""
+    risks truncating the reasoning before the answer (which tanks the reward).
+
+    `harness=None` leaves every seat on its own story — the multi-agent case: there
+    is no run-level harness, so a single-agent test's `harness` lands on the `agent`
+    seat and a multi-agent test pins its seats through `env` role fields instead."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
-    harness_cfg = {"id": harness, **(harness_overrides or {})}
+    env_cfg = dict(env or {})
     _configure_prime_runtimes(taskset_cfg)
-    _configure_prime_runtimes(harness_cfg)
+    if harness:
+        harness_cfg = {"id": harness, **(harness_overrides or {})}
+        _configure_prime_runtimes(harness_cfg)
+        env_cfg.setdefault("agent", {})["harness"] = harness_cfg
+    # Per-run caps live on the seats: resolve the env's declared roles and cap
+    # each one (a test's own seat dict wins over the shared defaults).
+    config_cls = vf.env_config_type(taskset, env_cfg.get("id", ""))
+    seats = [
+        name
+        for name, field in config_cls.model_fields.items()
+        if isinstance(field.default, vf.AgentConfig)
+    ]
+    for seat in seats:
+        seat_cfg = env_cfg.setdefault(seat, {})
+        seat_cfg.setdefault("max_turns", max_turns)
+        seat_cfg.setdefault("max_output_tokens", max_tokens)
+        seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
     return EvalConfig(
-        taskset=taskset_cfg,
-        harness=harness_cfg,
+        env={
+            "taskset": taskset_cfg,
+            "retries": {"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
+            **env_cfg,
+        },
         num_tasks=num_tasks,
         num_rollouts=n,
-        max_turns=max_turns,
-        max_output_tokens=max_tokens,
         sampling={
             "max_tokens": max_tokens,
             "temperature": 0,
             "reasoning_effort": reasoning_effort,
         },
-        timeout={"rollout": rollout_timeout, "scoring": 60},
-        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
         rich=False,
         output_dir=output_dir,
         **({"pool": pool} if pool else {}),
@@ -216,7 +195,7 @@ def run_v1():
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        return await run_eval(Environment(config), config)
+        return await run_eval(load_environment(config.env), config)
 
     return _run
 

@@ -4,10 +4,10 @@
 #   uv run eval @ configs/harbor.toml
 num_tasks = 10
 
-[taskset]
+[env.taskset]
 id = "harbor"
 dataset = "terminal-bench/terminal-bench-2"
 
-[harness]
+[env.agent.harness]
 id = "bash"
 runtime = { type = "docker" }

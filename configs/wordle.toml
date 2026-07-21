@@ -3,10 +3,12 @@
 #   uv run eval @ configs/wordle.toml --model <small-instruct-model>
 num_tasks = 5
 num_rollouts = 2
-max_turns = 8
 
-[taskset]
+[env.taskset]
 id = "wordle-v1"
 
-[harness]
+[env.agent]
+max_turns = 8
+
+[env.agent.harness]
 id = "null"
