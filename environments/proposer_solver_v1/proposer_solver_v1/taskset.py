@@ -71,7 +71,11 @@ class SolveTask(vf.Task[SolveData]):
             raise ValueError(
                 f"proposer did not end with the JSON contract: ...{reply[-300:]!r}"
             )
-        answer = proposed["answer"]
+        problem, answer = proposed["problem"], proposed["answer"]
+        if not isinstance(problem, str):
+            raise ValueError(
+                f"proposer's contract problem is not a string: {problem!r}"
+            )
         if not isinstance(answer, int) or isinstance(answer, bool):
             raise ValueError(
                 f"proposer's contract answer is not a JSON integer: {answer!r}"
@@ -79,8 +83,7 @@ class SolveTask(vf.Task[SolveData]):
         return cls(
             SolveData(
                 idx=proposer.task.data.idx,
-                prompt=str(proposed["problem"])
-                + "\n\nEnd your reply with just the final integer.",
+                prompt=problem + "\n\nEnd your reply with just the final integer.",
                 answer=str(answer),
             )
         )

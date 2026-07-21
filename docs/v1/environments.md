@@ -67,7 +67,7 @@ class DebateEnv(vf.Env[DebateConfig]):
   endpoint, tighter limits — and a declared pin is the env author's per-agent
   default. Per-run caps (turns, tokens, the setup/rollout/finalize/scoring
   timeouts, whole-run retries) live only on agents — there is no env-level cap;
-  the env keeps just its own hooks' bounds (`--env.timeout.run` for one
+  the env keeps just its own hooks' bounds (`--env.timeout.episode` for one
   episode's `run()`, `--env.timeout.finalize` for `finalize()`).
 - **The declared fields ARE the agents.** The base scrapes every `AgentConfig` off
   the config — recursively: a field is an `Agent` under its field name, a list of

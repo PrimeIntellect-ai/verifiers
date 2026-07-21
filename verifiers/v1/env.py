@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 class EnvTimeoutConfig(BaseConfig):
     """Wall-clock timeouts for the env's own hooks, in seconds (None = no limit)."""
 
-    run: float | None = None
+    episode: float | None = None
     """Max wall-clock for one episode's `run()` hook — the whole interaction."""
     finalize: float | None = None
     """Max wall-clock for the env's cross-trace `finalize()` hook."""
@@ -230,7 +230,7 @@ class Env(ABC, Generic[ConfigT]):
     async def run(self, task: Task, agents: Agents) -> None:
         """One episode: how the agents interact on `task`. An agent-run failure is
         data on its trace (this hook decides what it means); an exception raised
-        here is the episode itself failing. Bounded by `timeout.run`."""
+        here is the episode itself failing. Bounded by `timeout.episode`."""
 
     async def finalize(self, task: Task, traces: list[Trace]) -> None:
         """Cross-trace judgement over one episode's finished traces (per-trace
@@ -302,7 +302,7 @@ class Env(ABC, Generic[ConfigT]):
         gate: asyncio.Semaphore | None = None,
     ) -> list[Trace]:
         """One episode of `task`: `run()` over the episode's agents (bounded by
-        `timeout.run`), then `finalize()` over its traces (bounded by
+        `timeout.episode`), then `finalize()` over its traces (bounded by
         `timeout.finalize`). Returns the episode's traces, completion order,
         linked through the shared `EpisodeInfo` stamped at mint; a hook failure
         lands on `EpisodeInfo.errors` (mirrored on every completed trace), never
@@ -314,7 +314,7 @@ class Env(ABC, Generic[ConfigT]):
         completed: list[Trace] = []
         agents = self._episode_agents(ctx, episode, gate, completed, on_trace)
         try:
-            async with asyncio.timeout(self.config.timeout.run):
+            async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
                     await self.run(task, agents)
                     if not completed:
@@ -326,9 +326,12 @@ class Env(ABC, Generic[ConfigT]):
             if isinstance(e, TimeoutError):
                 e = TimeoutError(
                     f"{type(self).__name__}.run() exceeded its "
-                    f"{self.config.timeout.run:g}s deadline (--env.timeout.run)"
+                    f"{self.config.timeout.episode:g}s deadline "
+                    "(--env.timeout.episode)"
                 )
-            # The completed subset is the crash-safe episode.
+            # The completed subset is the crash-safe episode. Log too: a failure
+            # before any trace minted is otherwise invisible outside this stamp.
+            logger.warning("episode %s failed in run(): %s", episode.id, e)
             episode.errors.append(
                 Error(
                     type=type(e).__name__,
