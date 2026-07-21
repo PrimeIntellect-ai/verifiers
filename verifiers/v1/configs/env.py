@@ -1,9 +1,5 @@
-"""The `env` block as run configs own it, plus the env-server pool shapes.
-
-Every run config carrying an `env` field (`EnvServerConfig` and its subclasses,
-`GEPAConfig`) resolves it the same way: refuse the retired top-level axes, then
-narrow the raw data to the concrete env's config class (`resolve_env_field`).
-"""
+"""The `env` block as run configs own it (`resolve_env_field`), plus the
+env-server pool shapes."""
 
 from typing import Annotated, Literal
 

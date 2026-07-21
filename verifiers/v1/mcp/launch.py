@@ -160,10 +160,11 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
 
 
 async def _read_back_port(runtime: Runtime, path: str) -> int:
-    """Poll the server's port file until the server writes it."""
+    """Poll the server's port file without stacking the runtime's own read retries."""
+    reader = getattr(runtime, "inner", runtime)
     for _ in range(180):
         with contextlib.suppress(Exception):
-            data = (await runtime.read(path)).decode().strip()
+            data = (await reader.read(path)).decode().strip()
             if data.isdigit():
                 return int(data)
         await asyncio.sleep(1)
@@ -317,7 +318,7 @@ class SharedToolServer:
     """One live taskset-scoped (shared) server, as the rollouts see it: its eval-level
     `url` plus whether its runtime is `local` (host-reachable) — a remote one is an
     interception consumer, so the interception must be exposed for it to reach the
-    `/state` channel (see `Environment._requires_tunnel`). An `external` server (a
+    `/state` channel (see `Env._requires_tunnel`). An `external` server (a
     config-`url` endpoint) was not launched by the framework and sits outside its state
     machinery entirely: rollouts get its URL bare — no state tag (and no per-rollout
     secret sent to a third party)."""
@@ -332,7 +333,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
     """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
     Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
-    locality off — the caller (`Environment.shared_tools`) passes the harness runtime's
+    locality off — the caller (`Env.shared_tools`) passes the harness runtime's
     `harness_is_local`, so a host tool gets one host bridge (tunnel) when the harness runs
     remotely, and a remote tool runtime publishes its own URL. Torn down when the eval ends.
     A shared server is task-agnostic — the taskset carries no per-row data — so its `setup`
@@ -465,12 +466,10 @@ async def user_session(url: str) -> AsyncIterator[ClientSession]:
             await stack.aclose()
 
 
-async def user_respond(url: str, message: str, seq: int, *, timeout: float) -> Messages:
+async def user_respond(url: str, message: str, seq: int) -> Messages:
     """One `respond` turn against the user server, on a fresh session per attempt. A retried turn
     whose response was lost would advance the simulator twice, so the server dedups on
     (`seq`, `message`) and replays the recorded turn — making the retry effectively exactly-once.
-    `timeout` bounds each attempt (connect + initialize + call): a wedged connection must fail
-    fast enough for a retry to land inside the harness window instead of silently absorbing it.
     The payload is parsed outside the retry so a parse failure fails once."""
     from verifiers.v1.dialects import parse_message
     from verifiers.v1.retries import retrying
@@ -483,11 +482,10 @@ async def user_respond(url: str, message: str, seq: int, *, timeout: float) -> M
             label=f"user respond ({url})",
         ):
             with attempt:
-                async with asyncio.timeout(timeout):
-                    async with user_session(url) as session:
-                        result = await session.call_tool(
-                            "respond", {"message": message, "seq": seq}
-                        )
+                async with user_session(url) as session:
+                    result = await session.call_tool(
+                        "respond", {"message": message, "seq": seq}
+                    )
         assert result is not None
         texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
         data = json.loads("\n".join(texts))
@@ -523,4 +521,4 @@ async def serve_user(
         state_secret=state_secret,
         state_base=state_base,
     ) as url:
-        yield partial(user_respond, url, timeout=user.config.timeout)
+        yield partial(user_respond, url)

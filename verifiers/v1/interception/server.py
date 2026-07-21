@@ -156,12 +156,7 @@ class InterceptionServer(Interception):
         return secret
 
     def unregister(self, secret: str) -> None:
-        session = self.sessions.pop(secret, None)
-        if session is not None:
-            # The rollout concluded; its trace is sealed. Cancel straggler handlers
-            # (aiohttp keeps them alive past client death) so a slow upstream call
-            # can't commit a late turn onto the concluded trace.
-            session.release()
+        self.sessions.pop(secret, None)
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
@@ -254,10 +249,6 @@ class InterceptionServer(Interception):
         the model + effective settings that went upstream, timing, and — when the call
         committed no turn — the error, coupled to the exchange that raised it. Called
         once per real exchange; replayed/coalesced SDK retries never reach it."""
-        if (
-            session.released
-        ):  # the trace is sealed — a straggler exchange isn't recorded
-            return
         sampling = None
         if request is not None:
             try:
@@ -300,7 +291,6 @@ class InterceptionServer(Interception):
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
-        session.adopt(asyncio.current_task())
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -396,12 +386,6 @@ class InterceptionServer(Interception):
         )
         try:
             while True:
-                # The rollout may conclude (deadline, teardown) while this exchange was
-                # upstream: the trace is sealed, so drop the turn instead of mutating it.
-                if session.released:
-                    return web.json_response(
-                        dialect.error_body("rollout concluded"), status=409
-                    )
                 try:
                     refused = await session.refused()
                 except RolloutError as e:
@@ -449,10 +433,6 @@ class InterceptionServer(Interception):
                             session.trace.id,
                             len(call_response.message.tool_calls or []),
                         )
-                        if session.released:  # concluded while sampling — seal holds
-                            return web.json_response(
-                                dialect.error_body("rollout concluded"), status=409
-                            )
                         # One node per new message; branches fall out of walking the
                         # graph (see Trace.branches / verifiers.v1.graph).
                         node = turn.commit(call_response, tools)
@@ -563,10 +543,6 @@ class InterceptionServer(Interception):
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace. Single-shot — a streamed
         turn never drives a user simulator (the only client that streams is the eval relay)."""
-        if session.released:  # concluded while this request queued — seal holds
-            return web.json_response(
-                dialect.error_body("rollout concluded"), status=409
-            )
         try:
             refused = await session.refused()
         except RolloutError as e:
@@ -699,9 +675,8 @@ class InterceptionServer(Interception):
                 if parser_error is not None:
                     raise parser_error
                 response = parser.finish()
-                if not session.released:  # concluded mid-stream — seal holds
-                    node = turn.commit(response, tools)
-                    logger.debug("intercept stream turn: id=%s", session.trace.id)
+                node = turn.commit(response, tools)
+                logger.debug("intercept stream turn: id=%s", session.trace.id)
             finally:
                 # Release the withheld events only now — after the commit — then close.
                 with contextlib.suppress(ConnectionResetError):
@@ -738,7 +713,6 @@ class InterceptionServer(Interception):
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             return web.json_response(dialect.error_body("unauthorized"), status=401)
-        session.adopt(asyncio.current_task())
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             result = await session.ctx.client.relay_aux(
@@ -766,10 +740,7 @@ class InterceptionServer(Interception):
         same per-rollout secret the model routes use (dialect-independent, so parsed directly)."""
         auth = request.headers.get("Authorization", "")
         secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
-        session = self.sessions.get(secret)
-        if session is not None:  # state writes must not land on a sealed trace either
-            session.adopt(asyncio.current_task())
-        return session
+        return self.sessions.get(secret)
 
     async def handle_state_get(self, request: web.Request) -> web.Response:
         """Hand a rollout's tool/user server the current shared `trace.state` (it pulls before each
@@ -820,7 +791,5 @@ class InterceptionServer(Interception):
                 {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
                 status=400,
             )
-        if session.released:  # the trace is sealed — a straggler write must not land
-            return web.json_response({"error": "rollout concluded"}, status=409)
         session.trace.state = new_state
         return web.json_response({"ok": True})

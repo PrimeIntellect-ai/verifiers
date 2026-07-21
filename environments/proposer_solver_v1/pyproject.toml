@@ -1,0 +1,13 @@
+[project]
+name = "proposer-solver-v1"
+version = "0.1.0"
+description = "Proposer-solver recipe env: a proposer invents verified problems, n solvers race them"
+requires-python = ">=3.11"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["proposer_solver_v1"]

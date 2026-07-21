@@ -1,10 +1,5 @@
-"""Task x agent compatibility, resolved per run.
-
-`Agent.run` consumes these on every run — the task the agent actually receives is
-what validates, so an env-minted task carries its own needs. There is deliberately
-no upfront compilation: a misconfigured agent (a grader whose runtime can't hold
-its task) surfaces at runtime, on its own run.
-"""
+"""Task x agent compatibility, checked per run by `Agent.run` — there is
+deliberately no upfront compilation."""
 
 import logging
 from collections.abc import Collection

@@ -3,7 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
@@ -84,4 +84,4 @@ class ModelContext:
 
     model: str
     client: Client
-    sampling: Sampling = field(default_factory=Sampling)
+    sampling: Sampling

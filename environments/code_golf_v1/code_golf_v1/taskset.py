@@ -3,14 +3,14 @@
 Each task asks for a tiny program with a known output. The env fans one env-rollout
 into `--env.attempts` independent attempts by the same "golfer" agent and scores them
 against each other. Anything that needs the runtime is measured per attempt, box-live,
-into that attempt's trace; the env's `score()` then just compares the recorded
+into that attempt's trace; the env's `finalize()` then just compares the recorded
 metadata across the finished siblings:
 
   - `evaluate`      per-attempt `@metric`: runs the program once in that attempt's
                     runtime and records `passed` + `latency`. (task, trace, runtime)
   - `correct`       per-attempt `@reward`: reads `passed` off the trace.      (trace)
-  - `most_concise`  env `score()`: of the PASSING attempts, the shortest source wins.
-  - `fastest`       env `score()`: of the PASSING attempts, the lowest recorded
+  - `most_concise`  env `finalize()`: of the PASSING attempts, the shortest source wins.
+  - `fastest`       env `finalize()`: of the PASSING attempts, the lowest recorded
                     `latency` wins — a comparison of trace metadata.
 
 So one env-rollout produces, per attempt: did it work, was it the shorter one, was it
@@ -72,29 +72,25 @@ class CodeGolfEnvConfig(vf.EnvConfig):
     """Independent attempts per env-rollout, scored against each other."""
 
 
-class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
+class CodeGolfEnv(vf.Env[CodeGolfEnvConfig]):
     async def run(self, task, agents):
         await asyncio.gather(
             *(agents.golfer.run(task) for _ in range(self.config.attempts))
         )
 
-    @vf.reward(weight=0.5)
-    async def most_concise(self, trace, traces):
-        """The sibling comparison: shortest source among the passing attempts wins
-        (ties share); a failed attempt earns nothing."""
-        if not trace.metrics.get("passed"):
-            return 0.0
-        lengths = [len(extract_program(t)) for t in traces if t.metrics.get("passed")]
-        return float(len(extract_program(trace)) == min(lengths))
-
-    @vf.reward(weight=0.5)
-    async def fastest(self, trace, traces):
-        """The sibling comparison: lowest run latency among the passing attempts
-        wins (ties share); a failed attempt earns nothing."""
-        if not trace.metrics.get("passed"):
-            return 0.0
-        latencies = [t.metrics["latency"] for t in traces if t.metrics.get("passed")]
-        return float(trace.metrics["latency"] == min(latencies))
+    async def finalize(self, task, traces):
+        """The sibling comparisons: of the PASSING attempts, the shortest source
+        and the lowest recorded latency win (ties share); a failed attempt earns
+        nothing on either."""
+        passing = [t for t in traces if t.metrics.get("passed")]
+        min_length = min((len(extract_program(t)) for t in passing), default=None)
+        min_latency = min((t.metrics["latency"] for t in passing), default=None)
+        for trace in traces:
+            passed = trace.metrics.get("passed")
+            concise = passed and len(extract_program(trace)) == min_length
+            fastest = passed and trace.metrics["latency"] == min_latency
+            trace.record_reward("most_concise", float(bool(concise)), weight=0.5)
+            trace.record_reward("fastest", float(bool(fastest)), weight=0.5)
 
 
 class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):

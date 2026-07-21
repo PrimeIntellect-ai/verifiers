@@ -13,7 +13,7 @@ from gepa.core.result import GEPAResult
 
 from verifiers.v1.cli.output import append_episode, output_path, save_config
 from verifiers.v1.clients import ModelContext, resolve_client
-from verifiers.v1.env import Environment
+from verifiers.v1.env import Env
 from verifiers.v1.gepa.adapter import GEPAAdapter
 from verifiers.v1.gepa.config import GEPAConfig
 from verifiers.v1.gepa.dataset import (
@@ -35,7 +35,7 @@ class _GEPALog:
         logger.info(message)
 
 
-def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
+def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
     all_tasks = env.taskset.select(config.num_train + config.num_val, config.shuffle)
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)

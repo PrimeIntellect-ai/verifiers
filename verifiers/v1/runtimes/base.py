@@ -96,6 +96,9 @@ def cleanup_at_exit() -> None:
 
 class BaseRuntimeInfo(BaseConfig):
     id: str | None = None
+    borrowed: bool = False
+    """Whether the run was placed into a live box owned by someone else
+    (`Agent.run(runtime=...)`) rather than provisioning its own."""
 
 
 class Runtime(ABC):

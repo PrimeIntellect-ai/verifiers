@@ -190,7 +190,7 @@ def test_reward_name_fallback():
 
 
 async def test_base_judge_score_raises():
-    with pytest.raises(NotImplementedError, match="implements no `render`"):
+    with pytest.raises(NotImplementedError, match="implements no `score`"):
         await vf.Judge().score(task=QAData(idx=0, prompt="q"), trace=make_trace())
 
 

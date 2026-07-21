@@ -308,41 +308,37 @@ class VersionInfo(StrictBaseModel):
 
 class AgentInfo(StrictBaseModel):
     """The agent that produced this trace's sampled turns — its resolved identity
-    plus its standing in the run, so a bare trace is self-contained (flat,
-    trace-native ingestion)."""
+    plus its standing in the run, so a bare trace is self-contained."""
 
     model: str
     """The model identifier requested from the client."""
     sampling: SamplingConfig | None = None
     """The resolved sampling settings the rollout ran with."""
     harness: HarnessConfig | None = None
-    """The driving harness's config. Typed as the base config, so a custom harness's
-    extra fields don't serialize — records round-trip without importing the harness."""
-    name: str | None = None
-    """The env agent that produced this trace — the config field name (`solver`,
-    `grader`). None outside an env; first-class so training can filter and
-    baseline per agent."""
+    """The driving harness's config, typed as the base config so records
+    round-trip without importing the harness."""
+    name: str = "agent"
+    """The agent's name — inside an env, the config field name (`solver`,
+    `grader`)."""
     trainable: bool = True
-    """Whether this trace's tokens are training data for the run's policy. An env's
-    `setup()` marks fixed-model agents (a frozen grader, a pinned user sim)
-    untrainable."""
+    """Whether this trace's tokens are training data for the run's policy; an
+    env's `setup()` marks fixed-model agents untrainable."""
 
 
 class EpisodeInfo(StrictBaseModel):
-    """The env-rollout (episode) a trace belongs to, stamped at mint. One episode
-    is one run of the env on one task; its traces link through the shared `id`, so
-    a flat bag of traces — a `traces.jsonl`, a serve response — reconstitutes its
-    episodes with no side lookup (the run id rides separately on `Trace.run`)."""
+    """The env-rollout (episode) a trace belongs to, stamped at mint. Traces of
+    one episode link through the shared `id`, so a flat bag of traces — a
+    `traces.jsonl`, a serve response — reconstitutes its episodes with no side
+    lookup (the run id rides separately on `Trace.run`)."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Shared by every trace of one env-rollout."""
     env: str = ""
-    """The env that ran the episode (`EnvConfig.env_id`, e.g.
-    `solver-grader+gsm8k-v1`)."""
+    """The env that ran the episode (`EnvConfig.env_id`)."""
     errors: list[Error] = Field(default_factory=list)
-    """Failures not attributable to any one trace (the env's `run`/`score` hooks,
-    plus prior attempts' when retried), mirrored onto every trace of the episode;
-    per-trace failures stay on the traces."""
+    """Failures not attributable to any one trace (the env's `run`/`finalize`
+    hooks, plus prior attempts' when retried), mirrored onto every trace of the
+    episode; per-trace failures stay on the traces."""
 
     @property
     def error(self) -> Error | None:
@@ -426,12 +422,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     @property
     def has_error(self) -> bool:
         return bool(self.errors)
-
-    @property
-    def agent_name(self) -> str | None:
-        """The env agent that produced this trace (`agent.name`); None for the
-        single-agent default and outside an env."""
-        return self.agent.name if self.agent is not None else None
 
     @property
     def trainable(self) -> bool:

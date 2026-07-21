@@ -10,7 +10,7 @@ over the `/task` channel. Subclass it per dataset.
 (`@reward`/`@metric` methods plus the plugged judges from `config.judges`, run by
 `score`). Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]`
 (all three default); judgement that compares sibling traces lives on
-`Environment.score` instead.
+`Env.finalize` instead.
 
 A Task instance is shared across its rollouts (`-r n` runs hold the same instance),
 so hooks must not stash per-rollout state on `self` — that lives on the trace
@@ -53,18 +53,6 @@ def _requires_runtime(fn) -> bool:
     param = inspect.signature(fn).parameters.get("runtime")
     # A defaulted runtime parameter can still be called offline with None.
     return param is not None and param.default is inspect.Parameter.empty
-
-
-def _reject_role_scoped(cls: type, why: str) -> None:
-    """Refuse `@vf.reward(agent=...)`/`@vf.metric(agent=...)` on classes whose
-    scoring never routes by agent (`Task`, `Harness`) — shared by their
-    `__init_subclass__`."""
-    for name, attr in vars(cls).items():
-        if callable(attr) and getattr(attr, "_vf_agent", None) is not None:
-            raise TypeError(
-                f"{cls.__name__}.{name}: agent= belongs to an Environment's "
-                f"cross-trace signals; {why} — drop agent="
-            )
 
 
 def _record_result(
@@ -219,12 +207,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
 
     user: ClassVar[type[User] | None] = None
-
-    def __init_subclass__(cls, **kwargs) -> None:
-        """A task signal always scores its own trace, so `agent=` (an Environment
-        concept) is refused at definition rather than silently ignored."""
-        super().__init_subclass__(**kwargs)
-        _reject_role_scoped(cls, "a Task signal always scores its own trace")
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data

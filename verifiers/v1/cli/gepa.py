@@ -72,6 +72,16 @@ def main(argv: list[str] | None = None) -> None:
     # signals during that cleanup are swallowed so an impatient second Ctrl-C can't orphan them.
     install_interrupt()
 
+    # Only eval runs multi-agent envs: GEPA optimizes one seed task's system
+    # prompt per rollout, which has no meaning across an env's own minted tasks.
+    taskset_id = config.env.taskset.id if config.env.taskset is not None else ""
+    env_cls = vf.environment_class(taskset_id, config.env.id)
+    if not issubclass(env_cls, vf.SingleAgentEnv):
+        raise SystemExit(
+            f"gepa: only single-agent envs are supported, got {env_cls.__name__} "
+            "— drop --env.id"
+        )
+
     env = vf.load_environment(config.env)
     try:
         result = run_gepa(env, config)

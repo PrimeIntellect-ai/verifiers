@@ -1,25 +1,16 @@
 """proposer-solver: a proposer invents a verified math problem; n solvers race it.
 
-The task-generation recipe env. The "proposer" plays the dataset (a topic seed),
-uses its tools to CONSTRUCT and verify a hard integer-answer problem, and ends
-with a JSON contract. The env mints a typed `SolveTask` from that trace and fans
-it out to `--env.n` independent runs of the "solver". Each solve is judged by the
-minted task's own reward (exact final integer, against the proposer's verified
-answer); the proposer is judged by what its problem DOES to the solvers —
-`learnability` peaks when half of them crack it (4p(1-p), the automatic-curriculum
-signal) — plus a `solve_rate` metric.
+The task-generation recipe env, as an example package. The "proposer" plays the
+dataset (a topic seed), constructs and verifies a hard integer-answer problem with
+its tools, and ends with a JSON contract; the env mints a typed `SolveTask` from
+that trace and fans it to `--env.n` independent runs of the "solver". Each solve
+is judged by the minted task's own reward; the proposer is judged by what its
+problem DOES to the solvers — `learnability` peaks when half of them crack it
+(4p(1-p), the automatic-curriculum signal).
 
-Agents are deliberately heterogeneous: point the proposer at a code-running
-harness in a real sandbox and keep the solvers on a cheap tool-less chat loop —
-
-    uv run eval proposer-solver -n 4 \
+    uv run eval proposer-solver-v1 -n 4 \
       --env.proposer.harness.id codex --env.proposer.harness.runtime.type prime \
       --env.solver.harness.id null
-
-Train-side, the agents flip independently per run (`--env.train_solver false`
-trains only on proposer rollouts; both default trainable, late-bound to the run's
-model). The flip is this env's own config — trainability is env truth, not a
-per-agent knob.
 """
 
 import asyncio
@@ -133,7 +124,7 @@ class ProposerSolverEnvConfig(vf.EnvConfig):
     trains only on proposer rollouts)."""
 
 
-class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
+class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
     def setup(self, agents):
         # Both agents CAN train (same underlying policy); which one does this run
         # is this env's explicit choice to expose.
@@ -147,23 +138,20 @@ class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
             *(agents.solver.run(solve_task) for _ in range(self.config.n))
         )
 
-    @staticmethod
-    def _solve_rate(traces: list[vf.Trace]) -> float:
-        solves = [t for t in traces if t.agent_name == "solver"]
-        if not solves:
-            return 0.0
-        return sum(t.rewards.get("correct", 0.0) for t in solves) / len(solves)
-
-    @vf.reward(agent="proposer")
-    async def learnability(self, trace, traces):
-        """The curriculum signal: 1.0 when half the solvers crack the problem, 0
-        when it's trivial or impossible for them (4p(1-p))."""
-        rate = self._solve_rate(traces)
-        return 4.0 * rate * (1.0 - rate)
-
-    @vf.metric(agent="proposer")
-    async def solve_rate(self, trace, traces):
-        return self._solve_rate(traces)
+    async def finalize(self, task, traces):
+        """The curriculum signal: `learnability` rewards the proposer where half
+        the solvers crack the problem, 0 where it's trivial or impossible for
+        them (4p(1-p))."""
+        solves = [t for t in traces if t.agent.name == "solver"]
+        rate = (
+            sum(t.rewards.get("correct", 0.0) for t in solves) / len(solves)
+            if solves
+            else 0.0
+        )
+        for trace in traces:
+            if trace.agent.name == "proposer":
+                trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
+                trace.record_metric("solve_rate", rate)
 
 
 class ProposerSolverTaskset(vf.Taskset[ProposeTask, vf.TasksetConfig]):

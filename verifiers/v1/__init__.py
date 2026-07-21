@@ -28,9 +28,9 @@ from verifiers.v1.configs.env import (
     pool_serve_kwargs,
 )
 from verifiers.v1.env import (
+    Env,
     EnvConfig,
     EnvTimeoutConfig,
-    Environment,
     default_agent_harness,
 )
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
@@ -253,7 +253,7 @@ __all__ = [
     "SubprocessConfig",
     "DockerConfig",
     "PrimeConfig",
-    "Environment",
+    "Env",
     "SingleAgentEnv",
     "EnvConfig",
     "EnvServerConfig",

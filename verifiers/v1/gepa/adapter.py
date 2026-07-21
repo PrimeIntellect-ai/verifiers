@@ -17,7 +17,7 @@ from gepa.core.adapter import EvaluationBatch
 from pydantic_core import to_jsonable_python
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.env import Environment
+from verifiers.v1.env import Env
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 
@@ -26,14 +26,14 @@ Candidate = dict[str, str]
 
 @dataclass
 class GEPAAdapter:
-    """Bridges GEPA's optimization loop with a native v1 `Environment`. `tasks` covers only the
+    """Bridges GEPA's optimization loop with a native v1 `Env`. `tasks` covers only the
     trainset + valset tasks GEPA was given (not the whole taskset), keyed by `task.data.idx` —
     GEPA's `batch` is a list of those idxs, and injecting the candidate rebuilds each `Task`
     around a `data` row carrying the new `system_prompt`. `loop` is the runner's persistent event
     loop (which holds `env.serving()` open); `evaluate` drives its rollouts on it with
     `run_until_complete`."""
 
-    env: Environment
+    env: Env
     ctx: ModelContext
     tasks: dict[int, Task]
     loop: asyncio.AbstractEventLoop
@@ -107,8 +107,8 @@ class GEPAAdapter:
                     "completion": trace.last_reply,
                     "reward": trace.reward,
                 }
-                if trace.agent_name:
-                    record["agent"] = trace.agent_name
+                if trace.agent is not None:
+                    record["agent"] = trace.agent.name
                 if trace.has_error:
                     record["error"] = str(trace.error)
                 if trace.stop_condition:

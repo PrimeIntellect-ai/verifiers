@@ -276,8 +276,8 @@ async def test_multi_agent_env(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one env-rollout, one trace per agent
-    assert sorted(t.agent_name for t in traces) == ["a", "b"]
-    (b,) = [t for t in traces if t.agent_name == "b"]
+    assert sorted(t.agent.name for t in traces) == ["a", "b"]
+    (b,) = [t for t in traces if t.agent.name == "b"]
     assert b.trainable is False
     for trace in traces:
         assert trace.errors == []
@@ -306,7 +306,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one env-rollout, two attempts
-    assert all(t.agent_name == "agent" and t.errors == [] for t in traces)
+    assert all(t.agent.name == "agent" and t.errors == [] for t in traces)
     assert len({t.episode.id for t in traces}) == 1  # one shared episode stamp
     assert any(t.metrics["best"] == 1.0 for t in traces)
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes
@@ -316,9 +316,9 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 async def test_env_id_solver_grader(run_v1, tmp_path):
     """The solver-grader env over the echo taskset (needs docker): the grader lands
     in its own box with the graded transcript uploaded, investigates with real
-    execution, and its parsed verdict lands on the solver's trace under the spec's
-    reward key. Wiring, not taste: the grader followed the default `score` spec's
-    output contract — the grade itself is the model's call."""
+    execution, writes its verdict file, and the parsed score lands on the solver's
+    trace as the `grader` reward. Wiring, not taste — the grade itself is the
+    model's call."""
     traces = await run_v1(
         "echo-v1",
         harness=None,  # agents pin their own harness; there is no run-level one
@@ -331,13 +331,13 @@ async def test_env_id_solver_grader(run_v1, tmp_path):
         max_turns=10,
         rollout_timeout=600,
     )
-    assert sorted(t.agent_name for t in traces) == ["grader", "solver"]
-    (solver,) = [t for t in traces if t.agent_name == "solver"]
-    (grader,) = [t for t in traces if t.agent_name == "grader"]
+    assert sorted(t.agent.name for t in traces) == ["grader", "solver"]
+    (solver,) = [t for t in traces if t.agent.name == "solver"]
+    (grader,) = [t for t in traces if t.agent.name == "grader"]
     assert solver.errors == [] and grader.errors == []
     assert grader.trainable is False
     assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
-    assert "SCORE:" in (grader.last_reply or "")
+    assert isinstance(grader.info.get("verdict"), dict)  # scraped from the box
     assert 0.0 <= solver.rewards["grader"] <= 1.0
 
 
@@ -352,7 +352,7 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2
-    assert sorted(t.agent_name for t in traces) == ["a", "b"]
+    assert sorted(t.agent.name for t in traces) == ["a", "b"]
     for trace in traces:
         assert trace.errors == []
         assert trace.metrics["duet"] == 1.0

@@ -1,13 +1,6 @@
-"""On-disk output: traces.jsonl (one trace per line) + config.toml.
-
-A trace is the atom: one JSON line each, appended the moment its episode
-completes, so results are durable mid-run. Traces of one env-rollout link through
-their `episode.id` stamp — a multi-agent episode is simply several consecutive
-lines sharing it. config.toml is the run's resolved config in the format the CLI
-reads (`@ config.toml`), so a run is re-runnable from its own output. Files
-written before the episode stamp (bare traces without `episode`) still read fine:
-each line is one trace either way.
-"""
+"""On-disk output: traces.jsonl (one trace per line, episodes linked through the
+`episode.id` stamp) + config.toml (the resolved config, re-runnable via
+`@ config.toml`)."""
 
 import asyncio
 import json

@@ -1,57 +1,47 @@
-"""solver-grader: a solver plays the task, a code-executing grader verifies it in a sandbox.
-
-Agent-as-judge as a reusable env (`--env.id solver-grader` over any taskset). The
-grader's verdict task mirrors the solver task's world — same image/workdir/resources,
-in a FRESH box in its original state (the solver's runtime is gone by grading time) —
-with the graded transcript uploaded, so the grader reconstructs and tests the work
-empirically, always in its own sandbox, never on the host.
-
-The verdict spec is a judge plugin (`--env.spec.id`, the same registry as an
-`env.taskset.task.judges` entry): the prompt+parse a plugged judge runs as one bare
-call is here executed as a real agent run, and `spec.verdict()` lands on the
-SOLVER's trace exactly as the plugged tier records it.
-"""
+"""solver-grader: a solver plays the task, a code-executing grader verifies it in a sandbox."""
 
 import json
 
-from pydantic import SerializeAsAny, model_validator
-
 import verifiers.v1 as vf
-from verifiers.v1.judge import JudgeConfig
-from verifiers.v1.judges.score import ScoreJudgeConfig
-from verifiers.v1.task import _record_result
-from verifiers.v1.utils.generic import deep_merge
 
 TRANSCRIPT_MD = "/tmp/transcript.md"
 TRANSCRIPT_JSON = "/tmp/transcript.json"
+VERDICT_FILE = "/tmp/verdict.json"
+
+GRADE_PROMPT = f"""You are grading another agent's attempt at a task.
+
+## The graded task
+{{task_prompt}}
+
+## Your workspace
+Your sandbox is {{world}}. The agent's full transcript is uploaded at
+{TRANSCRIPT_MD} (rendered) and {TRANSCRIPT_JSON} (the raw trace record).
+
+## Your job
+Verify the attempt empirically: reconstruct what the agent did from the transcript,
+re-run or re-check the work with real commands where possible, and judge whether it
+actually solves the task. When you are done, write your verdict as a single JSON
+object to {VERDICT_FILE}:
+
+    {{{{"score": <integer 0-10>, "reasoning": "<one paragraph>"}}}}
+
+The verdict file is how you are scored — do not finish without writing it."""
 
 
-def _sandbox_note(solver: vf.TaskData) -> str:
-    """What a grading agent must know about its box before it starts verifying."""
-    world = (
-        f"a fresh instance of the same environment the graded agent worked in "
-        f"(image {solver.image}), in its ORIGINAL state — the agent's edits are "
-        "NOT applied; reconstruct them from the transcript to verify"
-        if solver.image is not None
-        else "your own — the graded agent worked elsewhere"
-    )
-    return (
-        f"\n\n## Your workspace\nYour sandbox is {world}. The agent's full transcript "
-        f"is uploaded at {TRANSCRIPT_MD} (rendered) and {TRANSCRIPT_JSON} (the raw "
-        "trace record)."
-    )
-
-
-def _noted(prompt: str | vf.Messages, note: str) -> str | vf.Messages:
-    if isinstance(prompt, str):
-        return prompt + note
-    return [*prompt, vf.UserMessage(content=note.strip())]
+def _world(solver: vf.TaskData) -> str:
+    if solver.image is not None:
+        return (
+            f"a fresh instance of the same environment the graded agent worked in "
+            f"(image {solver.image}), in its ORIGINAL state — the agent's edits are "
+            "NOT applied; reconstruct them from the transcript to verify"
+        )
+    return "your own — the graded agent worked elsewhere"
 
 
 class GradeTask(vf.Task):
-    """The grader's verdict task: the solver task's world mirrored onto the minted
-    row, transcript uploaded before the grader starts. `NEEDS_CONTAINER` keeps
-    `Agent.run`'s per-task validation aligned with the grader's actual need."""
+    """The grader's task: the solver task's world mirrored onto a fresh box (the
+    solver's runtime is gone by grading time), transcript uploaded before the
+    grader starts, verdict scraped from the box after it finishes."""
 
     NEEDS_CONTAINER = True
 
@@ -59,62 +49,14 @@ class GradeTask(vf.Task):
         super().__init__(data)
         self._files = files
 
-    async def setup(self, trace, runtime):
-        for path, content in self._files.items():
-            await runtime.write(path, content)
-
-
-class SolverGraderEnvConfig(vf.EnvConfig):
-    solver: vf.AgentConfig = vf.AgentConfig()
-    grader: vf.AgentConfig = vf.AgentConfig()
-    """The grader. Its runtime must be a container:
-    `--env.grader.harness.runtime.type docker|prime`."""
-    spec: SerializeAsAny[JudgeConfig] = ScoreJudgeConfig(name="grader")
-    """The verdict spec — a judge plugin's config; its `name`/`weight` set the
-    reward key and weight on the solver's trace. The spec's own model/client/
-    sampling are ignored: the grader agent makes the calls (route via
-    `--env.grader.*`)."""
-
-    @model_validator(mode="before")
     @classmethod
-    def _resolve_spec(cls, data):
-        if not isinstance(data, dict) or not isinstance(data.get("spec"), dict):
-            return data
-        from verifiers.v1.loaders import judge_config_type
-
-        raw = data["spec"]
-        if raw.get("id"):  # an explicit id swaps the spec (narrowing to its config)
-            data["spec"] = judge_config_type(raw["id"]).model_validate(raw)
-        else:  # a partial override tunes the default spec, never resets it
-            default = cls.model_fields["spec"].default
-            data["spec"] = type(default).model_validate(
-                deep_merge(default.model_dump(exclude_none=True), raw)
-            )
-        return data
-
-
-class SolverGraderEnv(vf.Environment[SolverGraderEnvConfig]):
-    def __init__(self, config: SolverGraderEnvConfig) -> None:
-        super().__init__(config)
-        from verifiers.v1.loaders import load_judge
-
-        # The spec drives the grader's task; a misconfigured spec or grader
-        # surfaces at runtime, on its own run (no upfront compilation).
-        self._spec = load_judge(self.config.spec)
-
-    def setup(self, agents):
-        # The grader grades the policy; its tokens are never training data.
-        agents.grader.trainable = False
-
-    async def run(self, task, agents):
-        solution = await agents.solver.run(task)
-        prompt = self._spec.render(task.data, solution)
-        # A fresh box of the solver task's image, original state (the solver's
-        # edits live only in its own box), transcript uploaded.
-        grade_task = GradeTask(
+    def from_trace(cls, task: vf.Task, solution: vf.Trace) -> "GradeTask":
+        return cls(
             vf.TaskData(
                 idx=task.data.idx,
-                prompt=_noted(prompt, _sandbox_note(task.data)),
+                prompt=GRADE_PROMPT.format(
+                    task_prompt=task.data.prompt_text, world=_world(task.data)
+                ),
                 image=task.data.image,
                 workdir=task.data.workdir,
                 resources=task.data.resources,
@@ -124,15 +66,49 @@ class SolverGraderEnv(vf.Environment[SolverGraderEnvConfig]):
                 TRANSCRIPT_JSON: json.dumps(solution.to_record()).encode(),
             },
         )
-        await agents.grader.run(grade_task)
 
-    async def score(self, task, traces):
-        """Parse the grader's reply through the spec and record it like the plugged
-        tier would — a malformed verdict raises, failing the episode (retryable)
-        rather than scoring the solver 0."""
-        by_agent = {t.agent_name: t for t in traces}
-        solution, verdict = by_agent["solver"], by_agent["grader"]
-        result = self._spec.verdict(task.data, solution, verdict.last_reply)
-        _record_result(
-            solution, self._spec.reward_name, result, self._spec.config.weight
-        )
+    async def setup(self, trace, runtime):
+        for path, content in self._files.items():
+            await runtime.write(path, content)
+
+    async def finalize(self, trace, runtime):
+        # Scrape the verdict while the box is still alive; a grader that wrote
+        # none fails the episode in the env's finalize (retryable).
+        try:
+            raw = await runtime.read(VERDICT_FILE)
+        except Exception:
+            return
+        trace.info["verdict"] = json.loads(raw.decode())
+
+
+class SolverGraderEnvConfig(vf.EnvConfig):
+    solver: vf.AgentConfig = vf.AgentConfig()
+    grader: vf.AgentConfig = vf.AgentConfig()
+    """The grader; its runtime must be a container
+    (`--env.grader.harness.runtime.type docker|prime`)."""
+
+
+class SolverGraderEnv(vf.Env[SolverGraderEnvConfig]):
+    def setup(self, agents):
+        # The grader grades the policy; its tokens are never training data.
+        agents.grader.trainable = False
+
+    async def run(self, task, agents):
+        solution = await agents.solver.run(task)
+        await agents.grader.run(GradeTask.from_trace(task, solution))
+
+    async def finalize(self, task, traces):
+        # A missing or malformed verdict raises, failing the episode (retryable)
+        # rather than scoring the solver 0.
+        by_agent = {t.agent.name: t for t in traces}
+        solution, graded = by_agent["solver"], by_agent["grader"]
+        verdict = graded.info.get("verdict")
+        if not isinstance(verdict, dict) or "score" not in verdict:
+            raise ValueError(
+                f"grader wrote no verdict to {VERDICT_FILE}; last reply: "
+                f"...{(graded.last_reply or '')[-200:]!r}"
+            )
+        score = verdict["score"]
+        if not isinstance(score, (int, float)) or isinstance(score, bool):
+            raise ValueError(f"grader verdict score is not a number: {score!r}")
+        solution.record_reward("grader", min(max(float(score), 0.0), 10.0) / 10.0)

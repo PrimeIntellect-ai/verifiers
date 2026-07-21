@@ -22,7 +22,7 @@ The control flow between agents: how many run on one task, in what order, judged
 
 ## Agent
 
-An `Agent` is a reusable (harness × model × runtime policy) value with one executable arrow — `agent.run(task) -> Trace` — the building block environments hand to `rollout()`, and a scripting surface of its own (see [Agent](agent.md)).
+An `Agent` is a reusable (harness × model × runtime policy) value with one executable arrow — `agent.run(task) -> Trace` — the building block environments hand to `run()`, and a scripting surface of its own (see [Agent](agent.md)).
 
 ## Toolset
 
@@ -38,9 +38,9 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Architecture](architecture.md) — An overview about the architecture and runtime of verifiers
 - [Tasksets](tasksets.md) — How to create tasksets
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
-- [Multi-agent environments](environments.md) — Roles, the control flow between agents, and cross-agent rewards
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — run tasks, place runs into shared sandboxes, chain traces into new tasks
+- [Multi-agent environments](environments.md) — Multiple agents, the control flow between them, and cross-agent rewards
 
 For the documentation for legacy environments, go to [the v0 documentation](../v0/overview.md).

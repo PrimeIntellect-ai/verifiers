@@ -180,7 +180,13 @@ class RolloutRun:
                 "placed into the box"
             )
         runtime = self.runtime
-        self.trace.runtime = runtime.info
+        if self._owns_runtime:
+            # The shared object: start() below fills the provisioned id in place.
+            self.trace.runtime = runtime.info
+        else:
+            # A borrowed box is already provisioned and its info object is shared
+            # across the runs placed in it — stamp `borrowed` on a copy.
+            self.trace.runtime = runtime.info.model_copy(update={"borrowed": True})
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             self.trace.id,

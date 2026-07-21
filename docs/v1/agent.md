@@ -47,8 +47,9 @@ run with and without tools — and borrowed like the others: never started or to
 by the agent, counted in the pairing check (a harness that can't drive MCP tools is
 refused).
 
-Chaining needs no framework: mint the next task's `TaskData` from earlier traces with a
-plain function and hand it to the next agent.
+Chaining needs no framework: give the downstream `Task` subclass a `from_trace`
+classmethod (`from_traces` when it reads several) and hand its result to the next
+agent.
 
 ## Same-box grading
 
@@ -65,15 +66,17 @@ grader = vf.make_agent(
     vf.AgentConfig(harness=harness, model="openai/gpt-5.4-mini"), client=client
 )
 
-def grade_task(solver_trace: vf.Trace) -> vf.Task:
-    return vf.Task(vf.TaskData(
-        idx=0,
-        prompt=(
-            "Audit the agent whose trajectory is at /app/evidence/trace.json and whose "
-            "work product is at /app/answer.txt. Recompute the expected result yourself "
-            'and reply with ONLY {"verdict": "correct" | "incorrect", "reasoning": "..."}'
-        ),
-    ))
+class GradeTask(vf.Task):
+    @classmethod
+    def from_trace(cls, solver_trace: vf.Trace) -> "GradeTask":
+        return cls(vf.TaskData(
+            idx=solver_trace.task.data.idx,
+            prompt=(
+                "Audit the agent whose trajectory is at /app/evidence/trace.json and whose "
+                "work product is at /app/answer.txt. Recompute the expected result yourself "
+                'and reply with ONLY {"verdict": "correct" | "incorrect", "reasoning": "..."}'
+            ),
+        ))
 
 task = vf.Task(vf.TaskData(
     idx=0, prompt="Compute the sum of the first 100 primes into /app/answer.txt"
@@ -83,11 +86,12 @@ async with solver.provision(task) as box:
     solver_trace = await solver.run(task, runtime=box)
     await box.write("/app/evidence/trace.json",
                     json.dumps(solver_trace.to_record()).encode())
-    verdict_trace = await grader.run(grade_task(solver_trace), runtime=box)
+    verdict_trace = await grader.run(GradeTask.from_trace(solver_trace), runtime=box)
 ```
 
-Both traces carry `info["agent"]` (harness, model, runtime type + descriptor, borrowed
-flag), so "these two runs shared a box" stays a queryable relation afterwards.
+Each trace carries its agent's resolved identity on `trace.agent` (`AgentInfo`:
+model, sampling, harness) and its box on `trace.runtime` (id + `borrowed` flag),
+so "these two runs shared a box" stays a queryable relation afterwards.
 
 ## Proposer → solvers
 
@@ -98,22 +102,24 @@ class ProposedData(vf.TaskData):
     answer: str
 
 class ProposedTask(vf.Task[ProposedData]):
+    @classmethod
+    def from_trace(cls, proposer_trace: vf.Trace) -> "ProposedTask":
+        ...  # parse the proposer's reply into a ProposedData row
+
     @vf.reward
     async def correct(self, trace: vf.Trace) -> float:
         ...  # compare the trace's final answer against self.data.answer
 
 proposer_trace = await proposer.run(vf.Task(vf.TaskData(idx=0, prompt=PROPOSE)))
-task = mint_task(proposer_trace)          # your traces -> ProposedTask function
+task = ProposedTask.from_trace(proposer_trace)
 traces = await asyncio.gather(*(solver.run(task) for _ in range(8)))
 ```
 
 Fan-out is plain `asyncio.gather` — each run gets its own fresh box. The Agent
 deliberately has no group verb: each run scores its rollout on its own, and comparing
 siblings — relative success, preference, advantages — belongs to whoever gathered the
-traces (in training, prime-rl samples the group; in an `Environment`, `score()`
+traces (in training, prime-rl samples the group; in an `Env`, `finalize()`
 compares the finished traces).
-
-Reward/metric handlers are `async def` — a sync handler fails at scoring time.
 
 ## Placement rules
 

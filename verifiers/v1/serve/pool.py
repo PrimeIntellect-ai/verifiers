@@ -1,18 +1,24 @@
 """Env-server worker pool: a ROUTER broker over N worker processes.
 
-A lone `EnvServer` runs every rollout on one event loop, so CPU-bound work
-(renderer tokenization, scoring) competes for it; the pool spreads that across
-worker processes. The broker binds the client-facing ROUTER with the *same* wire
-protocol as a lone `EnvServer` (so `EnvClient` is unchanged) and dispatches each
-request to the least-busy worker over a per-worker `DEALER`; the real client
-identity is held in `pending` and the reply routed back by `request_id`.
+A lone `EnvServer` runs every rollout as an `asyncio.Task` on one event loop, so
+CPU-bound work (renderer tokenization, scoring) competes for that loop. v0 relieved
+this with a router + worker pool; this reinstates it for v1.
 
-Scaling is elastic but upscale-only: a new worker spawns when in-flight requests
-reach 90% of `workers * multiplex`. Workers monitor a death pipe so an orphan
-self-exits if the broker dies. A worker that dies fails its in-flight requests
-back to their clients and leaves dispatch; when every worker is dead the pool
-shuts down (clients error instead of hanging). TODO: downscale idle workers,
-per-worker restart-on-death.
+A broker binds the client-facing ROUTER (the *same* wire protocol as a lone
+`EnvServer`, so `EnvClient` is unchanged), starts one worker process and scales up to
+`max_workers` on demand — each an ordinary `EnvServer` / `LegacyEnvServer` bound to its
+own ipc address — load-balancing requests to the least-busy worker over a `DEALER` per
+worker. The worker's `client_id` (its reply identity) is the broker's DEALER identity;
+the broker holds the real client identity in `pending` and routes the reply back by
+`request_id`. `health` is answered inline (no worker needed); everything else goes to a
+worker.
+
+Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
+reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
+(own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
+broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
+monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
+so worker death is rare).
 """
 
 import asyncio
@@ -29,28 +35,22 @@ import msgpack
 import zmq
 import zmq.asyncio
 
-from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import BaseResponse, HealthResponse, RunGroupRequest
+from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
 
 logger = logging.getLogger(__name__)
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 
 
-def _error(message: str) -> bytes:
-    return msgpack.packb(
-        BaseResponse(success=False, error=message).model_dump(mode="json"),
-        use_bin_type=True,
-    )
-
-
 def _arm_teardown(death_pipe=None) -> None:
-    """Arm a spawned process for clean teardown — by default SIGTERM would kill it
-    abruptly, skipping asyncio's serving() cleanup and orphaning tunnels/sandboxes.
-    SIGTERM -> KeyboardInterrupt so the event loop runs its finallys; with
-    `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on SIGKILL) so
-    no child is orphaned."""
+    """Arm a spawned process (serve_env broker/single server, or pool worker) for clean
+    teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
+    asyncio.run()'s serving() cleanup and orphaning host tunnels (and sandboxes).
+
+    - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
+    - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
+      child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
 
     def on_sigterm(*_) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -70,8 +70,13 @@ def _arm_teardown(death_pipe=None) -> None:
 
 class EnvServerPool:
     """ROUTER broker that elastically scales worker processes (least-busy dispatch).
-    The broker forwards opaque request frames, so workers can be `EnvServer` (v1)
-    or `LegacyEnvServer` (v0) without the broker caring."""
+
+    With `elastic=True` (default) it starts with a single worker and spawns another
+    whenever in-flight requests reach 90% of current capacity (`workers * multiplex`), up
+    to `max_workers`. Upscale-only for now — workers are never reclaimed. `elastic=False`
+    pre-spawns all `max_workers` upfront (the old fixed-pool behavior). The broker forwards
+    opaque request frames, so workers can be `EnvServer` (v1) or `LegacyEnvServer` (v0)
+    without the broker caring."""
 
     def __init__(
         self,
@@ -134,7 +139,6 @@ class EnvServerPool:
                 "pipe": parent_conn,
                 "active": 0,
                 "index": i,
-                "dead": False,
             }
         )
         if self._poller is not None:
@@ -142,8 +146,10 @@ class EnvServerPool:
 
     def _maybe_scale_up(self, in_flight: int) -> None:
         """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
-        A new worker starts at `active=0`, so least-busy dispatch funnels the
-        backlog to it as it comes online. `max_workers=None` scales without a cap."""
+
+        A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
+        it as it comes online (a few seconds to load the env) — fine, since we only scale
+        up once already saturated. `max_workers=None` scales without a cap."""
         if self.max_workers is not None and len(self.workers) >= self.max_workers:
             return
         if in_flight >= 0.9 * len(self.workers) * self.multiplex:
@@ -162,7 +168,8 @@ class EnvServerPool:
     async def run(self) -> None:
         self._poller = zmq.asyncio.Poller()
         self._poller.register(self.frontend, zmq.POLLIN)
-        # Elastic starts with one worker; otherwise pre-spawn the lot.
+        # Elastic: start with one and scale up on demand. Otherwise pre-spawn the lot
+        # (`max_workers` is a concrete count when elastic is off).
         for _ in range(1 if self.elastic else (self.max_workers or 1)):
             self._spawn_worker()
         # request_id -> {client_id, worker, rollout_slots}
@@ -178,34 +185,18 @@ class EnvServerPool:
         try:
             in_flight = 0
             while True:
-                # Bounded poll so worker liveness is checked even when idle.
-                events = dict(await self._poller.poll(timeout=1000))
-                in_flight -= await self._reap_dead_workers(pending)
-                if all(w["dead"] for w in self.workers):
-                    logger.error(
-                        "EnvServerPool: all %d worker(s) died; shutting down",
-                        len(self.workers),
-                    )
-                    # Give requests racing toward the dead pool a beat to land,
-                    # then refuse them, so their clients error instead of hanging.
-                    await asyncio.sleep(0.5)
-                    await self._refuse_queued_requests()
-                    raise RuntimeError(
-                        "all env workers died — check the worker logs for the cause"
-                    )
+                events = dict(await self._poller.poll())
                 if self.frontend in events:
-                    frames = await self.frontend.recv_multipart()
-                    if len(frames) != 4:
-                        logger.warning(
-                            "invalid message: expected 4 frames, got %d", len(frames)
-                        )
-                        continue
-                    client_id, request_id, method, payload = frames
+                    (
+                        client_id,
+                        request_id,
+                        method,
+                        payload,
+                    ) = await self.frontend.recv_multipart()
                     if method == b"health":
-                        with contextlib.suppress(zmq.ZMQError):
-                            await self.frontend.send_multipart(
-                                [client_id, request_id, _HEALTH]
-                            )
+                        await self.frontend.send_multipart(
+                            [client_id, request_id, _HEALTH]
+                        )
                     else:
                         # Pool capacity is measured in rollouts; one group request carries n.
                         rollout_slots = 1
@@ -215,10 +206,7 @@ class EnvServerPool:
                                     msgpack.unpackb(payload, raw=False)
                                 )
                                 rollout_slots = max(1, request.n)
-                        worker = min(
-                            (w for w in self.workers if not w["dead"]),
-                            key=lambda w: w["active"],
-                        )
+                        worker = min(self.workers, key=lambda w: w["active"])
                         worker["active"] += rollout_slots
                         pending[request_id] = {
                             "client_id": client_id,
@@ -234,7 +222,7 @@ class EnvServerPool:
                         if self.elastic:
                             self._maybe_scale_up(in_flight)
                 for w in self.workers:
-                    if not w["dead"] and w["dealer"] in events:
+                    if w["dealer"] in events:
                         request_id, data = await w["dealer"].recv_multipart(copy=False)
                         # Copy only the routing key; relay the response Frames unchanged.
                         entry = pending.pop(request_id.bytes, None)
@@ -250,65 +238,6 @@ class EnvServerPool:
             pass
         finally:
             self._shutdown()
-
-    async def _reap_dead_workers(self, pending: dict[bytes, dict]) -> int:
-        """Fail a dead worker's in-flight requests back to their clients and drop it
-        from dispatch (restart-on-death is deliberately deferred). Replies the worker
-        managed to send before dying are relayed, not failed. Returns the rollout
-        slots released."""
-        released = 0
-        for w in self.workers:
-            if w["dead"] or w["process"].is_alive():
-                continue
-            w["dead"] = True
-            while await w["dealer"].poll(timeout=0):
-                request_id, data = await w["dealer"].recv_multipart(copy=False)
-                entry = pending.pop(request_id.bytes, None)
-                if entry is None:
-                    continue
-                released += entry["rollout_slots"]
-                with contextlib.suppress(zmq.ZMQError):
-                    await self.frontend.send_multipart(
-                        [entry["client_id"], request_id, data], copy=False
-                    )
-            lost = [rid for rid, e in pending.items() if e["worker"] is w]
-            error = _error(
-                f"env worker {w['index']} died (exit code {w['process'].exitcode}) "
-                "with the request in flight — check the worker logs for the crash"
-            )
-            for request_id in lost:
-                entry = pending.pop(request_id)
-                released += entry["rollout_slots"]
-                with contextlib.suppress(zmq.ZMQError):
-                    await self.frontend.send_multipart(
-                        [entry["client_id"], request_id, error]
-                    )
-            logger.error(
-                "EnvServerPool: worker %d died (exit code %s); "
-                "failed %d in-flight request(s)",
-                w["index"],
-                w["process"].exitcode,
-                len(lost),
-            )
-            if self._poller is not None:
-                with contextlib.suppress(KeyError):
-                    self._poller.unregister(w["dealer"])
-            w["dealer"].close()
-            with contextlib.suppress(Exception):
-                w["pipe"].close()
-        return released
-
-    async def _refuse_queued_requests(self) -> None:
-        """Error-reply everything already queued on the frontend so those clients
-        fail fast; anything sent after the pool exits is unanswerable."""
-        error = _error("env server pool shut down: all workers died")
-        while await self.frontend.poll(timeout=0):
-            frames = await self.frontend.recv_multipart()
-            if len(frames) != 4:
-                continue
-            client_id, request_id, _, _ = frames
-            with contextlib.suppress(zmq.ZMQError):
-                await self.frontend.send_multipart([client_id, request_id, error])
 
     def _shutdown(self) -> None:
         for w in self.workers:
@@ -331,11 +260,11 @@ class EnvServerPool:
         logger.info("EnvServerPool down")
 
 
-def env_config_data(env: EnvConfig) -> dict:
+def env_config_data(config) -> dict:
     """A picklable dict of a (possibly dynamically-narrowed, unpicklable) env config —
     ship this across a process boundary, then rebuild via `resolve_env_config`
-    (re-narrowing to the env's concrete config class)."""
-    return env.model_dump(mode="json")
+    (re-narrowing to the env's concrete config class, agent fields included)."""
+    return config.model_dump(mode="json")
 
 
 def serve_env(
@@ -351,17 +280,27 @@ def serve_env(
     **server_kwargs,
 ) -> None:
     """Serve one env over ZMQ: a single in-process `EnvServer` when `max_workers <= 1`,
-    else an `EnvServerPool` broker over up to `max_workers` workers (`None` =
-    unbounded). The frontend speaks the same protocol either way. Reports the bound
-    address on `address_queue` (for a spawner that passed an OS-assigned `:0`).
+    else an `EnvServerPool` broker over up to `max_workers` worker processes (`None` =
+    unbounded). The frontend speaks the same protocol either way, so the client is
+    identical. Reports the bound address on `address_queue` (for a spawner that passed an
+    OS-assigned `:0`).
 
-    A native env config may come as `config` (an object) or `config_data` (the
-    picklable dict from `env_config_data` — a spawning caller can't pickle a
-    dynamically-narrowed config type); legacy passes `env_id`/`env_args`/
-    `extra_env_kwargs`. `log_setup` (a picklable callable) configures logging for
-    this process and every worker — without it a spawned server's logs are silently
-    dropped. `death_pipe` makes this server self-terminate if its parent dies
-    abruptly (see `_arm_teardown`)."""
+    `elastic` (default True) starts the pool at one worker and scales up to `max_workers`
+    as load grows; `multiplex` is the per-worker capacity for the scale-up trigger (spawn
+    the next worker at 90% of `workers * multiplex` in-flight). `elastic=False` pre-spawns
+    all `max_workers`.
+
+    A native env config may be passed as `config` (an object) or `config_data` (the
+    picklable dict from `env_config_data`, for callers that spawn this function and so
+    can't pickle a dynamically-narrowed config type); legacy passes `env_id`/`env_args`/
+    `extra_env_kwargs`.
+
+    `log_setup` (a picklable callable) configures logging for this process and every
+    spawned worker — without it a spawned server inherits no handlers and its INFO logs
+    (rollout start/done, the pool line) are silently dropped.
+
+    `death_pipe` (when spawned by a parent, e.g. the eval main process) makes this server
+    self-terminate if that parent dies abruptly — see `_arm_teardown`."""
     # Graceful SIGTERM (run asyncio teardown) + self-terminate if the parent dies. The
     # re-raised KeyboardInterrupt is swallowed below for a clean exit (no spurious traceback).
     _arm_teardown(death_pipe)

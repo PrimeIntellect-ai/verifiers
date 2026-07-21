@@ -1,11 +1,6 @@
-"""Resume an interrupted eval: reload its finished rollouts and run only the rest.
-
-`--resume <dir>` reloads the run's saved config verbatim (so it takes no other
-flags) and writes back into the same dir. `load` keeps the good saved rollouts and
-re-runs what's owed: missing rollouts (never written) and errored ones (dropped and
-redone). The unit is the episode — traces sharing an `episode.id` stamp are kept or
-redone together.
-"""
+"""Resume an interrupted eval: reload its finished rollouts and run only the
+rest. The unit is the episode — traces sharing an `episode.id` stamp are kept or
+redone together."""
 
 import json
 import tomllib
@@ -62,7 +57,7 @@ def load(
     idx). A rollout is kept or redone as a unit — the traces sharing an
     `episode.id` stamp (a stampless pre-episode line is its own single-trace
     episode). `complete` is the environment's keep-verdict
-    (`Environment.complete`); without it (the server path) the default is
+    (`Env.complete`); without it (the server path) the default is
     `episode_ok`, so an errored rollout is dropped and re-run. `whole_task` redoes
     a partially-kept task as a unit — the legacy group-scored path, where
     `run_group` always serves the full n. Rewrites `traces.jsonl` to just the kept

@@ -1,4 +1,4 @@
-from verifiers.v1.envs.proposer_solver.env import (
+from proposer_solver_v1.taskset import (
     ProposerSolverEnv,
     ProposerSolverEnvConfig,
     ProposerSolverTaskset,

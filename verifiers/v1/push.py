@@ -1,12 +1,13 @@
-"""Push a finished eval run to the Prime Intellect platform (`--no-push` to skip).
+"""Push a finished eval run to the Prime Intellect platform (`uv run eval`, `--no-push` to skip).
 
-Converts each v1 `Trace` to the platform's (v0) eval-sample schema and uploads the
-run over the `/evaluations/` API (create -> push samples -> finalize) — the same
-contract as `prime eval push`, done inline at the end of a run. Auth + base URL
-come from `$PRIME_API_KEY` / `~/.prime/config.json`.
+On by default. Converts each in-memory v1 `Trace` to the platform's (v0) eval-sample schema
+(`trace_to_sample`) and uploads the run over the `/evaluations/` API (create -> push samples ->
+finalize) — the same contract
+`prime eval push` uploads a saved run through, done inline at the end of a run rather than
+later from disk. Auth + base URL come from `$PRIME_API_KEY` / `~/.prime/config.json`
+(written by `prime login`), like the rest of the CLI.
 """
 
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -35,13 +36,12 @@ class PushState:
 
 
 def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
-    """One trace -> the platform's sample dict (the v0 eval-sample format).
+    """One rollout -> the platform's sample dict (the "old" v0 eval-sample format).
 
-    The hub table stays flat — one row per trace, and the trace itself carries its
-    episode standing (`episode.id`/`agent.name`/`agent.trainable`), so a
-    multi-trace rollout's grouping is reconstructable without a nested schema. No
-    prompt/completion split (meaningless mid-branch): `completion` is the final
-    branch's messages, `trajectory` one message list per branch."""
+    The conversation is the unit — no prompt/completion split (meaningless mid-branch):
+    `completion` is the final branch's messages and `trajectory` carries one message list per
+    branch. `rollout_number` is this rollout's 1-based index within its task's group (callers that
+    don't group rollouts can leave it at the default)."""
 
     def dump(messages):
         return [m.model_dump(mode="json", exclude_none=True) for m in messages]
@@ -53,13 +53,15 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
         "episode_id": trace.episode.id if trace.episode is not None else None,
-        "agent": trace.agent_name,
+        "agent": trace.agent.name if trace.agent is not None else None,
         "trainable": trace.trainable,
         "task": task,
         "prompt": [],
         "completion": dump(branches[-1].messages) if branches else [],
         "answer": task.get("answer"),
-        # Keyed `tool_defs` because the v0 sample format already carries it there.
+        # The tools advertised to the model (`Trace.tools`); keyed `tool_defs` because the
+        # v0 sample format already carries it there, so bridged and native rollouts render
+        # the same on the platform.
         "tool_defs": [t.model_dump(mode="json", exclude_none=True) for t in trace.tools]
         if trace.tools
         else None,
@@ -85,7 +87,8 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         else None,
         "info": dict(trace.info) or None,
     }
-    # Flatten sub-rewards to top-level keys the way v0 does; env metrics stay nested.
+    # Flatten each sub-reward onto the sample as a top-level key, the way v0's `state_to_output`
+    # does. Env metrics stay in the nested `metrics` field.
     for name, value in trace.rewards.items():
         sample.setdefault(name, value)
     return sample
@@ -111,98 +114,15 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     return api_key, base, frontend, team_id
 
 
-@dataclass
-class _EpisodeIndex:
-    """The episode grouping read off the run's traces.jsonl: which episode each
-    trace belongs to, and every episode's task and outcome. Empty when the file
-    doesn't exist; unstamped (pre-episode) lines aren't indexed."""
-
-    ok: dict[str, bool]
-    """episode id -> `episode_ok` (no episode-level error, no trace errors)."""
-    idx: dict[str, int]
-    """episode id -> its task's `idx`."""
-
-
-def _episode_index(config: EvalConfig) -> _EpisodeIndex:
-    from verifiers.v1.cli.output import TRACES_FILE, output_path
-
-    index = _EpisodeIndex(ok={}, idx={})
-    path = output_path(config) / TRACES_FILE
-    if not path.exists():
-        return index
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            episode = row.get("episode")
-            if not isinstance(episode, dict) or not episode.get("id"):
-                continue
-            eid = episode["id"]
-            index.ok[eid] = (
-                index.ok.get(eid, True)
-                and not episode.get("errors")
-                and not row.get("errors")
-            )
-            index.idx[eid] = row["task"]["data"]["idx"]
-    return index
-
-
-def _run_metrics(traces: list[Trace], index: _EpisodeIndex) -> dict[str, Any]:
-    """Run-level aggregates as v0's `GenerateMetadata`. Rewards/metrics aggregate
-    over the trainable traces only — fixed agents (a grader, a modeled user) often
-    carry no rewards and would dilute every mean with structural zeros — falling
-    back to all traces when none are trainable (same rule as the dashboard).
-    `avg_error` is the share of EPISODES that aren't ok: a hook failure counts even
-    when its traces are clean (read off traces.jsonl, per-trace fallback when the
-    file is absent)."""
-    scored = [t for t in traces if t.trainable] or traces
-    sums: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    for trace in scored:
-        for name, value in {**trace.rewards, **trace.metrics}.items():
-            sums[name] = sums.get(name, 0.0) + value
-            counts[name] = counts.get(name, 0) + 1
-    n = len(scored)
-    avg_error = (
-        sum(not ok for ok in index.ok.values()) / len(index.ok)
-        if index.ok
-        else (sum(t.has_error for t in scored) / n if n else 0.0)
-    )
-    return {
-        "avg_reward": sum(t.reward for t in scored) / n if n else 0.0,
-        "avg_metrics": {name: sums[name] / counts[name] for name in sums},
-        "avg_error": avg_error,
-    }
-
-
-def _build_samples(traces: list[Trace]) -> list[dict[str, Any]]:
-    """One platform sample per trace, with one `rollout_number` per EPISODE: a
-    multi-agent rollout's agents are the same attempt at the task, not attempts
-    1..n. The grouping is each trace's own episode stamp (`episode.id`); an
-    unstamped trace counts as an attempt of its own."""
-    counts: dict[int, int] = {}
-    episode_numbers: dict[str, int] = {}
-    samples = []
-    for trace in traces:
-        episode_id = trace.episode.id if trace.episode is not None else None
-        number = episode_numbers.get(episode_id) if episode_id else None
-        if number is None:
-            idx = trace.task.data.idx
-            counts[idx] = number = counts.get(idx, 0) + 1
-            if episode_id:
-                episode_numbers[episode_id] = number
-        samples.append(trace_to_sample(trace, number))
-    return samples
-
-
 def push_traces(
     traces: list[Trace], config: EvalConfig, state: "PushState | None" = None
 ) -> str | None:
-    """Upload a finished run to the platform; return the viewer URL (None if
-    skipped/failed). Resolves the env by name (get-or-create, so a local run
-    uploads without a prior `prime env push`); when `state` is given, records the
-    outcome on it so the dashboard's status line resolves."""
+    """Upload a finished run to the platform; return the viewer URL (None if skipped/failed).
+
+    Resolves the env (get-or-create) by name so a local run uploads without a prior
+    `prime env push`, then create evaluation -> push samples -> finalize. When `state` is given
+    (the v1 `--rich` path), record the outcome on it (`url` on success, `error` on skip/failure,
+    `done` when finished) so the dashboard's status line resolves."""
 
     def finish(url: str | None = None, error: str | None = None) -> str | None:
         if state is not None:
@@ -218,24 +138,47 @@ def push_traces(
         )
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
-    index = _episode_index(config)
+    def compute_metrics() -> dict[str, Any]:
+        """Run-level aggregates as v0's `GenerateMetadata`: `avg_reward` (mean over all traces),
+        `avg_metrics` (each sub-reward and env-metric averaged over the traces that recorded it),
+        and `avg_error` (errored fraction) — what the overview renders."""
+        sums: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for trace in traces:
+            for name, value in {**trace.rewards, **trace.metrics}.items():
+                sums[name] = sums.get(name, 0.0) + value
+                counts[name] = counts.get(name, 0) + 1
+        n = len(traces)
+        return {
+            "avg_reward": sum(t.reward for t in traces) / n if n else 0.0,
+            "avg_metrics": {name: sums[name] / counts[name] for name in sums},
+            "avg_error": sum(t.has_error for t in traces) / n if n else 0.0,
+        }
+
     env_name = (
         config.env.taskset.id if config.env.taskset is not None else ""
     ) or config.id
-    metrics = _run_metrics(traces, index)
-    samples = _build_samples(traces)
-    # Distinct tasks over the file's episodes when available: a task whose every
-    # env-rollout failed before minting a trace still counts as attempted.
-    num_examples = (
-        len(set(index.idx.values()))
-        if index.idx
-        else len({t.task.data.idx for t in traces})
-    )
+    metrics = compute_metrics()
+    counts: dict[int, int] = {}
+    episode_numbers: dict[str, int] = {}
+    samples = []
+    for trace in traces:
+        # One rollout_number per episode: a multi-agent rollout's traces are the
+        # same attempt at the task, not attempts 1..n.
+        episode_id = trace.episode.id if trace.episode is not None else None
+        number = episode_numbers.get(episode_id) if episode_id else None
+        if number is None:
+            idx = trace.task.data.idx
+            counts[idx] = number = counts.get(idx, 0) + 1
+            if episode_id:
+                episode_numbers[episode_id] = number
+        samples.append(trace_to_sample(trace, number))
+
     metadata = {
         "framework": "verifiers",
         "run_id": config.uuid,
         "model": config.model,
-        "num_examples": num_examples,
+        "num_examples": len(counts),
         "rollouts_per_example": config.num_rollouts,
         **metrics,
     }
@@ -243,8 +186,9 @@ def push_traces(
     team = {"team_id": team_id} if team_id else {}
     api = f"{base}/api/v1"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    # The run is done and its results saved; a network blip here must not crash it
-    # — log and skip the upload instead.
+    # The run is already done and its results saved; a network blip or platform error here must
+    # not crash the run (or, on the non-rich path, swallow the final per-trace output that prints
+    # after this) — log and skip the upload instead.
     try:
         with httpx.Client(headers=headers, timeout=300.0) as client:
 

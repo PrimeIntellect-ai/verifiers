@@ -60,6 +60,27 @@ def parse_sse_event(raw: bytes) -> dict | None:
         return json.loads(data.decode("utf-8", errors="replace"))
 
 
+def iter_sse(raw: bytes) -> Iterator[dict]:
+    """Yield JSON SSE payloads in order without retaining prior events."""
+    # Detect the wire line ending once, then scan without retaining prior payloads.
+    first_newline = raw.find(b"\n")
+    separator = (
+        b"\r\n\r\n"
+        if first_newline > 0 and raw[first_newline - 1] == ord("\r")
+        else b"\n\n"
+    )
+    start = 0
+    while start < len(raw):
+        end = raw.find(separator, start)
+        if end == -1:
+            end = len(raw)
+        block = raw[start:end]
+        event = parse_sse_event(block)
+        if event is not None:
+            yield event
+        start = end + len(separator)
+
+
 def iter_sse_reverse(raw: bytes) -> Iterator[dict]:
     """Yield JSON SSE payloads from the end without decoding earlier events."""
     decoded = raw.decode("utf-8", errors="replace")

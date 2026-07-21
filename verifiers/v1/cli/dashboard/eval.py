@@ -117,8 +117,10 @@ def _timeouts(config: EvalConfig) -> list[str]:
             rows.append(f"{stage} {v:g}s")
         else:
             rows.append(f"no {stage} timeout")
-    score = config.env.timeout.score
-    rows.append(f"score {score:g}s" if score else "no score timeout")
+    env_finalize = config.env.timeout.finalize
+    rows.append(
+        f"env finalize {env_finalize:g}s" if env_finalize else "no env finalize timeout"
+    )
     return rows
 
 
@@ -352,7 +354,8 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
     by_agent: dict[str | None, list[Trace]] = {}
     for trace in done:
-        by_agent.setdefault(trace.agent_name, []).append(trace)
+        name = trace.agent.name if trace.agent is not None else "agent"
+        by_agent.setdefault(name, []).append(trace)
     for label, source in score_rows:
         if len(by_agent) > 1:
             segments = [
@@ -547,7 +550,13 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
                 continue
             for t in slot.traces:
-                label = f"{base} agent={t.agent_name}" if t.agent_name else base
+                # Label the agent only when the episode has several traces — a
+                # single-agent row's `agent=agent` would be noise.
+                label = (
+                    f"{base} agent={t.agent.name}"
+                    if t.agent is not None and len(slot.traces) > 1
+                    else base
+                )
                 if slot.done:  # fully scored — reward is final
                     state = "error" if t.has_error else "success"
                     # A trace that recorded nothing shows no reward: a judge or
