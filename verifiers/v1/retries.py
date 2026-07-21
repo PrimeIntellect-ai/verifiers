@@ -105,12 +105,15 @@ def trace_should_retry(trace, retry: RetryConfig) -> bool:
 
 
 def episode_should_retry(episode: Episode, retry: RetryConfig) -> bool:
-    """Whether a finished env-rollout should be retried: any captured error —
-    episode-level or on any trace — is retryable. All captures count, not just the
-    most recent: a retryable failure followed by a teardown error would otherwise
-    never retry. Episode-atomic — a half-played sibling context isn't reproducible."""
+    """Whether a finished env-rollout should be retried: any LIVE captured error —
+    episode-level, or on a trace that ended not-`ok` — is retryable. An `ok` trace's
+    errors are history its own per-agent retry already recovered from, never
+    grounds to re-run the episode. All of a failed trace's captures count, not just
+    the most recent: a retryable failure followed by a teardown error would
+    otherwise never retry. Episode-atomic — a half-played sibling context isn't
+    reproducible."""
     return any(_retryable(e, retry) for e in episode.errors) or any(
-        _retryable(e, retry) for t in episode.traces for e in t.errors
+        _retryable(e, retry) for t in episode.traces if not t.ok for e in t.errors
     )
 
 
