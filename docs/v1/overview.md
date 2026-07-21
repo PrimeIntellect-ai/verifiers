@@ -35,12 +35,12 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 ## Documentation
 
 - [Getting started](getting_started.md) - How to install verifiers and the needed skills.
-- [Architecture](architecture.md) — An overview about the architecture and runtime of verifiers
+- [Architecture](architecture.md) — How verifiers works behind-the-scenes
 - [Tasksets](tasksets.md) — How to create tasksets
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Harnesses](harnesses.md) — How to build custom harnesses
-- [Agent](agent.md) — run tasks, place runs into shared sandboxes, chain traces into new tasks
-- [Multi-agent environments](environments.md) — The control flow between agents and cross-agent rewards
+- [Agent](agent.md) — How to run standalone agents
+- [Env](env.md) — How to program interactions between agents
 
 For the documentation for legacy environments, go to [the v0 documentation](../v0/overview.md).
