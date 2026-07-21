@@ -328,7 +328,13 @@ async def test_env_id_solver_grader(run_v1, tmp_path):
         env={
             "id": "solver-grader",
             "solver": {"harness": {"id": "null"}},
-            "grader": {"harness": {"runtime": {"type": "docker"}}},
+            # The grader investigates with real execution — a reasoning model
+            # needs far more output-token budget than the echo defaults.
+            "grader": {
+                "harness": {"runtime": {"type": "docker"}},
+                "max_turns": 12,
+                "max_output_tokens": 16384,
+            },
         },
         output_dir=tmp_path,
         max_turns=10,
