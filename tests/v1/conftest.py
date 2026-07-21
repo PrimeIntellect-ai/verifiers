@@ -196,7 +196,9 @@ def run_v1():
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        return await run_eval(load_environment(config.env), config)
+        records = await run_eval(load_environment(config.env), config)
+        # The runner answers durability envelopes; the tests assert on traces.
+        return [t for r in records for t in r.traces]
 
     return _run
 
@@ -213,7 +215,8 @@ def run_v1_server():
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         kwargs.setdefault("pool", {"type": "static", "num_workers": 1})
         config = _eval_config(taskset, **kwargs)
-        return await run_eval_server(config)
+        records = await run_eval_server(config)
+        return [t for r in records for t in r.traces]
 
     return _run
 
@@ -240,6 +243,7 @@ def run_v0():
             rich=False,
             output_dir=output_dir,
         )
-        return await run_legacy_eval(config)
+        records = await run_legacy_eval(config)
+        return [t for r in records for t in r.traces]
 
     return _run

@@ -484,8 +484,8 @@ def _legacy_output_dir(config) -> Path:
     return Path("outputs") / name / config.uuid
 
 
-async def run_legacy_eval(config) -> list[Trace]:
-    """Run a legacy environment in process and return v1 traces."""
+async def run_legacy_eval(config) -> list[EpisodeRecord]:
+    """Run a legacy environment in process and return v1 episode records."""
     import asyncio
 
     from verifiers import load_environment
