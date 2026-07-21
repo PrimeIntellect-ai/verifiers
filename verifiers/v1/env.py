@@ -27,7 +27,7 @@ from verifiers.v1.interception import (
     make_interception,
     requires_tunnel,
 )
-from verifiers.v1.retries import RetryConfig, run_episode_with_retry
+from verifiers.v1.retries import RolloutRetryConfig, run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import EnvError, boundary
@@ -82,7 +82,11 @@ class EnvConfig(BaseConfig):
     positional shorthand `uv run eval <taskset-id>`). None only for an env that
     mints its tasks without a dataset; every bundled env requires one."""
     timeout: EnvTimeoutConfig = EnvTimeoutConfig()
-    retries: RetryConfig = RetryConfig()
+    retries: RolloutRetryConfig = RolloutRetryConfig()
+    """Whole-EPISODE retries — the coarse fallback for faults no agent owns (the
+    env's own hooks, cross-agent state); per-agent faults retry on the agent
+    (`--env.<agent>.retries`). A retried episode reruns whole: a half-played
+    sibling context isn't reproducible."""
     max_concurrent: int | None = None
     """Bounds concurrent agent runs on a SERVED env, per worker — an env's internal
     fan-out counts, so best-of-n under many requests can't run unbounded (None = no
@@ -566,7 +570,7 @@ class Environment(ABC, Generic[ConfigT]):
         on_complete: Callable[[EpisodeRecord], Awaitable[None]] | None = None,
     ) -> EpisodeRecord:
         """Run one planned env-rollout to its finished episode, with whole-episode
-        retries per `retries.rollout`. `semaphore` gates the agent RUNS, not the
+        retries per `--env.retries`. `semaphore` gates the agent RUNS, not the
         episode — `--max-concurrent` holds even when `rollout()` fans out
         internally. `on_complete` fires the moment the episode is final — the
         runners' persistence hook."""
@@ -577,7 +581,7 @@ class Environment(ABC, Generic[ConfigT]):
                 slot.task, ctx, on_trace=slot.traces.append, gate=semaphore
             )
 
-        episode = await run_episode_with_retry(attempt, self.config.retries.rollout)
+        episode = await run_episode_with_retry(attempt, self.config.retries)
         slot.traces = list(episode.traces)
         slot.episode = episode
         slot.done = True

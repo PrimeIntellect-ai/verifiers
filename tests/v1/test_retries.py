@@ -74,3 +74,49 @@ async def test_any_captured_error_counts_for_retry():
     episode = await run_episode_with_retry(masked_then_good, retry)
     assert calls == 2
     assert episode.ok
+
+
+def _trace(error: Exception | None = None) -> Trace:
+    trace = Trace(task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi")))
+    if error is not None:
+        trace.capture_error(error)
+    return trace
+
+
+async def test_agent_retries_its_own_rollout(monkeypatch):
+    """`--env.<agent>.retries`: a retryable trace error reruns just this agent's
+    rollout; a good final attempt returns clean."""
+    monkeypatch.setattr("verifiers.v1.agent.backoff", lambda attempt: 0.0)
+    calls = {"n": 0}
+
+    async def flaky_then_good(self, task, runtime, shared_tools, on_trace):
+        calls["n"] += 1
+        return _trace(RuntimeError("blip") if calls["n"] == 1 else None)
+
+    monkeypatch.setattr(vf.Agent, "_run_once", flaky_then_good)
+    agent = vf.Agent(
+        vf.AgentConfig(model="m", retries=RolloutRetryConfig(max_retries=1))
+    )
+    trace = await agent.run(vf.Task(vf.TaskData(idx=0, prompt="hi")))
+    assert calls["n"] == 2
+    assert not trace.errors  # a good final attempt returns clean
+
+
+async def test_agent_never_retries_into_a_borrowed_box(monkeypatch):
+    """A borrowed box's state is no longer the task's start state: the error
+    stands after one attempt instead of rerunning setup into a dirty world."""
+    from verifiers.v1.runtimes import SubprocessConfig, make_runtime
+
+    calls = {"n": 0}
+
+    async def always_bad(self, task, runtime, shared_tools, on_trace):
+        calls["n"] += 1
+        return _trace(RuntimeError("boom"))
+
+    monkeypatch.setattr(vf.Agent, "_run_once", always_bad)
+    agent = vf.Agent(
+        vf.AgentConfig(model="m", retries=RolloutRetryConfig(max_retries=3))
+    )
+    box = make_runtime(SubprocessConfig())
+    trace = await agent.run(vf.Task(vf.TaskData(idx=0, prompt="hi")), runtime=box)
+    assert calls["n"] == 1 and trace.error is not None

@@ -2,14 +2,19 @@
 
 Transient model-call and runtime faults are retried by the harness/runtime SDKs; the
 framework adds targeted retries only where no SDK sits underneath (`retrying()`).
-`run_episode_with_retry` reruns an entire env-rollout — the episode is the retry
-atom, never one participant of a multi-agent interaction — when it ends with a
-retryable error (matched by exception type name); off by default.
+Two opt-in whole-run retry atoms sit above that: `Agent.run` reruns ITS OWN rollout
+while the trace ends with a retryable error (`--env.<agent>.retries` — a flaky
+grader retries without re-burning the solver), and `run_episode_with_retry` reruns
+the entire env-rollout (`--env.retries`) — the coarse fallback for faults no agent
+owns: the env's own hooks, cross-agent state. Both match by exception type name;
+both off by default.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -20,7 +25,6 @@ from tenacity import (
     RetryCallState,
     retry_if_exception_type,
     retry_if_not_exception_type,
-    retry_if_result,
     stop_after_attempt,
     wait_exponential_jitter,
 )
@@ -29,6 +33,11 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import EpisodeRecord, Error
 
 logger = logging.getLogger(__name__)
+
+
+def backoff(attempt: int) -> float:
+    """Exponential backoff with full jitter (same curve as `retrying()`'s)."""
+    return min(0.5 * 2**attempt, 30.0) * (0.5 + random.random())
 
 
 def retrying(
@@ -76,14 +85,6 @@ class RolloutRetryConfig(BaseConfig):
     """Never retry errors whose type is listed (wins over `include`)."""
 
 
-class RetryConfig(BaseConfig):
-    """A rollout's retries — only whole-`rollout` ones; per-call retries are the
-    harness/runtime SDKs'."""
-
-    rollout: RolloutRetryConfig = RolloutRetryConfig()
-    """Retries of the whole rollout, on a captured retryable error."""
-
-
 def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
     """Whether `error` matches the retry policy: its exception type is included (and
     not excluded)."""
@@ -94,6 +95,12 @@ def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
     if retry.include:
         return error.type in retry.include
     return True
+
+
+def trace_should_retry(trace, retry: RolloutRetryConfig) -> bool:
+    """Whether a finished agent rollout should be retried: any captured error on
+    its trace is retryable (all captures count, not just the most recent)."""
+    return any(_retryable(e, retry) for e in trace.errors)
 
 
 def episode_should_retry(episode: EpisodeRecord, retry: RolloutRetryConfig) -> bool:
@@ -114,43 +121,27 @@ async def run_episode_with_retry(
     it ends with a retryable error. When the final attempt fails too, the earlier
     attempts' errors are prepended so the episode shows the full history; a final
     good attempt returns clean."""
-    if retry.max_retries < 1:
-        return await run()
-
     history: list = []
-
-    def note(state: RetryCallState) -> None:
-        # before_sleep fires only between attempts (a retry is imminent), so this
-        # collects exactly the errors that caused a retry — never the final attempt's.
-        attempt_episode = state.outcome.result()
-        cause = attempt_episode.episode.error or next(
-            (t.error for t in attempt_episode.traces if t.error), None
+    for attempt in range(retry.max_retries + 1):
+        final = await run()
+        if attempt == retry.max_retries or not episode_should_retry(final, retry):
+            break
+        cause = final.episode.error or next(
+            (t.error for t in final.traces if t.error), None
         )
+        history.extend(final.episode.errors)
+        for trace in final.traces:
+            history.extend(trace.errors)
+        delay = backoff(attempt)
         logger.warning(
-            "retrying env-rollout %s (retry %d/%d) after error: %s",
-            attempt_episode.episode.id,
-            state.attempt_number,
+            "retrying env-rollout %s (retry %d/%d) in %.1fs after error: %s",
+            final.episode.id,
+            attempt + 1,
             retry.max_retries,
+            delay,
             cause.type if cause else "?",
         )
-        history.extend(attempt_episode.episode.errors)
-        for trace in attempt_episode.traces:
-            history.extend(trace.errors)
-
-    retrying = AsyncRetrying(
-        stop=stop_after_attempt(retry.max_retries + 1),
-        wait=wait_exponential_jitter(initial=0.5, max=30),
-        retry=retry_if_result(lambda rec: episode_should_retry(rec, retry)),
-        before_sleep=note,
-        retry_error_callback=lambda state: state.outcome.result(),
-    )
-
-    async def attempt() -> EpisodeRecord:
-        # tenacity only awaits a coroutine *function*; adapt so a plain callable
-        # returning an awaitable works too.
-        return await run()
-
-    final = await retrying(attempt)
+        await asyncio.sleep(delay)
     if history and not final.ok:  # final attempt failed too → prepend the history
         final.episode.errors = history + final.episode.errors
     return final

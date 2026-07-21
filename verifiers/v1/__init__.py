@@ -82,7 +82,7 @@ from verifiers.v1.scoring import (
     read_answer_file_or_last_reply as read_answer_file_or_last_reply,
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
-from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
+from verifiers.v1.retries import RolloutRetryConfig
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
     capture_patch as capture_patch,
@@ -259,7 +259,6 @@ __all__ = [
     "ElasticPoolConfig",
     "default_agent_harness",
     "pool_serve_kwargs",
-    "RetryConfig",
     "RolloutRetryConfig",
     "TimeoutConfig",
     "EnvTimeoutConfig",

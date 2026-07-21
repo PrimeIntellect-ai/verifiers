@@ -31,6 +31,7 @@ from verifiers.v1.clients import (
 from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
+from verifiers.v1.retries import RolloutRetryConfig, backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun
 from verifiers.v1.runtimes import (
     Runtime,
@@ -85,6 +86,11 @@ class AgentConfig(BaseConfig):
     timeout: TimeoutConfig = TimeoutConfig()
     """Per-stage wall-clock timeouts for this agent's runs (each stage falls back
     to the task's own)."""
+    retries: RolloutRetryConfig = RolloutRetryConfig()
+    """Whole-run retries: rerun this agent's rollout while its trace ends with a
+    retryable error (`--env.<agent>.retries.max_retries`) — a flaky grader
+    retries without re-burning its siblings. Never into a borrowed box (its
+    state is no longer the task's start state)."""
     max_turns: int | None = None
     """Max model turns per run (None = no limit). Framework-enforced (the
     interception server refuses turns past it), so it applies to any harness."""
@@ -258,7 +264,45 @@ class Agent:
         unscored. `runtime` places the run into a live borrowed box instead of
         provisioning one from the agent's policy. `shared_tools` are live servers
         borrowed from their owner, counted in the pairing check. `on_trace` observes
-        the run's trace the moment it's minted, before any I/O."""
+        the run's trace the moment it's minted, before any I/O.
+
+        The run retries whole while its trace ends with a retryable error
+        (`config.retries`), with backoff — but never into a borrowed box, whose
+        state is no longer the task's start state. The final trace keeps the
+        earlier attempts' errors."""
+        retry = self.config.retries
+        history: list = []
+        for attempt in range(retry.max_retries + 1):
+            trace = await self._run_once(task, runtime, shared_tools, on_trace)
+            if attempt == retry.max_retries or not trace_should_retry(trace, retry):
+                break
+            if runtime is not None:
+                logger.warning(
+                    "not retrying the rollout on a borrowed box (its state is no "
+                    "longer the task's start state); the error stands"
+                )
+                break
+            history.extend(trace.errors)
+            delay = backoff(attempt)
+            logger.warning(
+                "retrying agent rollout (retry %d/%d) in %.1fs after error: %s",
+                attempt + 1,
+                retry.max_retries,
+                delay,
+                trace.error.type if trace.error else "?",
+            )
+            await asyncio.sleep(delay)
+        if history and trace.errors:  # the final attempt failed too
+            trace.errors = history + trace.errors
+        return trace
+
+    async def _run_once(
+        self,
+        task: Task,
+        runtime: Runtime | None,
+        shared_tools: Mapping[str, SharedToolServer] | None,
+        on_trace: Callable[[Trace], None] | None,
+    ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         run = RolloutRun(task=task, on_trace=on_trace, **params)
         try:
