@@ -25,10 +25,10 @@ SEARCH_PROMPT = (
 )
 
 
-class DefaultHarnessConfig(HarnessConfig):
+class BashHarnessConfig(HarnessConfig):
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
-    `bash`. On by default; set `--harness.edit false` for a bash-only agent."""
+    `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""
 
     search: bool = False
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
@@ -36,7 +36,7 @@ class DefaultHarnessConfig(HarnessConfig):
     the agent's `bash` subprocesses don't inherit it."""
 
 
-class DefaultHarness(Harness[DefaultHarnessConfig]):
+class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_USER_SIM = True
@@ -76,7 +76,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             # Resolve the key and keep it OUT of the program env: it's handed to the program over
             # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
             # inheriting it via $SERPER_API_KEY / /proc/self/environ. Prefer a key set in the harness
-            # env (--harness.env / forward_env); fall back to the host env only when the key is
+            # env (harness config env / forward_env); fall back to the host env only when the key is
             # *absent* (None), not present-but-empty — a rollout setting SERPER_API_KEY="" is
             # deliberately masking the host secret, so honor that (the check below then fails loudly
             # rather than leaking the host key). The pop is scoped to search=true, so an unrelated
@@ -86,8 +86,8 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
                 serper_key = os.environ.get("SERPER_API_KEY")
             if not serper_key:
                 raise ValueError(
-                    "default search=true requires SERPER_API_KEY in the eval environment "
-                    "(the host env or --harness.env)"
+                    "bash search=true requires SERPER_API_KEY in the eval environment "
+                    "(the host env or the harness config's env)"
                 )
             args += ["--search", f"--serper-key={serper_key}"]
         if mcp_urls:

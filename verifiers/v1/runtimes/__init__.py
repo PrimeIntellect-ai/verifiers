@@ -1,5 +1,3 @@
-"""Execution runtimes for harnesses."""
-
 from typing import Annotated
 
 from pydantic import Field

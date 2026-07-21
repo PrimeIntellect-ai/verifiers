@@ -42,7 +42,7 @@ Inspect the taskset, task, data, and configs:
 
 - `Taskset.load()` constructs the tasks.
 - `TaskData` contains each serializable row.
-- `Task` contains hooks, scoring, task-scoped tools, and user simulation.
+- `Task` contains hooks, scoring, task-scoped tools, and user simulation. An exported `Environment` subclass (if any) holds multi-agent control flow.
 - `TasksetConfig` contains load-time settings; task-facing settings live under its nested `task` config.
 - Check custom harness and runtime requirements explicitly.
 
@@ -67,5 +67,5 @@ Return:
 1. Ranked shortlist with one-line rationale.
 2. A compact comparison of each taskset's tasks, rewards, and overall goal.
 3. Exact `prime eval run` commands to run each taskset.
-4. For each taskset, state which harnesses might be supported: a custom one, CLI-based harnesses such as Codex, or the default harness.
+4. For each taskset, state which harnesses might be supported: a custom one, CLI-based harnesses such as Codex, or the `bash` harness.
 5. Recommended starting tasksets and why.

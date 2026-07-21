@@ -23,16 +23,17 @@ from verifiers.v1.task import TaskData
 from verifiers.v1.types import ID, Messages
 
 if TYPE_CHECKING:
-    # Annotation-only: trace.py embeds HarnessConfig (AgentInfo), so the runtime
-    # import goes trace -> harness, not the other way around.
+    # Annotation-only: the runtime import goes trace -> harness (AgentInfo embeds
+    # HarnessConfig), not the other way around.
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
 
 class HarnessConfig(BaseConfig):
-    id: ID = "default"
-    """Local package or Hub `org/name[@version]`, set through `--harness.id`."""
+    id: ID = "bash"
+    """Local package or Hub `org/name[@version]`, set through the seat's
+    `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env)."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Runtime for the harness program; tool servers choose their placement separately."""
     env: dict[str, str] = Field(default_factory=dict)
@@ -60,6 +61,11 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_MCP: ClassVar[bool] = False
     SUPPORTS_USER_SIM: ClassVar[bool] = False
     SUPPORTS_MESSAGE_PROMPT: ClassVar[bool] = False
+    EXECUTES_CODE: ClassVar[bool] = True
+    """Whether the program hands the model local execution in the runtime — true for
+    every real harness; the tool-less chat loops (`null`) override to False. Read
+    where model-directed execution changes the rules: the subprocess-on-host
+    warning, the judge env's sandbox requirement."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -118,11 +124,9 @@ class Harness(ABC, Generic[ConfigT]):
         trace.stop("agent_completed")
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
-        """Run this harness's `@metric` methods over the finished trace, concurrently,
-        recording each into `trace.metrics`. Mirrors `Task.score` (which the
-        Rollout runs in parallel with this); metrics declare what they need (`task`,
-        `trace`, `runtime`) and can read what the harness left behind in the runtime.
-        No-op for an harness with no `@metric`s."""
+        """Run this harness's `@metric` methods over the finished trace, recording
+        each into `trace.metrics`. Metrics declare what they need (`task`, `trace`,
+        `runtime`) and can read what the harness left behind in the runtime."""
         available = {"task": trace.task.data, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
@@ -143,10 +147,13 @@ class Harness(ABC, Generic[ConfigT]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        """Run the harness program in `runtime` to completion and return its result. The
-        task is `trace.task.data`; model calls should reach the interception server at
-        `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
-        (name -> URL) to wire in. Each harness owns the env its program needs — read
-        `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
-        RLM_* too). UV-script harnesses prepare dependencies in `setup`, then launch the
-        returned argv through `runtime.run_program(...)` here."""
+        """Run the harness program in `runtime` to completion and return its result.
+        The task is `trace.task.data`; model calls must reach the interception
+        server at `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool
+        servers to wire in. Each harness owns the env its program needs (the
+        bash/compact harnesses set OPENAI_*).
+
+        The interception is the contract, not the process: a harness may run its
+        loop in-process instead of launching a program, as long as every model call
+        goes through `endpoint` + `secret` — it then returns a synthetic success
+        `ProgramResult`, and the trace is the record of what ran."""

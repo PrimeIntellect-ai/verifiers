@@ -59,7 +59,7 @@ max_completion_tokens = 2048
 [[orchestrator.train.env]]
 name = "my-task-train"
 taskset = { id = "my-task-v1", split = "train" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 timeout = { rollout = 600, scoring = 120 }
 max_turns = 8
 max_total_tokens = 32768
@@ -70,7 +70,7 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "my-task-test"
 taskset = { id = "my-task-v1", split = "test" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 num_examples = 200
 group_size = 4
 ```
@@ -112,7 +112,7 @@ can override it.
 - If groups are mostly all-one, increase difficulty or sample a harder task distribution.
 - Choose `batch_size` with whole groups, packing, sequence length, and GPU memory in mind.
 
-A task `@vf.group_reward` is scoring, not trainer advantage. The env server automatically keeps that task's rollouts together before returning traces.
+Sibling-dependent scoring (best-of-n selection, zero-sum payoffs) lives on `Environment.finalize(task, episode)`, and runs inside the env — every trace carries its agent name, trainability, and episode stamp, so a flat batch regroups without a side lookup. `-r` stays purely the trainer's group size: n independent env-rollouts per task; env-internal fan-out is the env's own knob (`--env.n`).
 
 ## Difficulty filtering
 
@@ -172,13 +172,13 @@ environments:
 name = "math"
 ratio = 3
 taskset = { id = "gsm8k-v1", split = "train" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 
 [[orchestrator.train.env]]
 name = "tools"
 ratio = 1
 taskset = { id = "wiki-search-v1" }
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "bash", runtime = { type = "subprocess" } }
 ```
 
 Ratios are relative. Keep environment-specific rewards interpretable; a scalar reward scale mismatch

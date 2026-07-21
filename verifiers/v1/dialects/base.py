@@ -21,7 +21,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import BaseModel
 from pydantic_core import from_json
 
-from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
+from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
@@ -58,27 +58,6 @@ def parse_sse_event(raw: bytes) -> dict | None:
             "SSE JSON fast-path failed; falling back to stdlib with invalid UTF-8 replacement"
         )
         return json.loads(data.decode("utf-8", errors="replace"))
-
-
-def iter_sse(raw: bytes) -> Iterator[dict]:
-    """Yield JSON SSE payloads in order without retaining prior events."""
-    # Detect the wire line ending once, then scan without retaining prior payloads.
-    first_newline = raw.find(b"\n")
-    separator = (
-        b"\r\n\r\n"
-        if first_newline > 0 and raw[first_newline - 1] == ord("\r")
-        else b"\n\n"
-    )
-    start = 0
-    while start < len(raw):
-        end = raw.find(separator, start)
-        if end == -1:
-            end = len(raw)
-        block = raw[start:end]
-        event = parse_sse_event(block)
-        if event is not None:
-            yield event
-        start = end + len(separator)
 
 
 def iter_sse_reverse(raw: bytes) -> Iterator[dict]:
@@ -120,6 +99,12 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     (`RespT`). The single place a protocol lives: implement a `Dialect` + register it in
     `dialects.DIALECTS` and a harness speaking that format works end-to-end (the eval client and
     interception server are generic over this interface)."""
+
+    sampling_fields: ClassVar[frozenset[str]] = frozenset()
+    """Request keys that are call settings — what shapes generation given the same
+    conversation: decoding knobs, budgets/stops, reasoning effort, output contract.
+    A whitelist, so payload, conversation state, and tracking fields can never leak
+    into the per-call record by omission; an unlisted knob is simply not recorded."""
 
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts model turns to. The interception server serves
@@ -166,6 +151,14 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
         """The native request -> vf prompt + tools (for the trace)."""
+
+    def parse_sampling(self, body: ReqT) -> Sampling:
+        """The native request's call settings -> the canonical `Sampling` (for the
+        trace's per-call records): the `sampling_fields` whitelist, with this format's
+        aliases mapped onto the typed knobs; dialect-specific keys ride as extras."""
+        return Sampling.model_validate(
+            {k: v for k, v in body.items() if k in self.sampling_fields}
+        )
 
     @abstractmethod
     def parse_response(self, response: RespT) -> Response:

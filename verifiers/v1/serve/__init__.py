@@ -1,5 +1,3 @@
-"""Serve V1 environments over ZMQ."""
-
 from verifiers.v1.serve.client import EnvClient
 from verifiers.v1.serve.pool import EnvServerPool, env_config_data, serve_env
 from verifiers.v1.serve.server import EnvServer
@@ -10,8 +8,8 @@ from verifiers.v1.serve.types import (
     InfoResponse,
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 
 __all__ = [
@@ -24,8 +22,8 @@ __all__ = [
     "HealthResponse",
     "InfoRequest",
     "InfoResponse",
-    "RunRolloutRequest",
-    "RunRolloutResponse",
+    "RunRequest",
+    "RunResponse",
     "RunGroupRequest",
     "RunGroupResponse",
 ]
