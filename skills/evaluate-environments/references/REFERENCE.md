@@ -117,7 +117,7 @@ trace.
 | `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Environment` subclass, else `SingleAgentEnv`). |
 | `taskset` | `TasksetConfig \| None` | `None` | The seed taskset every rollout starts from; resolved to its concrete subclass by `--env.taskset.id` (positional shorthand: `eval <taskset-id>`). See [Taskset config](#taskset-config). `None` only for a taskset-less env; every bundled env requires one. |
 | *(agents)* | `AgentConfig` | env-declared | Each declared agent: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the agentic-judge env, the env's own names elsewhere. See [Agent config](#agent-config). |
-| `timeout` | `EnvTimeoutConfig` | `EnvTimeoutConfig()` | The env's own hook bounds: `--env.timeout.episode` (the whole `run()` hook) and `--env.timeout.finalize` (`finalize()` plus the decorated signals). Per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`). |
+| `timeout` | `EnvTimeoutConfig` | `EnvTimeoutConfig()` | The env's own hook bounds: `--env.timeout.episode` (the whole `run()` hook) and `--env.timeout.finalize` (the `finalize()` hook). Per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`). |
 | `retries` | `RolloutRetryConfig` | `RolloutRetryConfig()` | Whole-EPISODE retries, the coarse fallback for faults no agent owns. See [Retry config](#retry-config). Set via `--env.retries.*`. |
 | `interception` | `InterceptionConfig` | `ElasticInterceptionPoolConfig()` | The interception shape: `elastic` (default — servers grown on demand, `multiplex` rollouts each), `server` (one server, tunnel choice incl. bring-your-own endpoint), or `static` (a fixed list). |
 
@@ -181,7 +181,7 @@ fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrat
 | `finalize` | `float \| None` | `None` | Max wall-clock for the task's `finalize` hook. |
 | `scoring` | `float \| None` | `None` | Max wall-clock for task rewards/metrics/judges and harness metrics. |
 
-`EnvTimeoutConfig` (the env's `--env.timeout.*`) keeps only `episode` — the bound on the whole `run()` interaction — and `finalize` — the bound on the env's `finalize()` hook plus its decorated signals.
+`EnvTimeoutConfig` (the env's `--env.timeout.*`) keeps only `episode` — the bound on the whole `run()` interaction — and `finalize` — the bound on the env's `finalize()` hook.
 
 > Remote sandboxes cap any harness timeout at 24 hours (provider max lifetime).
 

@@ -88,49 +88,37 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
-def metric(func: F, priority: int = 0, agent: str | None = None) -> F: ...
+def metric(func: F, priority: int = 0) -> F: ...
 @overload
-def metric(
-    func: None = None, priority: int = 0, agent: str | None = None
-) -> Callable[[F], F]: ...
-def metric(
-    func: F | None = None, priority: int = 0, agent: str | None = None
-) -> F | Callable[[F], F]:
-    """Mark a metric `(self, trace) -> float` (recorded, not summed). On an
-    `Environment` it's a cross-agent signal: run once per episode trace with the
-    finished sibling set in reach (`trace` = the target, `traces` = all of them);
-    `agent=` narrows the targets to one seat's traces (env-only — a task has no
-    agents)."""
+def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def metric(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Mark a `Task`/`Harness` metric `(self, trace) -> float` (recorded, not
+    summed) — per-trace judgement; it declares what it needs by name (`task`,
+    `trace`, `runtime`). Cross-agent judgement is an `Environment`'s `finalize()`,
+    imperatively."""
 
     def decorator(f: F) -> F:
-        return mark("metric", metric_priority=priority, _vf_agent=agent)(
-            _async_only("metric")(f)
-        )
+        return mark("metric", metric_priority=priority)(_async_only("metric")(f))
 
     return decorator if func is None else decorator(func)
 
 
 @overload
-def reward(
-    func: F, weight: float = 1.0, priority: int = 0, agent: str | None = None
-) -> F: ...
+def reward(func: F, weight: float = 1.0, priority: int = 0) -> F: ...
 @overload
 def reward(
-    func: None = None, weight: float = 1.0, priority: int = 0, agent: str | None = None
+    func: None = None, weight: float = 1.0, priority: int = 0
 ) -> Callable[[F], F]: ...
 def reward(
-    func: F | None = None,
-    weight: float = 1.0,
-    priority: int = 0,
-    agent: str | None = None,
+    func: F | None = None, weight: float = 1.0, priority: int = 0
 ) -> F | Callable[[F], F]:
-    """Mark a weighted per-rollout reward returning a float or keyed scores. On an
-    `Environment` it's a cross-agent signal — see `metric` for the env semantics
-    (`agent=` picks whose traces it records onto)."""
+    """Mark a weighted `Task` reward returning a float or keyed scores — per-trace
+    judgement over the trace's own run. Cross-agent judgement is an
+    `Environment`'s `finalize()`, imperatively."""
 
     def decorator(f: F) -> F:
-        return mark(
-            "reward", reward_priority=priority, _vf_weight=weight, _vf_agent=agent
-        )(_async_only("reward")(f))
+        return mark("reward", reward_priority=priority, _vf_weight=weight)(
+            _async_only("reward")(f)
+        )
 
     return decorator if func is None else decorator(func)

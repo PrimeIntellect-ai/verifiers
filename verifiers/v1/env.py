@@ -29,9 +29,8 @@ from verifiers.v1.interception import (
 )
 from verifiers.v1.retries import RolloutRetryConfig, run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
-from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import EnvError, boundary
-from verifiers.v1.task import Task, _record_result, resolve_server_config
+from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Error, Trace
@@ -228,6 +227,19 @@ class Environment(ABC, Generic[ConfigT]):
     — the base owns everything else. Task x agent fit is validated per run, on the
     task the agent actually receives — an env-minted task carries its own needs."""
 
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        # Cross-agent judgement is finalize(), imperatively — a decorated signal
+        # on an env would never run; refuse it where it's written.
+        for name, attr in vars(cls).items():
+            for kind in ("metric", "reward"):
+                if callable(attr) and hasattr(attr, kind):
+                    raise TypeError(
+                        f"{cls.__name__}.{name}: @vf.{kind} scores a Task's or "
+                        "Harness's own trace; an Environment judges across agents "
+                        "in finalize() — record via record_reward/record_metric"
+                    )
+
     def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
 
@@ -260,18 +272,6 @@ class Environment(ABC, Generic[ConfigT]):
                 "(`solver: vf.AgentConfig = vf.AgentConfig()`) — the field name is "
                 "the agent's name. The single-agent case is SingleAgentEnv."
             )
-        for fn in (
-            *discover_decorated(self, "metric"),
-            *discover_decorated(self, "reward"),
-        ):
-            agent = getattr(fn, "_vf_agent", None)
-            if agent is not None and agent not in self._agent_specs:
-                name = getattr(fn, "__name__", repr(fn))
-                raise ValueError(
-                    f"{type(self).__name__}.{name} is decorated with "
-                    f"agent={agent!r}, but the env's config declares agents "
-                    f"{sorted(self._agent_specs)}"
-                )
         # Same harness config -> one loaded object (harnesses are stateless values).
         loaded: dict[str, Harness] = {}
         self._harnesses: dict[str, Harness] = {}
@@ -319,46 +319,13 @@ class Environment(ABC, Generic[ConfigT]):
         it means); an exception raised here is the env-rollout itself failing."""
 
     async def finalize(self, task: Task, episode: Episode) -> None:
-        """Imperative sibling-dependent judgement over one finished env-rollout
-        (per-trace judgement already ran); `episode.traces` is the flat episode in
-        completion order — record onto traces via record_reward/record_metric.
-        The decorated `@vf.reward`/`@vf.metric` signals run after this,
-        unconditionally; override this only for what they can't express."""
-
-    async def score(self, task: Task, episode: Episode) -> None:
-        """Run the decorated `@vf.reward`/`@vf.metric` signals once per target trace
-        (`agent=` narrows the targets). Internal, like `Task.score`: it runs after
-        `finalize()` — users author `finalize()` and the decorators, not this."""
-        metrics = discover_decorated(self, "metric")
-        rewards = discover_decorated(self, "reward")
-        traces = episode.traces
-
-        async def run_signals(fns) -> list[tuple]:
-            pairs = [
-                (fn, target)
-                for fn in fns
-                for target in self._signal_targets(fn, traces)
-            ]
-            results = await asyncio.gather(
-                *(
-                    invoke(
-                        fn,
-                        {
-                            "task": task,
-                            "trace": target,
-                            "traces": traces,
-                        },
-                    )
-                    for fn, target in pairs
-                )
-            )
-            return list(zip(pairs, results))
-
-        # Metrics record before rewards run, so a reward may read `trace.metrics`.
-        for (fn, target), result in await run_signals(metrics):
-            _record_result(target, fn.__name__, result)
-        for (fn, target), result in await run_signals(rewards):
-            _record_result(target, fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
+        """Cross-agent judgement — THE programmable judgement surface: plain
+        imperative Python over the finished episode (per-trace judgement already
+        ran on each trace's own task). `episode.traces` is the flat episode in
+        completion order, each trace's `agent_name` stamp naming its agent; attach
+        signals via `record_reward`/`record_metric`, in program order. A raise
+        fails the env-rollout (the retryable unit) — validate strictly, never
+        record a guess."""
 
     def complete(self, episode: Episode) -> bool:
         """Whether a finished env-rollout is a valid result — what `--resume` keeps
@@ -379,13 +346,6 @@ class Environment(ABC, Generic[ConfigT]):
     def _agent_harness(self, agent: AgentConfig) -> HarnessConfig:
         """The role's harness config: its own pin, else the taskset's default."""
         return agent.harness if agent.harness is not None else self._default_harness
-
-    def _signal_targets(self, fn: Callable, traces: list[Trace]) -> list[Trace]:
-        """Every trace unless `agent=` narrows it (by the trace's agent-name stamp)."""
-        agent = getattr(fn, "_vf_agent", None)
-        if agent is None:
-            return list(traces)
-        return [t for t in traces if t.agent_name == agent]
 
     def _episode_agents(
         self,
@@ -447,7 +407,7 @@ class Environment(ABC, Generic[ConfigT]):
         gate: asyncio.Semaphore | None = None,
     ) -> Episode:
         """One env-rollout of `task`, minted as the wire atom: `setup()` then `run()`
-        over fresh agents, then `finalize()` and the decorated signals; `gate` bounds
+        over fresh agents, then `finalize()`; `gate` bounds
         the agent runs, so internal fan-out counts against `--max-concurrent` too.
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
@@ -480,8 +440,6 @@ class Environment(ABC, Generic[ConfigT]):
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
                     await self.finalize(task, episode)
-                async with boundary(EnvError, f"{type(self).__name__} scoring"):
-                    await self.score(task, episode)
         except Exception as e:
             # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
