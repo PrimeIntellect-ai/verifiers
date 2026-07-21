@@ -65,6 +65,9 @@ class GradeTask(vf.Task):
         )
 
     async def setup(self, trace, runtime):
+        # The task's image (or a reused box) may already carry a verdict file;
+        # finalize must only ever read one the current grader wrote.
+        await runtime.run(["rm", "-f", VERDICT_FILE], {})
         for path, content in self._files.items():
             await runtime.write(path, content)
 
@@ -81,8 +84,6 @@ class GradeTask(vf.Task):
 class SolverGraderEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
     grader: vf.AgentConfig = vf.AgentConfig()
-    """The grader; its runtime must be a container
-    (`--env.grader.harness.runtime.type docker|prime`)."""
 
 
 class SolverGraderEnv(vf.Env[SolverGraderEnvConfig]):
