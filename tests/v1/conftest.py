@@ -168,7 +168,7 @@ def _eval_config(
         seat_cfg.setdefault("max_turns", max_turns)
         seat_cfg.setdefault("max_output_tokens", max_tokens)
         seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
-        # Flake resilience: retries are per-agent now (flat RolloutRetryConfig).
+        # Flake resilience: retries are per-agent now (flat RetryConfig).
         seat_cfg.setdefault("retries", {"max_retries": 2, "include": ["ProviderError"]})
     return EvalConfig(
         env={

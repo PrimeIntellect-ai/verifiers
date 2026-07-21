@@ -23,7 +23,7 @@ from verifiers.v1.clients import (
 from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.retries import RolloutRetryConfig, backoff, trace_should_retry
+from verifiers.v1.retries import RetryConfig, backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun
 from verifiers.v1.runtimes import (
     Runtime,
@@ -69,7 +69,7 @@ class AgentConfig(BaseConfig):
     sampling: SamplingConfig | None = None
     """Sampling override (None = the run's sampling)."""
     timeout: TimeoutConfig = TimeoutConfig()
-    retries: RolloutRetryConfig = RolloutRetryConfig()
+    retries: RetryConfig = RetryConfig()
     """Whole-run retries: rerun this agent's rollout while its trace ends with a
     retryable error (never into a borrowed box)."""
     max_turns: int | None = None

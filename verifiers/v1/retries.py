@@ -73,7 +73,7 @@ def retrying(
     )
 
 
-class RolloutRetryConfig(BaseConfig):
+class RetryConfig(BaseConfig):
     """Retry a whole rollout when it ends with a captured error. `include`/`exclude`
     name exception classes (e.g. ``ProviderError``, ``SandboxError``)."""
 
@@ -86,7 +86,7 @@ class RolloutRetryConfig(BaseConfig):
     """Never retry errors whose type is listed (wins over `include`)."""
 
 
-def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
+def _retryable(error: Error | None, retry: RetryConfig) -> bool:
     """Whether `error` matches the retry policy: its exception type is included (and
     not excluded)."""
     if error is None:
@@ -98,13 +98,13 @@ def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
     return True
 
 
-def trace_should_retry(trace, retry: RolloutRetryConfig) -> bool:
+def trace_should_retry(trace, retry: RetryConfig) -> bool:
     """Whether a finished agent rollout should be retried: any captured error on
     its trace is retryable (all captures count, not just the most recent)."""
     return any(_retryable(e, retry) for e in trace.errors)
 
 
-def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
+def episode_should_retry(episode: Episode, retry: RetryConfig) -> bool:
     """Whether a finished env-rollout should be retried: any captured error —
     episode-level or on any trace — is retryable. All captures count, not just the
     most recent: a retryable failure followed by a teardown error would otherwise
@@ -116,7 +116,7 @@ def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
 
 async def run_episode_with_retry(
     run: Callable[[], Awaitable[Episode]],
-    retry: RolloutRetryConfig,
+    retry: RetryConfig,
 ) -> Episode:
     """Run one env-rollout (`run` must mint a fresh episode per call), retrying while
     it ends with a retryable error. When the final attempt fails too, the earlier

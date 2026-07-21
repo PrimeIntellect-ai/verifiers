@@ -27,7 +27,7 @@ from verifiers.v1.interception import (
     make_interception,
     requires_tunnel,
 )
-from verifiers.v1.retries import RolloutRetryConfig, run_episode_with_retry
+from verifiers.v1.retries import RetryConfig, run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, resolve_server_config
@@ -39,7 +39,7 @@ from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
-class EnvTimeoutConfig(BaseConfig):
+class TimeoutConfig(BaseConfig):
     """Wall-clock timeouts for the env's own `run()`/`finalize()` hooks, in seconds
     (None = no limit); per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`)."""
 
@@ -68,8 +68,8 @@ class EnvConfig(BaseConfig):
     taskset: SerializeAsAny[TasksetConfig] | None = None
     """The seed taskset — the rows every rollout starts from (`--env.taskset.id`).
     None only for an env that mints its tasks without a dataset."""
-    timeout: EnvTimeoutConfig = EnvTimeoutConfig()
-    retries: RolloutRetryConfig = RolloutRetryConfig()
+    timeout: TimeoutConfig = TimeoutConfig()
+    retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
     retried episode reruns whole (a half-played sibling context isn't reproducible)."""
     max_concurrent: int | None = None
