@@ -101,6 +101,16 @@ class TestXMLParser:
             result == "45"
         )  # Should return just the last answer, not a full parse() namespace
 
+    def test_parse_answer_last_answer_within_single_message(self, xml_parser):
+        content = (
+            "<reasoning>first attempt</reasoning><answer>44</answer>"
+            "<reasoning>actually, reconsider</reasoning><answer>45</answer>"
+        )
+        assert xml_parser.parse_answer(content) == "45"
+        assert (
+            xml_parser.parse_answer([{"role": "assistant", "content": content}]) == "45"
+        )
+
     def test_parse_answer_no_answer_field(self, xml_parser):
         """Test parse_answer when no answer field is found."""
         completion = [
