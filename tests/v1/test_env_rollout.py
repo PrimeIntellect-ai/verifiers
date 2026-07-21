@@ -80,20 +80,18 @@ class DuetEnv(vf.Environment[DuetConfig]):
 
 async def test_single_agent_env_mints_single_agent_records(monkeypatch):
     """`SingleAgentEnv` is the single-agent case every plain taskset resolves to:
-    one `agent` seat playing the seed taskset, one unstamped trace per episode,
-    score() a no-op."""
+    one `agent` playing the seed taskset, one trace per episode, score() a no-op."""
     env = vf.SingleAgentEnv(_env_config())
     assert list(env._agent_specs) == ["agent"]
     runs = _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
-    assert episode.ok and episode.env == "echo-v1"
+    assert episode.ok and episode.episode.env == "echo-v1"
     assert runs["agent"] == 1
     assert len(episode.traces) == 1
     trace = episode.traces[0]
-    assert (
-        trace.agent_name is None and trace.trainable
-    )  # the wire matches a plain eval's
-    assert episode.task.data.idx == trace.task.data.idx
+    assert trace.agent_name == "agent" and trace.trainable
+    # The trace is self-contained: its stamp is the episode's.
+    assert trace.episode is episode.episode
 
 
 async def test_multi_role_records_stamp_roles(monkeypatch):
@@ -115,7 +113,9 @@ async def test_agent_failures_are_trace_data_not_record_errors(monkeypatch):
     env = vf.SingleAgentEnv(_env_config())
     _stub_engine(env, monkeypatch, errors={"agent": RuntimeError("boom")})
     episode = await env.run_episode(_task(env), _ctx())
-    assert not episode.ok and not episode.errors  # the failure lives on the trace
+    assert (
+        not episode.ok and not episode.episode.errors
+    )  # the failure lives on the trace
     assert episode.traces[0].error is not None
 
 
@@ -133,8 +133,10 @@ async def test_hook_crash_keeps_completed_traces(monkeypatch):
     episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
     # Hook failures land episode-level with the stable boundary type.
-    assert episode.error is not None and episode.error.type == "EnvError"
-    assert "hook bug" in episode.error.message
+    assert (
+        episode.episode.error is not None and episode.episode.error.type == "EnvError"
+    )
+    assert "hook bug" in episode.episode.error.message
     assert len(episode.traces) == 1 and episode.traces[0].error is None
 
 
@@ -147,7 +149,10 @@ async def test_score_deadline_is_a_record_error(monkeypatch):
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
-    assert episode.error is not None and episode.error.type == "TimeoutError"
+    assert (
+        episode.episode.error is not None
+        and episode.episode.error.type == "TimeoutError"
+    )
     assert len(episode.traces) == 1  # the finished traces survive the score failure
 
 
@@ -163,7 +168,9 @@ async def test_score_failure_keeps_the_traces(monkeypatch):
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
-    assert episode.error is not None and episode.error.type == "EnvError"
+    assert (
+        episode.episode.error is not None and episode.episode.error.type == "EnvError"
+    )
     assert [t.agent_name for t in episode.traces] == ["a", "b"]
 
 
@@ -178,8 +185,8 @@ async def test_empty_rollout_is_the_env_failing(monkeypatch):
     env = Lazy(_duet_config())
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
-    assert not episode.ok and episode.error is not None
-    assert "ran no agent" in episode.error.message and episode.traces == []
+    assert not episode.ok and episode.episode.error is not None
+    assert "ran no agent" in episode.episode.error.message and episode.traces == []
 
 
 async def test_a_seat_may_fan_out(monkeypatch):
@@ -257,7 +264,7 @@ async def test_decorated_signals_on_unstamped_single_role(monkeypatch):
     env = Solo(_env_config())
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
-    assert episode.traces[0].agent_name is None
+    assert episode.traces[0].agent_name == "agent"
     assert episode.traces[0].metrics["n"] == 1.0
 
 
@@ -274,7 +281,9 @@ async def test_decorated_signal_failure_is_an_episode_error(monkeypatch):
     _stub_engine(env, monkeypatch)
     episode = await env.run_episode(_task(env), _ctx())
     assert not episode.ok
-    assert episode.error is not None and episode.error.type == "EnvError"
+    assert (
+        episode.episode.error is not None and episode.episode.error.type == "EnvError"
+    )
     assert len(episode.traces) == 1 and episode.traces[0].error is None
 
 
@@ -287,16 +296,16 @@ def test_slots_need_a_rollout():
 async def test_run_slot_observes_and_completes(monkeypatch):
     """`slots` plans n independent env-rollouts; `run_slot` runs each to its episode,
     keeping the slot live (traces appear at mint) and firing `on_complete` once final."""
-    from verifiers.v1.trace import Episode
+    from verifiers.v1.trace import EpisodeRecord
 
     env = vf.SingleAgentEnv(_env_config())
     _stub_engine(env, monkeypatch)
     slots = env.slots(_task(env), n=3)
     assert [s.traces for s in slots] == [[]] * 3
     assert not any(s.done for s in slots)
-    completed: list[Episode] = []
+    completed: list[EpisodeRecord] = []
 
-    async def on_complete(episode: Episode) -> None:
+    async def on_complete(episode: EpisodeRecord) -> None:
         completed.append(episode)
 
     episodes = [await env.run_slot(slot, _ctx(), None, on_complete) for slot in slots]

@@ -87,7 +87,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # there's nothing to re-score, so it drops out in the flatten. Each kept trace
     # remembers its episode's env identity — the replay output re-stamps it.
     episodes = read_episodes(source, Trace[WireTaskData, state_cls(task_cls)])
-    sourced = [(trace, e.env) for e in episodes for trace in e.traces]
+    sourced = [(trace, e.episode.env) for e in episodes for trace in e.traces]
     if config.num_traces is not None:
         sourced = sourced[: config.num_traces]
     traces = [trace for trace, _ in sourced]

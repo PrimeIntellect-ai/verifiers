@@ -6,7 +6,6 @@ this is the primitive underneath.
 """
 
 import asyncio
-import json
 
 import verifiers.v1 as vf
 
@@ -26,7 +25,9 @@ async def main() -> None:
     print("usage:", trace.usage)
     last = trace.assistant_messages[-1].content if trace.assistant_messages else None
     print("answer:", last)
-    print("agent stamp:", json.dumps(trace.info["agent"], indent=2))
+    assert trace.agent is not None
+    print("agent:", trace.agent.name, trace.agent.model)
+    print("runtime:", trace.runtime.type if trace.runtime else None)
 
 
 if __name__ == "__main__":

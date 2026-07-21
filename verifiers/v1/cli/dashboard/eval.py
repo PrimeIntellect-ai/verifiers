@@ -538,7 +538,9 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
             base = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
             if not slot.traces:
                 if slot.done:  # the env's rollout() itself failed before any trace
-                    error = slot.episode.error if slot.episode is not None else None
+                    error = (
+                        slot.episode.episode.error if slot.episode is not None else None
+                    )
                     group_rows.append(
                         (
                             "error",

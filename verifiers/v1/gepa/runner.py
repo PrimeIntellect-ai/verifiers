@@ -21,7 +21,7 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
-from verifiers.v1.trace import Episode
+from verifiers.v1.trace import EpisodeRecord
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     # run_eval passes to `env.run_slot` (each trace records its candidate prompt).
     write_lock = asyncio.Lock()
 
-    async def on_complete(episode: Episode) -> None:
+    async def on_complete(episode: EpisodeRecord) -> None:
         if run_dir is not None:
             await append_episode(run_dir, episode, write_lock)
 

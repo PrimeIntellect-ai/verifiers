@@ -16,13 +16,13 @@ from verifiers.v1.cli.output import (
     save_config,
 )
 from verifiers.v1.env import Environment, RunSlot
-from verifiers.v1.trace import Episode, EvalRunInfo, Trace
+from verifiers.v1.trace import EpisodeRecord, EvalRunInfo
 from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
 
 
-async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
+async def run_eval(env: Environment, config: EvalConfig) -> list[EpisodeRecord]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
     tasks = env.taskset.select(config.num_tasks, config.shuffle)
@@ -33,7 +33,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     out = output_path(config)
     owed: dict[str, int] | None = None
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
-    finished: list[Episode] = []
+    finished: list[EpisodeRecord] = []
     if config.resume is not None:
         finished, owed = resume.load(
             out, [t.data.idx for t in tasks], config.num_rollouts, env.complete
@@ -61,7 +61,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
 
     write_lock = asyncio.Lock()
 
-    async def on_complete(episode: Episode) -> None:
+    async def on_complete(episode: EpisodeRecord) -> None:
         for trace in episode.traces:
             trace.stamp(EvalRunInfo(id=config.uuid))
         await append_episode(out, episode, write_lock)
@@ -92,19 +92,18 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
                 *(env.run_slot(slot, ctx, semaphore, on_complete) for slot in planned)
             )
             episodes = finished + list(results)
-            traces = [trace for episode in episodes for trace in episode.traces]
             if (
                 push_state is not None
             ):  # upload off the event loop so the view keeps refreshing
                 from verifiers.v1.push import push_traces
 
                 push_state.started = True
-                await asyncio.to_thread(push_traces, traces, config, push_state)
+                await asyncio.to_thread(push_traces, episodes, config, push_state)
     await client.close()
-    return traces
+    return episodes
 
 
-async def run_eval_server(config: EvalConfig) -> list[Trace]:
+async def run_eval_server(config: EvalConfig) -> list[EpisodeRecord]:
     """Run evaluation through the env-server worker pool."""
     import multiprocessing as mp
     from functools import partial
@@ -170,14 +169,13 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         else:
             idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
         out = output_path(config)
-        finished: list[Trace] = []
+        finished: list[EpisodeRecord] = []
         if config.resume is not None:
             # (legacy only) a group is served and scored together, so a partially-kept
             # task redoes as a whole group — whole_task drops its kept rows.
-            episodes, owed = resume.load(
+            finished, owed = resume.load(
                 out, idxs, config.num_rollouts, whole_task=group_scored
             )
-            finished = [trace for episode in episodes for trace in episode.traces]
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
@@ -209,7 +207,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         )
         write_lock = asyncio.Lock()
 
-        async def run_group_unit(idx: int) -> list[Trace]:
+        async def run_group_unit(idx: int) -> list[EpisodeRecord]:
             async with semaphore or contextlib.nullcontext():
                 traces = await client.run_group(
                     task_idx=idx,
@@ -218,14 +216,16 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     model=config.model,
                     sampling=config.sampling,
                 )
+            records = []
             for trace in traces:
                 trace.stamp(EvalRunInfo(id=config.uuid))
                 await append_trace(out, trace, write_lock, env=config.env_id)
-            return traces
+                records.append(EpisodeRecord.of(trace))
+            return records
 
-        async def run_rollout_unit(idx: int) -> list[Trace]:
+        async def run_unit(idx: int) -> list[EpisodeRecord]:
             async with semaphore or contextlib.nullcontext():
-                episode = await client.run_rollout(
+                episode = await client.run(
                     task_idx=idx,
                     client=config.client,
                     model=config.model,
@@ -234,7 +234,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             for trace in episode.traces:
                 trace.stamp(EvalRunInfo(id=config.uuid))
             await append_episode(out, episode, write_lock)
-            return list(episode.traces)
+            return [episode]
 
         # A group-scored legacy task runs its rollouts together (one `run_group`
         # request, one worker); otherwise each rollout is its own `run_rollout`
@@ -242,11 +242,11 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         units = (
             [run_group_unit(i) for i in idxs]
             if group_scored
-            else [run_rollout_unit(i) for i in idxs for _ in range(owed[i])]
+            else [run_unit(i) for i in idxs for _ in range(owed[i])]
         )
         results = await asyncio.gather(*units)
         await client.close()
-        return finished + [trace for unit_traces in results for trace in unit_traces]
+        return finished + [record for unit in results for record in unit]
     finally:
         proc.terminate()
         with contextlib.suppress(Exception):

@@ -30,8 +30,6 @@ class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
     seat playing the seed taskset (`--env.agent.*`). Its one trace per episode
     carries no seat name, so the wire matches a plain eval's."""
 
-    _stamp_roles = False
-
     def __init__(self, config: SingleAgentEnvConfig) -> None:
         super().__init__(config)
         # The one seat definitionally plays the seed taskset, so an impossible

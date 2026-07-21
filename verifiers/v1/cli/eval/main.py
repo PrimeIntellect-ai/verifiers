@@ -105,14 +105,14 @@ def main(argv: list[str] | None = None) -> None:
         ):  # v0 backwards-compat: run the classic env, bridged to Traces
             from verifiers.v1.legacy import run_legacy_eval
 
-            traces = asyncio.run(run_legacy_eval(config))
+            episodes = asyncio.run(run_legacy_eval(config))
         elif config.server:  # opt-in: drive rollouts through the env-server worker pool
             from verifiers.v1.cli.eval.runner import run_eval_server
 
-            traces = asyncio.run(run_eval_server(config))
+            episodes = asyncio.run(run_eval_server(config))
         else:  # in-process (default), with or without the live dashboard
             env = vf.load_environment(config.env)
-            traces = asyncio.run(run_eval(env, config))
+            episodes = asyncio.run(run_eval(env, config))
     except KeyboardInterrupt:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
         # disk. Exit on the conventional Ctrl-C code without a traceback.
@@ -120,7 +120,8 @@ def main(argv: list[str] | None = None) -> None:
     if config.push and not rich:
         from verifiers.v1.push import push_traces
 
-        push_traces(traces, config)
+        push_traces(episodes, config)
     if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
-        for trace in traces:
-            print(trace.model_dump_json(indent=2, exclude_none=True))
+        for episode in episodes:
+            for trace in episode.traces:
+                print(trace.model_dump_json(indent=2, exclude_none=True))

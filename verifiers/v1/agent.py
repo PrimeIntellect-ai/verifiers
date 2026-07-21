@@ -41,7 +41,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import EpisodeInfo, Trace
 from verifiers.v1.types import Sampling, SamplingConfig
 from verifiers.v1.utils.compile import (
     cap_remote_harness_timeout,
@@ -270,7 +270,8 @@ class Agent:
             # close() never runs — free the run's servers and owned runtime first.
             await run.abort()
             raise
-        self._stamp_agent(trace, params["runtime_config"], borrowed=runtime is not None)
+        if trace.runtime is not None:
+            trace.runtime.borrowed = runtime is not None
         return trace
 
     def _rollout_params(
@@ -324,21 +325,6 @@ class Agent:
             runtime=runtime,
         )
 
-    def _stamp_agent(
-        self, trace: Trace, runtime_config: RuntimeConfig, *, borrowed: bool
-    ) -> None:
-        # Keeps traces attributable after the Agent objects are gone; a borrowed
-        # box wins over the policy.
-        trace.info["agent"] = {
-            "harness": self.harness.config.id,
-            "model": self.ctx.model,
-            "runtime": {
-                "type": runtime_config.type,
-                "descriptor": trace.runtime.id if trace.runtime is not None else None,
-                "borrowed": borrowed,
-            },
-        }
-
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime policy,
@@ -378,9 +364,7 @@ class _EpisodeAgent(Agent):
         client: Client,
         interception: Interception | None,
         name: str,
-        role: str | None,
-        episode: str,
-        env: str,
+        episode: EpisodeInfo,
         shared_tools: Mapping[str, SharedToolServer],
         task_cls: type[Task],
         gate: asyncio.Semaphore | None,
@@ -392,9 +376,7 @@ class _EpisodeAgent(Agent):
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name
-        self._role = role
         self._episode = episode
-        self._env = env
         self._shared_tools = shared_tools
         self._task_cls = task_cls
         self._gate = gate
@@ -413,12 +395,12 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         def watch(trace: Trace) -> None:
-            # The trace's episode standing, self-contained on its agent info.
+            # The trace's episode standing, self-contained on the trace: the
+            # shared EpisodeInfo instance links it to its siblings.
             if trace.agent is not None:
-                trace.agent.name = self._role
+                trace.agent.name = self._name
                 trace.agent.trainable = self.trainable
-                trace.agent.episode = self._episode
-                trace.agent.env = self._env
+            trace.episode = self._episode
             if self._on_trace is not None:
                 self._on_trace(trace)
             if on_trace is not None:

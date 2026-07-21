@@ -26,7 +26,7 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.trace import Error, Episode
+    from verifiers.v1.trace import EpisodeRecord, Error
 
 logger = logging.getLogger(__name__)
 
@@ -96,20 +96,20 @@ def _retryable(error: Error | None, retry: RolloutRetryConfig) -> bool:
     return True
 
 
-def episode_should_retry(episode: Episode, retry: RolloutRetryConfig) -> bool:
+def episode_should_retry(episode: EpisodeRecord, retry: RolloutRetryConfig) -> bool:
     """Whether a finished env-rollout should be retried: any captured error —
     episode-level or on any trace — is retryable. All captures count, not just the
     most recent: a retryable failure followed by a teardown error would otherwise
     never retry. Episode-atomic — a half-played sibling context isn't reproducible."""
-    return any(_retryable(e, retry) for e in episode.errors) or any(
+    return any(_retryable(e, retry) for e in episode.episode.errors) or any(
         _retryable(e, retry) for t in episode.traces for e in t.errors
     )
 
 
 async def run_episode_with_retry(
-    run: Callable[[], Awaitable[Episode]],
+    run: Callable[[], Awaitable[EpisodeRecord]],
     retry: RolloutRetryConfig,
-) -> Episode:
+) -> EpisodeRecord:
     """Run one env-rollout (`run` must mint a fresh episode per call), retrying while
     it ends with a retryable error. When the final attempt fails too, the earlier
     attempts' errors are prepended so the episode shows the full history; a final
@@ -123,17 +123,17 @@ async def run_episode_with_retry(
         # before_sleep fires only between attempts (a retry is imminent), so this
         # collects exactly the errors that caused a retry — never the final attempt's.
         attempt_episode = state.outcome.result()
-        cause = attempt_episode.error or next(
+        cause = attempt_episode.episode.error or next(
             (t.error for t in attempt_episode.traces if t.error), None
         )
         logger.warning(
             "retrying env-rollout %s (retry %d/%d) after error: %s",
-            attempt_episode.id,
+            attempt_episode.episode.id,
             state.attempt_number,
             retry.max_retries,
             cause.type if cause else "?",
         )
-        history.extend(attempt_episode.errors)
+        history.extend(attempt_episode.episode.errors)
         for trace in attempt_episode.traces:
             history.extend(trace.errors)
 
@@ -145,12 +145,12 @@ async def run_episode_with_retry(
         retry_error_callback=lambda state: state.outcome.result(),
     )
 
-    async def attempt() -> Episode:
+    async def attempt() -> EpisodeRecord:
         # tenacity only awaits a coroutine *function*; adapt so a plain callable
         # returning an awaitable works too.
         return await run()
 
     final = await retrying(attempt)
     if history and not final.ok:  # final attempt failed too → prepend the history
-        final.errors = history + final.errors
+        final.episode.errors = history + final.episode.errors
     return final

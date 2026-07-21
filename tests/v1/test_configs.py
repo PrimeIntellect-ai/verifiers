@@ -205,11 +205,11 @@ async def test_replay_skips_traceless_episodes(tmp_path):
     from verifiers.v1.cli.output import TRACES_FILE, append_episode, save_config
     from verifiers.v1.cli.replay import run_replay
     from verifiers.v1.configs.replay import ReplayConfig
-    from verifiers.v1.trace import Episode, Trace, TraceTask
+    from verifiers.v1.trace import EpisodeInfo, EpisodeRecord, Trace, TraceTask
 
     task = TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi"))
-    failed = Episode(env="echo-v1", task=task)
-    scored = Episode(env="echo-v1", task=task)
+    failed = EpisodeRecord(episode=EpisodeInfo(env="echo-v1"))
+    scored = EpisodeRecord(episode=EpisodeInfo(env="echo-v1"))
     scored.traces.append(Trace(task=task))
     source = tmp_path / "run"
     save_config(EvalConfig(env={"taskset": {"id": "echo-v1"}}), source)
@@ -221,4 +221,4 @@ async def test_replay_skips_traceless_episodes(tmp_path):
     traces = await run_replay(config, source, out)
     assert len(traces) == 1
     (line,) = (out / TRACES_FILE).read_text().splitlines()
-    assert json.loads(line)["env"] == "echo-v1"
+    assert json.loads(line)["episode"]["env"] == "echo-v1"

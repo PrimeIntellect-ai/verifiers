@@ -29,11 +29,11 @@ from verifiers.v1.serve.types import (
     InfoResponse,
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 from verifiers.v1.task import WireTaskData
-from verifiers.v1.trace import Trace, WireEpisode
+from verifiers.v1.trace import Trace, WireEpisodeRecord
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -139,16 +139,16 @@ class EnvClient:
         """Return the taskset `num_tasks` + whether its tasks group-score (legacy v0 only)."""
         return await self._request(InfoRequest(), InfoResponse)
 
-    async def run_rollout(
+    async def run(
         self, task_idx: int, client: ClientConfig, model: str, sampling: SamplingConfig
-    ) -> WireEpisode:
-        """Run one rollout for `task_idx`; return its `Episode` (traces typed
-        `Trace[WireTaskData]`)."""
+    ) -> WireEpisodeRecord:
+        """Run one rollout for `task_idx`; return its episode record — flat traces
+        (typed `Trace[WireTaskData]`) plus the shared stamp."""
         response = await self._request(
-            RunRolloutRequest(
+            RunRequest(
                 task_idx=task_idx, client=client, model=model, sampling=sampling
             ),
-            RunRolloutResponse,
+            RunResponse,
         )
         return response.episode
 

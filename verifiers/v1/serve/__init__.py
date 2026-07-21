@@ -10,8 +10,8 @@ from verifiers.v1.serve.types import (
     InfoResponse,
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 
 __all__ = [
@@ -24,8 +24,8 @@ __all__ = [
     "HealthResponse",
     "InfoRequest",
     "InfoResponse",
-    "RunRolloutRequest",
-    "RunRolloutResponse",
+    "RunRequest",
+    "RunResponse",
     "RunGroupRequest",
     "RunGroupResponse",
 ]

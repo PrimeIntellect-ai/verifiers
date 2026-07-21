@@ -19,7 +19,7 @@ from pydantic_core import to_jsonable_python
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import Environment
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Episode
+from verifiers.v1.trace import EpisodeRecord
 
 Candidate = dict[str, str]
 
@@ -38,7 +38,7 @@ class GEPAAdapter:
     tasks: dict[int, Task]
     loop: asyncio.AbstractEventLoop
     semaphore: asyncio.Semaphore | None = None
-    on_complete: Callable[[Episode], Awaitable[None]] | None = None
+    on_complete: Callable[[EpisodeRecord], Awaitable[None]] | None = None
     """Called with each rollout's episode as it finalizes — the runner's persist hook that
     streams episodes to `traces.jsonl`, exactly as `run_eval` does."""
     reflection_columns: list[str] = field(default_factory=list)
@@ -52,7 +52,7 @@ class GEPAAdapter:
         batch: list[int],
         candidate: Candidate,
         capture_traces: bool = False,
-    ) -> EvaluationBatch[Episode, Episode]:
+    ) -> EvaluationBatch[EpisodeRecord, EpisodeRecord]:
         """Run `candidate`'s system prompt on the tasks named by `batch` (`Task.idx` values)
         and score them — one env-rollout and one score per batch entry, so the batch stays
         aligned however many traces the env's episode holds. Called synchronously by GEPA on
@@ -67,7 +67,9 @@ class GEPAAdapter:
             trajectories=episodes if capture_traces else None,
         )
 
-    async def _run_batch(self, batch: list[int], system_prompt: str) -> list[Episode]:
+    async def _run_batch(
+        self, batch: list[int], system_prompt: str
+    ) -> list[EpisodeRecord]:
         # Inject the candidate by rebuilding each Task around a data row with the new
         # system_prompt (TaskData is frozen; behavior/config carry over unchanged).
         tasks = [
@@ -88,7 +90,7 @@ class GEPAAdapter:
     def make_reflective_dataset(
         self,
         candidate: Candidate,  # noqa: ARG002 - required by GEPA's adapter protocol
-        eval_batch: EvaluationBatch[Episode, Episode],
+        eval_batch: EvaluationBatch[EpisodeRecord, EpisodeRecord],
         components_to_update: list[str],
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
         """Build the reflective dataset the teacher LM reads to propose a new system prompt,
@@ -121,7 +123,7 @@ class GEPAAdapter:
         return {comp: records for comp in components_to_update}
 
 
-def _episode_score(episode: Episode) -> float:
+def _episode_score(episode: EpisodeRecord) -> float:
     """A candidate's score on one env-rollout: the mean reward of the episode's scored
     traces. Seats that recorded no rewards (a reward-less judge) don't dilute the
     signal; an episode with no scored traces scores 0."""

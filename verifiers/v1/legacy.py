@@ -27,14 +27,14 @@ from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
 from verifiers.v1.trace import (
+    EpisodeRecord,
     Error,
-    Episode,
     GenerationSpan,
     ModelCall,
     TimeSpan,
@@ -428,11 +428,11 @@ class LegacyEnvServer(EnvServer):
             state_columns=["trajectory"],
         )
 
-    async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
+    async def _run(self, req: RunRequest) -> RunResponse:
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-        # Trust the bridge-minted episode; serialize it once (mirrors `EnvServer`).
-        return RunRolloutResponse.model_construct(
-            episode=Episode.of(
+        # Trust the bridge-minted record; serialize it once (mirrors `EnvServer`).
+        return RunResponse.model_construct(
+            episode=EpisodeRecord.of(
                 rollout_output_to_trace(out, req.task_idx), env=self.taskset_id
             )
         )
@@ -539,4 +539,6 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     # `num_rollouts` rollouts per selected task, all bounded by the one semaphore.
     coros = [run_one(i) for i in idxs for _ in range(config.num_rollouts)]
-    return list(await asyncio.gather(*coros))
+    traces = await asyncio.gather(*coros)
+    # append_trace stamped each trace's episode; .of reuses the stamp.
+    return [EpisodeRecord.of(trace) for trace in traces]

@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import (
-    ClassVar,
     Generic,
     TypeVar,
     get_args,
@@ -34,7 +33,7 @@ from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, _record_result, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.trace import Error, Episode, Trace, TraceTask
+from verifiers.v1.trace import EpisodeInfo, EpisodeRecord, Error, Trace
 from verifiers.v1.utils.generic import deep_merge, generic_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.mcp import SharedToolServer, serve_shared
@@ -230,13 +229,13 @@ class RunSlot:
 
     task: Task
     traces: list[Trace] = field(default_factory=list)
-    episode: Episode | None = None
+    episode: EpisodeRecord | None = None
     done: bool = False
 
     @classmethod
-    def finished(cls, episode: Episode) -> "RunSlot":
+    def finished(cls, episode: EpisodeRecord) -> "RunSlot":
         return cls(
-            task=Task(episode.task.data),
+            task=Task(episode.traces[0].task.data),
             traces=list(episode.traces),
             episode=episode,
             done=True,
@@ -265,11 +264,6 @@ class Environment(ABC, Generic[ConfigT]):
     resume, serving. Task x agent fit is validated per run, on the task the agent
     actually receives — an env-minted task carries its own needs (`tools`,
     `NEEDS_CONTAINER`), so there is nothing to declare here."""
-
-    _stamp_roles: ClassVar[bool] = True
-    """Whether traces are stamped with their seat name at mint. True for every env
-    but `SingleAgentEnv`, whose sole implicit seat stays nameless — a plain eval's
-    trace carries no role."""
 
     def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
@@ -410,11 +404,11 @@ class Environment(ABC, Generic[ConfigT]):
         for (fn, target), result in await run(rewards):
             _record_result(target, fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
 
-    def complete(self, episode: Episode) -> bool:
+    def complete(self, episode: EpisodeRecord) -> bool:
         """Whether a finished env-rollout is a valid result — what `--resume` keeps
         vs. redoes. Default: `episode.ok`. An env whose `rollout()` deliberately
         tolerates a failed participant (a forfeited player) overrides this —
-        typically `not episode.errors` — else resume re-runs rollouts it already
+        typically `not episode.episode.errors` — else resume re-runs rollouts it already
         accepted. The server eval path keeps the strict default (its env lives in
         the workers)."""
         return episode.ok
@@ -437,18 +431,16 @@ class Environment(ABC, Generic[ConfigT]):
 
     def _signal_targets(self, fn: Callable, traces: list[Trace]) -> list[Trace]:
         """Which traces a decorated env signal records onto: every trace unless
-        `agent=` narrows it. Membership is the trace's agent-name stamp — except
-        in `SingleAgentEnv`'s nameless shape, where every trace belongs to the
-        sole implicit seat."""
+        `agent=` narrows it. Membership is the trace's agent-name stamp."""
         agent = getattr(fn, "_vf_agent", None)
-        if agent is None or not self._stamp_roles:
+        if agent is None:
             return list(traces)
         return [t for t in traces if t.agent_name == agent]
 
     def _episode_agents(
         self,
         ctx: ModelContext,
-        episode_id: str,
+        episode: EpisodeInfo,
         gate: "asyncio.Semaphore | None",
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
@@ -480,9 +472,7 @@ class Environment(ABC, Generic[ConfigT]):
                 else ctx.client,
                 interception=self._interception,
                 name=name,
-                role=name if self._stamp_roles else None,
-                episode=episode_id,
-                env=self.config.env_id,
+                episode=episode,
                 shared_tools=self._shared_tools,
                 task_cls=self._task_cls,
                 gate=gate,
@@ -510,7 +500,7 @@ class Environment(ABC, Generic[ConfigT]):
         *,
         on_trace: Callable[[Trace], None] | None = None,
         gate: asyncio.Semaphore | None = None,
-    ) -> Episode:
+    ) -> EpisodeRecord:
         """One env-rollout of `task`, minted as the wire atom: run `rollout()` over the
         role agents, then `score()` over its traces (bounded by `timeout.score`).
         `gate` bounds the agent runs themselves — every run acquires it, so an env's
@@ -522,12 +512,9 @@ class Environment(ABC, Generic[ConfigT]):
         order) — `rollout()` returns nothing, and a hook that raises after some
         runs finished still yields an episode with the completed subset. A hook
         exception lands on the episode's `errors`, never on a trace."""
-        episode: Episode = Episode(
-            env=self.config.env_id,
-            task=TraceTask(type=type(task).__name__, data=task.data),
-        )
+        info = EpisodeInfo(env=self.config.env_id)
         completed: list[Trace] = []
-        agents = self._episode_agents(ctx, episode.id, gate, completed, on_trace)
+        agents = self._episode_agents(ctx, info, gate, completed, on_trace)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.rollout()"):
@@ -545,11 +532,9 @@ class Environment(ABC, Generic[ConfigT]):
                     f"{type(self).__name__}.rollout() exceeded its "
                     f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
                 )
-            episode.errors.append(_as_error(e))
+            info.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode.
-            episode.traces = list(completed)
-            return episode
-        episode.traces = list(completed)
+            return EpisodeRecord(episode=info, traces=list(completed))
         try:
             async with asyncio.timeout(self.config.timeout.score):
                 async with boundary(EnvError, f"{type(self).__name__}.score()"):
@@ -562,8 +547,8 @@ class Environment(ABC, Generic[ConfigT]):
                     f"{type(self).__name__}.score() exceeded its "
                     f"{self.config.timeout.score:g}s deadline (--env.timeout.score)"
                 )
-            episode.errors.append(_as_error(e))
-        return episode
+            info.errors.append(_as_error(e))
+        return EpisodeRecord(episode=info, traces=list(completed))
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
         """Plan `n` independent env-rollouts of `task` — one observable `RunSlot`
@@ -578,15 +563,15 @@ class Environment(ABC, Generic[ConfigT]):
         slot: RunSlot,
         ctx: ModelContext,
         semaphore: asyncio.Semaphore | None = None,
-        on_complete: Callable[[Episode], Awaitable[None]] | None = None,
-    ) -> Episode:
+        on_complete: Callable[[EpisodeRecord], Awaitable[None]] | None = None,
+    ) -> EpisodeRecord:
         """Run one planned env-rollout to its finished episode, with whole-episode
         retries per `retries.rollout`. `semaphore` gates the agent RUNS, not the
         episode — `--max-concurrent` holds even when `rollout()` fans out
         internally. `on_complete` fires the moment the episode is final — the
         runners' persistence hook."""
 
-        async def attempt() -> Episode:
+        async def attempt() -> EpisodeRecord:
             slot.traces = []  # a retry shows the fresh attempt's traces
             return await self.run_episode(
                 slot.task, ctx, on_trace=slot.traces.append, gate=semaphore

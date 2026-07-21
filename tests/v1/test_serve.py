@@ -5,8 +5,8 @@ import asyncio
 
 import verifiers.v1 as vf
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import RunRolloutRequest
-from verifiers.v1.trace import Episode, TraceTask
+from verifiers.v1.serve.types import RunRequest
+from verifiers.v1.trace import EpisodeInfo, EpisodeRecord
 
 
 async def test_served_rollouts_ride_the_env_gate(monkeypatch):
@@ -23,17 +23,17 @@ async def test_served_rollouts_ride_the_env_gate(monkeypatch):
 
     async def spy(slot, ctx, semaphore=None, on_complete=None):
         seen["gate"] = semaphore
-        return Episode(env="echo-v1", task=TraceTask(type="Task", data=slot.task.data))
+        return EpisodeRecord(episode=EpisodeInfo(env="echo-v1"))
 
     monkeypatch.setattr(server.env, "run_slot", spy)
     monkeypatch.setattr(EnvServer, "_context", lambda self, *a: None)
-    req = RunRolloutRequest(
+    req = RunRequest(
         task_idx=0,
         client=vf.EvalClientConfig(),
         model="m",
         sampling=vf.SamplingConfig(),
     )
-    await server._run_rollout(req)
+    await server._run(req)
     assert seen["gate"] is server._gate
 
 
