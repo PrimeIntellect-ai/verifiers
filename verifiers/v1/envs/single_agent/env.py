@@ -13,7 +13,7 @@ class SingleAgentEnvConfig(EnvConfig):
 
 class SingleAgentEnv(Env[SingleAgentEnvConfig]):
     """One `agent` playing the seed taskset, one trace per episode. Not paired by
-    id like its siblings here: `loaders.environment_class` falls back to it whenever
+    id like its siblings here: `loaders.env_class` falls back to it whenever
     neither `--env.id` nor the taskset names an `Env`."""
 
     async def run(self, task: Task, agents: Agents):

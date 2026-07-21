@@ -28,16 +28,6 @@ object to {VERDICT_FILE}:
 The verdict file is how you are scored — do not finish without writing it."""
 
 
-def _world(solver: vf.TaskData) -> str:
-    if solver.image is not None:
-        return (
-            f"a fresh instance of the same environment the graded agent worked in "
-            f"(image {solver.image}), in its ORIGINAL state — the agent's edits are "
-            "NOT applied; reconstruct them from the transcript to verify"
-        )
-    return "your own — the graded agent worked elsewhere"
-
-
 class GradeTask(vf.Task):
     """The grader's task: the solver task's world mirrored onto a fresh box (the
     solver's runtime is gone by grading time), transcript uploaded before the
@@ -51,11 +41,18 @@ class GradeTask(vf.Task):
 
     @classmethod
     def from_trace(cls, task: vf.Task, solution: vf.Trace) -> "GradeTask":
+        world = (
+            f"a fresh instance of the same environment the graded agent worked in "
+            f"(image {task.data.image}), in its ORIGINAL state — the agent's edits "
+            "are NOT applied; reconstruct them from the transcript to verify"
+            if task.data.image is not None
+            else "your own — the graded agent worked elsewhere"
+        )
         return cls(
             vf.TaskData(
                 idx=task.data.idx,
                 prompt=GRADE_PROMPT.format(
-                    task_prompt=task.data.prompt_text, world=_world(task.data)
+                    task_prompt=task.data.prompt_text, world=world
                 ),
                 image=task.data.image,
                 workdir=task.data.workdir,

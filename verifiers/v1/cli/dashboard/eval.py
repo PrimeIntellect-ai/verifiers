@@ -18,6 +18,7 @@ from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval.slots import RunSlot
+from verifiers.v1.env import agent_harnesses
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import (
@@ -164,7 +165,7 @@ def _warning(config: EvalConfig) -> Text | None:
 
     if any(
         h.runtime.type == "subprocess" and harness_class(h.id).EXECUTES_CODE
-        for h in config.env.agent_harnesses().values()
+        for h in agent_harnesses(config.env).values()
     ):
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
@@ -230,7 +231,7 @@ def Overview(config: EvalConfig) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
-    agents = config.env.agent_harnesses()
+    agents = agent_harnesses(config.env)
     taskset = config.env.taskset
     env_label = taskset.name if taskset is not None else "no taskset"
     if config.env.id:
@@ -758,7 +759,7 @@ def _render(
             now,
             "/".join(
                 dict.fromkeys(
-                    h.runtime.type for h in config.env.agent_harnesses().values()
+                    h.runtime.type for h in agent_harnesses(config.env).values()
                 )
             )
             or "subprocess",

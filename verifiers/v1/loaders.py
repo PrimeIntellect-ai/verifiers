@@ -163,17 +163,17 @@ def default_harness_id(taskset_id: str) -> str:
     return taskset_id
 
 
-def import_environment(env_id: str) -> ModuleType:
+def import_env(env_id: str) -> ModuleType:
     return _import_plugin(env_id, "environment", "verifiers.v1.envs")
 
 
-def environment_class(taskset_id: str, env_id: str = "") -> type[Env]:
+def env_class(taskset_id: str, env_id: str = "") -> type[Env]:
     """The `Env` class for a run. An explicit `env_id` names it directly,
     and a failure to resolve raises — an explicit pairing must not silently fall
     back. Otherwise the taskset's own: its package's exported `Env`
     subclass, else `SingleAgentEnv`."""
     if env_id:
-        return _plugin_class(import_environment(env_id), Env, "environment")
+        return _plugin_class(import_env(env_id), Env, "environment")
     if not taskset_id:
         return SingleAgentEnv
     try:
@@ -183,11 +183,11 @@ def environment_class(taskset_id: str, env_id: str = "") -> type[Env]:
         return SingleAgentEnv
 
 
-def load_environment(config: EnvConfig) -> Env:
+def load_env(config: EnvConfig) -> Env:
     """Construct the env for `config`. Every construction site (eval, serve, gepa)
     goes through here so subclass envs load everywhere."""
     taskset_id = config.taskset.id if config.taskset is not None else ""
-    return environment_class(taskset_id, config.id)(config)
+    return env_class(taskset_id, config.id)(config)
 
 
 def load_taskset(config: TasksetConfig) -> Taskset:
@@ -228,8 +228,7 @@ def env_config_type(taskset_id: str, env_id: str = "") -> type[EnvConfig]:
     its MRO — `SingleAgentEnvConfig` for a plain taskset. The run's `env` field
     narrows to this, which is what gives `--env.<role>.model` addressing."""
     return (
-        generic_type(environment_class(taskset_id, env_id), EnvConfig, origin=Env)
-        or EnvConfig
+        generic_type(env_class(taskset_id, env_id), EnvConfig, origin=Env) or EnvConfig
     )
 
 

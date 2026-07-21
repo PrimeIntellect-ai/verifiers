@@ -71,9 +71,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     saved = tomllib.loads((source / CONFIG_FILE).read_text())
     saved_env = saved.get("env") or {}
     saved_taskset = saved.get("taskset") or saved_env.get("taskset") or {}
-    env_cls = vf.environment_class(
-        saved_taskset.get("id") or "", saved_env.get("id") or ""
-    )
+    env_cls = vf.env_class(saved_taskset.get("id") or "", saved_env.get("id") or "")
     if not issubclass(env_cls, vf.SingleAgentEnv):
         raise SystemExit(
             f"replay: {source} is a multi-agent run ({env_cls.__name__}); offline "

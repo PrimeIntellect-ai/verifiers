@@ -1,7 +1,7 @@
 """The per-rollout unit the interception layer serves.
 
 One `RolloutSession` per rollout, registered on an interception server under the rollout's
-secret. The rollout constructs it (model ctx, trace, task `@stop`s, limits) and the server
+secret. `Agent.run` constructs it (model ctx, trace, task `@stop`s, limits) and the server
 drives it: routes each intercepted model call to it, runs `refused()` before each turn,
 injects the user simulator's replies, and stashes the real failure on `error`.
 `RolloutLimits` is the framework's per-rollout budget (turns / tokens), checked between

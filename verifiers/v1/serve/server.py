@@ -12,7 +12,7 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.env import EnvConfig
-from verifiers.v1.loaders import load_environment
+from verifiers.v1.loaders import load_env
 from verifiers.v1.serve.types import (
     PROTOCOL_VERSION,
     BaseResponse,
@@ -37,7 +37,7 @@ class EnvServer:
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id if config.taskset is not None else ""
-        self.env = load_environment(config)
+        self.env = load_env(config)
         # A finite taskset materializes up front; an infinite one is pulled off its
         # generator on demand, so `num_tasks=None` on the wire means infinite.
         self._task_iter = iter(self.env.taskset.load())

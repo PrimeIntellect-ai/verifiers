@@ -45,26 +45,6 @@ class SolveData(vf.TaskData):
     """The proposer's verified answer — the minted task's ground truth."""
 
 
-def _loads_contract(chunk: str) -> object:
-    """``json.loads`` with one retry that doubles every backslash not part of an
-    unambiguous JSON escape (``\\\\``, ``\\"``, ``\\/``, ``\\uXXXX``) — a math
-    proposer writes LaTeX (``\\(``, ``\\frac``) inside the contract, which is
-    off-spec JSON. The single-letter escapes ``\\b \\f \\n \\r \\t`` are NOT kept:
-    in a failed-parse contract they are the heads of LaTeX commands (``\\frac``,
-    ``\\neq``, ``\\times``), and a literal backslash-n in problem text beats a
-    corrupted ``\\neq``. The retry only runs when the strict parse failed, so a
-    fully valid contract keeps its real escapes."""
-    try:
-        return json.loads(chunk)
-    except json.JSONDecodeError:
-        fixed = re.sub(
-            r'\\(?:["\\/]|u[0-9a-fA-F]{4})|\\',
-            lambda m: m.group(0) if len(m.group(0)) > 1 else "\\\\",
-            chunk,
-        )
-        return json.loads(fixed)
-
-
 class SolveTask(vf.Task[SolveData]):
     @classmethod
     def from_trace(cls, proposer: vf.Trace) -> "SolveTask":
@@ -81,7 +61,7 @@ class SolveTask(vf.Task[SolveData]):
             if not (chunk.startswith("{") and chunk.endswith("}")):
                 continue
             try:
-                parsed = _loads_contract(chunk)
+                parsed = json.loads(chunk)
             except json.JSONDecodeError:
                 continue
             if isinstance(parsed, dict) and {"problem", "answer"} <= parsed.keys():

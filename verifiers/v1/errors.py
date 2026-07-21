@@ -13,7 +13,7 @@ Four mechanisms, each in one place:
 3. Surfacing (`session.RolloutSession.error`): a model/tool/user call fails behind the harness
    subprocess and comes back as HTTP, so the interception server stashes the real error there and
    the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
-4. Capture (`RolloutRun`, mirrored by the env-server): the one place that records a failure (typed
+4. Capture (`Agent.run`, mirrored by the env-server): the one place that records a failure (typed
    or not) onto the trace and never lets it cancel sibling rollouts. A bad rollout is data, not a
    crash.
 

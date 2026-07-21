@@ -38,7 +38,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.loaders import load_environment
+from verifiers.v1.loaders import load_env
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace
 
@@ -168,12 +168,11 @@ def _eval_config(
         agent_cfg.setdefault("max_turns", max_turns)
         agent_cfg.setdefault("max_output_tokens", max_tokens)
         agent_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
+        agent_cfg.setdefault(
+            "retries", {"max_retries": 2, "include": ["ProviderError"]}
+        )
     return EvalConfig(
-        env={
-            "taskset": taskset_cfg,
-            "retries": {"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
-            **env_cfg,
-        },
+        env={"taskset": taskset_cfg, **env_cfg},
         num_tasks=num_tasks,
         num_rollouts=n,
         sampling={
@@ -195,7 +194,7 @@ def run_v1():
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        return await run_eval(load_environment(config.env), config)
+        return await run_eval(load_env(config.env), config)
 
     return _run
 

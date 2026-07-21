@@ -15,7 +15,8 @@ trace = await solver.run(vf.Task(vf.TaskData(idx=0, prompt="What is 2+2?")))
 The config carries everything declarative: `harness` a typed `HarnessConfig` (None =
 the built-in `bash`; inside an env, the taskset's default), `model` the pinned model
 id, `client` an endpoint config (None = the env-var eval endpoint), `sampling`, the
-per-run caps (`max_turns`, token budgets) and per-stage `timeout`s. Live resources
+per-run caps (`max_turns`, token budgets), per-stage `timeout`s, and whole-run
+`retries` (rerun while the trace ends with a retryable error). Live resources
 are injected, not configured: `make_agent(config, client=...)` shares one `Client`
 (one connection pool) across agents on the same endpoint — prime-rl hands agents its
 renderer client the same way — and `interception=` shares a live interception pool

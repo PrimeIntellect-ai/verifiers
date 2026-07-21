@@ -66,8 +66,9 @@ class DebateEnv(vf.Env[DebateConfig]):
   (`--env.judge.harness.runtime.type docker`), a frozen model, an off-train
   endpoint, tighter limits — and a declared pin is the env author's per-agent
   default. Per-run caps (turns, tokens, the setup/rollout/finalize/scoring
-  timeouts) live only on agents — there is no env-level cap; the env keeps just
-  its own hook's bound (`--env.timeout.finalize`).
+  timeouts, whole-run retries) live only on agents — there is no env-level cap;
+  the env keeps just its own hooks' bounds (`--env.timeout.run` for one
+  episode's `run()`, `--env.timeout.finalize` for `finalize()`).
 - **The declared fields ARE the agents.** The base scrapes every `AgentConfig` off
   the config — recursively: a field is an `Agent` under its field name, a list of
   `AgentConfig`s an index-addressable list — into the `Agents` container that
@@ -103,8 +104,9 @@ class DebateEnv(vf.Env[DebateConfig]):
   info carries the agent name and trainability, and its `episode` stamp
   (`EpisodeInfo`) the episode id and env id — so a flat bag of traces (a
   `traces.jsonl`, a serve response) reconstitutes its episodes with no nested
-  schema, and the trace API ingests them natively. Episodes succeed, resume, and
-  retry as a unit. An agent failure is data on its trace (the hook decides what a
+  schema, and the trace API ingests them natively. Episodes succeed and resume
+  as a unit; retries are per agent run (`--env.<agent>.retries`), never of a
+  whole episode. An agent failure is data on its trace (the hook decides what a
   failed participant means); an exception in `run()`/`finalize()` is the env-rollout
   failing — it lands on the shared `EpisodeInfo.errors`, mirrored on every trace
   that completed before it.

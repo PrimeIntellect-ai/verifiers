@@ -5,7 +5,6 @@ redone together."""
 import json
 import tomllib
 from collections import defaultdict
-from collections.abc import Callable
 from pathlib import Path
 
 from pydantic_core import from_json
@@ -48,7 +47,6 @@ def load(
     resume_dir: Path,
     selected_idxs: list[int],
     num_rollouts: int,
-    complete: Callable[[list[Trace]], bool] | None = None,
     *,
     whole_task: bool = False,
 ) -> tuple[list[list[Trace]], dict[int, int]]:
@@ -56,16 +54,14 @@ def load(
     them against the run's target: returns (kept episodes, rollouts owed per task
     idx). A rollout is kept or redone as a unit — the traces sharing an
     `episode.id` stamp (a stampless pre-episode line is its own single-trace
-    episode). `complete` is the environment's keep-verdict
-    (`Env.complete`); without it (the server path) the default is
-    `episode_ok`, so an errored rollout is dropped and re-run. `whole_task` redoes
+    episode); an errored rollout (`episode_ok` false) is dropped and re-run.
+    `whole_task` redoes
     a partially-kept task as a unit — the legacy group-scored path, where
     `run_group` always serves the full n. Rewrites `traces.jsonl` to just the kept
     rows via a temp file + atomic rename, so an interrupted resume can't corrupt
     the prior results; the resumed rollouts then append."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
-    verdict = complete if complete is not None else episode_ok
 
     # episode key -> [(line, trace)], insertion order; all lines of one episode
     # share its fate (kept or redone) even if interleaved on disk.
@@ -99,7 +95,7 @@ def load(
         idx = rows[0][1].task.data.idx
         if idx not in selected or len(good[idx]) >= num_rollouts:
             continue
-        if not verdict([trace for _, trace in rows]):
+        if not episode_ok([trace for _, trace in rows]):
             continue
         good[idx].append(rows)
     keep: list[bytes] = []

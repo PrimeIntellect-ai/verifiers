@@ -11,6 +11,7 @@ import tomli_w
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.env import agent_harnesses
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.install import env_name
@@ -27,15 +28,14 @@ def output_path(config: EvalConfig) -> Path:
     `--output-dir`). The per-run `uuid` leaf means runs never overwrite each other."""
     if config.output_dir is not None:
         return config.output_dir
-    taskset = config.env.taskset
-    env = taskset.name if taskset is not None else "no-taskset"
-    if taskset is not None and taskset.id and config.env.id:
+    env = config.env.taskset.name
+    if config.env.taskset.id and config.env.id:
         # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k-v1` run must
         # not share a parent dir with a plain `gsm8k-v1` one.
         env = f"{env_name(config.env.id)}+{env}"
     # Every agent's resolved harness, distinct, in declaration order.
     harness = "+".join(
-        dict.fromkeys(h.name for h in config.env.agent_harnesses().values())
+        dict.fromkeys(h.name for h in agent_harnesses(config.env).values())
     )
     name = f"{env}--{config.model.replace('/', '--')}--{harness or 'default'}"
     return Path("outputs") / name / config.uuid

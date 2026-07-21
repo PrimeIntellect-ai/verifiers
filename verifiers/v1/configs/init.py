@@ -16,6 +16,6 @@ class InitConfig(BaseConfig):
     add_harness: bool = Field(False, validation_alias=AliasChoices("add_harness", "H"))
     """Also scaffold a custom `vf.Harness` (`harness.py`), selectable via `--env.agent.harness.id <name>` (`-H`)."""
     v0: bool = False
-    """Scaffold a legacy v0 environment (a `load_environment` package) instead of a v1 taskset."""
+    """Scaffold a legacy v0 environment (a `load_env` package) instead of a v1 taskset."""
     force: bool = False
     """Overwrite an existing environment package (default: refuse if it already exists)."""
