@@ -73,6 +73,32 @@ class SubprocessRuntime(Runtime):
             stderr=stderr.decode(errors="replace"),
         )
 
+    async def _run_program_stdin(
+        self, argv: list[str], env: dict[str, str], stdin: bytes
+    ) -> ProgramResult:
+        full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
+        full_env.update(env)
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            env=full_env,
+            cwd=self.workdir,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = await proc.communicate(input=stdin)
+        finally:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        return ProgramResult(
+            exit_code=proc.returncode or 0,
+            stdout=stdout.decode(errors="replace"),
+            stderr=stderr.decode(errors="replace"),
+        )
+
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:

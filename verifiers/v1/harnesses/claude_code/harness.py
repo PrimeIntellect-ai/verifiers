@@ -79,7 +79,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             ctx.model,
         ]
         if system_prompt:
-            argv += ["--append-system-prompt", system_prompt]
+            system_prompt_path = f".vf-claude-system-{trace.id}.txt"
+            await runtime.write(system_prompt_path, system_prompt.encode("utf-8"))
+            argv += ["--append-system-prompt-file", system_prompt_path]
         argv += [
             arg
             for tool in self.config.disabled_tools or []
@@ -97,6 +99,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             mcp_path,
             "--strict-mcp-config",
             "--",
-            instruction or "",
         ]
-        return await runtime.run_program(argv, env)
+        return await runtime.run_program(
+            argv, env, stdin=(instruction or "").encode("utf-8")
+        )

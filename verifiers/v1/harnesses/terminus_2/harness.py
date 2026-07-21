@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -58,13 +59,15 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
-            f"--system-prompt={system_prompt or ''}",
-            f"--task={prompt}",
+            "--payload-stdin",
         ]
+        payload = json.dumps(
+            {"system_prompt": system_prompt or "", "task": prompt}
+        ).encode("utf-8")
         try:
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-            return await runtime.run_program([*program, *args], env)
+            return await runtime.run_program([*program, *args], env, stdin=payload)
         finally:
             # Harbor normally destroys its whole sandbox; this adapter borrows the
             # Verifiers runtime, so clean up Terminus's detached tmux server ourselves.
