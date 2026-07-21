@@ -23,7 +23,7 @@ class BestOfNEnvConfig(vf.EnvConfig):
     """A sibling counts as solved when its task reward reaches this (`pass_at_n`)."""
 
 
-class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
+class BestOfNEnv(vf.Env[BestOfNEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         # TaskGroup: a raising attempt cancels and awaits its siblings, so no
         # straggler keeps burning tokens past the episode.

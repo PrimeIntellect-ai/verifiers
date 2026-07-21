@@ -1,5 +1,3 @@
-"""Registered wire dialects for interception."""
-
 from verifiers.v1.dialects.anthropic import AnthropicDialect
 from verifiers.v1.dialects.base import Dialect, StreamParser
 from verifiers.v1.dialects.chat import (

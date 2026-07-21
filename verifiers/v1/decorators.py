@@ -75,7 +75,7 @@ def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def metric(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """Mark a `Task`/`Harness` metric `(self, trace) -> float` (recorded, not
     summed) — per-trace judgement; it declares what it needs by name (`task`,
-    `trace`, `runtime`). Cross-agent judgement is an `Environment`'s `finalize()`,
+    `trace`, `runtime`). Cross-agent judgement is an `Env`'s `finalize()`,
     imperatively."""
     decorator = mark("metric", metric_priority=priority)
     return decorator if func is None else decorator(func)
@@ -92,6 +92,6 @@ def reward(
 ) -> F | Callable[[F], F]:
     """Mark a weighted `Task` reward returning a float or keyed scores — per-trace
     judgement over the trace's own run. Cross-agent judgement is an
-    `Environment`'s `finalize()`, imperatively."""
+    `Env`'s `finalize()`, imperatively."""
     decorator = mark("reward", reward_priority=priority, _vf_weight=weight)
     return decorator if func is None else decorator(func)

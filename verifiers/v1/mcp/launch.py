@@ -317,7 +317,7 @@ class SharedToolServer:
     """One live taskset-scoped (shared) server, as the rollouts see it: its eval-level
     `url` plus whether its runtime is `local` (host-reachable) — a remote one is an
     interception consumer, so the interception must be exposed for it to reach the
-    `/state` channel (see `Environment._requires_tunnel`). An `external` server (a
+    `/state` channel (see `Env._requires_tunnel`). An `external` server (a
     config-`url` endpoint) was not launched by the framework and sits outside its state
     machinery entirely: rollouts get its URL bare — no state tag (and no per-rollout
     secret sent to a third party)."""
@@ -332,7 +332,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
     """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
     Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
-    locality off — the caller (`Environment.shared_tools`) passes the harness runtime's
+    locality off — the caller (`Env.shared_tools`) passes the harness runtime's
     `harness_is_local`, so a host tool gets one host bridge (tunnel) when the harness runs
     remotely, and a remote tool runtime publishes its own URL. Torn down when the eval ends.
     A shared server is task-agnostic — the taskset carries no per-row data — so its `setup`

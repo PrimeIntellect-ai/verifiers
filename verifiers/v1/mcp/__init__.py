@@ -1,5 +1,3 @@
-"""MCP tool servers and user simulators."""
-
 from verifiers.v1.mcp.launch import (
     Respond,
     serve,

@@ -1,12 +1,12 @@
 """The single-agent case — the env every plain taskset resolves to.
 
 Not paired by id like its siblings here: `loaders.environment_class` falls back to
-it whenever neither `--env.id` nor the taskset names an `Environment`, so a plain
+it whenever neither `--env.id` nor the taskset names an `Env`, so a plain
 eval is exactly this env (one `agent` seat, one nameless trace per episode).
 """
 
 from verifiers.v1.agent import AgentConfig, Agents
-from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.env import EnvConfig, Env
 from verifiers.v1.task import Task
 
 
@@ -18,7 +18,7 @@ class SingleAgentEnvConfig(EnvConfig):
     `--env.agent.harness.*` to choose its program or runtime."""
 
 
-class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
+class SingleAgentEnv(Env[SingleAgentEnvConfig]):
     """The single-agent case — the env every plain taskset resolves to: one `agent`
     seat playing the seed taskset (`--env.agent.*`). Its one trace per episode
     carries no seat name, so the wire matches a plain eval's."""

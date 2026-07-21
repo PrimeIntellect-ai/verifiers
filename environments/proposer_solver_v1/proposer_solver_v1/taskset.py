@@ -133,7 +133,7 @@ class ProposerSolverEnvConfig(vf.EnvConfig):
     trains only on proposer rollouts)."""
 
 
-class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
+class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
     async def setup(self, agents: vf.Agents) -> None:
         # Both seats CAN train (same underlying policy); which one does this run
         # is this env's explicit choice to expose.

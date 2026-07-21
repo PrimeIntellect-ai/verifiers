@@ -72,7 +72,7 @@ class CodeGolfEnvConfig(vf.EnvConfig):
     """Independent attempts per env-rollout, scored against each other."""
 
 
-class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
+class CodeGolfEnv(vf.Env[CodeGolfEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with asyncio.TaskGroup() as tg:
             for _ in range(self.config.attempts):

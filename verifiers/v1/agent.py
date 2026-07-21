@@ -163,7 +163,7 @@ class Agent:
             max_total_tokens=config.max_total_tokens,
         )
         self.timeout = config.timeout
-        # Env-owned standing, not config: `Environment.setup` marks fixed agents
+        # Env-owned standing, not config: `Env.setup` marks fixed agents
         # untrainable and traces are stamped from here; inert outside an env.
         self.trainable: bool = True
         self._entered = False

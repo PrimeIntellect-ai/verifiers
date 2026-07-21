@@ -61,7 +61,7 @@ def load(
     run's target: returns (kept episodes, rollouts owed per task idx). A rollout is
     kept or redone as a unit — the episode — so a multi-trace rollout interrupted
     mid-write is simply owed again. `complete` is the environment's keep-verdict
-    (`Environment.complete`); without it (the server path) the default is
+    (`Env.complete`); without it (the server path) the default is
     `episode.ok`, so an errored rollout is dropped and re-run. `whole_task` redoes
     a partially-kept task as a unit — the legacy group-scored path, where
     `run_group` always serves the full n. Rewrites `traces.jsonl` to just the kept

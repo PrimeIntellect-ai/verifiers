@@ -10,7 +10,7 @@ over the `/task` channel. Subclass it per dataset.
 (`@reward`/`@metric` methods plus the plugged judges from `config.judges`, run by
 `score`). Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]`
 (all three default); judgement that compares sibling traces lives on
-`Environment.score` instead.
+`Env.finalize` instead.
 
 A Task instance is shared across its rollouts (`-r n` runs hold the same instance),
 so hooks must not stash per-rollout state on `self` — that lives on the trace

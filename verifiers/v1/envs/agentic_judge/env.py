@@ -118,7 +118,7 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     `--env.judge.harness.runtime.type docker|prime`."""
 
 
-class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
+class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
         super().__init__(config)
         self._check_judge_harness(self._harnesses["judge"])

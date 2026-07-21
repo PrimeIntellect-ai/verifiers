@@ -264,7 +264,7 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
 
 @pytest.mark.e2e
 async def test_multi_agent_env(run_v1, tmp_path):
-    """An `Environment` subclass shipped with its taskset (duet-v1): two roles run the
+    """An `Env` subclass shipped with its taskset (duet-v1): two roles run the
     task, `score()` episodes a sibling-dependent metric, and one eval rollout lands one
     episode carrying two role-stamped traces."""
     import json

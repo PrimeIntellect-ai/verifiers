@@ -57,12 +57,12 @@ def _mentions_agent_config(annotation) -> bool:
 
 class EnvConfig(BaseConfig):
     """An environment's config — the run's single `[env]` block, one subclass per
-    `Environment` class (bound via `Environment[YourConfig]`): each role is an
+    `Env` class (bound via `Env[YourConfig]`): each role is an
     `AgentConfig` field with a default instance, plus env-level knobs. The run's `env`
     field narrows to it by env `id` (else taskset id) — `--env.<role>.model` addressing."""
 
     id: ID = ""
-    """Which `Environment` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
+    """Which `Env` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
     to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
     # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
     taskset: SerializeAsAny[TasksetConfig] | None = None
@@ -217,12 +217,12 @@ class RunSlot:
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)
 
 
-class Environment(ABC, Generic[ConfigT]):
+class Env(ABC, Generic[ConfigT]):
     """A taskset, the agents that play it, and how one task becomes one env-rollout.
 
     Abstract: every run gets a concrete subclass — `SingleAgentEnv` for every plain
     taskset. A multi-agent env declares each role as an `AgentConfig` field on an
-    `EnvConfig` subclass (bound via `Environment[YourConfig]`) and writes
+    `EnvConfig` subclass (bound via `Env[YourConfig]`) and writes
     `run(task, agents)`; optional overrides: `setup`, `finalize`, `start`/`stop`
     — the base owns everything else. Task x agent fit is validated per run, on the
     task the agent actually receives — an env-minted task carries its own needs."""
@@ -230,12 +230,10 @@ class Environment(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
 
-        config_cls = (
-            generic_type(type(self), EnvConfig, origin=Environment) or EnvConfig
-        )
+        config_cls = generic_type(type(self), EnvConfig, origin=Env) or EnvConfig
         if not isinstance(config, config_cls):
             raise TypeError(
-                f"{type(self).__name__} declares Environment[{config_cls.__name__}], "
+                f"{type(self).__name__} declares Env[{config_cls.__name__}], "
                 f"but was handed a {type(config).__name__}; build the run config "
                 "naming this env (its `env` field narrows to it), or pass "
                 f"{config_cls.__name__}(...) explicitly"

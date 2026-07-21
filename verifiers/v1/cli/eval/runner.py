@@ -15,7 +15,7 @@ from verifiers.v1.cli.output import (
     output_path,
     save_config,
 )
-from verifiers.v1.env import Environment, RunSlot
+from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EvalRunInfo
 from verifiers.v1.utils.sampling import sample
@@ -23,7 +23,7 @@ from verifiers.v1.utils.sampling import sample
 logger = logging.getLogger(__name__)
 
 
-async def run_eval(env: Environment, config: EvalConfig) -> list[Episode]:
+async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
     tasks = env.taskset.select(config.num_tasks, config.shuffle)

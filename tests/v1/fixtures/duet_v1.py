@@ -1,7 +1,7 @@
 """duet: the smallest multi-agent environment — two roles echo the same phrase.
 
 The multi-agent fixture for the v1 e2e suite (resolved by id `duet-v1`): an
-`Environment` subclass exported alongside its taskset, with two roles ("a", a trainable
+`Env` subclass exported alongside its taskset, with two roles ("a", a trainable
 seat on the run's model; "b", pinned untrainable), a `run()` that fans both out on
 the task, and a `finalize()` that records a sibling-dependent signal. One eval rollout
 should land one record carrying two role-stamped traces.
@@ -20,7 +20,7 @@ class DuetEnvConfig(vf.EnvConfig):
     b: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
 
 
-class DuetEnv(vf.Environment[DuetEnvConfig]):
+class DuetEnv(vf.Env[DuetEnvConfig]):
     async def setup(self, agents):
         # "b" plays a fixed, untrainable participant.
         agents.b.trainable = False

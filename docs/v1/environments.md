@@ -1,6 +1,6 @@
 # Multi-agent environments
 
-One eval rollout doesn't have to be one agent run. `Environment` is abstract, and
+One eval rollout doesn't have to be one agent run. `Env` is abstract, and
 every run gets a concrete subclass: plain tasksets resolve to the bundled
 `SingleAgentEnv` (one `agent` playing the taskset), and a package can export
 its own (via `__all__`, alongside its [`Taskset`](tasksets.md) — the same plugin
@@ -26,7 +26,7 @@ class VerdictTask(vf.Task):
         return cls(vf.TaskData(idx=task.data.idx, prompt=prompt))
 
 
-class DebateEnv(vf.Environment[DebateConfig]):
+class DebateEnv(vf.Env[DebateConfig]):
     async def setup(self, agents: vf.Agents) -> None:
         """Per-agent standing the env hardcodes: the judge grades the debate,
         so its tokens are never training data."""
@@ -82,7 +82,7 @@ The same pairing as TOML — `env.id` plus one `[env.<agent>]` block per agent �
 checked in as `configs/agentic_judge.toml` (`uv run eval @ configs/agentic_judge.toml`).
 
 `--env.id` resolves like every plugin id — a bundled env (below), a local package
-exporting an `Environment` subclass via `__all__`, or a Hub `org/name[@version]` —
+exporting an `Env` subclass via `__all__`, or a Hub `org/name[@version]` —
 and its `EnvConfig` surface typed on the CLI (`--env.<agent>.*`, `-h` renders
 them). Empty (the default) keeps the taskset's own story: the env its package
 ships (a *recipe* env like `code_golf_v1`, where the interaction is intrinsic to

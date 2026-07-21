@@ -1,5 +1,3 @@
-"""Public v1 API."""
-
 import logging as _logging
 
 from pydantic_config import BaseConfig
@@ -23,7 +21,7 @@ from verifiers.v1.configs.env import (
 )
 from verifiers.v1.env import (
     EnvConfig,
-    Environment,
+    Env,
     default_agent_harness,
 )
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
@@ -245,7 +243,7 @@ __all__ = [
     "SubprocessConfig",
     "DockerConfig",
     "PrimeConfig",
-    "Environment",
+    "Env",
     "SingleAgentEnv",
     "EnvConfig",
     "EnvServerConfig",
