@@ -369,6 +369,66 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         ] or None
         return prompt, tools
 
+    def textify_body(self, body: dict, render) -> dict:
+        raw = body.get("input")
+        if not isinstance(raw, list):
+            return body
+
+        def render_image(part: dict) -> str | None:
+            url = part.get("image_url")
+            return render(url) if isinstance(url, str) else None
+
+        def textify_parts(content):
+            if not isinstance(content, list):
+                return content
+            parts = []
+            for part in content:
+                text = (
+                    render_image(part)
+                    if isinstance(part, dict) and part.get("type") == "input_image"
+                    else None
+                )
+                parts.append({"type": "input_text", "text": text} if text else part)
+            return parts
+
+        screenshots: dict[str, str] = {}
+        for item in raw:
+            if not isinstance(item, dict) or item.get("type") != "computer_call_output":
+                continue
+            output = item.get("output")
+            text = (
+                render_image(output)
+                if isinstance(output, dict)
+                and output.get("type") == "computer_screenshot"
+                else None
+            )
+            if text and (call_id := item.get("call_id")):
+                screenshots[call_id] = text
+
+        items = []
+        for item in raw:
+            if isinstance(item, dict):
+                if (
+                    item.get("type") == "computer_call"
+                    and item.get("call_id") in screenshots
+                ):
+                    # The screenshot becomes an ordinary user observation; remove the paired
+                    # computer call too, rather than leaving a tool call with no valid output.
+                    continue
+                if item.get("type") == "computer_call_output" and (
+                    text := screenshots.get(item.get("call_id", ""))
+                ):
+                    item = {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    }
+                elif "content" in item:
+                    item = {**item, "content": textify_parts(item.get("content"))}
+                elif item.get("type") == "function_call_output":
+                    item = {**item, "output": textify_parts(item.get("output"))}
+            items.append(item)
+        return {**body, "input": items}
+
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
 

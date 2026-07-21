@@ -299,6 +299,42 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         ] or None
         return parse_messages(body), tools
 
+    def textify_body(self, body: dict, render) -> dict:
+        def blocks(content):
+            if not isinstance(content, list):
+                return content
+            out = []
+            for part in content:
+                if not isinstance(part, dict):
+                    out.append(part)
+                    continue
+                text = None
+                if part.get("type") == "image":
+                    source = part.get("source") or {}
+                    if source.get("type") == "url":
+                        text = render(source.get("url", ""))
+                    elif source.get("type") == "base64":
+                        url = (
+                            f"data:{source.get('media_type', '')};base64,"
+                            f"{source.get('data', '')}"
+                        )
+                        text = render(url)
+                elif part.get("type") == "tool_result":
+                    part = {**part, "content": blocks(part.get("content"))}
+                out.append({"type": "text", "text": text} if text else part)
+            return out
+
+        transformed = {
+            **body,
+            "messages": [
+                {**raw, "content": blocks(raw.get("content"))}
+                for raw in body.get("messages", [])
+            ],
+        }
+        if "system" in body:
+            transformed["system"] = blocks(body["system"])
+        return transformed
+
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
 

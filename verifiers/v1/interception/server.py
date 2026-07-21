@@ -27,9 +27,9 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Literal, TypeVar
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
@@ -55,6 +55,7 @@ from verifiers.v1.interception.tunnel import (
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import Error, ModelCall, TimeSpan
 from verifiers.v1.types import FinishReason, Messages, Response, Tool, Usage
+from verifiers.v1.utils.textify import textify_messages
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,8 @@ _STREAM_QUEUE_MAXSIZE = 16
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
 _HASH_INLINE_MAX = 1024**2  # 1 MiB
+
+T = TypeVar("T")
 
 
 def _body_digest(raw: bytes) -> bytes:
@@ -219,12 +222,10 @@ class InterceptionServer(Interception):
                 self.tunnel.expose(self.port)
             )
 
-    def _fail(
+    def _error_response(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (a `@stop` or user simulator raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error."""
-        session.error = error
+        """Report an already-attributed rollout failure to the harness."""
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
@@ -232,6 +233,52 @@ class InterceptionServer(Interception):
             dialect.error_body(str(error)),
             status=getattr(error, "status_code", 502),
         )
+
+    def _fail(
+        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+    ) -> web.Response:
+        """Stash a model-turn-adjacent failure for the rollout, then report it."""
+        session.error = error
+        return self._error_response(session, dialect, error)
+
+    async def _textify(
+        self,
+        session: RolloutSession,
+        value: T,
+        transform: Callable[..., T],
+        *args,
+    ) -> T:
+        if not session.textify.enabled:
+            return value
+        try:
+            return await asyncio.to_thread(transform, value, *args)
+        except Exception as e:
+            raise TaskError(f"textify failed: {type(e).__name__}: {e}") from e
+
+    async def _opening_messages(self, session: RolloutSession, turn: int) -> Messages:
+        """Get the simulator opening once; cache it before fallible textification."""
+        async with session._opening_lock:
+            if session.opening is None:
+                respond = session.user
+                assert respond is not None
+                session.opening = await respond("", turn)
+            if not session._opening_textified:
+                try:
+                    session.opening = await self._textify(
+                        session,
+                        session.opening,
+                        textify_messages,
+                        session.textify,
+                        session.render_image,
+                    )
+                except TaskError as e:
+                    # Store while holding the lock. The caller only writes the HTTP response,
+                    # so it cannot poison a later successful attempt after that attempt clears it.
+                    session.error = e
+                    raise
+                session.error = None
+                session._opening_textified = True
+            return session.opening
 
     def record_call(
         self,
@@ -284,6 +331,45 @@ class InterceptionServer(Interception):
             )
         )
 
+    def _replay_result(
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        result: dict | RolloutError,
+    ) -> web.Response:
+        """Replay a committed response or its post-commit failure."""
+        if isinstance(result, RolloutError):
+            session.error = result
+            return self._error_response(session, dialect, result)
+        session.error = None
+        return _completion_response(result)
+
+    @staticmethod
+    def _remember_result(
+        session: RolloutSession,
+        req_hash: bytes,
+        result: dict | RolloutError,
+        fut: "asyncio.Future[dict | RolloutError | None] | None" = None,
+    ) -> None:
+        """Cache one completed request result and release any coalesced retry."""
+        session.last_request = req_hash
+        session.last_result = result
+        if fut is not None and not fut.done():
+            fut.set_result(result)
+
+    def _fail_after_commit(
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        req_hash: bytes,
+        error: RolloutError,
+        fut: "asyncio.Future[dict | RolloutError | None]",
+    ) -> web.Response:
+        """Cache a committed turn's later failure and report it consistently."""
+        session.error = error
+        self._remember_result(session, req_hash, error, fut)
+        return self._error_response(session, dialect, error)
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -307,15 +393,17 @@ class InterceptionServer(Interception):
         #   1. the first attempt already finished -> replay the recorded response;
         #   2. the first attempt is still computing (a slow turn) -> await it and return its
         #      result, so a slow turn is safe without an inflated client timeout.
-        # A growing conversation never repeats a body, so these only ever match a real retry; a
-        # failed attempt caches nothing and re-runs normally.
-        if session.last_request == req_hash and session.last_response is not None:
+        # A growing conversation never repeats a body, so these only ever match a real retry.
+        # Pre-commit failures cache nothing; post-commit failures replay the same error.
+        if session.last_request == req_hash and session.last_result is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return _completion_response(session.last_response)
+            return self._replay_result(session, dialect, session.last_result)
 
-        async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
+        async def coalesced(
+            inflight: "asyncio.Future[dict | RolloutError | None]",
+        ) -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
-            # response (it errored/refused), so let the SDK retry afresh.
+            # result (it errored/refused before commit), so let the SDK retry afresh.
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
@@ -324,10 +412,16 @@ class InterceptionServer(Interception):
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
-            return _completion_response(completion)
+            return self._replay_result(session, dialect, completion)
 
         if (inflight := session.inflight.get(req_hash)) is not None:
             return await coalesced(inflight)
+        try:
+            body = await self._textify(
+                session, body, dialect.textify_body, session.render_image
+            )
+        except TaskError as e:
+            return self._fail(session, dialect, e)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -348,10 +442,12 @@ class InterceptionServer(Interception):
             and session.trace.task.data.prompt is None
             and all(m.role != "assistant" for m in prompt)
         ):
-            if session.opening is None:
-                session.opening = await session.user("", len(prompt))
-            body = dialect.extend(body, None, session.opening)
-            prompt = [*prompt, *session.opening]
+            try:
+                opening = await self._opening_messages(session, len(prompt))
+            except TaskError as e:
+                return self._error_response(session, dialect, e)
+            body = dialect.extend(body, None, opening)
+            prompt = [*prompt, *opening]
             # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
@@ -363,7 +459,9 @@ class InterceptionServer(Interception):
         # await between them, so two concurrent identical requests can never both become owner.
         if (inflight := session.inflight.get(req_hash)) is not None:
             return await coalesced(inflight)
-        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
+        fut: asyncio.Future[dict | RolloutError | None] = (
+            asyncio.get_running_loop().create_future()
+        )
         session.inflight[req_hash] = fut
 
         def serve(response: Response) -> web.Response:
@@ -371,10 +469,7 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
-            session.last_response = response.raw
-            if not fut.done():
-                fut.set_result(response.raw)
+            self._remember_result(session, req_hash, response.raw, fut)
             return _completion_response(response.raw)
 
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -504,13 +599,25 @@ class InterceptionServer(Interception):
                         response.message.content or "", len(prompt)
                     )
                 except RolloutError as e:
-                    return self._fail(session, dialect, e)
+                    return self._fail_after_commit(session, dialect, req_hash, e, fut)
                 except Exception as e:
-                    return self._fail(
+                    return self._fail_after_commit(
                         session,
                         dialect,
+                        req_hash,
                         UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                        fut,
                     )
+                try:
+                    user_messages = await self._textify(
+                        session,
+                        user_messages,
+                        textify_messages,
+                        session.textify,
+                        session.render_image,
+                    )
+                except TaskError as e:
+                    return self._fail_after_commit(session, dialect, req_hash, e, fut)
                 # Inject the model turn + the simulator's user turn(s): into the wire request for
                 # the next model call (`dialect.extend`, which keeps the model turn verbatim so
                 # reasoning survives) and into the typed prompt for the trace. The simulator ends
@@ -715,8 +822,12 @@ class InterceptionServer(Interception):
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
+            body = await request.json()
+            body = await self._textify(
+                session, body, dialect.textify_body, session.render_image
+            )
             result = await session.ctx.client.relay_aux(
-                dialect, route, await request.json(), headers=request.headers
+                dialect, route, body, headers=request.headers
             )
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.

@@ -14,6 +14,7 @@ EvalConfig                       (the run + the env)
 ├─ timeout: TimeoutConfig
 ├─ retries: RetryConfig
 │  └─ rollout: RolloutRetryConfig
+├─ textify: TextifyConfig
 ├─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
 ├─ multiplex
 └─ pool: PoolConfig              (static | elastic) — env-server only
@@ -47,7 +48,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 
 Validator: `--rich` + `--server` together is rejected (the dashboard is in-process only).
 
-Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`timeout`](#timeout-config), [`retries`](#retry-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, [`multiplex`](#envconfig--the-environment), the legacy `id` / `args` / `extra_env_kwargs`.
+Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`timeout`](#timeout-config), [`retries`](#retry-config), [`textify`](#textify-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, [`multiplex`](#envconfig--the-environment), the legacy `id` / `args` / `extra_env_kwargs`.
 Inherited from `EnvServerConfig`: [`pool`](#pool-config).
 
 ---
@@ -104,6 +105,7 @@ behavior, tools, user simulator, and scoring; only its `TaskData` is stored on t
 | `harness` | `HarnessConfig` | `HarnessConfig(id="bash")` | Resolved to its concrete subclass by `--harness.id` (or the taskset's bundled harness). See [Harness config](#harness-config). |
 | `timeout` | `TimeoutConfig` | `TimeoutConfig()` | See [Timeout config](#timeout-config). |
 | `retries` | `RetryConfig` | `RetryConfig()` | See [Retry config](#retry-config). |
+| `textify` | `TextifyConfig` | `TextifyConfig()` | Image rendering; see [Textify config](#textify-config). |
 | `max_turns` | `int \| None` | `None` | Max model turns per rollout (None = no limit). Framework-enforced between turns. |
 | `max_input_tokens` | `int \| None` | `None` | Max input (prompt) tokens per rollout. Caps `trace.num_input_tokens`. |
 | `max_output_tokens` | `int \| None` | `None` | Max output (completion) tokens per rollout. Caps `trace.num_output_tokens`. |
@@ -138,6 +140,29 @@ Set `id` (leave `taskset` unset) to run a classic `verifiers.load_environment` e
 | `extra_env_kwargs` | `dict` | `{}` | Post-load kwargs applied via `env.set_kwargs(**...)` (e.g. `max_total_completion_tokens`, `max_seq_len`, `timeout_seconds`). |
 
 `EnvConfig.is_legacy` → `id is not None and not taskset.id`.
+
+## Textify config
+
+Renders base64 images as text in native v1; disabled by default.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | `bool` | `False` | Enable rendering. |
+| `mode` | `"ascii" \| "braille"` | `"ascii"` | Output format. |
+| `width` | `int` | `160` | Output columns. |
+| `height` | `int \| None` | `None` | Output rows; derived when unset. |
+| `char_aspect` | `float` | `0.5` | Character aspect correction. |
+| `gamma` | `float` | `1.0` | Luminance gamma. |
+| `invert` | `bool \| None` | `None` | Inversion; `None` selects automatically. |
+| `ramp` | `str` | `" .:-=+*#%@"` | ASCII character ramp. |
+| `threshold` | `float \| "otsu"` | `0.5` | Braille/ASCII threshold. |
+| `max_chars` | `int \| None` | `40000` | Per-image character limit. |
+
+```toml
+[textify]
+enabled = true
+width = 160
+```
 
 ### EnvServerConfig — the pool
 

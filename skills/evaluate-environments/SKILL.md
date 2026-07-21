@@ -67,6 +67,18 @@ disabled_tools = ["shell_tool"]
 
 The names of these tools are set by the respective harness. Research the relevant first party documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
 
+## Rendering images as text
+
+For native v1 vision tasks, Textify renders base64 images as ASCII (default) or braille:
+
+```bash
+prime eval run my-vision-v1 -m my-text-model \
+  --textify.enabled true --textify.width 160
+```
+
+Use `--textify.mode braille` to change modes. Keep it disabled for vision baselines; see
+[`TextifyConfig`](references/REFERENCE.md#textify-config) for other options.
+
 ## Typed taskset overrides
 
 Taskset settings:

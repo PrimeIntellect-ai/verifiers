@@ -30,6 +30,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.textify import TextifyConfig
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
@@ -112,6 +113,10 @@ class EnvConfig(BaseConfig):
     default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
     with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
     such servers)."""
+    textify: TextifyConfig = TextifyConfig()
+    """Render wire images to ascii/braille text (`--textify.enabled true`), applied by
+    the interception server to every model request — any harness, any image source
+    (prompt, tool results, user sim). Disabled by default; ascii is the default mode."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
@@ -161,6 +166,12 @@ class EnvConfig(BaseConfig):
             data, "harness", harness_config_type, default_harness_id(taskset_id or "")
         )
         return data
+
+    @model_validator(mode="after")
+    def _check_textify(self) -> "EnvConfig":
+        if self.is_legacy and self.textify.enabled:
+            raise ValueError("textify is supported by native v1 tasksets only")
+        return self
 
 
 class EnvServerConfig(EnvConfig):
@@ -356,6 +367,7 @@ class Environment:
                 finalize_timeout=finalize_timeout,
                 scoring_timeout=scoring_timeout,
                 limits=self.limits,
+                textify=self.config.textify,
                 shared_tools=self._shared_tools,
                 interception=self._interception,
             )

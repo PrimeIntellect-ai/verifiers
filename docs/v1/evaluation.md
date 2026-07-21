@@ -54,3 +54,24 @@ disabled_tools = ["shell_tool"]
 ```
 
 The names of these tools are set by the respective harness. Consult the relevant documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
+
+
+## Rendering images as text
+
+Textify can replace every base64 image sent to the model — task prompts, tool results, and
+user-simulator turns — with deterministic ASCII or braille at the interception server. It is
+disabled by default; ASCII is the default mode when enabled:
+
+```toml
+[textify]
+enabled = true                  # enable rendering
+mode = "ascii"                  # output format
+width = 160                     # output columns
+height = 80                     # output rows
+char_aspect = 0.5               # aspect correction
+gamma = 1.0                     # luminance gamma
+invert = true                   # invert luminance
+ramp = " .:-=+*#%@"             # ASCII glyphs
+threshold = "otsu"              # adaptive threshold
+max_chars = 40000               # output limit
+```

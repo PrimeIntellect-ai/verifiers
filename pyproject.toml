@@ -30,6 +30,7 @@ dependencies = [
     "anthropic>=0.78.0",
     "datasets>=3.3.0,<6.0.0",
     "numpy>=2.1.0",
+    "pillow",
     "math-verify>=0.8.0",
     "mcp>=1.24.0,<2",
     "openai>=2.9.0",

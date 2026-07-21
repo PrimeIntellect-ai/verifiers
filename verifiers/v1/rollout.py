@@ -32,6 +32,7 @@ from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
+from verifiers.v1.utils.textify import TextifyConfig
 from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class Rollout:
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
+        textify: TextifyConfig | None = None,
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
     ) -> None:
@@ -71,6 +73,7 @@ class Rollout:
         self.finalize_timeout = finalize_timeout
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
+        self.textify = textify or TextifyConfig()
         self.shared_tools = shared_tools or {}
         self.interception = interception
         self.phase = Phase.PENDING
@@ -134,7 +137,13 @@ class Rollout:
             self.runtime_config.type,
         )
         try:
-            session = RolloutSession(ctx, trace, stops, self.limits)
+            session = RolloutSession(
+                ctx=ctx,
+                trace=trace,
+                stops=stops,
+                limits=self.limits,
+                textify=self.textify,
+            )
             await runtime.start()
             now = time.time()
             trace.timing.boot.end = now
