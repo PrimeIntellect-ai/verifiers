@@ -419,7 +419,7 @@ class Env(ABC, Generic[ConfigT]):
                     f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
                 )
             episode.errors.append(_as_error(e))
-            # The completed subset is the crash-safe episode.
+            # The completed subset is the crash-safe episode; ok stays False.
             return episode
         try:
             async with asyncio.timeout(self.config.timeout.finalize):
@@ -433,6 +433,10 @@ class Env(ABC, Generic[ConfigT]):
                     f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
                 )
             episode.errors.append(_as_error(e))
+            return episode
+        # Both hooks and every trace concluded — stamp the attempt's verdict
+        # (retry history merges into `errors` later without touching it).
+        episode.ok = all(t.ok for t in episode.traces)
         return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:

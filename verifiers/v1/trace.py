@@ -378,10 +378,16 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """Usage from judges and other calls outside the agent's message graph."""
 
     is_completed: bool = False
+    ok: bool = False
+    """THE success sentinel, stamped by the engine when the rollout ran to
+    completion without its final attempt failing. Distinct from `errors`
+    emptiness: a rollout that recovered on retry is `ok` and still keeps its
+    earlier attempts' errors."""
     stop_condition: str | None = None
     errors: list[Error] = Field(default_factory=list)
-    """Every error captured across attempts, oldest first (more than one only when the
-    rollout was retried). `error` exposes the most recent."""
+    """Every error captured across attempts, oldest first (more than one only when
+    the rollout was retried). `error` exposes the most recent; success is `ok`,
+    never errors-emptiness."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
@@ -398,7 +404,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def has_error(self) -> bool:
-        return bool(self.errors)
+        return not self.ok
 
     @property
     def agent_name(self) -> str | None:
@@ -587,6 +593,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 else traceback.format_exc(),
             )
         )
+        self.ok = False
         self.stop("error")
 
     def to_record(self) -> dict[str, Any]:

@@ -252,7 +252,9 @@ class Agent:
                 trace.error.type if trace.error else "?",
             )
             await asyncio.sleep(delay)
-        if history and trace.errors:  # the final attempt failed too
+        if history:
+            # The full history rides the final trace either way; success is the
+            # `ok` stamp, never errors-emptiness.
             trace.errors = history + trace.errors
         return trace
 

@@ -141,7 +141,9 @@ async def run_episode_with_retry(
             cause.type if cause else "?",
         )
         await asyncio.sleep(delay)
-    if history and not final.ok:  # final attempt failed too → prepend the history
-        # In place: the envelope, the stamp, and every trace share this one list.
+    if history:
+        # The full history rides the final episode either way; success is the
+        # `ok` stamp, never errors-emptiness. In place: the envelope, the stamp,
+        # and every consumer share this one list.
         final.errors[:0] = history
     return final

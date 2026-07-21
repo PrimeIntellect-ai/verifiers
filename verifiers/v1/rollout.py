@@ -364,6 +364,7 @@ class RolloutRun:
             self.fail(e)
         finally:
             trace.is_completed = True
+            trace.ok = not self._failed
             now = time.time()
             for span in (
                 trace.timing.boot,

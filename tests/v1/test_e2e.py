@@ -95,7 +95,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
         output_dir=tmp_path,
         max_turns=2,
     )
-    assert trace.errors == []
+    assert trace.ok
     assert trace.num_turns == 1
     assert trace.reward == 1.0
     # The seat's resolved identity rides the trace (policy metadata for trainers).
@@ -123,7 +123,7 @@ async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
         max_turns=6,
         taskset_overrides={"task": {"user": user_runtime}},
     )
-    assert trace.errors == []
+    assert trace.ok
     assert trace.num_turns >= 2  # genuinely multi-turn
     assert trace.reward == 1.0
 
@@ -145,7 +145,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
         max_turns=6,
         taskset_overrides={"task": {"tools": tool_runtime}},
     )
-    assert trace.errors == []
+    assert trace.ok
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
     # The interception server captured the advertised tools onto the trace (for tool-use SFT):
@@ -172,7 +172,7 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
         max_turns=8,
         taskset_overrides={"task": {"tools": tool_runtime}},
     )
-    assert trace.errors == []
+    assert trace.ok
     assert trace.num_turns >= 2  # at least two tool calls accumulated
     assert trace.reward == 1.0
 
@@ -197,7 +197,7 @@ async def test_shared_tool_isolation(
     )
     assert len(traces) == 2
     for trace in traces:
-        assert trace.errors == []
+        assert trace.ok
         assert trace.num_turns >= 2  # tool call + answer
         assert trace.reward == 1.0
 
@@ -214,7 +214,7 @@ async def test_tool_response_image(run_v1, tmp_path):
         output_dir=tmp_path,
         max_turns=4,
     )
-    assert trace.errors == []
+    assert trace.ok
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
 
@@ -240,7 +240,7 @@ async def test_rubric_judge(run_v1, tmp_path):
         taskset_overrides={"task": {"judges": [{"id": "rubric", "path": str(rubric)}]}},
         max_turns=2,
     )
-    assert trace.errors == []
+    assert trace.ok
     assert trace.rewards["rubric"] > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0
     assert trace.info["judge"]  # the call was recorded onto the trace
@@ -257,7 +257,7 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
         output_dir=tmp_path,
         max_turns=10,
     )
-    assert trace.errors == []
+    assert trace.ok
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0
 
@@ -280,7 +280,7 @@ async def test_multi_agent_env(run_v1, tmp_path):
     (b,) = [t for t in traces if t.agent_name == "b"]
     assert b.trainable is False
     for trace in traces:
-        assert trace.errors == []
+        assert trace.ok
         assert trace.reward == 1.0  # each seat's own task reward
         assert trace.metrics["duet"] == 1.0  # the sibling-dependent signal
     # On disk: one episode line carrying both traces, each self-stamped on its
@@ -306,7 +306,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one env-rollout, two attempts
-    assert all(t.agent_name == "agent" and t.errors == [] for t in traces)
+    assert all(t.agent_name == "agent" and t.ok for t in traces)
     assert any(t.metrics["best"] == 1.0 for t in traces)
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes
 
@@ -338,7 +338,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     assert sorted(t.agent_name for t in traces) == ["judge", "solver"]
     (solver,) = [t for t in traces if t.agent_name == "solver"]
     (judge,) = [t for t in traces if t.agent_name == "judge"]
-    assert solver.errors == [] and judge.errors == []
+    assert solver.ok and judge.ok
     assert judge.trainable is False
     assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
     assert isinstance(judge.info.get("verdict"), dict)  # scraped off the box
@@ -358,7 +358,7 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
     assert len(traces) == 2
     assert sorted(t.agent_name for t in traces) == ["a", "b"]
     for trace in traces:
-        assert trace.errors == []
+        assert trace.ok
         assert trace.metrics["duet"] == 1.0
 
 
@@ -386,7 +386,7 @@ async def test_replay_round_trip(run_v1, tmp_path):
         output_dir=run_dir,
         max_turns=2,
     )
-    assert source.errors == []
+    assert source.ok
     assert "lcs" in source.rewards
 
     async def replay(source_dir: Path, out: Path):
@@ -401,7 +401,7 @@ async def test_replay_round_trip(run_v1, tmp_path):
     first = await replay(run_dir, tmp_path / "replay1")
     second = await replay(tmp_path / "replay1", tmp_path / "replay2")
     for replayed in (first, second):
-        assert replayed.errors == []
+        assert replayed.ok
         # The typed rebuild ran (not the base-Task fallback): the trace-only reward re-ran
         # and recomputed the same value.
         assert replayed.rewards.keys() == source.rewards.keys()

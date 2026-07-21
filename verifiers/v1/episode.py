@@ -31,6 +31,11 @@ class Episode(StrictBaseModel, Generic[DataT, StateT]):
     env: str = ""
     """The env that ran the episode (`EnvConfig.env_id`, e.g.
     `agentic-judge+gsm8k-v1`)."""
+    ok: bool = False
+    """THE success sentinel — the resume unit's keep-verdict, stamped by the
+    engine when the final attempt's hooks and every trace concluded clean.
+    Distinct from `errors` emptiness: a retried-and-recovered episode is `ok`
+    and still keeps its earlier attempts' errors."""
     errors: list[Error] = Field(default_factory=list)
     traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
 
@@ -38,16 +43,10 @@ class Episode(StrictBaseModel, Generic[DataT, StateT]):
     def error(self) -> Error | None:
         return self.errors[-1] if self.errors else None
 
-    @property
-    def ok(self) -> bool:
-        """Whether the whole episode is good — no episode-level error and no trace
-        errors. The resume unit: anything less is redone."""
-        return not self.errors and not any(t.errors for t in self.traces)
-
     @classmethod
     def of(cls, trace: Trace, env: str = "") -> "Episode":
         """The single-agent record: one trace as its own episode."""
-        return cls(env=env, traces=[trace])
+        return cls(env=env, traces=[trace], ok=trace.ok)
 
 
 WireEpisode = Episode[WireTaskData, State]

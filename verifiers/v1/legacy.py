@@ -274,6 +274,9 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         info=dict(out.get("info") or {}),
         is_completed=bool(out.get("is_completed", True)),
+        # Bridged rollouts are complete by construction; the sentinel mirrors
+        # whether the v0 run captured an error.
+        ok=error is None,
         stop_condition=_v1_stop_condition(out),
         errors=[error] if error else [],
         timing=_timing(out.get("timing")),
