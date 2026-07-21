@@ -73,7 +73,7 @@ class CodeGolfEnvConfig(vf.EnvConfig):
 
 
 class CodeGolfEnv(vf.Environment[CodeGolfEnvConfig]):
-    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with asyncio.TaskGroup() as tg:
             for _ in range(self.config.attempts):
                 tg.create_task(agents.golfer.run(task))

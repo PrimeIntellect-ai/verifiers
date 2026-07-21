@@ -117,7 +117,7 @@ trace.
 | `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Environment` subclass, else `SingleAgentEnv`). |
 | `taskset` | `TasksetConfig \| None` | `None` | The seed taskset every rollout starts from; resolved to its concrete subclass by `--env.taskset.id` (positional shorthand: `eval <taskset-id>`). See [Taskset config](#taskset-config). `None` only for a taskset-less env; every bundled env requires one. |
 | *(agents)* | `AgentConfig` | env-declared | Each declared agent: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the agentic-judge env, the env's own names elsewhere. See [Agent config](#agent-config). |
-| `timeout` | `EnvTimeoutConfig` | `EnvTimeoutConfig()` | The env's own hook bounds: `--env.timeout.episode` (the whole `rollout()` hook) and `--env.timeout.score`. Per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`). |
+| `timeout` | `EnvTimeoutConfig` | `EnvTimeoutConfig()` | The env's own hook bounds: `--env.timeout.episode` (the whole `run()` hook) and `--env.timeout.finalize` (`finalize()` plus the decorated signals). Per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`). |
 | `retries` | `RolloutRetryConfig` | `RolloutRetryConfig()` | Whole-EPISODE retries, the coarse fallback for faults no agent owns. See [Retry config](#retry-config). Set via `--env.retries.*`. |
 | `interception` | `InterceptionConfig` | `ElasticInterceptionPoolConfig()` | The interception shape: `elastic` (default — servers grown on demand, `multiplex` rollouts each), `server` (one server, tunnel choice incl. bring-your-own endpoint), or `static` (a fixed list). |
 
@@ -141,7 +141,7 @@ author's per-agent default; partial overrides deep-merge onto it (an `id` switch
 | `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-agent caps (None = no limit); map onto [`RolloutLimits`](#rollout-limits), each checked between turns (soft by one turn). |
 
 Trainability is not a config field: it is env truth, set in place by the env's
-`brief(agents)` hook (default: every agent trains) and stamped on each trace. An env
+`setup(agents)` hook (default: every agent trains) and stamped on each trace. An env
 that wants the flip run-configurable exposes its own switch (e.g. proposer-solver's
 `--env.train_solver false`).
 

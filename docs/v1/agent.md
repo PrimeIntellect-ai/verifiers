@@ -123,7 +123,7 @@ Each run gets its own fresh box, and the entered agent's interception server
 multiplexes the N concurrent runs. The Agent deliberately has no group verb: each
 run scores its rollout on its own, and comparing siblings — relative success,
 preference, advantages — belongs to whoever gathered the traces (in training,
-prime-rl samples the group; in an `Environment`, `score()` compares the finished
+prime-rl samples the group; in an `Environment`, `finalize()` compares the finished
 traces).
 
 Reward/metric handlers are `async def` — a sync handler is refused at decoration.

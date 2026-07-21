@@ -323,7 +323,7 @@ class AgentInfo(StrictBaseModel):
     First-class so training can filter and baseline per agent."""
     trainable: bool = True
     """Whether this trace's tokens are training data for the run's policy. An env's
-    `brief()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
+    `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
 
 
 class EpisodeInfo(StrictBaseModel):

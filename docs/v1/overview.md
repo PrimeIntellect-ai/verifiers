@@ -18,7 +18,7 @@ A harness is the program the model is run in, e.g. Claude Code, Codex or mini-sw
 
 ## Agent
 
-An `Agent` is a reusable (harness × model × runtime policy) value with one executable arrow — `agent.run(task) -> Trace` — the building block environments hand to `rollout()`, and a scripting surface of its own (see [Agent](agent.md)).
+An `Agent` is a reusable (harness × model × runtime policy) value with one executable arrow — `agent.run(task) -> Trace` — the building block environments hand to `run()`, and a scripting surface of its own (see [Agent](agent.md)).
 
 ## Environment
 

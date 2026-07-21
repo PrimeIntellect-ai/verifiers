@@ -256,8 +256,8 @@ every run gets a concrete subclass: plain tasksets resolve to the bundled
 `SingleAgentEnv` (one `agent` playing the taskset), and a package can export
 its own (via `__all__`, alongside its [`Taskset`](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/v1/tasksets.md) — the same plugin
 idiom as a bundled harness). An env declares its config as an `EnvConfig` subclass —
-each agent an `AgentConfig` field, plus its own knobs — writes `rollout()`, and
-optionally overrides `brief()` and `score()`:
+each agent an `AgentConfig` field, plus its own knobs — writes `run()`, and
+optionally overrides `setup()` and `finalize()`:
 
 ```python
 class DebateConfig(vf.EnvConfig):
@@ -278,12 +278,12 @@ class VerdictTask(vf.Task):
 
 
 class DebateEnv(vf.Environment[DebateConfig]):
-    def brief(self, agents: vf.Agents) -> None:
+    async def setup(self, agents: vf.Agents) -> None:
         """Per-agent standing the env hardcodes: the judge grades the debate,
         so its tokens are never training data."""
         agents.judge.trainable = False
 
-    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         """How the agents interact on one task: imperative Python over Agent
         values. A loop is rounds, a TaskGroup is fan-out, a Task classmethod is
         chaining. Returns nothing — every finished run joins the episode
@@ -291,10 +291,11 @@ class DebateEnv(vf.Environment[DebateConfig]):
         pro, con = await asyncio.gather(agents.pro.run(task), agents.con.run(task))
         await agents.judge.run(VerdictTask.from_traces(task, pro, con))
 
-    async def score(self, task: vf.Task, traces: list[vf.Trace]) -> None:
+    async def finalize(self, task: vf.Task, traces: list[vf.Trace]) -> None:
         """Sibling-dependent judgement over the finished traces (per-trace
         judgement already ran on each trace's own task); each trace's
-        `agent_name` stamp names its agent. Attach via record_reward/record_metric."""
+        `agent_name` stamp names its agent. Attach via record_reward/record_metric;
+        the env's own `@vf.reward`/`@vf.metric` methods run after this."""
         by_agent = {t.agent_name: t for t in traces}
         winner = (by_agent["judge"].last_reply or "").strip().lower()
         by_agent["pro"].record_reward("won", float(winner == "pro"))
@@ -303,7 +304,7 @@ class DebateEnv(vf.Environment[DebateConfig]):
 
 For the single-agent case none of this is machinery the user sees: `SingleAgentEnv`
 declares one `agent` (`--env.agent.harness.id codex`, `--env.agent.max_turns 20`),
-`rollout()` is `await agents.agent.run(task)`, and the episode carries exactly one
+`run()` is `await agents.agent.run(task)`, and the episode carries exactly one
 trace.
 
 The run's `[env]` block is the whole run — the env is the encompassing entity,
@@ -342,5 +343,5 @@ Bundled envs (`verifiers/v1/envs/`):
 
 | id | agents | what it does |
 | --- | --- | --- |
-| `best-of-n` | `agent` | `--env.n` independent attempts per rollout; `score()` marks the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. A single-agent env keeps the single-agent name, so `--env.agent.*` flags compose unchanged. |
+| `best-of-n` | `agent` | `--env.n` independent attempts per rollout; its metrics mark the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. A single-agent env keeps the single-agent name, so `--env.agent.*` flags compose unchanged. |
 | `agentic-judge` | `solver`, `judge` | agent-as-judge: the solver plays the task; a code-executing judge agent verifies the finished attempt with real execution, always in its own sandbox, never on the host. The judge's task mirrors the solver task's world (same image, a fresh box in its original state) with the graded transcript uploaded (`/tmp/transcript.md`/`.json`). The verdict channel is a file: the judge writes `{"score": 0-10, "reasoning": ...}` to `/tmp/verdict.json` in its box, scraped onto its trace while the box is alive and validated STRICTLY onto the solver's trace as the `judge` reward — a missing, malformed, or off-scale verdict fails the rollout instead of clamping. The judge must land in a container: pin `--env.judge.harness.runtime.type docker\|prime`, or construction refuses. A judgement that needs no execution belongs on the plugged tier (`env.taskset.task.judges`), not on an agent. |

@@ -9,8 +9,8 @@ empirically, always in its own sandbox, never on the host.
 The verdict channel is a file, not the chat: the judge writes
 `{"score": 0-10, "reasoning": ...}` to `/tmp/verdict.json` in its box (a file
 survives a chatty final reply), `JudgeTask.finalize` scrapes it off the live
-runtime onto the judge's trace, and `score()` validates it strictly onto the
-solver's trace — a missing, malformed, or off-scale verdict fails loudly instead
+runtime onto the judge's trace, and the env's `finalize()` validates it strictly
+onto the solver's trace — a missing, malformed, or off-scale verdict fails loudly instead
 of clamping to full marks.
 """
 
@@ -143,15 +143,15 @@ class AgenticJudgeEnv(vf.Environment[AgenticJudgeEnvConfig]):
                 "or prime."
             )
 
-    def brief(self, agents: vf.Agents) -> None:
+    async def setup(self, agents: vf.Agents) -> None:
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
-    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         solution = await agents.solver.run(task)
         await agents.judge.run(JudgeTask.from_trace(task, solution))
 
-    async def score(self, task: vf.Task, traces: list[vf.Trace]) -> None:
+    async def finalize(self, task: vf.Task, traces: list[vf.Trace]) -> None:
         """Record the scraped verdict on the SOLVER's trace. Strict on scale: an
         off-scale score raises (a judge answering `95` must not clamp to full
         marks), failing the env-rollout rather than scoring the solver wrong."""

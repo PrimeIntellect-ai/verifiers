@@ -134,13 +134,13 @@ class ProposerSolverEnvConfig(vf.EnvConfig):
 
 
 class ProposerSolverEnv(vf.Environment[ProposerSolverEnvConfig]):
-    def brief(self, agents: vf.Agents) -> None:
+    async def setup(self, agents: vf.Agents) -> None:
         # Both seats CAN train (same underlying policy); which one does this run
         # is this env's explicit choice to expose.
         agents.proposer.trainable = self.config.train_proposer
         agents.solver.trainable = self.config.train_solver
 
-    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         proposed = await agents.proposer.run(task)
         solve_task = SolveTask.from_trace(proposed)
         async with asyncio.TaskGroup() as tg:

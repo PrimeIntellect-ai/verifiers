@@ -23,5 +23,5 @@ class SingleAgentEnv(Environment[SingleAgentEnvConfig]):
     seat playing the seed taskset (`--env.agent.*`). Its one trace per episode
     carries no seat name, so the wire matches a plain eval's."""
 
-    async def rollout(self, task: Task, agents: Agents) -> None:
+    async def run(self, task: Task, agents: Agents) -> None:
         await agents.agent.run(task)

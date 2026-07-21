@@ -40,11 +40,11 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
 class EnvTimeoutConfig(BaseConfig):
-    """Wall-clock timeouts for the env's own `rollout()`/`score()` hooks, in seconds
+    """Wall-clock timeouts for the env's own `run()`/`finalize()` hooks, in seconds
     (None = no limit); per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`)."""
 
     episode: float | None = None
-    score: float | None = None
+    finalize: float | None = None
 
 
 def _mentions_agent_config(annotation) -> bool:
@@ -223,7 +223,7 @@ class Environment(ABC, Generic[ConfigT]):
     Abstract: every run gets a concrete subclass — `SingleAgentEnv` for every plain
     taskset. A multi-agent env declares each role as an `AgentConfig` field on an
     `EnvConfig` subclass (bound via `Environment[YourConfig]`) and writes
-    `rollout(task, agents)`; optional overrides: `brief`, `score`, `setup`/`teardown`
+    `run(task, agents)`; optional overrides: `setup`, `finalize`, `start`/`stop`
     — the base owns everything else. Task x agent fit is validated per run, on the
     task the agent actually receives — an env-minted task carries its own needs."""
 
@@ -306,26 +306,32 @@ class Environment(ABC, Generic[ConfigT]):
 
     # --- the multi-agent surface (override these) ------------------------------
 
-    def brief(self, agents: Agents) -> None:
-        """Brief this rollout's agents before `rollout()` sees them — standing the env
-        hardcodes, today `trainable` (`agents.judge.trainable = False`); once per episode."""
+    async def setup(self, agents: Agents) -> None:
+        """Before `run()` sees this episode's agents — standing the env hardcodes,
+        today `trainable` (`agents.judge.trainable = False`); once per episode."""
 
     @abstractmethod
-    async def rollout(self, task: Task, agents: Agents) -> None:
+    async def run(self, task: Task, agents: Agents) -> None:
         """One env-rollout: how the agents interact on `task`, returning nothing —
         every finished run joins the episode automatically, stamped with its seat's
         standing. An agent-run failure is data on its trace (this hook decides what
         it means); an exception raised here is the env-rollout itself failing."""
 
+    async def finalize(self, task: Task, traces: list[Trace]) -> None:
+        """Imperative sibling-dependent judgement over one env-rollout's finished
+        traces (per-trace judgement already ran); the flat list is the episode,
+        completion order — record onto traces via record_reward/record_metric.
+        The decorated `@vf.reward`/`@vf.metric` signals run after this,
+        unconditionally; override this only for what they can't express."""
+
     async def score(self, task: Task, traces: list[Trace]) -> None:
-        """Sibling-dependent judgement over one env-rollout's finished traces
-        (per-trace judgement already ran); the flat list is the episode, completion
-        order. The default runs the decorated `@vf.reward`/`@vf.metric` methods once
-        per target trace (`agent=` narrows); `await super().score(...)` keeps them."""
+        """Run the decorated `@vf.reward`/`@vf.metric` signals once per target trace
+        (`agent=` narrows the targets). Internal, like `Task.score`: it runs after
+        `finalize()` — users author `finalize()` and the decorators, not this."""
         metrics = discover_decorated(self, "metric")
         rewards = discover_decorated(self, "reward")
 
-        async def run(fns) -> list[tuple]:
+        async def run_signals(fns) -> list[tuple]:
             pairs = [
                 (fn, target)
                 for fn in fns
@@ -347,9 +353,9 @@ class Environment(ABC, Generic[ConfigT]):
             return list(zip(pairs, results))
 
         # Metrics record before rewards run, so a reward may read `trace.metrics`.
-        for (fn, target), result in await run(metrics):
+        for (fn, target), result in await run_signals(metrics):
             _record_result(target, fn.__name__, result)
-        for (fn, target), result in await run(rewards):
+        for (fn, target), result in await run_signals(rewards):
             _record_result(target, fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
 
     def complete(self, episode: EpisodeRecord) -> bool:
@@ -358,13 +364,13 @@ class Environment(ABC, Generic[ConfigT]):
         failed participant overrides this, else resume re-runs accepted rollouts."""
         return episode.ok
 
-    async def setup(self) -> None:
+    async def start(self) -> None:
         """Bring up env-owned shared resources — inside `serving()`, after the
         framework's resources are live and before any rollout. Default: no-op."""
 
-    async def teardown(self) -> None:
-        """Tear down what `setup()` built. Runs when `serving()` exits, even when
-        `setup()` failed partway — so it must tolerate partial state. Default: no-op."""
+    async def stop(self) -> None:
+        """Tear down what `start()` built. Runs when `serving()` exits, even when
+        `start()` failed partway — so it must tolerate partial state. Default: no-op."""
 
     # --- machinery (the base owns everything below) -----------------------------
 
@@ -388,7 +394,7 @@ class Environment(ABC, Generic[ConfigT]):
         on_trace: Callable[[Trace], None] | None,
     ) -> Agents:
         """One env-rollout's `Agents` — fresh value objects riding the live serving
-        resources (nothing shared across concurrent episodes), briefed before `rollout()`."""
+        resources (nothing shared across concurrent episodes); `setup()` sees them first."""
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
@@ -420,7 +426,6 @@ class Environment(ABC, Generic[ConfigT]):
             )
 
         agents = Agents(self.config, make)
-        self.brief(agents)
         return agents
 
     def _client_for(self, config: ClientConfig) -> Client:
@@ -438,42 +443,47 @@ class Environment(ABC, Generic[ConfigT]):
         on_trace: Callable[[Trace], None] | None = None,
         gate: asyncio.Semaphore | None = None,
     ) -> EpisodeRecord:
-        """One env-rollout of `task`, minted as the wire atom: `rollout()` over fresh
-        briefed agents, then `score()`; `gate` bounds the agent runs, so internal
-        fan-out counts against `--max-concurrent` too. Traces join as runs complete —
-        a hook raising mid-way yields the completed subset, its exception on `errors`."""
+        """One env-rollout of `task`, minted as the wire atom: `setup()` then `run()`
+        over fresh agents, then `finalize()` and the decorated signals; `gate` bounds
+        the agent runs, so internal fan-out counts against `--max-concurrent` too.
+        Traces join as runs complete — a hook raising mid-way yields the completed
+        subset, its exception on `errors`."""
         info = EpisodeInfo(env=self.config.env_id)
         completed: list[Trace] = []
         agents = self._episode_agents(ctx, info, gate, completed, on_trace)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
-                async with boundary(EnvError, f"{type(self).__name__}.rollout()"):
-                    await self.rollout(task, agents)
+                async with boundary(EnvError, f"{type(self).__name__}.setup()"):
+                    await self.setup(agents)
+                async with boundary(EnvError, f"{type(self).__name__}.run()"):
+                    await self.run(task, agents)
                     if not completed:
                         raise ValueError(
-                            f"{type(self).__name__}.rollout() ran no agent — every "
+                            f"{type(self).__name__}.run() ran no agent — every "
                             "episode must carry at least one run"
                         )
         except Exception as e:
             # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
             if isinstance(e, TimeoutError):
                 e = TimeoutError(
-                    f"{type(self).__name__}.rollout() exceeded its "
+                    f"{type(self).__name__}.run() exceeded its "
                     f"{self.config.timeout.episode:g}s deadline (--env.timeout.episode)"
                 )
             info.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode.
             return EpisodeRecord(episode=info, traces=list(completed))
         try:
-            async with asyncio.timeout(self.config.timeout.score):
-                async with boundary(EnvError, f"{type(self).__name__}.score()"):
+            async with asyncio.timeout(self.config.timeout.finalize):
+                async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
+                    await self.finalize(task, list(completed))
+                async with boundary(EnvError, f"{type(self).__name__} scoring"):
                     await self.score(task, list(completed))
         except Exception as e:
             # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
                 e = TimeoutError(
-                    f"{type(self).__name__}.score() exceeded its "
-                    f"{self.config.timeout.score:g}s deadline (--env.timeout.score)"
+                    f"{type(self).__name__}.finalize() exceeded its "
+                    f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
                 )
             info.errors.append(_as_error(e))
         return EpisodeRecord(episode=info, traces=list(completed))
@@ -523,12 +533,12 @@ class Environment(ABC, Generic[ConfigT]):
                 self._shared_tools = shared
                 self._interception = interception
                 try:
-                    await self.setup()
+                    await self.start()
                     yield
                 finally:
                     try:
-                        # teardown() sees what setup() saw; the framework unwinds after.
-                        await self.teardown()
+                        # stop() sees what start() saw; the framework unwinds after.
+                        await self.stop()
                     finally:
                         self._shared_tools = {}
                         self._interception = None

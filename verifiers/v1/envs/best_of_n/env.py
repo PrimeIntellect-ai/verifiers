@@ -24,7 +24,7 @@ class BestOfNEnvConfig(vf.EnvConfig):
 
 
 class BestOfNEnv(vf.Environment[BestOfNEnvConfig]):
-    async def rollout(self, task: vf.Task, agents: vf.Agents) -> None:
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         # TaskGroup: a raising attempt cancels and awaits its siblings, so no
         # straggler keeps burning tokens past the episode.
         async with asyncio.TaskGroup() as tg:

@@ -107,7 +107,7 @@ def _limits(config: EvalConfig) -> list[str]:
 
 def _timeouts(config: EvalConfig) -> list[str]:
     """Per-stage run timeouts for the overview (each seat's own), plus the env's
-    score() bound (unset → 'no <stage> timeout')."""
+    finalize() bound (unset → 'no <stage> timeout')."""
     rows = []
     for stage in ("setup", "rollout", "finalize", "scoring"):
         v = _seat_value(config, lambda spec, stage=stage: getattr(spec.timeout, stage))
@@ -117,8 +117,10 @@ def _timeouts(config: EvalConfig) -> list[str]:
             rows.append(f"{stage} {v:g}s")
         else:
             rows.append(f"no {stage} timeout")
-    score = config.env.timeout.score
-    rows.append(f"score {score:g}s" if score else "no score timeout")
+    finalize = config.env.timeout.finalize
+    rows.append(
+        f"env finalize {finalize:g}s" if finalize else "no env finalize timeout"
+    )
     return rows
 
 
