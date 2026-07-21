@@ -22,6 +22,12 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 # research-environments now.
 SKIP_EVAL: set[str] = set()
 
+# Per-run caps are seat fields; recipe envs name their own seats.
+SEATS: dict[str, tuple[str, ...]] = {
+    "code_golf_v1": ("golfer",),
+    "proposer_solver_v1": ("proposer", "solver"),
+}
+
 
 def v1_tasksets() -> list[str]:
     if not ENVIRONMENTS.is_dir():
@@ -51,10 +57,15 @@ def test_eval(taskset: str):
     else:
         pytest.skip("no model API key configured")
 
+    caps = [
+        flag
+        for seat in SEATS.get(taskset, ("agent",))
+        for flag in (f"--env.{seat}.max-turns", "4")
+    ]
     cmd = [
         "uv", "run", "--no-sync", "eval", taskset,
         *model,
-        "-n", "1", "-r", "1", "--env.max-turns", "4",
+        "-n", "1", "-r", "1", *caps,
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:
