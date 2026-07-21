@@ -28,8 +28,10 @@ import multiprocessing as mp
 import os
 import signal
 import threading
+import time
 import uuid
 from collections.abc import Callable
+from multiprocessing.connection import wait
 
 import msgpack
 import zmq
@@ -38,6 +40,7 @@ import zmq.asyncio
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
+from verifiers.utils.process_utils import kill_process_session
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +120,7 @@ class EnvServerPool:
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
-            target=serve_env,
+            target=_serve_pool_worker,
             kwargs=dict(
                 max_workers=1,
                 address=address,
@@ -241,24 +244,43 @@ class EnvServerPool:
             self._shutdown()
 
     def _shutdown(self) -> None:
-        for w in self.workers:
-            with contextlib.suppress(Exception):
-                w["pipe"].close()
-            with contextlib.suppress(Exception):
-                w["process"].terminate()
-        for w in self.workers:
-            with contextlib.suppress(Exception):
-                w["process"].join(timeout=10)
-            if w["process"].is_alive():
+        old_handlers = {
+            sig: signal.signal(sig, signal.SIG_IGN)
+            for sig in (signal.SIGINT, signal.SIGTERM)
+        }
+        try:
+            for w in self.workers:
                 with contextlib.suppress(Exception):
-                    w["process"].kill()
-            with contextlib.suppress(Exception):
-                w["dealer"].close()
-            with contextlib.suppress(OSError):
-                os.unlink(self._worker_path(w["index"]))
-        self.frontend.close()
-        self.ctx.term()
-        logger.info("EnvServerPool down")
+                    w["pipe"].close()
+                with contextlib.suppress(Exception):
+                    w["process"].terminate()
+
+            # Wait on sentinels rather than join/is_alive: an exited worker remains a zombie,
+            # reserving the PID that identifies its cleanup session until that session is reaped.
+            pending = {w["process"].sentinel for w in self.workers}
+            deadline = time.monotonic() + 10
+            while pending and (remaining := deadline - time.monotonic()) > 0:
+                pending.difference_update(wait(pending, timeout=remaining))
+
+            for w in self.workers:
+                with contextlib.suppress(Exception):
+                    kill_process_session(w["process"])
+                with contextlib.suppress(Exception):
+                    w["dealer"].close()
+                with contextlib.suppress(OSError):
+                    os.unlink(self._worker_path(w["index"]))
+            self.frontend.close()
+            self.ctx.term()
+            logger.info("EnvServerPool down")
+        finally:
+            for sig, handler in old_handlers.items():
+                signal.signal(sig, handler)
+
+
+def _serve_pool_worker(**kwargs) -> None:
+    """Run a pool worker as the leader of the session that owns its subprocesses."""
+    os.setsid()
+    serve_env(**kwargs)
 
 
 def env_config_data(config) -> dict:
