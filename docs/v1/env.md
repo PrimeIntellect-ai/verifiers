@@ -1,6 +1,6 @@
 # The Env
 
-An `Env` programs interactions between agents. In the simplest case, it is just
+An `Env` defines the control flow between agents. In the simplest case, it is just
 a `SingleAgentEnv` where a single agent solves a task from a taskset. In more
 advanced settings, it can define grader-solver (agentic judges) or
 proposer-solver episodes which chains multiple agents.
@@ -48,7 +48,9 @@ class DebateEnv(vf.Env[DebateConfig]):
 
 ## Episode
 
-An `Episode` holds all agents' traces from a single invocation of `Env.run`.
+An `Episode` holds all agents' traces from a single invocation of `Env.run`. A
+good mental model is: the `Trace` is an agent's local view of a rollout, while
+the `Episode` is the global view.
 
 ## Pluggability
 

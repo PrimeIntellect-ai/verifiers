@@ -41,6 +41,6 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — How to run standalone agents
-- [Env](env.md) — How to program interactions between agents
+- [Env](env.md) — How to build multi-agent environments
 
 For the documentation for legacy environments, go to [the v0 documentation](../v0/overview.md).

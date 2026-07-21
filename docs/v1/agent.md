@@ -2,7 +2,7 @@
 
 An `Agent` is a configured **harness** (the program that drives the model), a
 **model**, and a **runtime** (where the harness executes), built from an
-`AgentConfig` alone, with one executable arrow — `Agent.run(task: Task) -> Trace`:
+`AgentConfig` alone. An agent is given a `Task` and produces a `Trace`.
 
 ```python
 import verifiers.v1 as vf
