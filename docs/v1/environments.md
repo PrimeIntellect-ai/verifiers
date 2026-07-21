@@ -1,6 +1,6 @@
 # Multi-agent environments
 
-One eval rollout doesn't have to be one agent run. `Env` is abstract, and
+One episode doesn't have to be one agent run. `Env` is abstract, and
 every run gets a concrete subclass: plain tasksets resolve to the bundled
 `SingleAgentEnv` (one `agent` playing the taskset), and a package can export
 its own (via `__all__`, alongside its [`Taskset`](tasksets.md) — the same plugin

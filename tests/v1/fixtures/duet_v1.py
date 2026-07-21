@@ -3,7 +3,7 @@
 The multi-agent fixture for the v1 e2e suite (resolved by id `duet-v1`): an
 `Env` subclass exported alongside its taskset, with two roles ("a", a trainable
 seat on the run's model; "b", pinned untrainable), a `run()` that fans both out on
-the task, and a `finalize()` that records a sibling-dependent signal. One eval rollout
+the task, and a `finalize()` that records a sibling-dependent signal. One episode
 should land one record carrying two role-stamped traces.
 """
 

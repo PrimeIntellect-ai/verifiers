@@ -152,7 +152,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """Record the scraped verdict on the SOLVER's trace. Strict on scale: an
         off-scale score raises (a judge answering `95` must not clamp to full
-        marks), failing the env-rollout rather than scoring the solver wrong."""
+        marks), failing the episode rather than scoring the solver wrong."""
         by_agent = {t.agent_name: t for t in episode.traces}
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")

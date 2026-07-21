@@ -33,7 +33,7 @@ class EvalConfig(EnvServerConfig):
             "group_size", "rollouts_per_example", "num_rollouts", "r"
         ),
     )
-    """Independent env-rollouts per task — the trainer's group size."""
+    """Independent episodes per task — the trainer's group size."""
     shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(

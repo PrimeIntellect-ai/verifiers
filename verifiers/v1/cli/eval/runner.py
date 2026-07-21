@@ -1,4 +1,4 @@
-"""The eval runner: fan env-rollouts out with bounded concurrency."""
+"""The eval runner: fan episodes out with bounded concurrency."""
 
 import asyncio
 import contextlib

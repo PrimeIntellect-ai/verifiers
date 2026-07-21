@@ -1,4 +1,4 @@
-# code-golf-v1 — the taskset ships a recipe env: one env-rollout runs
+# code-golf-v1 — the taskset ships a recipe env: one episode runs
 # `--env.attempts` independent attempts (default 2) and scores them against
 # each other (shortest wins), so one rollout per task is a full comparison.
 #
