@@ -221,19 +221,19 @@ class Agent:
         task: Task,
         *,
         runtime: Runtime | None = None,
-        shared_tools: Mapping[str, SharedToolServer] | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: `runtime` places it
-        into a live borrowed box instead of provisioning one; `shared_tools` are
-        live servers borrowed from their owner, counted in the pairing check;
+        into a live borrowed box instead of provisioning one; `tools` are live
+        servers borrowed from their owner, counted in the pairing check;
         `on_trace` observes the trace the moment it's minted, before any I/O.
         Retries whole while the trace ends with a retryable error (`config.retries`)
         — never into a borrowed box; the final trace keeps earlier attempts' errors."""
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
-            trace = await self._run_once(task, runtime, shared_tools, on_trace)
+            trace = await self._run_once(task, runtime, tools, on_trace)
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
             if runtime is not None:
@@ -356,7 +356,7 @@ class _EpisodeAgent(Agent):
     they're created, finished ones land in `completed` (the episode's traces),
     each run takes the eval's gate. The taskset's shared tool servers ride only
     its own tasks — on an env-minted task they'd wrongly put MCP in play
-    (`shared_tools=` overrides)."""
+    (`tools=` overrides)."""
 
     def __init__(
         self,
@@ -392,7 +392,7 @@ class _EpisodeAgent(Agent):
         task: Task,
         *,
         runtime: Runtime | None = None,
-        shared_tools: Mapping[str, SharedToolServer] | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         last: Trace | None = None
@@ -416,9 +416,7 @@ class _EpisodeAgent(Agent):
             trace = await super().run(
                 task,
                 runtime=runtime,
-                shared_tools=shared_tools
-                if shared_tools is not None
-                else self._shared_for(task),
+                tools=tools if tools is not None else self._shared_for(task),
                 on_trace=watch,
             )
         self._completed.append(trace)
