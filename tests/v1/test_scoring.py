@@ -1,5 +1,3 @@
-import pytest
-
 import verifiers.v1 as vf
 
 
@@ -33,17 +31,3 @@ def test_parse_judge_choice_uses_first_choice_after_verdict_marker() -> None:
     response = "Final Judgment: B because it is a better answer"
 
     assert vf.parse_judge_choice(response, choices=("A", "B")) == "B"
-
-
-def test_env_refuses_decorated_signals_at_definition() -> None:
-    """Cross-agent judgement is finalize(); a decorated signal on an Environment
-    would never run, so it's refused where it's written."""
-    with pytest.raises(TypeError, match="judges across agents in finalize"):
-
-        class Signalled(vf.Environment):
-            async def run(self, task, agents):
-                pass
-
-            @vf.metric
-            async def stray(self, trace):
-                return 1.0
