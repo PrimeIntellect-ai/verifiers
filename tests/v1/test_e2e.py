@@ -316,7 +316,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     """The agentic judge over the echo taskset (needs docker): the judge lands in
     its own box with the graded transcript uploaded, investigates with real
     execution, and its parsed verdict lands on the solver's trace under the spec's
-    reward key. Wiring, not taste: the judge followed the default `score` spec's
+    reward key. Wiring, not taste: the judge followed the verdict-file contract's
     output contract — the grade itself is the model's call."""
     traces = await run_v1(
         "echo-v1",
@@ -336,7 +336,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     assert solver.errors == [] and judge.errors == []
     assert judge.trainable is False
     assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
-    assert "SCORE:" in (judge.last_reply or "")
+    assert isinstance(judge.info.get("verdict"), dict)  # scraped off the box
     assert 0.0 <= solver.rewards["judge"] <= 1.0
 
 

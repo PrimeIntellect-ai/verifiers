@@ -29,25 +29,30 @@ REFERENCE_PROMPT = (Path(__file__).resolve().parent / "reference.txt").read_text
 
 class ReferenceJudgeConfig(JudgeConfig):
     id: ID = "reference"
-    """Pinned to the built-in, so a code-level default entry needs no explicit id."""
+    """Pinned to the built-in, so a code-level default entry needs no explicit id (a TOML
+    entry's `id` selects the config type before this default is ever seen)."""
     answer_field: str = "answer"
-    """The task field holding the reference answer (extra/wire fields work too). A
-    list-valued field renders one acceptable answer per line — matching any passes."""
+    """The task field holding the reference answer (works for extra/wire fields too). A
+    list-valued field is rendered as one acceptable answer per line — the response must
+    match any of them."""
     question_field: str = ""
-    """Task field to fill the prompt's `{question}`; empty = the task's prompt
-    rendered as text (`TaskData.prompt_text`)."""
+    """Task field to fill the prompt's `{question}` (e.g. a dedicated `question` column
+    without the prompt's instruction framing); empty = the task's prompt rendered as text
+    (`TaskData.prompt_text`)."""
     view: JudgeView = "last_reply"
-    """How much of the rollout fills `{response}`. Defaults to the final reply — a
-    reference check grades the answer, not the path to it."""
+    """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the final
+    reply — a reference-answer check grades the answer, not the path to it."""
     choices: tuple[str, str] = ("yes", "no")
-    """The (positive, negative) verdict labels, injected into the prompt as
-    `{positive}`/`{negative}`. The positive label scores 1.0; a verdict matching
-    neither raises — a judge failure, never a 0."""
+    """The (positive, negative) verdict labels — e.g. `["A", "B"]` for graders that verdict
+    with letters. Injected into the prompt as `{positive}`/`{negative}`, so the default
+    template asks for whatever labels `parse` expects. The positive label scores 1.0; a
+    verdict matching neither raises (a judge failure must error the rollout, not score the
+    model 0)."""
 
     @model_validator(mode="after")
     def check_choices(self) -> "ReferenceJudgeConfig":
-        # Duplicate labels would score every parsable verdict as positive; matching
-        # is case-insensitive, so distinctness is too.
+        # Duplicate labels would score every parsable verdict as the positive one; labels
+        # are matched case-insensitively (`parse_judge_choice`), so distinctness is too.
         if not all(self.choices) or self.choices[0].upper() == self.choices[1].upper():
             raise ValueError(
                 f"`choices` needs two distinct, non-empty verdict labels, got {self.choices!r}"
@@ -63,7 +68,7 @@ class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
             judge_verdict(response.text, self.config.choices) == self.config.choices[0]
         )
 
-    def _fields(self, task: TaskData, trace: Trace) -> dict[str, str]:
+    async def score(self, task: TaskData, trace: Trace) -> float:
         answer = getattr(task, self.config.answer_field, None)
         if answer is None:
             raise ValueError(
@@ -72,27 +77,19 @@ class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
             )
         if isinstance(answer, (list, tuple)):
             answer = "\n".join(str(item) for item in answer)
+        response = judge_response(trace, self.config.view)
+        if not response.strip():
+            return 0.0  # nothing to grade — skip the (foregone) judge call
         positive, negative = self.config.choices
-        return dict(
+        result = await self.evaluate(
+            trace=trace,
             question=judge_question(task, self.config.question_field),
             answer=answer,
-            response=judge_response(trace, self.config.view),
+            response=response,
             positive=positive,
             negative=negative,
         )
-
-    def render(self, task: TaskData, trace: Trace) -> str:
-        return cast(str, self.build_messages(**self._fields(task, trace)))
-
-    def verdict(self, task: TaskData, trace: Trace, reply: str) -> float:
-        return float(
-            judge_verdict(reply, self.config.choices) == self.config.choices[0]
-        )
-
-    async def score(self, task: TaskData, trace: Trace) -> float:
-        if not self._fields(task, trace)["response"].strip():
-            return 0.0  # nothing to grade — skip the (foregone) judge call
-        return cast(float, await super().score(task, trace))
+        return cast(float, result.parsed)
 
 
 __all__ = ["ReferenceJudge", "ReferenceJudgeConfig"]

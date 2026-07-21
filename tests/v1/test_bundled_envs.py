@@ -10,10 +10,7 @@ import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNEnvConfig
-from verifiers.v1.envs.agentic_judge import AgenticJudgeEnvConfig
-from verifiers.v1.envs.agentic_judge.env import JudgeTask
-from verifiers.v1.judges.rubric import RubricJudgeConfig
-from verifiers.v1.judges.score import ScoreJudge
+from verifiers.v1.envs.agentic_judge.env import AgenticJudgeEnv, JudgeTask
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 
 
@@ -204,74 +201,55 @@ def test_best_of_n_sibling_scoring():
     assert all(t.metrics["pass_at_n"] == 0.0 for t in misses)
 
 
-def _judged(reply: str) -> float:
-    judge = ScoreJudge()
-    task = vf.TaskData(idx=0, prompt="q")
-    return judge.verdict(task, _scored_trace(0.0), reply)
-
-
-def test_score_judge_verdict():
-    assert _judged("SCORE: 7") == 0.7
-    assert _judged("The answer is right.\nSCORE: 10") == 1.0
-    assert _judged("SCORE: 3\n...revised...\nSCORE: 8") == 0.8  # last wins
-    assert _judged("SCORE: 7.5") == 0.75  # a decimal is a verdict, not a 0.7
-    with pytest.raises(ValueError, match="no 'SCORE:"):
-        _judged("I refuse to grade this.")  # a judge failure, never a 0
-    with pytest.raises(ValueError, match="off the 0-10 scale"):
-        _judged("SCORE: 95")  # a judge on its own scale must not clamp to full marks
-
-
-def test_judge_spec_resolves_like_a_judges_entry():
-    """The env's verdict spec rides the judge-plugin registry: an explicit id swaps
-    (and narrows) it; a partial override tunes the default without resetting it."""
-    swapped = AgenticJudgeEnvConfig.model_validate(
-        {"spec": {"id": "rubric", "path": "grading.toml"}}
-    )
-    assert isinstance(swapped.spec, RubricJudgeConfig)
-    assert swapped.spec.view == "full_trace"  # the rubric's own default
-    tuned = AgenticJudgeEnvConfig.model_validate({"spec": {"view": "full_trace"}})
-    assert type(tuned.spec).__name__ == "ScoreJudgeConfig"
-    assert tuned.spec.view == "full_trace"
-    assert tuned.spec.name == "judge"  # the pinned reward key survives
-
-
-def test_rubric_spec_agent_execution_round_trip(tmp_path):
-    """The unification: the same rubric file drives an agent-executed judge —
-    `render` carries the criteria + JSON contract, `verdict` parses the agent's
-    reply into the identical per-criterion metrics and weighted total the plugged
-    tier records."""
-    import json
-
-    from verifiers.v1.judges.rubric import RubricJudge
-
-    rubric = tmp_path / "grading.json"
-    rubric.write_text(
-        json.dumps(
+def _verdict_env() -> AgenticJudgeEnv:
+    return vf.load_environment(
+        vf.resolve_env_config(
             {
-                "criteria": [
-                    {"name": "correct", "text": "Is it right?", "weight": 3.0},
-                    {"name": "concise", "text": "Is it short?"},
-                ]
+                "id": "agentic-judge",
+                "taskset": {"id": "echo-v1"},
+                "judge": {"harness": {"runtime": {"type": "docker"}}},
             }
         )
     )
-    judge = RubricJudge(RubricJudgeConfig(path=rubric))
-    task = vf.TaskData(idx=0, prompt="What is 2+2?")
-    trace = _scored_trace(0.0)
-    prompt = judge.render(task, trace)
-    assert "correct" in prompt and "concise" in prompt and "verdicts" in prompt
-    reply = json.dumps(
-        {
-            "verdicts": [
-                {"name": "correct", "reason": "it is", "verdict": "yes"},
-                {"name": "concise", "reason": "it is not", "verdict": "no"},
-            ]
-        }
+
+
+def _verdict_traces(verdict) -> tuple[vf.Trace, list[vf.Trace]]:
+    solver = Trace(
+        task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        agent=AgentInfo(model="test", name="solver"),
     )
-    total = judge.verdict(task, trace, f"Here is my grading:\n{reply}")
-    assert total == 0.75  # (3*1 + 1*0) / 4
-    assert trace.metrics["rubric/correct"] == 1.0
-    assert trace.metrics["rubric/concise"] == 0.0
+    judge = Trace(
+        task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="grade")),
+        agent=AgentInfo(model="test", name="judge"),
+    )
+    if verdict is not None:
+        judge.info["verdict"] = verdict
+    return solver, [solver, judge]
+
+
+def test_agentic_judge_verdict_lands_on_the_solver():
+    env = _verdict_env()
+    task = vf.Task(vf.TaskData(idx=0, prompt="q"))
+    solver, traces = _verdict_traces({"score": 7, "reasoning": "verified"})
+    asyncio.run(env.score(task, traces))
+    assert solver.rewards["judge"] == 0.7
+
+
+def test_agentic_judge_refuses_bad_verdicts():
+    """Strict on the verdict contract: a missing file, an off-scale score, NaN, or
+    a boolean must fail the rollout — never clamp to full marks or coerce."""
+    env = _verdict_env()
+    task = vf.Task(vf.TaskData(idx=0, prompt="q"))
+    for verdict, match in (
+        (None, "no verdict"),
+        ({"score": 95}, "not on the 0-10 scale"),
+        ({"score": float("nan")}, "not on the 0-10 scale"),
+        ({"score": True}, "not on the 0-10 scale"),
+        ({"score": "8"}, "not on the 0-10 scale"),
+    ):
+        _, traces = _verdict_traces(verdict)
+        with pytest.raises(ValueError, match=match):
+            asyncio.run(env.score(task, traces))
 
 
 def _reply_trace(reply: str, role: str | None = None) -> Trace:
