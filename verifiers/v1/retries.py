@@ -141,15 +141,7 @@ async def run_episode_with_retry(
             cause.type if cause else "?",
         )
         await asyncio.sleep(delay)
-    if history:
-        if not final.ok:  # final attempt failed too → prepend the history
-            # In place: the envelope, the stamp, and every trace share this one list.
-            final.errors[:0] = history
-        else:
-            # A recovered episode: `errors` stays empty (its emptiness is the
-            # keep-verdict resume and training read), so the prior attempts'
-            # failures ride each trace's info instead of vanishing.
-            record = [{"type": e.type, "message": e.message} for e in history]
-            for trace in final.traces:
-                trace.info["retried_errors"] = record
+    if history and not final.ok:  # final attempt failed too → prepend the history
+        # In place: the envelope, the stamp, and every trace share this one list.
+        final.errors[:0] = history
     return final

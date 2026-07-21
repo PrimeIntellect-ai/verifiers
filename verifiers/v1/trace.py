@@ -380,10 +380,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     is_completed: bool = False
     stop_condition: str | None = None
     errors: list[Error] = Field(default_factory=list)
-    """The final attempt's errors — emptiness is the error-free sentinel resume and
-    training read. A retried-and-still-failed rollout prepends the earlier attempts'
-    errors (oldest first); a rollout that recovered on retry keeps them under
-    `info["retried_errors"]` instead. `error` exposes the most recent."""
+    """Every error captured across attempts, oldest first (more than one only when the
+    rollout was retried). `error` exposes the most recent."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
