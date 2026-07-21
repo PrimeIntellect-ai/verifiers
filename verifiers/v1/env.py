@@ -40,68 +40,47 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
 class EnvTimeoutConfig(BaseConfig):
-    """Wall-clock timeouts for the env's own hooks, in seconds (None = no limit).
-    Per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`)."""
+    """Wall-clock timeouts for the env's own `rollout()`/`score()` hooks, in seconds
+    (None = no limit); per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`)."""
 
     episode: float | None = None
-    """Max wall-clock for the env's `rollout()` hook — the whole interaction
-    (each agent run inside it is additionally bounded by its own stages)."""
     score: float | None = None
-    """Max wall-clock for the env's cross-trace `score()` hook, run once per
-    env-rollout (per-trace scoring is bounded by each agent's `timeout.scoring`)."""
 
 
 def _mentions_agent_config(annotation) -> bool:
     """Whether `annotation` names an `AgentConfig` — directly or inside
-    Optional/union/Annotated/container forms — i.e. anything an author plausibly
-    meant as an agent declaration."""
+    Optional/union/Annotated/container forms."""
     if isinstance(annotation, type):
         return issubclass(annotation, AgentConfig)
     return any(_mentions_agent_config(arg) for arg in get_args(annotation))
 
 
 class EnvConfig(BaseConfig):
-    """An environment's config — the run's single `[env]` block. One subclass per
-    `Environment` class (bound via `Environment[YourConfig]`, available as
-    `self.config`): declare each role as an `AgentConfig` field with a default
-    instance, plus any env-level knobs. The run's `env` field narrows to it by the
-    env `id` (else the taskset id), which is what gives `--env.<role>.model`-style
-    CLI/TOML addressing. The base carries what every environment has: which env
-    and the seed taskset — per-run caps (turns, tokens, stage timeouts) are each
-    seat's own (`--env.<role>.max_turns`)."""
+    """An environment's config — the run's single `[env]` block, one subclass per
+    `Environment` class (bound via `Environment[YourConfig]`): each role is an
+    `AgentConfig` field with a default instance, plus env-level knobs. The run's `env`
+    field narrows to it by env `id` (else taskset id) — `--env.<role>.model` addressing."""
 
     id: ID = ""
-    """Which `Environment` runs. Empty = the taskset's own: the subclass its package
-    exports, else `SingleAgentEnv`. Set it to pair a reusable env with any taskset
-    (`--env.id best-of-n`): a bundled env, a local package, or a Hub
-    `org/name[@version]`. An explicit id wins over the taskset's bundled env."""
-    # SerializeAsAny: keep the resolved subclass's fields in model_dump(); the
-    # env-server wire would otherwise drop them.
+    """Which `Environment` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
+    to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
+    # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
     taskset: SerializeAsAny[TasksetConfig] | None = None
-    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`,
-    positional shorthand `uv run eval <taskset-id>`). None only for an env that
-    mints its tasks without a dataset; every bundled env requires one."""
+    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`).
+    None only for an env that mints its tasks without a dataset."""
     timeout: EnvTimeoutConfig = EnvTimeoutConfig()
     retries: RolloutRetryConfig = RolloutRetryConfig()
-    """Whole-EPISODE retries — the coarse fallback for faults no agent owns (the
-    env's own hooks, cross-agent state); per-agent faults retry on the agent
-    (`--env.<agent>.retries`). A retried episode reruns whole: a half-played
-    sibling context isn't reproducible."""
+    """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
+    retried episode reruns whole (a half-played sibling context isn't reproducible)."""
     max_concurrent: int | None = None
-    """Bounds concurrent agent runs on a SERVED env, per worker — an env's internal
-    fan-out counts, so best-of-n under many requests can't run unbounded (None = no
-    limit). The in-process eval CLI gates with its run-level `--max-concurrent`
-    instead."""
+    """Bounds concurrent agent runs on a SERVED env, per worker (None = no limit);
+    the in-process eval CLI gates with its run-level `--max-concurrent` instead."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
-    """The interception shape (see `verifiers.v1.interception`): `elastic` (default —
-    servers grown on demand), `server` (one server, with a tunnel choice), or
-    `static` (a fixed list of servers)."""
+    """The interception shape: `elastic` (default), `server`, or `static`."""
 
     @property
     def env_id(self) -> str:
-        """The run's identifier — the taskset id, prefixed by the paired env id
-        (`best-of-n+gsm8k-v1`), so paired and plain runs stay distinguishable on
-        episodes and output dirs."""
+        """The taskset id, prefixed by the paired env id (`best-of-n+gsm8k-v1`)."""
         taskset_id = self.taskset.id if self.taskset is not None else ""
         if taskset_id and self.id:
             return f"{self.id}+{taskset_id}"
@@ -109,8 +88,7 @@ class EnvConfig(BaseConfig):
 
     def agent_harnesses(self) -> dict[str, HarnessConfig]:
         """Each declared role's resolved harness config (pin, else the taskset's
-        default) — known without constructing the env, for output naming and the
-        dashboard."""
+        default) — known without constructing the env."""
         default = default_agent_harness(
             self.taskset.id if self.taskset is not None else ""
         )
@@ -122,9 +100,8 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _refuse_env_level_harness(cls, data):
-        """Point an env-level `harness` key (the v0 muscle-memory spelling) at the
-        seat that owns it, instead of a bare `extra_forbidden`. A subclass that
-        declares a role named `harness` keeps the key."""
+        """Point an env-level `harness` key (v0 muscle memory) at the seat that owns
+        it; a subclass declaring a role named `harness` keeps the key."""
         if (
             isinstance(data, dict)
             and "harness" in data
@@ -140,9 +117,8 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_taskset(cls, data):
-        """Narrow `taskset` to its concrete config type by `id`, so taskset-specific
-        fields validate typed. Lazy import for the same reason as
-        `AgentConfig._resolve_harness`."""
+        """Narrow `taskset` to its concrete config type by `id`; lazy import for
+        the same reason as `AgentConfig._resolve_harness`."""
         if isinstance(data, dict) and data.get("taskset") is not None:
             from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
@@ -152,10 +128,8 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _merge_role_defaults(cls, data):
-        """Deep-merge partial role data over the field's declared default instance.
-        Plain validation would replace the instance wholesale, so a partial override
-        (`--env.user.sampling.temperature`) would silently reset the role's other
-        pins (model, trainability)."""
+        """Deep-merge partial role data over the field's declared default — plain
+        validation would replace the instance wholesale, resetting its other pins."""
         if isinstance(data, dict):
             for name, field in cls.model_fields.items():
                 if isinstance(field.default, AgentConfig) and isinstance(
@@ -168,11 +142,8 @@ class EnvConfig(BaseConfig):
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs):
-        """A role field must carry a default *instance* (the deep-merge and the
-        role machinery read it) and must not shadow a base field; refuse both at
-        class definition rather than silently dropping the role. Membership is the
-        role machinery's (`_merge_role_defaults`/`_declared_agent_configs`): the
-        default instance, not the annotation form, is what makes a field a role."""
+        """Refuse, at class definition, a role field without a default *instance*
+        or one shadowing a base field — the default instance is what makes a field a role."""
         super().__pydantic_init_subclass__(**kwargs)
         for name, info in cls.model_fields.items():
             is_role = isinstance(info.default, AgentConfig)
@@ -195,8 +166,7 @@ class EnvConfig(BaseConfig):
 
 def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
     """The `AgentConfig` fields declared on an env's config, in declaration order —
-    the env's roles, each seat keyed by its field name (the only naming site).
-    Membership test (a default instance) matches `_merge_role_defaults`."""
+    the env's roles, each seat keyed by its field name (the only naming site)."""
     return {
         name: getattr(config, name)
         for name, field in type(config).model_fields.items()
@@ -226,10 +196,8 @@ def _as_error(e: Exception) -> Error:
 
 @dataclass
 class RunSlot:
-    """One planned env-rollout of a task, observable while it happens: `traces`
-    collects the current attempt's live traces (a retry restarts the list),
-    `episode`/`done` land when the rollout is final. The dashboard renders slots;
-    `--resume` preloads kept episodes as `finished` slots."""
+    """One planned env-rollout, observable while it happens: `traces` collects the
+    current attempt (a retry restarts the list), `episode`/`done` land when final."""
 
     task: Task
     traces: list[Trace] = field(default_factory=list)
@@ -254,20 +222,10 @@ class Environment(ABC, Generic[ConfigT]):
 
     Abstract: every run gets a concrete subclass — `SingleAgentEnv` for every plain
     taskset. A multi-agent env declares each role as an `AgentConfig` field on an
-    `EnvConfig` subclass (bound via `Environment[YourConfig]`, available as
-    `self.config`) and writes
-
-      - `rollout(task, agents)` — how the agents interact on one task. It returns
-        nothing: every finished run joins the episode automatically, stamped with
-        its seat's standing.
-
-    Optional overrides: `brief(agents)` (per-agent standing the env hardcodes —
-    a frozen judge opts out of training), `score(task, traces)` (sibling-dependent
-    judgement), and `setup()`/`teardown()` (env-owned shared resources). The base
-    owns everything else: agent construction, episodes, retries, persistence/
-    resume, serving. Task x agent fit is validated per run, on the task the agent
-    actually receives — an env-minted task carries its own needs (`tools`,
-    `NEEDS_CONTAINER`), so there is nothing to declare here."""
+    `EnvConfig` subclass (bound via `Environment[YourConfig]`) and writes
+    `rollout(task, agents)`; optional overrides: `brief`, `score`, `setup`/`teardown`
+    — the base owns everything else. Task x agent fit is validated per run, on the
+    task the agent actually receives — an env-minted task carries its own needs."""
 
     def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
@@ -313,8 +271,7 @@ class Environment(ABC, Generic[ConfigT]):
                     f"agent={agent!r}, but the env's config declares agents "
                     f"{sorted(self._agent_specs)}"
                 )
-        # Seats resolving to the same harness config share the loaded object
-        # (harnesses are stateless values).
+        # Same harness config -> one loaded object (harnesses are stateless values).
         loaded: dict[str, Harness] = {}
         self._harnesses: dict[str, Harness] = {}
         for name, spec in self._agent_specs.items():
@@ -339,8 +296,7 @@ class Environment(ABC, Generic[ConfigT]):
                     "for an isolated run.",
                     harness.config.id,
                 )
-        # Eval-level serving resources, live only inside `serving()`; the env's
-        # agents borrow them, so runners never thread them through `run_slot`.
+        # Serving resources, live only inside `serving()`; the env's agents borrow them.
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
         # Clients for endpoint-pinning roles, cached by config, closed with serving().
@@ -351,32 +307,21 @@ class Environment(ABC, Generic[ConfigT]):
     # --- the multi-agent surface (override these) ------------------------------
 
     def brief(self, agents: Agents) -> None:
-        """Brief this rollout's agents before `rollout()` sees them — the in-place
-        spot for per-agent standing the env hardcodes rather than exposes as
-        config. Today that is `trainable` (every agent defaults True; a fixed one
-        opts out: `agents.judge.trainable = False`). Agents are built fresh per
-        env-rollout, so this runs once per episode — keep it cheap and in-place.
-        Single-agent envs never write this."""
+        """Brief this rollout's agents before `rollout()` sees them — standing the env
+        hardcodes, today `trainable` (`agents.judge.trainable = False`); once per episode."""
 
     @abstractmethod
     async def rollout(self, task: Task, agents: Agents) -> None:
-        """One env-rollout: how the agents interact on `task` — imperative Python
-        over the handed-in agents, returning nothing. Every finished run is
-        captured as the episode's traces automatically, each stamped with its
-        seat's standing (`agent.name`/`trainable`/`episode`/`env`). An agent-run
-        failure is data on its trace (this hook decides what it means); an
-        exception raised here is the env-rollout itself failing."""
+        """One env-rollout: how the agents interact on `task`, returning nothing —
+        every finished run joins the episode automatically, stamped with its seat's
+        standing. An agent-run failure is data on its trace (this hook decides what
+        it means); an exception raised here is the env-rollout itself failing."""
 
     async def score(self, task: Task, traces: list[Trace]) -> None:
         """Sibling-dependent judgement over one env-rollout's finished traces
-        (per-trace judgement already ran on each trace's own task). The flat list
-        is the episode, completion order; each trace's `agent_name` stamp names
-        its seat. The default runs the env's decorated `@vf.reward`/`@vf.metric`
-        methods, each invoked once per target trace and recorded there, with
-        `task`, `trace` (the target), and `traces` (all of them) in reach —
-        `agent=` narrows the targets, unset means every trace. Override it for
-        imperative control; `await super().score(task, traces)` keeps the
-        decorated ones. Bounded by `timeout.score`."""
+        (per-trace judgement already ran); the flat list is the episode, completion
+        order. The default runs the decorated `@vf.reward`/`@vf.metric` methods once
+        per target trace (`agent=` narrows); `await super().score(...)` keeps them."""
         metrics = discover_decorated(self, "metric")
         rewards = discover_decorated(self, "reward")
 
@@ -401,8 +346,7 @@ class Environment(ABC, Generic[ConfigT]):
             )
             return list(zip(pairs, results))
 
-        # Metrics record before rewards run, so a reward may read `trace.metrics`
-        # (the same staging as task scoring).
+        # Metrics record before rewards run, so a reward may read `trace.metrics`.
         for (fn, target), result in await run(metrics):
             _record_result(target, fn.__name__, result)
         for (fn, target), result in await run(rewards):
@@ -410,17 +354,13 @@ class Environment(ABC, Generic[ConfigT]):
 
     def complete(self, episode: EpisodeRecord) -> bool:
         """Whether a finished env-rollout is a valid result — what `--resume` keeps
-        vs. redoes. Default: `episode.ok`. An env whose `rollout()` deliberately
-        tolerates a failed participant (a forfeited player) overrides this —
-        typically `not episode.episode.errors` — else resume re-runs rollouts it already
-        accepted. The server eval path keeps the strict default (its env lives in
-        the workers)."""
+        vs. redoes (default `episode.ok`). An env whose `rollout()` tolerates a
+        failed participant overrides this, else resume re-runs accepted rollouts."""
         return episode.ok
 
     async def setup(self) -> None:
-        """Bring up env-owned shared resources. Runs inside `serving()`, after the
-        framework's resources (shared tool servers, interception) are live and before
-        any rollout. Default: no-op."""
+        """Bring up env-owned shared resources — inside `serving()`, after the
+        framework's resources are live and before any rollout. Default: no-op."""
 
     async def teardown(self) -> None:
         """Tear down what `setup()` built. Runs when `serving()` exits, even when
@@ -429,13 +369,11 @@ class Environment(ABC, Generic[ConfigT]):
     # --- machinery (the base owns everything below) -----------------------------
 
     def _agent_harness(self, agent: AgentConfig) -> HarnessConfig:
-        """The harness config a role resolves to: its own pin, else the taskset's
-        default (`default_agent_harness`)."""
+        """The role's harness config: its own pin, else the taskset's default."""
         return agent.harness if agent.harness is not None else self._default_harness
 
     def _signal_targets(self, fn: Callable, traces: list[Trace]) -> list[Trace]:
-        """Which traces a decorated env signal records onto: every trace unless
-        `agent=` narrows it. Membership is the trace's agent-name stamp."""
+        """Every trace unless `agent=` narrows it (by the trace's agent-name stamp)."""
         agent = getattr(fn, "_vf_agent", None)
         if agent is None:
             return list(traces)
@@ -449,15 +387,11 @@ class Environment(ABC, Generic[ConfigT]):
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
     ) -> Agents:
-        """One env-rollout's `Agents`, scraped off the config — fresh value objects
-        riding the live serving resources (everything expensive is env-owned and
-        borrowed, so construction is cheap and no state is shared across concurrent
-        episodes), briefed before `rollout()` sees them."""
+        """One env-rollout's `Agents` — fresh value objects riding the live serving
+        resources (nothing shared across concurrent episodes), briefed before `rollout()`."""
 
         def make(name: str, spec: AgentConfig) -> Agent:
-            # The episode's resolved config: every unpinned field falls back to
-            # the run's own context (model, sampling) or the taskset's default
-            # (harness); the live client is injected, never configured here.
+            # Unpinned fields fall back to the run's ctx / the taskset's harness.
             resolved = spec.model_copy(
                 update={
                     "harness": spec.harness
@@ -490,8 +424,7 @@ class Environment(ABC, Generic[ConfigT]):
         return agents
 
     def _client_for(self, config: ClientConfig) -> Client:
-        """Resolve (and cache by config) an agent-pinned endpoint's client; closed
-        when `serving()` exits."""
+        """Resolve (and cache by config) an agent-pinned endpoint's client."""
         key = config.model_dump_json()
         if key not in self._agent_clients:
             self._agent_clients[key] = resolve_client(config)
@@ -505,17 +438,10 @@ class Environment(ABC, Generic[ConfigT]):
         on_trace: Callable[[Trace], None] | None = None,
         gate: asyncio.Semaphore | None = None,
     ) -> EpisodeRecord:
-        """One env-rollout of `task`, minted as the wire atom: run `rollout()` over the
-        role agents, then `score()` over its traces (bounded by `timeout.score`).
-        `gate` bounds the agent runs themselves — every run acquires it, so an env's
-        internal fan-out counts against `--max-concurrent` too.
-
-        The agents are built fresh for this episode (`_episode_agents`, briefed by
-        `brief()`): every trace gets its episode standing written the moment it's
-        created and joins the episode the moment its run completes (completion
-        order) — `rollout()` returns nothing, and a hook that raises after some
-        runs finished still yields an episode with the completed subset. A hook
-        exception lands on the episode's `errors`, never on a trace."""
+        """One env-rollout of `task`, minted as the wire atom: `rollout()` over fresh
+        briefed agents, then `score()`; `gate` bounds the agent runs, so internal
+        fan-out counts against `--max-concurrent` too. Traces join as runs complete —
+        a hook raising mid-way yields the completed subset, its exception on `errors`."""
         info = EpisodeInfo(env=self.config.env_id)
         completed: list[Trace] = []
         agents = self._episode_agents(ctx, info, gate, completed, on_trace)
@@ -529,8 +455,7 @@ class Environment(ABC, Generic[ConfigT]):
                             "episode must carry at least one run"
                         )
         except Exception as e:
-            # A TimeoutError here can only be the deadline's own expiry — one
-            # raised inside rollout() became an EnvError at the boundary.
+            # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
             if isinstance(e, TimeoutError):
                 e = TimeoutError(
                     f"{type(self).__name__}.rollout() exceeded its "
@@ -544,8 +469,7 @@ class Environment(ABC, Generic[ConfigT]):
                 async with boundary(EnvError, f"{type(self).__name__}.score()"):
                     await self.score(task, list(completed))
         except Exception as e:
-            # A TimeoutError here can only be the deadline's own expiry — one
-            # raised inside score() became an EnvError at the boundary.
+            # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
                 e = TimeoutError(
                     f"{type(self).__name__}.score() exceeded its "
@@ -555,9 +479,7 @@ class Environment(ABC, Generic[ConfigT]):
         return EpisodeRecord(episode=info, traces=list(completed))
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
-        """Plan `n` independent env-rollouts of `task` — one observable `RunSlot`
-        each, run to an episode by `run_slot`. `-r n` means exactly this: n episodes
-        per task, nothing coupling them."""
+        """Plan `n` independent env-rollouts of `task` (`-r n`): nothing couples them."""
         if n < 1:
             raise ValueError("a task needs at least one rollout (n >= 1)")
         return [RunSlot(task) for _ in range(n)]
@@ -570,10 +492,8 @@ class Environment(ABC, Generic[ConfigT]):
         on_complete: Callable[[EpisodeRecord], Awaitable[None]] | None = None,
     ) -> EpisodeRecord:
         """Run one planned env-rollout to its finished episode, with whole-episode
-        retries per `--env.retries`. `semaphore` gates the agent RUNS, not the
-        episode — `--max-concurrent` holds even when `rollout()` fans out
-        internally. `on_complete` fires the moment the episode is final — the
-        runners' persistence hook."""
+        retries per `--env.retries`; `semaphore` gates the agent RUNS, not the
+        episode; `on_complete` (the runners' persistence hook) fires when final."""
 
         async def attempt() -> EpisodeRecord:
             slot.traces = []  # a retry shows the fresh attempt's traces
@@ -593,9 +513,8 @@ class Environment(ABC, Generic[ConfigT]):
 
     @contextlib.asynccontextmanager
     async def serving(self):
-        """Hold the env-level serving resources for the duration of an eval — shared
-        tool servers, interception, and whatever `setup()` brings up. Plan and run
-        slots inside; torn down on exit (`teardown()`, then the framework's)."""
+        """Hold the env-level serving resources for the duration of an eval; plan and
+        run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(
                 self.config.interception, requires_tunnel=self._requires_tunnel(shared)
@@ -608,8 +527,7 @@ class Environment(ABC, Generic[ConfigT]):
                     yield
                 finally:
                     try:
-                        # teardown() sees the same live resources setup() saw;
-                        # the framework's own unwind comes after.
+                        # teardown() sees what setup() saw; the framework unwinds after.
                         await self.teardown()
                     finally:
                         self._shared_tools = {}
@@ -620,8 +538,7 @@ class Environment(ABC, Generic[ConfigT]):
                                 await client.close()
 
     def _runs_local(self) -> bool:
-        """Whether every role's runtime policy is local — the env-level stand-in for
-        the single harness's `runtime_is_local` (any remote role means tunnels)."""
+        """Whether every role's runtime policy is local (any remote role means tunnels)."""
         return all(
             runtime_is_local(harness.config.runtime)
             for harness in self._harnesses.values()
@@ -629,11 +546,8 @@ class Environment(ABC, Generic[ConfigT]):
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: role
-        runtimes, live `shared` servers, and the task class's tool/user servers with
-        their configs resolved the way `Task.server_config` resolves them. A task
-        class that overrides `server_config` isn't statically knowable, so it
-        conservatively counts as remote — a wrongly-assumed localhost would reach
-        nothing."""
+        runtimes, live `shared` servers, and the task class's tool/user servers;
+        a class overriding `server_config` conservatively counts as remote."""
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
         server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
         if server_classes and task_cls.server_config is not Task.server_config:

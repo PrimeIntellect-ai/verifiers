@@ -1,16 +1,8 @@
-"""The Agent: a reusable (harness x model x runtime) value with one executable arrow.
-
-An `Agent` bundles the harness (the program), the model context (`agent.ctx`), and a
-runtime policy (where a run's box comes from). `agent.run(task)` executes one
-rollout and returns its `Trace`; `runtime=` borrows a live box, `provision(task)`
-hands you one.
-
-Interception follows the runtime story: inject a live `Interception` at
-construction to share servers and tunnels across agents (a pool belongs to the
-thing that spans agents — an env, a script — never to one agent); an entered
-agent (`async with`) owns one interception server; un-entered, each run brings
-up its own per-rollout server.
-"""
+"""The Agent: a reusable (harness x model x runtime) value with one executable
+arrow — `agent.run(task) -> Trace`; `runtime=` borrows a live box,
+`provision(task)` hands you one. Inject a live `Interception` to share servers
+across agents (a pool belongs to what spans agents, never to one agent); an
+entered agent (`async with`) owns one server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
@@ -54,19 +46,13 @@ logger = logging.getLogger(__name__)
 
 
 class TimeoutConfig(BaseConfig):
-    """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None =
-    no limit). A per-agent cap: every agent run is bounded by its own agent's
-    stages (`--env.<agent>.timeout.rollout`); each stage falls back to the task's
-    own `TaskTimeout` when unset."""
+    """Per-agent wall-clock timeouts per rollout stage, in seconds (None = no
+    limit); each stage falls back to the task's own `TaskTimeout` when unset."""
 
-    setup: float | None = None
-    """Shared wall-clock budget for task setup and harness provisioning."""
+    setup: float | None = None  # one shared budget: task setup + provisioning
     rollout: float | None = None
-    """Max wall-clock for the rollout (the harness run)."""
     finalize: float | None = None
-    """Max wall-clock for the task's `finalize` hook (post-run work, before scoring)."""
     scoring: float | None = None
-    """Max wall-clock for task and harness scoring."""
 
 
 class AgentConfig(BaseConfig):
@@ -79,38 +65,27 @@ class AgentConfig(BaseConfig):
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
     client: ClientConfig | None = None
-    """Endpoint override (None = the run's client) — routes a fixed agent (a frozen
-    judge, a pinned user sim) off the training endpoint."""
+    """Endpoint override (None = the run's client)."""
     sampling: SamplingConfig | None = None
     """Sampling override (None = the run's sampling)."""
     timeout: TimeoutConfig = TimeoutConfig()
-    """Per-stage wall-clock timeouts for this agent's runs (each stage falls back
-    to the task's own)."""
     retries: RolloutRetryConfig = RolloutRetryConfig()
     """Whole-run retries: rerun this agent's rollout while its trace ends with a
-    retryable error (`--env.<agent>.retries.max_retries`) — a flaky grader
-    retries without re-burning its siblings. Never into a borrowed box (its
-    state is no longer the task's start state)."""
+    retryable error (never into a borrowed box)."""
     max_turns: int | None = None
     """Max model turns per run (None = no limit). Framework-enforced (the
     interception server refuses turns past it), so it applies to any harness."""
     max_input_tokens: int | None = None
-    """Max input (prompt) tokens per run (None = no limit); framework-enforced
-    between turns."""
     max_output_tokens: int | None = None
-    """Max output (completion) tokens per run (None = no limit); framework-enforced
-    between turns."""
     max_total_tokens: int | None = None
-    """Max total (prompt + completion) tokens per run (None = no limit);
-    framework-enforced between turns."""
+    """Token caps per run (None = no limit); framework-enforced between turns."""
 
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):
-        """Narrow a pinned `harness` to its concrete config type by `id`; an absent
-        harness stays None (the taskset's default, resolved at env construction).
-        The lazy import keeps class-body `AgentConfig()` defaults constructible
-        while this module is still initializing."""
+        """Narrow a pinned `harness` to its concrete config type by `id` (absent
+        stays None = the taskset's default). The lazy import keeps class-body
+        `AgentConfig()` defaults constructible while this module initializes."""
         if isinstance(data, dict) and data.get("harness") is not None:
             from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
 
@@ -119,11 +94,10 @@ class AgentConfig(BaseConfig):
 
 
 def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
-    """A borrowed box is never re-provisioned, so a task's placement fields can't be
-    honored. A task `image` on a subprocess box raises (a wiring bug in the
-    borrowing program — it goes to the caller, not the trace); a container box whose
-    image differs only warns, since placing a run into an existing world is the
-    point of borrowing."""
+    """A borrowed box is never re-provisioned, so a task's placement fields can't
+    be honored. A task `image` on a subprocess box raises (a wiring bug — it goes
+    to the caller, not the trace); a container box whose image differs only warns,
+    since placing a run into an existing world is the point of borrowing."""
     if task.data.image is None:
         return
     if isinstance(runtime.config, SubprocessConfig):
@@ -148,16 +122,11 @@ class Agent:
     """A configured harness + model + runtime policy, runnable on any task.
 
     Built from an `AgentConfig` alone; `client=`/`interception=` inject live
-    resources to borrow — agents on the same endpoint should share one `Client`
-    (one connection pool), and a live `Interception`'s owner keeps its lifecycle.
-    Without one, an entered agent (`async with`) owns one interception server (a
-    server multiplexes concurrent runs — one agent never needs a pool) and an
-    un-entered one brings up a per-run server.
-
-    The harness config's `runtime` is a *policy*: each `run` provisions a fresh
-    box from it, resolved per task. `run(runtime=...)` places the run into an
-    existing box instead — borrowed boxes are never started or torn down by the
-    run."""
+    resources to borrow — agents on one endpoint should share one `Client`, and a
+    live `Interception`'s owner keeps its lifecycle. The harness config's
+    `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
+    per task; `run(runtime=...)` places the run into an existing box instead
+    (borrowed boxes are never started or torn down by the run)."""
 
     def __init__(
         self,
@@ -195,8 +164,7 @@ class Agent:
         )
         self.timeout = config.timeout
         # Env-owned standing, not config: `Environment.brief` marks fixed agents
-        # (a frozen judge) untrainable and the episode wrapper stamps traces from
-        # here. Inert in bespoke scripts — nothing outside an env reads it.
+        # untrainable and traces are stamped from here; inert outside an env.
         self.trainable: bool = True
         self._entered = False
         self._server: InterceptionServer | None = None
@@ -207,8 +175,8 @@ class Agent:
             raise RuntimeError("Agent is already entered; enter it once and share it")
         self._entered = True
         if self.interception is None:
-            # Sized to the runtime policy: a remote policy needs the tunnel. Runs the
-            # server can't serve fall back per run (`_interception_for`).
+            # Sized to the runtime policy (remote needs the tunnel); runs the
+            # server can't serve fall back per run.
             self._server = InterceptionServer(
                 requires_tunnel=not runtime_is_local(self.runtime_config)
             )
@@ -230,12 +198,11 @@ class Agent:
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping
     ) -> Interception | None:
-        """Which interception this run rides. An injected one always — its owner
-        sized its reach. The owned server only when provably reachable from all of
-        this run's consumers: always when it tunnels, else for a local run with no
-        tool or user servers in play (any such server may sit in a remote runtime
-        and must reach `/state`). Otherwise `None` — the rollout brings up a per-run
-        server sized to the task."""
+        """Which interception this run rides: an injected one always (its owner
+        sized its reach); the owned server only when provably reachable from all
+        the run's consumers — when it tunnels, else for a local run with no tool
+        or user servers in play (such servers may sit in a remote runtime and must
+        reach `/state`). Otherwise `None`: a per-run server sized to the task."""
         if self.interception is not None:
             return self.interception
         if self._server is None:
@@ -257,19 +224,12 @@ class Agent:
         shared_tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
-        """Run this agent on `task` once and return the trace: the program runs on
-        the task's prompt until it exits.
-
-        The task carries its own judgement; a plain base `Task` makes the run
-        unscored. `runtime` places the run into a live borrowed box instead of
-        provisioning one from the agent's policy. `shared_tools` are live servers
-        borrowed from their owner, counted in the pairing check. `on_trace` observes
-        the run's trace the moment it's minted, before any I/O.
-
-        The run retries whole while its trace ends with a retryable error
-        (`config.retries`), with backoff — but never into a borrowed box, whose
-        state is no longer the task's start state. The final trace keeps the
-        earlier attempts' errors."""
+        """Run this agent on `task` once and return the trace: `runtime` places it
+        into a live borrowed box instead of provisioning one; `shared_tools` are
+        live servers borrowed from their owner, counted in the pairing check;
+        `on_trace` observes the trace the moment it's minted, before any I/O.
+        Retries whole while the trace ends with a retryable error (`config.retries`)
+        — never into a borrowed box; the final trace keeps earlier attempts' errors."""
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
@@ -321,8 +281,7 @@ class Agent:
     def _rollout_params(
         self, task: Task, runtime: Runtime | None, shared_tools: dict
     ) -> dict:
-        """Resolve one run's execution parameters — runtime config, pairing checks,
-        stage timeouts, interception."""
+        """Resolve one run's runtime config, pairing checks, timeouts, interception."""
         if runtime is not None:
             _check_borrowed_placement(task, runtime)
             runtime_config = runtime.config
@@ -371,9 +330,8 @@ class Agent:
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
-        """Provision (and on exit tear down) a box from this agent's runtime policy,
-        resolved for `task` when given. Place runs into it via `run(..., runtime=box)`:
-        the provisioning program owns the box, so several runs can share one world."""
+        """Provision (and on exit tear down) a box from this agent's runtime
+        policy, resolved for `task` when given; share it via `run(..., runtime=box)`."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
@@ -390,16 +348,12 @@ class Agent:
 
 
 class _EpisodeAgent(Agent):
-    """One role's `Agent` for one env-rollout. An `Environment` builds these fresh
-    per episode (an Agent is a cheap bundle of references — the expensive resources
-    are env-owned and borrowed), so the episode's own capture lives right here with
-    no state shared across concurrent episodes: every trace's `agent` info gets its
-    episode standing (seat name, trainable, episode id, env id) written the moment
-    it's created, finished traces land in `completed` (the episode's trace list),
-    and each run takes the eval's concurrency gate. The taskset's shared tool servers ride only its own
-    tasks — an env-minted task carries its own needs, and handing shared servers
-    to its run would wrongly put MCP in play (pass `shared_tools=` explicitly to
-    override either way)."""
+    """One role's `Agent` for one env-rollout, built fresh per episode (a cheap
+    bundle of references — expensive resources are env-owned and borrowed, so no
+    state spans concurrent episodes): traces get their episode standing the moment
+    they're created, finished ones land in `completed`, each run takes the eval's
+    gate. The taskset's shared tool servers ride only its own tasks — on an
+    env-minted task they'd wrongly put MCP in play (`shared_tools=` overrides)."""
 
     def __init__(
         self,
@@ -439,8 +393,7 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
         def watch(trace: Trace) -> None:
-            # The trace's episode standing, self-contained on the trace: the
-            # shared EpisodeInfo instance links it to its siblings.
+            # Episode standing on the trace; the shared EpisodeInfo links siblings.
             if trace.agent is not None:
                 trace.agent.name = self._name
                 trace.agent.trainable = self.trainable
@@ -469,9 +422,8 @@ def make_agent(
     client: Client | None = None,
     interception: Interception | None = None,
 ) -> Agent:
-    """The agent for a config (the counterpart to `make_runtime`/`make_interception`).
-    `client`/`interception` inject live resources to borrow; everything else — the
-    harness, the model, the caps — comes from the config."""
+    """The agent for a config; `client`/`interception` inject live resources to
+    borrow, everything else comes from the config."""
     return Agent(config, client=client, interception=interception)
 
 
