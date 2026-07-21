@@ -14,9 +14,7 @@ async def main() -> None:
     # An agent is built from its config alone; pass a live Client to share a
     # connection pool across agents.
     solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"))
-    task = vf.Task(
-        vf.TaskData(idx=0, prompt="What is 2+2? Answer with just the number.")
-    )
+    task = vf.Task(vf.TaskData(prompt="What is 2+2? Answer with just the number."))
     trace = await solver.run(task)
     print("stop:", trace.stop_condition)
     print("error:", trace.error)

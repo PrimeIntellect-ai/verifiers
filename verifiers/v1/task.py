@@ -125,7 +125,9 @@ class TaskData(StrictBaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    idx: int
+    idx: int | None = None
+    """The row's position in its taskset — set by every taskset's `load()`; None
+    for a task minted outside one (a standalone agent script)."""
     name: str | None = None
     description: str | None = None
     prompt: str | Messages | None = None

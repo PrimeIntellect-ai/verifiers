@@ -9,7 +9,7 @@ a **model context** (model + client + optional sampling), and a **runtime policy
 import verifiers.v1 as vf
 
 solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"))
-trace = await solver.run(vf.Task(vf.TaskData(idx=0, prompt="What is 2+2?")))
+trace = await solver.run(vf.Task(vf.TaskData(prompt="What is 2+2?")))
 ```
 
 The config carries everything declarative: `harness` a typed `HarnessConfig` (None =
@@ -80,7 +80,7 @@ class GradeTask(vf.Task):
         ))
 
 task = vf.Task(vf.TaskData(
-    idx=0, prompt="Compute the sum of the first 100 primes into /app/answer.txt"
+    prompt="Compute the sum of the first 100 primes into /app/answer.txt"
 ))
 
 async with solver.provision(task) as box:
@@ -111,7 +111,7 @@ class ProposedTask(vf.Task[ProposedData]):
     async def correct(self, trace: vf.Trace) -> float:
         ...  # compare the trace's final answer against self.data.answer
 
-proposer_trace = await proposer.run(vf.Task(vf.TaskData(idx=0, prompt=PROPOSE)))
+proposer_trace = await proposer.run(vf.Task(vf.TaskData(prompt=PROPOSE)))
 task = ProposedTask.from_trace(proposer_trace)
 traces = await asyncio.gather(*(solver.run(task) for _ in range(8)))
 ```
