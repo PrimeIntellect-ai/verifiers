@@ -139,7 +139,7 @@ async def test_interaction(live_ctx):
 
     agent = vf.make_agent(
         vf.AgentConfig(
-            harness=NullHarnessConfig(),
+            harness=NullHarnessConfig(id="null"),
             model=live_ctx.model,
             sampling=live_ctx.sampling,
         ),
