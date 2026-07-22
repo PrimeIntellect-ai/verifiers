@@ -78,6 +78,29 @@ def test_prime_stop_confirmed_treats_already_gone_sandbox_as_success():
     assert client.deleted == ["prime-runtime-id"]
 
 
+def test_prime_stop_confirmed_sets_stopped_flag():
+    """stop_confirmed must set stopped=True so borrow checks reject the dead runtime."""
+    runtime = PrimeRuntime(PrimeConfig())
+    runtime.info.id = "prime-runtime-id"
+    client = FakePrimeClient()
+    runtime._client = client
+    assert runtime.stopped is False
+    asyncio.run(runtime.stop_confirmed())
+    assert runtime.stopped is True
+
+
+def test_modal_stop_confirmed_sets_stopped_flag():
+    """stop_confirmed must set stopped=True so borrow checks reject the dead runtime."""
+    runtime = ModalRuntime(ModalConfig())
+    runtime.info.id = "modal-runtime-id"
+    terminate = FakeTerminate()
+    sandbox = SimpleNamespace(terminate=terminate)
+    runtime._sandbox = sandbox
+    assert runtime.stopped is False
+    asyncio.run(runtime.stop_confirmed())
+    assert runtime.stopped is True
+
+
 def test_prime_stop_confirmed_rejects_loose_404_in_non_api_errors():
     """A non-APIError whose message happens to contain '404' must NOT be
     treated as a confirmed deletion — only the provider's own APIError with

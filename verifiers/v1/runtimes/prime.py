@@ -300,6 +300,7 @@ class PrimeRuntime(Runtime):
             else:
                 raise
         self._confirmed_stop_id = runtime_id
+        self.stopped = True
         self._client = None
         with contextlib.suppress(Exception):
             await client.aclose()

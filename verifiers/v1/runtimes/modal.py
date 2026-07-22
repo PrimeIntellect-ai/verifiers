@@ -205,6 +205,7 @@ class ModalRuntime(Runtime):
             )
         await sandbox.terminate.aio()
         self._confirmed_stop_id = runtime_id
+        self.stopped = True
         self._sandbox = None
 
     def cleanup(self) -> None:
