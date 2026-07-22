@@ -106,7 +106,7 @@ def validate_pairing(
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
             "this run resolves to the subprocess runtime; use "
-            "--env.<agent>.harness.runtime.type docker or prime."
+            "--env.<agent>.runtime.type docker or prime."
         )
 
 

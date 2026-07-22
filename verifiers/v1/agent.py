@@ -62,7 +62,10 @@ class AgentConfig(BaseConfig):
     to the run's own, the harness to the taskset's default."""
 
     harness: SerializeAsAny[HarnessConfig] | None = None
-    """The agent's program + runtime policy (None = the taskset's default harness)."""
+    """The agent's program (None = the taskset's default harness)."""
+    runtime: RuntimeConfig = SubprocessConfig()
+    """Runtime for the harness program — the policy each run provisions its box
+    from; tool servers choose their placement separately."""
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
     client: ClientConfig | None = None
@@ -150,8 +153,8 @@ class Agent:
 
     Built from an `AgentConfig` alone; `client=`/`interception=` inject live
     resources to borrow — agents on one endpoint should share one `Client`, and a
-    live `Interception`'s owner keeps its lifecycle. The harness config's
-    `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
+    live `Interception`'s owner keeps its lifecycle. The config's `runtime` is a
+    *policy*: each `run` provisions a fresh box from it, resolved
     per task; `run(runtime=...)` places the run into an existing box instead
     (borrowed boxes are never started or torn down by the run)."""
 
@@ -183,7 +186,7 @@ class Agent:
             sampling=config.sampling if config.sampling is not None else Sampling(),
         )
         self._closed = False
-        self.runtime_config: RuntimeConfig = self.harness.config.runtime
+        self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
             max_turns=config.max_turns,

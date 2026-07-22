@@ -268,14 +268,14 @@ class Env(ABC, Generic[ConfigT]):
             # Warn once per distinct harness; tool-less chat loops are exempt.
             if (
                 harness.EXECUTES_CODE
-                and isinstance(harness.config.runtime, SubprocessConfig)
+                and isinstance(self._agent_specs[name].runtime, SubprocessConfig)
                 and harness.config.id not in warned
             ):
                 warned.add(harness.config.id)
                 logger.warning(
                     "Harness %r is running in the subprocess runtime on the local system. "
                     "Local files and settings may affect the evaluation; use subprocess only "
-                    "for debugging. Use --env.<role>.harness.runtime.type docker or prime "
+                    "for debugging. Use --env.<role>.runtime.type docker or prime "
                     "for an isolated run.",
                     harness.config.id,
                 )
@@ -509,8 +509,7 @@ class Env(ABC, Generic[ConfigT]):
     def _runs_local(self) -> bool:
         """Whether every role's runtime policy is local (any remote role means tunnels)."""
         return all(
-            runtime_is_local(harness.config.runtime)
-            for harness in self._harnesses.values()
+            runtime_is_local(spec.runtime) for spec in self._agent_specs.values()
         )
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:

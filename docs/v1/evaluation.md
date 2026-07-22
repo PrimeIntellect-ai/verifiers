@@ -68,7 +68,7 @@ Docker harnesses can keep trusted setup online, then restrict the agent to decla
 HTTP(S) destinations:
 
 ```toml
-[env.agent.harness.runtime]
+[env.agent.runtime]
 type = "docker"
 allow = ["https://*.wikipedia.org"]
 block = ["https://upload.wikimedia.org"]

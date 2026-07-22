@@ -6,19 +6,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.utils.install import env_name
-from verifiers.v1.runtimes import (
-    ProgramResult,
-    Runtime,
-    RuntimeConfig,
-    SubprocessConfig,
-)
+from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import ID, Messages
 
@@ -34,13 +29,27 @@ class HarnessConfig(BaseConfig):
     id: ID = "bash"
     """Local package or Hub `org/name[@version]`, set through the seat's
     `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env)."""
-    runtime: RuntimeConfig = SubprocessConfig()
-    """Runtime for the harness program; tool servers choose their placement separately."""
     env: dict[str, str] = Field(default_factory=dict)
     """Extra program variables; harness-owned variables take precedence."""
     forward_env: list[str] = Field(default_factory=list)
     """Host variables to forward without writing secrets into config; explicit `env` wins."""
     disabled_tools: list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_runtime(cls, data):
+        """Point a harness-level `runtime` key (its old home) at the seat that owns
+        it; a harness config declaring its own `runtime` field keeps the key."""
+        if (
+            isinstance(data, dict)
+            and "runtime" in data
+            and "runtime" not in cls.model_fields
+        ):
+            raise ValueError(
+                "the runtime belongs to the seat, not the harness: "
+                "--env.<role>.runtime.type docker (TOML: [env.agent.runtime])"
+            )
+        return data
 
     @property
     def name(self) -> str:

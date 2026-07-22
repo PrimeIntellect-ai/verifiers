@@ -265,7 +265,7 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
-TRACE_VERSION = 2
+TRACE_VERSION = 3
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 

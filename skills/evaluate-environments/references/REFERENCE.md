@@ -1,6 +1,6 @@
 # REFERENCE.md
 
-A complete reference of every settable config field for **evaluating tasksets in `verifiers.v1`**. The config tree is parsed from CLI flags (dotted, e.g. `--env.agent.harness.runtime.type docker`) and/or `@ file.toml` by `prime-pydantic-config`; every field below is settable either way unless noted.
+A complete reference of every settable config field for **evaluating tasksets in `verifiers.v1`**. The config tree is parsed from CLI flags (dotted, e.g. `--env.agent.runtime.type docker`) and/or `@ file.toml` by `prime-pydantic-config`; every field below is settable either way unless noted.
 
 The root config the eval CLI parses is [`EvalConfig`](#evalconfig--the-run). It composes the environment (`env` — the whole `[env]` block: taskset, agents, limits) with the run knobs (model, sampling, counts) and the worker pool. The tree:
 
@@ -14,7 +14,7 @@ EvalConfig                          (the run)
 │  ├─ <agent>: AgentConfig          (per-agent harness/model/client/sampling +
 │  │  │                              per-run caps; `agent` on the single-agent env)
 │  │  ├─ harness: HarnessConfig     (subclass resolved by --env.<agent>.harness.id)
-│  │  │  └─ runtime: RuntimeConfig  (subprocess | docker | prime | modal)
+│  │  ├─ runtime: RuntimeConfig     (subprocess | docker | prime | modal)
 │  │  ├─ timeout: TimeoutConfig     (per-stage: setup/rollout/finalize/scoring)
 │  │  ├─ retries: RolloutRetryConfig (per-agent whole-run retries)
 │  │  └─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
@@ -121,7 +121,8 @@ Per-run caps (turns, tokens, stage timeouts, retries) are agent fields, not env 
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `harness` | `HarnessConfig \| None` | `None` | The agent's program + runtime policy; resolved to its concrete subclass by `--env.<agent>.harness.id`. `None` = the taskset's default harness (its bundled one, else `bash`). See [Harness config](#harness-config). |
+| `harness` | `HarnessConfig \| None` | `None` | The agent's program; resolved to its concrete subclass by `--env.<agent>.harness.id`. `None` = the taskset's default harness (its bundled one, else `bash`). See [Harness config](#harness-config). |
+| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--env.<agent>.runtime.type docker\|prime\|modal`. |
 | `model` | `str \| None` | `None` | Pin a model for this agent (None = the run's `--model`). |
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
 | `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
@@ -241,7 +242,6 @@ A taskset implements `load()` and declares exactly one task type through its gen
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `id` | `ID` | `"bash"` | The harness id, which selects it. Set via `--env.<agent>.harness.id`. |
-| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--env.<agent>.harness.runtime.type docker\|prime\|modal`. |
 | `env` | `dict[str, str]` | `{}` | Additional env vars for the harness program. Harness-owned endpoint/auth/model vars take precedence. |
 | `forward_env` | `list[str]` | `[]` | Names of env vars to forward from `os.environ` into the harness program's runtime (for secrets not in checked-in config). Absent names are skipped; explicit `env` wins. |
 | `disabled_tools` | `list[str] \| None` | `None` | Harness-specific tool names to disable. |
@@ -252,7 +252,7 @@ A harness class also declares capability flags (ClassVars, not user-settable): `
 
 ### Built-in harness configs
 
-All inherit the base `HarnessConfig` fields (`id`, `runtime`, `env`, `forward_env`, `disabled_tools`).
+All inherit the base `HarnessConfig` fields (`id`, `env`, `forward_env`, `disabled_tools`); the runtime is the agent's (`--env.<agent>.runtime.*`).
 
 #### `BashHarnessConfig` — `id: "bash"` (the fallback)
 
@@ -314,7 +314,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 ## Runtime configs
 
-`verifiers/v1/runtimes/`. Discriminated on `type`; selected with the agent's `--env.<agent>.harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime` and `UserConfig.runtime`.
+`verifiers/v1/runtimes/`. Discriminated on `type`; selected with the agent's `--env.<agent>.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime` and `UserConfig.runtime`.
 
 ### `SubprocessConfig` — `type: "subprocess"` (default)
 
@@ -583,12 +583,12 @@ Use `only_gold` or `only_setup` to select one mode; setting both is rejected. Th
 - **Plugin resolution.** The run's `env` field narrows to the selected env's config class
   (`--env.id`, else the taskset's exported env, else `SingleAgentEnvConfig`) *before* validation; inside it, `taskset` narrows by its id and each pinned agent `harness` by its id. Entries in `TaskConfig.judges` are similarly narrowed by each judge `id`. This is why local and Hub plugin fields remain typed and appear in CLI validation instead of living in an untyped arguments dictionary.
 - **Dotted flags.** Every nested field is part of the same CLI tree
-  (`--env.agent.harness.runtime.type docker`, `--env.taskset.split test`, `--pool.max_workers 8`, `--env.agent.retries.max_retries 2`). An `@ file.toml` describes the identical tree; explicit CLI values layer over values loaded from the file.
+  (`--env.agent.runtime.type docker`, `--env.taskset.split test`, `--pool.max_workers 8`, `--env.agent.retries.max_retries 2`). An `@ file.toml` describes the identical tree; explicit CLI values layer over values loaded from the file.
 - **Runtime precedence.** An explicit, non-default CLI/TOML `workdir` or resource field wins over
   `TaskData`; otherwise a non-`None` row value fills it, and otherwise the runtime/provider default remains. `TaskData.image` is the required image for that row and replaces the runtime's base image. Unsupported resource fields are ignored; evaluation warns once per runtime/field.
 - **Timeout precedence.** For eval stages, a non-`None` agent-level `TimeoutConfig` value
   (`--env.<agent>.timeout.*`) wins over the corresponding `TaskData.timeout` value; if both are `None`, there is no framework timeout. The setup value is one deadline shared by task setup and harness provisioning. Validate uses `CheckTimeoutConfig.setup`, then falls back to `TaskData.timeout.setup`, while `CheckTimeoutConfig.total` independently bounds `Task.validate`.
-- **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `env.<agent>.harness.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
+- **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `env.<agent>.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
 - **Frozen models.** `TaskData`, `TaskResources`, and `TaskTimeout` are immutable wire input, not
   mutable runtime state. Put per-rollout coordination on typed `trace.state`. `RolloutLimits` is an immutable framework limit derived from the env's `max_*` fields.
 - **Legacy v0.** Set the run-level `id` (leave `env.taskset` unset) to run a classic `load_environment` env through the bridge. `--resume` is not supported for legacy evals.

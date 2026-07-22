@@ -115,15 +115,15 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge agent. Its runtime must be a container:
-    `--env.judge.harness.runtime.type docker|prime`."""
+    `--env.judge.runtime.type docker|prime`."""
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
         super().__init__(config)
-        self._check_judge_harness(self._harnesses["judge"])
+        self._check_judge(self._harnesses["judge"], config.judge)
 
-    def _check_judge_harness(self, harness: Harness) -> None:
+    def _check_judge(self, harness: Harness, judge: vf.AgentConfig) -> None:
         """The judge executes real code, never on the host — refuse an impossible
         judge at construction, not after burning a full solver run."""
         if not harness.EXECUTES_CODE:
@@ -133,11 +133,11 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
-        if isinstance(harness.config.runtime, vf.SubprocessConfig):
+        if isinstance(judge.runtime, vf.SubprocessConfig):
             raise ValueError(
                 "agentic-judge plays its judge in a container (JudgeTask mirrors "
                 "the solver task's image), but the judge resolves to the "
-                "subprocess runtime; use --env.judge.harness.runtime.type docker "
+                "subprocess runtime; use --env.judge.runtime.type docker "
                 "or prime."
             )
 

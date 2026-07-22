@@ -51,7 +51,7 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
 
 ```bash
-prime eval run owner/name --env.agent.harness.id codex --env.agent.harness.runtime.type prime
+prime eval run owner/name --env.agent.harness.id codex --env.agent.runtime.type prime
 ```
 
 The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id` keeps the taskset's own story (its exported `Environment` subclass, else the single-agent env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
@@ -59,7 +59,7 @@ The env — the control flow between agents — owns the whole `[env]` block. Em
 ```bash
 prime eval run my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
 prime eval run my-task-v1 --env.id agentic-judge \
-  --env.judge.harness.runtime.type docker                   # a judge agent verifies each attempt in a sandbox
+  --env.judge.runtime.type docker                           # a judge agent verifies each attempt in a sandbox
 ```
 
 When specifying Hub tasksets, always include the owner to resolve them correctly.
@@ -88,9 +88,9 @@ Harness and runtime settings:
 ```bash
 prime eval run my-task-v1 \
   --env.agent.harness.id rlm \
-  --env.agent.harness.runtime.type docker \
-  --env.agent.harness.runtime.cpu 4 \
-  --env.agent.harness.runtime.memory 8
+  --env.agent.runtime.type docker \
+  --env.agent.runtime.cpu 4 \
+  --env.agent.runtime.memory 8
 ```
 
 Sampling:
@@ -120,9 +120,11 @@ model = "openai/gpt-5-mini"
 id = "my-task-v1"
 split = "test"
 
+[env.agent]
+runtime = { type = "subprocess" }
+
 [env.agent.harness]
 id = "bash"
-runtime = { type = "subprocess" }
 
 [sampling]
 temperature = 0.7

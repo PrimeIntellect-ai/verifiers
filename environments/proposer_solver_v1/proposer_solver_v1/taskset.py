@@ -13,7 +13,7 @@ Seats are deliberately heterogeneous: point the proposer at a code-running harne
 in a real sandbox and keep the solvers on a cheap tool-less chat loop —
 
     uv run eval proposer-solver-v1 -n 4 \
-      --env.proposer.harness.id codex --env.proposer.harness.runtime.type prime \
+      --env.proposer.harness.id codex --env.proposer.runtime.type prime \
       --env.solver.harness.id null
 
 Train-side, the seats flip independently per run (`--env.train_solver false`

@@ -130,16 +130,16 @@ def _eval_config(
     max_turns: int | None = 4,
     rollout_timeout: float = 180,
     taskset_overrides: dict | None = None,
-    harness_overrides: dict | None = None,
+    runtime: dict | None = None,
     env: dict | None = None,
     pool: dict | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
-    (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` / `harness_overrides`
-    are merged onto the `{id: ...}` config (placement, runtime, etc.); `model` overrides the default
-    text model (e.g. a VLM for an image task).
+    (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` merges onto the
+    `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
+    harness one); `model` overrides the default text model (e.g. a VLM for an image task).
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
@@ -152,9 +152,11 @@ def _eval_config(
     env_cfg = dict(env or {})
     _configure_prime_runtimes(taskset_cfg)
     if harness:
-        harness_cfg = {"id": harness, **(harness_overrides or {})}
-        _configure_prime_runtimes(harness_cfg)
-        env_cfg.setdefault("agent", {})["harness"] = harness_cfg
+        env_cfg.setdefault("agent", {})["harness"] = {"id": harness}
+    if runtime:
+        runtime_cfg = dict(runtime)
+        _configure_prime_runtimes(runtime_cfg)
+        env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
     # Per-run caps live on the seats: resolve the env's declared roles and cap
     # each one (a test's own seat dict wins over the shared defaults).
     config_cls = vf.env_config_type(taskset, env_cfg.get("id", ""))
