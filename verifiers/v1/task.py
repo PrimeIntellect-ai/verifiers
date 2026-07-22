@@ -141,7 +141,9 @@ class TaskData(StrictBaseModel):
     """Whether this task permits public network access. False requires a runtime with
     framework-aware filtering; the evaluator may still add explicit allowed destinations."""
     network_allow: list[str] = []
-    """Destinations added to the runtime allowlist when network_access is false."""
+    """Destinations added to the Docker allowlist; effective under deny-by-default."""
+    network_block: list[str] = []
+    """Destinations added to the Docker blocklist; non-empty activates filtering."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 

@@ -101,6 +101,11 @@ HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed. As 
 user deny rules win over user allows; `network_access` selects Verifiers' default allow
 or deny posture.
 
+Per-task `TaskData.network_allow` and `TaskData.network_block` entries are merged into
+the Docker runtime lists. Task and evaluator restrictions compose: either may disable
+public access, all allow and block entries are retained, and block entries win. Any
+explicit task URL policy requires Docker's framework-aware policy support.
+
 The restriction begins after task and harness setup and remains active through agent
 execution, finalization, and scoring. Debug actions apply it after task setup as well.
 The policy proxy runs in the Verifiers process, not a sidecar. Linux puts its listening
