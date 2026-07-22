@@ -7,6 +7,9 @@ are local-only (their marks are excluded in CI)."""
 
 import pytest
 
+import verifiers.v1 as vf
+from verifiers.v1.clients import EvalClient
+
 _m = pytest.mark
 
 
@@ -82,6 +85,31 @@ SHARED_TOOL_PLACEMENTS = [
     _pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     _pair("modal", "modal", "harness-in-modal-with-tool-in-modal"),
 ]
+
+
+async def test_agent_client_lifecycle():
+    config = vf.AgentConfig(model="unused", harness=vf.HarnessConfig(id="null"))
+    agent = vf.make_agent(config)
+    first = agent.ctx.client
+    assert isinstance(first, EvalClient)
+
+    async with agent:
+        assert not first.http.is_closed
+    assert first.http.is_closed
+
+    async with agent:
+        second = agent.ctx.client
+        assert isinstance(second, EvalClient)
+        assert second is not first
+        assert not second.http.is_closed
+    assert second.http.is_closed
+
+    borrowed = vf.resolve_client(vf.EvalClientConfig())
+    assert isinstance(borrowed, EvalClient)
+    async with vf.make_agent(config, client=borrowed):
+        pass
+    assert not borrowed.http.is_closed
+    await borrowed.close()
 
 
 @pytest.mark.e2e

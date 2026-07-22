@@ -148,13 +148,15 @@ class Agent:
         self.config = config
         self.harness = load_harness(harness_config)
         self._owns_client = client is None
+        self._client_config = config.client or EvalClientConfig()
         if self._owns_client:
-            client = resolve_client(config.client or EvalClientConfig())
+            client = resolve_client(self._client_config)
         self.ctx = ModelContext(
             model=config.model,
             client=client,
             sampling=config.sampling if config.sampling is not None else Sampling(),
         )
+        self._client_closed = False
         self.runtime_config: RuntimeConfig = self.harness.config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
@@ -174,6 +176,13 @@ class Agent:
     async def __aenter__(self) -> "Agent":
         if self._entered:
             raise RuntimeError("Agent is already entered; enter it once and share it")
+        if self._client_closed:
+            self.ctx = ModelContext(
+                model=self.ctx.model,
+                client=resolve_client(self._client_config),
+                sampling=self.ctx.sampling,
+            )
+            self._client_closed = False
         self._entered = True
         if self.interception is None:
             # Sized to the runtime policy (remote needs the tunnel); runs the
@@ -189,6 +198,7 @@ class Agent:
                 self._entered, self._server = False, None
                 if self._owns_client:
                     await self.ctx.client.close()
+                    self._client_closed = True
                 raise
         return self
 
@@ -201,6 +211,7 @@ class Agent:
         finally:
             if self._owns_client:
                 await self.ctx.client.close()
+                self._client_closed = True
 
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping
