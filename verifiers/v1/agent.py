@@ -301,23 +301,18 @@ class Agent:
                 "AgentConfig.model is unset; an Agent needs a pinned model "
                 "(inside an env the run's own model fills it in)"
             )
-        # Resolve the unpinned fields into the config: it is the agent's full
-        # identity — what stamps onto every trace (`AgentInfo.config`).
-        if config.harness is None:
-            config = config.model_copy(
-                update={"harness": harness_config_type("bash")(id="bash")}
-            )
-        if config.sampling is None:
-            config = config.model_copy(update={"sampling": Sampling()})
+        harness_config = config.harness
+        if harness_config is None:
+            harness_config = harness_config_type("bash")(id="bash")
         self.config = config
-        self.harness = load_harness(config.harness)
+        self.harness = load_harness(harness_config)
         self._owns_client = client is None
         if self._owns_client:
             client = resolve_client(config.client or EvalClientConfig())
         self.ctx = ModelContext(
             model=config.model,
             client=client,
-            sampling=config.sampling,
+            sampling=config.sampling if config.sampling is not None else Sampling(),
         )
         self._closed = False
         self.runtime_config: RuntimeConfig = config.runtime
@@ -579,7 +574,6 @@ class Agent:
             else task.data.timeout.harness
         )
         return dict(
-            agent_config=self.config,
             harness=self.harness,
             ctx=self.ctx,
             runtime_config=runtime_config,

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
@@ -48,6 +48,12 @@ class HarnessConfig(BaseConfig):
     def resolved_env(self) -> dict[str, str]:
         forwarded = {k: os.environ[k] for k in self.forward_env if k in os.environ}
         return {**forwarded, **self.env}
+
+
+class WireHarnessConfig(HarnessConfig):
+    """Wire form that preserves harness-specific knobs without importing the harness."""
+
+    model_config = ConfigDict(extra="allow")
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)

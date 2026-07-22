@@ -23,7 +23,6 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import TYPE_CHECKING
 
 from verifiers import __version__
 from verifiers.v1.harness import Harness
@@ -55,9 +54,6 @@ from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.version import verifiers_commit
-
-if TYPE_CHECKING:
-    from verifiers.v1.agent import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +111,6 @@ class RolloutRun:
         self,
         *,
         task: Task,
-        agent_config: "AgentConfig",
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
@@ -151,9 +146,12 @@ class RolloutRun:
             ),
             state=state_cls(type(task))(),
             verifiers=VersionInfo(version=__version__, commit=verifiers_commit()),
-            # The seat's resolved config, role overrides included — the agent
-            # this trace can be reproduced with.
-            agent=AgentInfo(config=agent_config),
+            # The seat's resolved identity, role overrides included.
+            agent=AgentInfo(
+                model=ctx.model,
+                sampling=ctx.sampling,
+                harness=harness.config,
+            ),
         )
         if on_trace is not None:
             on_trace(self.trace)

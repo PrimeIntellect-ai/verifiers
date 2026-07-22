@@ -312,12 +312,6 @@ __all__ = [
     "Segment",
 ]
 
-# `AgentInfo.config` is a forward reference: the record sits below agent.py in
-# the import graph, so `AgentConfig` resolves here, at the package root — which
-# runs before any `verifiers.v1.*` submodule is reachable.
-AgentInfo.model_rebuild()
-Trace.model_rebuild()
-
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is
 # silent until an app opts in: a NullHandler on the package root absorbs records
 # so nothing is emitted (and no "no handler" warning) unless handlers are added.
