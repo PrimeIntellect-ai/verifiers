@@ -74,16 +74,13 @@ class Harness(ABC, Generic[ConfigT]):
     def resolve_prompt(
         self, task: TaskData
     ) -> tuple[str | None, str | Messages | None]:
+        """Resolve system-prompt placement without constraining the initial prompt.
+
+        Each `launch()` owns the prompt shapes its program accepts. In particular,
+        accepting initial Messages is distinct from `SUPPORTS_RESUME`, which means
+        the default `resume()` can replay an accumulated conversation.
+        """
         prompt = task.prompt
-        if (
-            prompt is not None
-            and not isinstance(prompt, str)
-            and not self.SUPPORTS_RESUME
-        ):
-            raise ValueError(
-                f"Harness {self.config.id!r} does not support a Messages prompt; "
-                "task.prompt must be a string or None."
-            )
         system = task.system_prompt
         if system is None or self.APPENDS_SYSTEM_PROMPT:
             return system if self.APPENDS_SYSTEM_PROMPT else None, prompt
@@ -99,6 +96,16 @@ class Harness(ABC, Generic[ConfigT]):
             self.config.id,
         )
         return None, f"{system}\n\n{prompt}"
+
+    def resolve_text_prompt(self, task: TaskData) -> tuple[str | None, str | None]:
+        """Resolve a harness prompt whose launch program accepts only plain text."""
+        system, prompt = self.resolve_prompt(task)
+        if prompt is not None and not isinstance(prompt, str):
+            raise ValueError(
+                f"Harness {self.config.id!r} does not support a Messages prompt; "
+                "task.prompt must be a string or None."
+            )
+        return system, prompt
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""

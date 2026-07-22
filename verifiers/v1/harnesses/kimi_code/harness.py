@@ -66,7 +66,7 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        _, prompt = self.resolve_prompt(data)
+        _, prompt = self.resolve_text_prompt(data)
         env = {
             **self.config.resolved_env,
             "KIMI_CODE_HOME": KIMI_HOME,

@@ -34,7 +34,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
-        _, prompt = self.resolve_prompt(data)
+        _, prompt = self.resolve_text_prompt(data)
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         args = [
             "--model",

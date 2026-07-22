@@ -113,7 +113,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(data)
+        system_prompt, prompt = self.resolve_text_prompt(data)
         env = {
             **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,

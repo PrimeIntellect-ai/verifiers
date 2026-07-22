@@ -433,7 +433,9 @@ class Agent:
         Everything is a real rollout — the trace (live on `session.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
         exchange (`user_closed`) and finishes the rollout, hooks and scoring
-        included. An exchange is caller-driven, so `config.retries` does not
+        included. A failure while opening the rollout raises before the context
+        is entered (the failed trace is still completed and reported through
+        `on_trace`). An exchange is caller-driven, so `config.retries` does not
         apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
@@ -454,7 +456,14 @@ class Agent:
             **params,
         )
         session = ChatSession(run)
-        await run.open()
+        if not await run.open():
+            trace = await run.close()
+            if trace.runtime is not None:
+                trace.runtime.borrowed = runtime is not None
+            failure = run.failure
+            if failure is None:  # `open()` returning False always captures one.
+                raise RuntimeError("rollout setup failed without a captured error")
+            raise failure
         try:
             yield session
         except Exception as e:
@@ -631,17 +640,28 @@ class _EpisodeAgent(Agent):
         `Env.run` stays crash-safe. No gate: a session is held open
         across the exchange (two of them interleave in one episode), so it must
         not occupy an eval slot the way a one-shot `run` does."""
-        async with super().chat(
-            task,
-            runtime=runtime,
-            tools=tools if tools is not None else self._shared_for(task),
-            mask_prompt=mask_prompt,
-            on_trace=self._watch(on_trace),
-        ) as session:
-            try:
+        trace: Trace | None = None
+
+        def remember(current: Trace) -> None:
+            nonlocal trace
+            trace = current
+            if on_trace is not None:
+                on_trace(current)
+
+        try:
+            async with super().chat(
+                task,
+                runtime=runtime,
+                tools=tools if tools is not None else self._shared_for(task),
+                mask_prompt=mask_prompt,
+                on_trace=self._watch(remember),
+            ) as session:
                 yield session
-            finally:
-                self._completed.append(session.trace)
+        finally:
+            # `Agent.chat()` may fail before yielding (e.g. task/harness setup).
+            # Its trace is minted first, so retain that failed rollout in the episode.
+            if trace is not None and trace.is_completed:
+                self._completed.append(trace)
 
 
 def make_agent(

@@ -160,6 +160,7 @@ class RolloutRun:
         )
         self._stack = AsyncExitStack()
         self._failed = False
+        self._failure: Exception | None = None
         self._opened = False
         self._closed = False
         self._endpoint: str | None = None
@@ -179,6 +180,11 @@ class RolloutRun:
         """Whether `close()` (or `abort()`) already ran — no further segments."""
         return self._closed
 
+    @property
+    def failure(self) -> Exception | None:
+        """The original exception most recently captured onto the trace."""
+        return self._failure
+
     def fail(self, error: Exception) -> None:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
@@ -195,6 +201,7 @@ class RolloutRun:
         if not isinstance(error, RolloutError):
             logger.exception("unexpected error in rollout %s", self.trace.id)
         self._failed = True
+        self._failure = error
         self.trace.capture_error(error)
 
     async def open(self) -> bool:
