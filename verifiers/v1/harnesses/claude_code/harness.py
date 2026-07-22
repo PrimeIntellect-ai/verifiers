@@ -69,13 +69,16 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "CLAUDE_CONFIG_DIR": CLAUDE_CONFIG_DIR,
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_AUTOUPDATER": "1",
             "IS_SANDBOX": "1",
         }
         argv = [
             CLAUDE_BIN.format(version=self.config.version),
             "--print",
-            "--bare",
+            # Bare mode suppresses skill discovery, so skill runs drop it; the fresh
+            # CLAUDE_CONFIG_DIR keeps user hooks/settings/memory out either way.
+            *([] if self.config.skills else ["--bare"]),
             "--dangerously-skip-permissions",
             "--no-session-persistence",
             "--model",
