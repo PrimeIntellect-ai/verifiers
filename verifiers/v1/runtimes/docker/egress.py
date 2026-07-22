@@ -91,6 +91,7 @@ class EgressProxy:
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        upstream_writer: asyncio.StreamWriter | None = None
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
             request, headers = head.split(b"\r\n", 1)
@@ -154,6 +155,8 @@ class EgressProxy:
                 writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
         finally:
+            if upstream_writer is not None:
+                upstream_writer.close()
             writer.close()
 
 

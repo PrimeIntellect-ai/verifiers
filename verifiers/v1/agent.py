@@ -94,7 +94,9 @@ class AgentConfig(BaseConfig):
         return data
 
 
-def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
+def _check_borrowed_placement(
+    task: Task, runtime: Runtime, base_config: RuntimeConfig
+) -> None:
     """A borrowed box is never re-provisioned, so a task's placement fields can't
     be honored. Reject requirements that cannot be applied to the running box; an
     image mismatch on a container only warns, since sharing its world is the point."""
@@ -106,12 +108,16 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
                 f"runtime {runtime.name!r} was not provisioned deny-by-default; use "
                 "agent.provision(task)"
             )
-        missing = [host for host in task.data.network_allow if host not in config.allow]
-        if missing:
+        base_allow = base_config.allow if isinstance(base_config, DockerConfig) else []
+        base_block = base_config.block if isinstance(base_config, DockerConfig) else []
+        # Do not inherit extra destinations from a box provisioned for another task.
+        expected_allow = set([*task.data.network_allow, *base_allow])
+        if set(config.allow) != expected_allow or set(config.block) != set(base_block):
             raise ValueError(
-                f"task {task.data.idx!r} requires network allow entries {missing!r}, "
-                f"but borrowed runtime {runtime.name!r} was not provisioned with them; "
-                "use agent.provision(task)"
+                f"task {task.data.idx!r} requires allow {sorted(expected_allow)!r} and "
+                f"block {base_block!r}, but borrowed runtime {runtime.name!r} has "
+                f"allow {config.allow!r} and block {config.block!r}; use "
+                "agent.provision(task)"
             )
     if task.data.image is None:
         return
@@ -300,7 +306,7 @@ class Agent:
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts, interception."""
         if runtime is not None:
-            _check_borrowed_placement(task, runtime)
+            _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
             run_is_local = runtime.is_local
         else:
