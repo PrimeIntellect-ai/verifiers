@@ -2,10 +2,7 @@
 
 Newer and more experimental environment classes that may have some sharper edges + change more frequently.
 
-For new taskset/harness environments, use the `verifiers.v1` `Taskset` /
-`Harness` format (`vf.Env`, `vf.Taskset`, and `vf.Harness`). The legacy
-experimental `ComposableEnv` stack remains in this subtree for existing
-experiments, but new environments should not be built on that format.
+For new taskset/harness environments, use the `verifiers.v1` `Taskset` / `Harness` format (`vf.Env`, `vf.Taskset`, and `vf.Harness`). The legacy experimental `ComposableEnv` stack remains in this subtree for existing experiments, but new environments should not be built on that format.
 
 ## SandboxMixin
 

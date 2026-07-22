@@ -30,7 +30,6 @@ uv tool install prime
 - The [docs](docs/) contain short, human-written guides and overviews about the architecture.
 - The [AGENTS.md](AGENTS.md) and [skills](skills/) are for coding agents and go into more details.
 
-
 ## Citation
 
 Originally created by Will Brown ([@willccbb](https://github.com/willccbb)).
