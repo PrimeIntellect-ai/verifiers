@@ -15,6 +15,9 @@ Every run is a standard rollout producing a `vf.Trace`. By default, the agent
 is self-contained: its context owns the model client and shared interception
 server, while each run owns its runtime and any per-run interception machinery.
 
+Exiting the context closes an agent-owned client, so create a new agent for
+later runs; injected clients remain caller-owned.
+
 ## Borrowed Resources
 
 At scale (large evals, training), per-run machinery adds up. `make_agent`

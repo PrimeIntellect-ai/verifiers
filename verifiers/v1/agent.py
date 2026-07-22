@@ -148,15 +148,14 @@ class Agent:
         self.config = config
         self.harness = load_harness(harness_config)
         self._owns_client = client is None
-        self._client_config = config.client or EvalClientConfig()
         if self._owns_client:
-            client = resolve_client(self._client_config)
+            client = resolve_client(config.client or EvalClientConfig())
         self.ctx = ModelContext(
             model=config.model,
             client=client,
             sampling=config.sampling if config.sampling is not None else Sampling(),
         )
-        self._client_closed = False
+        self._closed = False
         self.runtime_config: RuntimeConfig = self.harness.config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
@@ -176,13 +175,8 @@ class Agent:
     async def __aenter__(self) -> "Agent":
         if self._entered:
             raise RuntimeError("Agent is already entered; enter it once and share it")
-        if self._client_closed:
-            self.ctx = ModelContext(
-                model=self.ctx.model,
-                client=resolve_client(self._client_config),
-                sampling=self.ctx.sampling,
-            )
-            self._client_closed = False
+        if self._closed:
+            raise RuntimeError("Agent is closed; create a new agent")
         self._entered = True
         if self.interception is None:
             # Sized to the runtime policy (remote needs the tunnel); runs the
@@ -197,8 +191,8 @@ class Agent:
                 # here, or the agent stays "already entered" forever.
                 self._entered, self._server = False, None
                 if self._owns_client:
+                    self._closed = True
                     await self.ctx.client.close()
-                    self._client_closed = True
                 raise
         return self
 
@@ -210,8 +204,8 @@ class Agent:
                 await server.__aexit__(*exc)
         finally:
             if self._owns_client:
+                self._closed = True
                 await self.ctx.client.close()
-                self._client_closed = True
 
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping
@@ -248,6 +242,8 @@ class Agent:
         `on_trace` observes the trace the moment it's minted, before any I/O.
         Retries whole while the trace ends with a retryable error (`config.retries`)
         — never into a borrowed box; the final trace keeps earlier attempts' errors."""
+        if self._closed:
+            raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
