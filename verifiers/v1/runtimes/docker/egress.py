@@ -174,9 +174,7 @@ class EgressProxy:
                     for *_, address in addresses:
                         resolved = ip_address(address[0])
                         mapped = getattr(resolved, "ipv4_mapped", None)
-                        if not resolved.is_global or (
-                            mapped is not None and not mapped.is_global
-                        ):
+                        if not (mapped or resolved).is_global:
                             permitted = False
                             break
             if not permitted:
