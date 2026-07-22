@@ -66,3 +66,64 @@ skills = ["path/to/my-skill"]
 ```
 
 Setting `skills` on a harness without native skill support fails up front.
+
+## Runtime network policies
+
+Prime and Modal expose provider-native `network_access` switches. Docker instead uses
+URL-level `allow` and `block` lists, with a trusted setup phase before enforcement; the
+same policy vocabulary can extend to other runtimes when their sandbox APIs support it.
+
+### Docker URL policies
+
+Docker harnesses can keep trusted setup online, then restrict the agent to declared
+HTTP(S) destinations:
+
+```toml
+[env.agent.harness.runtime]
+type = "docker"
+allow = ["https://*.wikipedia.org"]
+block = ["https://upload.wikimedia.org"]
+```
+
+Docker is deny-by-default: an empty `allow` list permits only the interception URL and
+every MCP URL, which are added automatically before user entries. A bare `"*"` with no
+block entries opts out of filtering and keeps Docker's host-network behavior; adding a
+block entry enables filtering and narrows the wildcard. User block rules win over user
+allow rules; framework interception and MCP routes always remain reachable. Under every
+filtered policy, non-global destinations—including host-loopback, private, and link-local
+addresses—are reserved for framework routes, so user `allow` rules cannot expose host/LAN
+services or cloud metadata endpoints.
+
+Filtered Docker runtimes are single-rollout. Reusing one would require reopening trusted
+setup networking to processes left by the previous agent, so each rollout gets a fresh box.
+
+Rules may be bare host patterns (`*.example.com`) or URL origins
+(`https://example.com:8443`). A scheme or port in a rule narrows the match; URL paths
+are ignored. `*.example.com` includes `example.com` itself. HTTPS proxy tunnels use
+port 443 by default; an `allow` entry with an explicit HTTPS origin authorizes another
+port. Both the CONNECT authority and the TLS ClientHello SNI must satisfy the policy.
+
+The enforcement shape follows
+[Docker Sandboxes network isolation](https://docs.docker.com/ai/sandboxes/security/isolation/):
+HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed. As in
+[Docker's policy evaluation](https://docs.docker.com/ai/sandboxes/governance/concepts/),
+user deny rules win over user allows.
+
+Per-task `TaskData.network_allow` and `TaskData.network_block` entries are merged into
+the Docker runtime lists. The task's default `network_allow=["*"]` is neutral and leaves
+the evaluator policy intact. A concrete list replaces an evaluator wildcard; two
+concrete lists are combined, all block entries are retained, and block entries win. Any
+non-wildcard task URL policy requires Docker's framework-aware policy support.
+
+The restriction begins after task and harness setup and remains active through agent
+execution, finalization, and scoring. Debug actions apply it after task setup as well.
+The policy proxy runs in the Verifiers process, not a sidecar. Linux puts its listening
+socket on container loopback and removes every non-loopback route. macOS keeps one route
+to the host and limits it to the proxy port. One-shot helpers place the listener and
+apply the cut, then exit, so the harness remains the only running container. This
+prevents direct proxy bypass, peer-container access, arbitrary host access, and non-HTTP
+egress.
+
+Colocated MCP servers remain available on container loopback. The in-process proxy dials
+host-local interception and MCP endpoints directly; shared and external MCP URLs pass
+through the same policy without requiring a sidecar or public tunnel.

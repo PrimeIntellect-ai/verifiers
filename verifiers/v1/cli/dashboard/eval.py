@@ -232,7 +232,7 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_column()
     seats = config.env.agent_harnesses()
     taskset = config.env.taskset
-    env_label = taskset.name if taskset is not None else "no taskset"
+    env_label = taskset.name if taskset.id else "no taskset"
     if config.env.id:
         env_label = f"{env_name(config.env.id)}+{env_label}"
     # One seat story when every seat resolves the same way (the common case); one
@@ -254,9 +254,7 @@ def Overview(config: EvalConfig) -> Table:
     # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
     # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
     # here), but only for the harness — `taskset.task.tools.runtime.type` has no other display.
-    if taskset is not None and (
-        taskset_over := overrides(taskset, skip=frozenset({"id"}))
-    ):
+    if taskset_over := overrides(taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
     for role, h in seats.items():
         if harness_over := overrides(h, skip=frozenset({"id", "runtime.type"})):

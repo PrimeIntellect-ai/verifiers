@@ -31,7 +31,7 @@ from verifiers.v1.retries import RetryConfig, run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, resolve_server_config
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.taskset import TasksetConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.generic import deep_merge, generic_type
@@ -65,9 +65,9 @@ class EnvConfig(BaseConfig):
     """Which `Env` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
     to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
     # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
-    taskset: SerializeAsAny[TasksetConfig] | None = None
+    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The seed taskset — the rows every rollout starts from (`--env.taskset.id`).
-    None only for an env that mints its tasks without a dataset."""
+    The id stays empty only for a legacy (v0) run, which sets the top-level `id`."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
@@ -81,17 +81,14 @@ class EnvConfig(BaseConfig):
     @property
     def env_id(self) -> str:
         """The taskset id, prefixed by the paired env id (`best-of-n+gsm8k-v1`)."""
-        taskset_id = self.taskset.id if self.taskset is not None else ""
-        if taskset_id and self.id:
-            return f"{self.id}+{taskset_id}"
-        return taskset_id or self.id
+        if self.taskset.id and self.id:
+            return f"{self.id}+{self.taskset.id}"
+        return self.taskset.id or self.id
 
     def agent_harnesses(self) -> dict[str, HarnessConfig]:
         """Each declared role's resolved harness config (pin, else the taskset's
         default) — known without constructing the env."""
-        default = default_agent_harness(
-            self.taskset.id if self.taskset is not None else ""
-        )
+        default = default_agent_harness(self.taskset.id)
         return {
             name: cfg.harness if cfg.harness is not None else default
             for name, cfg in _declared_agent_configs(self).items()
@@ -239,7 +236,7 @@ class Env(ABC, Generic[ConfigT]):
                 f"{config_cls.__name__}(...) explicitly"
             )
         self.config: ConfigT = config
-        if config.taskset is None:
+        if not config.taskset.id:
             raise ValueError(
                 f"{type(self).__name__} needs a seed taskset — every rollout starts "
                 "from one of its tasks: set --env.taskset.id (or the positional "
@@ -247,7 +244,7 @@ class Env(ABC, Generic[ConfigT]):
             )
         self.taskset = load_taskset(config.taskset)
         self._default_harness = default_agent_harness(config.taskset.id)
-        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
+        task_cls = type(self.taskset).task_type()
         self._task_cls: type[Task] = task_cls
         self._agent_specs: dict[str, AgentConfig] = _declared_agent_configs(self.config)
         if not self._agent_specs:
@@ -520,7 +517,7 @@ class Env(ABC, Generic[ConfigT]):
         """`requires_tunnel` over the consumers known before any rollout: role
         runtimes, live `shared` servers, and the task class's tool/user servers;
         a class overriding `server_config` conservatively counts as remote."""
-        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
+        task_cls = type(self.taskset).task_type()
         server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
         if server_classes and task_cls.server_config is not Task.server_config:
             return True

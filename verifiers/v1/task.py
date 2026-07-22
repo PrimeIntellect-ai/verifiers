@@ -137,6 +137,13 @@ class TaskData(StrictBaseModel):
     system_prompt: str | None = None
     image: str | None = None
     workdir: str | None = None
+    network_allow: list[str] = ["*"]
+    """Execution-time destinations requested by this task. `*` leaves the runtime
+    allowlist unchanged; a concrete list replaces a wildcard or combines with
+    existing entries."""
+    network_block: list[str] = []
+    """Execution-time destinations denied by this task and combined with runtime
+    blocks."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 

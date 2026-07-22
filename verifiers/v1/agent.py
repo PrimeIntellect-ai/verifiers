@@ -26,6 +26,7 @@ from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.retries import RetryConfig, backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun
 from verifiers.v1.runtimes import (
+    DockerConfig,
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
@@ -93,11 +94,37 @@ class AgentConfig(BaseConfig):
         return data
 
 
-def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
+def _check_borrowed_placement(
+    task: Task, runtime: Runtime, base_config: RuntimeConfig
+) -> None:
     """A borrowed box is never re-provisioned, so a task's placement fields can't
-    be honored. A task `image` on a subprocess box raises (a wiring bug — it goes
-    to the caller, not the trace); a container box whose image differs only warns,
-    since placing a run into an existing world is the point of borrowing."""
+    be honored. Reject requirements that cannot be applied to the running box; an
+    image mismatch on a container only warns, since sharing its world is the point."""
+    task_policy = "*" not in task.data.network_allow or bool(task.data.network_block)
+    base_docker = base_config if isinstance(base_config, DockerConfig) else None
+    if task_policy or (base_docker is not None and base_docker.network_isolated):
+        config = runtime.config
+        if not isinstance(config, DockerConfig):
+            raise ValueError(
+                f"task {task.data.idx!r} requires a Docker URL network policy, but "
+                f"borrowed runtime {runtime.name!r} is not Docker-backed; use "
+                "agent.provision(task)"
+            )
+        policy_base = (
+            base_docker if base_docker is not None else DockerConfig(allow=["*"])
+        )
+        expected = resolve_runtime_config(policy_base, task)
+        assert isinstance(expected, DockerConfig)
+        # Do not inherit extra destinations from a box provisioned for another task.
+        if set(config.allow) != set(expected.allow) or set(config.block) != set(
+            expected.block
+        ):
+            raise ValueError(
+                f"task {task.data.idx!r} requires allow={expected.allow!r} and "
+                f"block={expected.block!r}, but borrowed runtime {runtime.name!r} "
+                f"has allow={config.allow!r} and block={config.block!r}; use "
+                "agent.provision(task)"
+            )
     if task.data.image is None:
         return
     if isinstance(runtime.config, SubprocessConfig):
@@ -147,13 +174,15 @@ class Agent:
             harness_config = harness_config_type("bash")(id="bash")
         self.config = config
         self.harness = load_harness(harness_config)
-        if client is None:
+        self._owns_client = client is None
+        if self._owns_client:
             client = resolve_client(config.client or EvalClientConfig())
         self.ctx = ModelContext(
             model=config.model,
             client=client,
             sampling=config.sampling if config.sampling is not None else Sampling(),
         )
+        self._closed = False
         self.runtime_config: RuntimeConfig = self.harness.config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
@@ -173,6 +202,8 @@ class Agent:
     async def __aenter__(self) -> "Agent":
         if self._entered:
             raise RuntimeError("Agent is already entered; enter it once and share it")
+        if self._closed:
+            raise RuntimeError("Agent is closed; create a new agent")
         self._entered = True
         if self.interception is None:
             # Sized to the runtime policy (remote needs the tunnel); runs the
@@ -186,14 +217,22 @@ class Agent:
                 # A failed __aenter__ gets no __aexit__ from `async with`: unwind
                 # here, or the agent stays "already entered" forever.
                 self._entered, self._server = False, None
+                if self._owns_client:
+                    self._closed = True
+                    await self.ctx.client.close()
                 raise
         return self
 
     async def __aexit__(self, *exc) -> None:
         self._entered = False
         server, self._server = self._server, None
-        if server is not None:
-            await server.__aexit__(*exc)
+        try:
+            if server is not None:
+                await server.__aexit__(*exc)
+        finally:
+            if self._owns_client:
+                self._closed = True
+                await self.ctx.client.close()
 
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping
@@ -230,6 +269,8 @@ class Agent:
         `on_trace` observes the trace the moment it's minted, before any I/O.
         Retries whole while the trace ends with a retryable error (`config.retries`)
         — never into a borrowed box; the final trace keeps earlier attempts' errors."""
+        if self._closed:
+            raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
@@ -285,7 +326,7 @@ class Agent:
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts, interception."""
         if runtime is not None:
-            _check_borrowed_placement(task, runtime)
+            _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
             run_is_local = runtime.is_local
         else:

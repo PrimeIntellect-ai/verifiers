@@ -275,9 +275,7 @@ rubric = vf.Rubric(funcs=[correct_answer, diversity_bonus])
 
 ### Shared Objects
 
-In rubric environments, reward functions can request static helper objects that
-live within the Rubric class. These are stored in the Rubric's `class_objects`
-dictionary, and can be added after initialization via `add_class_object()`:
+In rubric environments, reward functions can request static helper objects that live within the Rubric class. These are stored in the Rubric's `class_objects` dictionary, and can be added after initialization via `add_class_object()`:
 
 ```python
 rubric = vf.Rubric(funcs=[my_reward_func])
@@ -288,18 +286,9 @@ async def my_reward_func(completion, my_helper) -> float:
     return await my_helper.score(completion)
 ```
 
-For taskset/harness environments, keep shared dependencies behind the taskset or
-harness that owns them. Bindings are the canonical way to inject shared
-resources into rewards, updates, tools, and programs. Configured binding
-objects should use serializable loader paths when they cross a TOML or CLI
-boundary; Python-only construction may use factory callables directly when a
-resource cannot be serialized. Required Taskset and Toolset factory parameters
-must be supplied through bindings.
+For taskset/harness environments, keep shared dependencies behind the taskset or harness that owns them. Bindings are the canonical way to inject shared resources into rewards, updates, tools, and programs. Configured binding objects should use serializable loader paths when they cross a TOML or CLI boundary; Python-only construction may use factory callables directly when a resource cannot be serialized. Required Taskset and Toolset factory parameters must be supplied through bindings.
 
-Judges are used for tasks where deterministic evaluation is impractical, and an
-LLM is used to score responses. **JudgeRubric** stores an LLM client inside the
-rubric, and provides a `judge` callable to reward
-functions for scoring responses:
+Judges are used for tasks where deterministic evaluation is impractical, and an LLM is used to score responses. **JudgeRubric** stores an LLM client inside the rubric, and provides a `judge` callable to reward functions for scoring responses:
 
 ```python
 judge_rubric = vf.JudgeRubric(
@@ -365,12 +354,12 @@ For simple cases, metrics can be added directly to a rubric via `add_metric()` a
 
 Many environment types automatically include a monitor rubric that tracks metrics specific to their level of the environment class hierarchy:
 
-| Environment    | Tracked Metrics                                             |
+| Environment | Tracked Metrics |
 | -------------- | ----------------------------------------------------------- |
-| `MultiTurnEnv` | `num_turns`                                                 |
-| `ToolEnv`      | `total_tool_calls`, per-tool counts                         |
-| `SandboxEnv`   | `sandbox_ready_wait_time`, `sandbox_command_execution_time` |
-| `PythonEnv`    | `python_ready_wait_time`                                    |
+| `MultiTurnEnv` | `num_turns` |
+| `ToolEnv` | `total_tool_calls`, per-tool counts |
+| `SandboxEnv` | `sandbox_ready_wait_time`, `sandbox_command_execution_time` |
+| `PythonEnv` | `python_ready_wait_time` |
 
 These metrics appear automatically in rollout results alongside any custom reward functions.
 
@@ -558,11 +547,7 @@ def load_environment():
     return MyGameEnv(dataset=dataset, rubric=rubric, extract_action=extract_action)
 ```
 
-`env_response` receives the full conversation history thus far (and `state`) and
-returns a list of _new_ messages to append. For tool environments,
-`env_response` typically executes tool calls and returns results. For games or
-other custom protocols, this might involve extracting structured output and
-returning state updates or feedback.
+`env_response` receives the full conversation history thus far (and `state`) and returns a list of _new_ messages to append. For tool environments, `env_response` typically executes tool calls and returns results. For games or other custom protocols, this might involve extracting structured output and returning state updates or feedback.
 
 Several other methods can optionally be overridden for more control in complex custom environments:
 
@@ -687,7 +672,7 @@ prime env init my-env       # v0 stub
 
 This creates the following structure:
 
-```
+```text
 environments/my_env/
 ├── my_env.py          # environment implementation
 ├── pyproject.toml     # package metadata and dependencies
@@ -787,9 +772,7 @@ combined = vf.EnvGroup(
 )
 ```
 
-The group concatenates all sub-environment datasets and injects
-`info["env_id"]` as internal routing metadata. It is not a top-level input,
-state, or output field. Metrics from all environments are tracked together.
+The group concatenates all sub-environment datasets and injects `info["env_id"]` as internal routing metadata. It is not a top-level input, state, or output field. Metrics from all environments are tracked together.
 
 ## Performance
 
@@ -906,6 +889,7 @@ Newer and more experimental environment classes include:
         timeouts=SandboxTimeouts(read_file=30.0, extract=180.0, poll=120.0),
     )
     ```
+
 - **`vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval tasks, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
 - **`SandboxDebugEnv`** — no-agent debugger for sandbox-backed `SandboxTaskSet` instances. It creates the task sandbox, optionally runs `taskset.setup(state)`, performs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs the task tests and scorer. It records setup, sandbox creation, gold patch, debug command, and test timings in state for validation and timing investigations. `SWEDebugEnv` is a deprecated compatibility wrapper.
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks

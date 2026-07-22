@@ -187,8 +187,7 @@ def environment_class(taskset_id: str, env_id: str = "") -> type[Env]:
 def load_environment(config: EnvConfig) -> Env:
     """Construct the env for `config`. Every construction site (eval, serve, gepa)
     goes through here so subclass envs load everywhere."""
-    taskset_id = config.taskset.id if config.taskset is not None else ""
-    return environment_class(taskset_id, config.id)(config)
+    return environment_class(config.taskset.id, config.id)(config)
 
 
 def load_taskset(config: TasksetConfig) -> Taskset:
@@ -239,8 +238,7 @@ def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
     validate. The one entry every consumer takes (CLI, TOML, the env-server wire),
     so role fields always validate against the real config class."""
     if isinstance(data, EnvConfig):
-        taskset_id = data.taskset.id if data.taskset is not None else ""
-        cls = env_config_type(taskset_id, data.id)
+        cls = env_config_type(data.taskset.id, data.id)
         if isinstance(data, cls):
             return data  # already at least as specifically typed — keep
         data = data.model_dump()
@@ -260,4 +258,4 @@ def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
 def task_type(taskset_id: str) -> type[Task]:
     """The taskset's `Task` subclass from its generic parameters — no data is
     loaded, so replay can cheaply recover the task type. Falls back to `Task`."""
-    return generic_type(taskset_class(taskset_id), Task, origin=Taskset) or Task
+    return taskset_class(taskset_id).task_type()

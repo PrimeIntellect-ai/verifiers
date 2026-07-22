@@ -431,12 +431,23 @@ class LegacyEnvServer(EnvServer):
             state_columns=["trajectory"],
         )
 
+    @staticmethod
+    def _row(req: RunRequest) -> int:
+        """The dataset row a request addresses — the bridge's dataset lives
+        server-side, so requests must carry `task_idx` (v1 servers take `task_data`)."""
+        if req.task_idx is None:
+            raise ValueError(
+                "legacy env server requests address the dataset by task_idx"
+            )
+        return req.task_idx
+
     async def _run(self, req: RunRequest) -> RunResponse:
-        out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
+        task_idx = self._row(req)
+        out = await self._run_v0(task_idx, req.client, req.model, req.sampling)
         # Trust the bridge-minted record; serialize it once (mirrors `EnvServer`).
         return RunResponse.model_construct(
             episode=Episode.of(
-                rollout_output_to_trace(out, req.task_idx), env=self.taskset_id
+                rollout_output_to_trace(out, task_idx), env=self.taskset_id
             )
         )
 

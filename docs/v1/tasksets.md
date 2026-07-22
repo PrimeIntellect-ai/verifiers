@@ -33,6 +33,7 @@ Most tasksets do not need specific tools, user simulations or custom harnesses.
 ## An example taskset
 
 Tasksets are made of the following components:
+
 - The **Taskset** loads the actual **Tasks** from a dataset using the `load()` function. It can be configured with the **TasksetConfig**, to e.g. load a certain split. Configs are exposed to the user and thus should only contain configurable values.
 - A **Task** defines the scoring, stop conditions, setup, judging etc. of the task to solve. It also gets the tools or user config. It gets configured by a **TaskConfig**, e.g., to set a specific judge model.
 - The **TaskData** is the immutable object that holds the actual data, i.e., the prompts, images, expected outputs etc., as well as other information such as timeouts (if set).
@@ -113,14 +114,9 @@ These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset
 
 ## Lazy and infinite tasksets
 
-`load()` may be a generator instead of returning a list: yield each task as it's built.
-Consumers materialize tasks through `Taskset.select`, which pulls only what a run needs —
-`eval -n 5` builds 5 tasks, not the whole set — so a generator pays off whenever building
-a task is expensive.
+`load()` may be a generator instead of returning a list: yield each task as it's built. Consumers materialize tasks through `Taskset.select`, which pulls only what a run needs — `eval -n 5` builds 5 tasks, not the whole set — so a generator pays off whenever building a task is expensive.
 
-A procedural taskset can keep yielding forever. Declare `INFINITE = True` so consumers know
-the stream never ends — infinity is inherent to the taskset, not a config knob; how many
-tasks a run takes is the run's choice (`-n`), not the taskset's:
+A procedural taskset can keep yielding forever. Declare `INFINITE = True` so consumers know the stream never ends — infinity is inherent to the taskset, not a config knob; how many tasks a run takes is the run's choice (`-n`), not the taskset's:
 
 ```python
 import itertools
@@ -138,20 +134,14 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
             )
 ```
 
-Two rules follow from infinity: a run over an infinite taskset must be bounded with
-`num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is a no-op (warned):
-there is no whole set to sample from, and the first `n` generated tasks are already an
-arbitrary sample. Generation must be deterministic — env-server pool workers each run
-their own `load()` and rely on every worker producing the same sequence, so seed any
-randomness with a constant (see `alphabet_sort_v1`, `color_codeword_v1`, or the built-in
-`textarena` taskset).
+Two rules follow from infinity: a run over an infinite taskset must be bounded with `num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is a no-op (warned): there is no whole set to sample from, and the first `n` generated tasks are already an arbitrary sample. The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort_v1`, `color_codeword_v1`, or the built-in `textarena` taskset).
 
 ## Adding Tools
 
-Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
-Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
+Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`). Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
 
 You can create them like this (remember the bootstrapping with `uv run init MY_ENV -T`):
+
 ```python
 DATABASE = None
 
@@ -238,6 +228,4 @@ To override the judge model, set `env.taskset.task.judge.model` in your config (
 
 ## Beyond one agent
 
-One episode doesn't have to be one agent run: agents, the control flow between
-agents, and cross-agent rewards are the environment's job — see
-[The Env](env.md).
+One episode doesn't have to be one agent run: agents, the control flow between agents, and cross-agent rewards are the environment's job — see [The Env](env.md).
