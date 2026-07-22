@@ -16,19 +16,19 @@ Exiting the context closes an agent-owned client, so create a new agent for late
 ## Interactions
 
 `agent.interaction(task)` holds a rollout open turn by turn. The caller acts as the
-user, and each `turn()` runs one harness segment before returning a `vf.Reply`.
+user, and each `turn()` runs one harness segment before returning a `vf.Segment`.
 
 ```python
 async with agent.interaction(task) as interaction:
-    reply = await interaction.turn("hello")
-    if not reply.stopped:
-        reply = await interaction.turn(f"you said: {reply.last_reply}")
+    segment = await interaction.turn("hello")
+    if not segment.stopped:
+        segment = await interaction.turn(f"you said: {segment.last_reply}")
 
 trace = interaction.trace
 ```
 
-Each `Reply.messages` contains the assistant messages, tool calls, and tool
-results produced by that harness segment. `Reply.last_reply` is shorthand for
+Each `Segment.messages` contains the assistant messages, tool calls, and tool
+results produced by that harness segment. `Segment.last_reply` is shorthand for
 the final assistant message's text.
 
 A prompted task speaks first through a bare `turn()`; a prompt-less task starts

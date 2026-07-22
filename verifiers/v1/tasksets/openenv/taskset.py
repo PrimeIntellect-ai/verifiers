@@ -115,9 +115,9 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                 )
 
             async with agents.player.interaction(task) as interaction:
-                reply = await interaction.turn(payload())
-                while not reply.stopped and not result.done:
-                    action = reply.last_reply.strip()
+                segment = await interaction.turn(payload())
+                while not segment.stopped and not result.done:
+                    action = segment.last_reply.strip()
                     if not action:
                         # No action can advance OpenEnv. End this run explicitly
                         # instead of replaying the same observation forever when
@@ -129,7 +129,7 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                     total += result.reward or 0.0
                     if result.done:
                         break
-                    reply = await interaction.turn(payload())
+                    segment = await interaction.turn(payload())
         trace = interaction.trace
         trace.record_reward("openenv_reward", total)
 

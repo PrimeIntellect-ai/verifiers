@@ -132,14 +132,14 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
 
 
 @dataclass(frozen=True)
-class Reply:
+class Segment:
     """One harness segment's agent/tool output, as `Interaction.turn` returns it.
 
     `messages` carries every model-sampled assistant message and intervening tool
     result produced by the segment, in order; `last_reply` is quick sugar for its
     final assistant text. `stopped` marks the exchange over — the run ended (a
     limit, a `@stop`, or the harness finishing) instead of producing another
-    segment; a stopped `Reply` carries no messages (the last real segment was
+    segment; a stopped `Segment` carries no messages (the last real segment was
     already delivered), and the interaction's `trace` holds the full exchange.
     """
 
@@ -161,7 +161,7 @@ class Interaction:
     `agent.interaction(task)` opens the rollout; `await interaction.turn("...")`
     sends one user turn and runs ONE harness segment — the
     program, resumed onto the conversation, until it yields — returning the
-    assistant's `Reply`. A prompt-less (or masked) task is opened by the first
+    resulting `Segment`. A prompt-less (or masked) task is opened by the first
     `turn(message)`; a prompted task speaks first — a bare `turn()` takes its
     opening reply. One consumer at a time — `turn()` is a strict
     request/response alternation, not a mailbox. `interaction.trace` is live from
@@ -169,9 +169,12 @@ class Interaction:
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed` and finishes the rollout — hooks and scoring included."""
 
-    def __init__(self, run: "RolloutRun") -> None:
+    def __init__(
+        self, run: "RolloutRun", gate: asyncio.Semaphore | None = None
+    ) -> None:
         self._run = run
-        self._over = False  # a stopped reply was already delivered
+        self._gate = gate
+        self._over = False  # a stopped segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
 
@@ -179,16 +182,17 @@ class Interaction:
     def trace(self) -> Trace:
         return self._run.trace
 
-    async def turn(self, message: str | Messages | None = None) -> Reply:
+    async def turn(self, message: str | Messages | None = None) -> Segment:
         """Send one user turn (a string, or full `Messages` for multimodal /
-        multi-message turns); run one segment; return the assistant's `Reply`. A
+        multi-message turns); run one segment; return its `Segment`. A
         prompted task speaks FIRST: take its opening reply with a bare `turn()`
-        before answering. A `stopped` reply means the run ended instead of
+        before answering. A `stopped` segment means the run ended instead of
         answering (the message went unconsumed)."""
         async with self._lock:
-            return await self._turn(message)
+            async with self._gate or nullcontext():
+                return await self._turn(message)
 
-    async def _turn(self, message: str | Messages | None) -> Reply:
+    async def _turn(self, message: str | Messages | None) -> Segment:
         if self._run.closed:
             raise RuntimeError("this interaction is closed")
         if self._over:
@@ -218,26 +222,27 @@ class Interaction:
         await self._run.step(messages)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
-            # exchange, that surfaces as the NEXT turn's stopped reply.
-            reply_messages: Messages = []
+            # exchange, that surfaces as the NEXT turn's stopped segment.
+            segment_messages: Messages = []
             saw_assistant = False
             for node in self.trace.nodes[nodes_before:]:
                 if node.sampled:
-                    reply_messages.append(node.message)
+                    segment_messages.append(node.message)
                     saw_assistant = True
                 elif saw_assistant and isinstance(node.message, ToolMessage):
-                    reply_messages.append(node.message)
-            return Reply(messages=reply_messages)
+                    segment_messages.append(node.message)
+            return Segment(messages=segment_messages)
         self._over = True
-        return Reply(messages=[], stopped=True)
+        return Segment(messages=[], stopped=True)
 
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
         run, then the finished trace returns (also on `interaction.trace`)."""
         async with self._lock:
-            if not self._run.closed and self._run.ok:
-                self.trace.stop("user_closed")
-            return await self._run.close()
+            async with self._gate or nullcontext():
+                if not self._run.closed and self._run.ok:
+                    self.trace.stop("user_closed")
+                return await self._run.close()
 
 
 class Agent:
@@ -287,6 +292,10 @@ class Agent:
             max_total_tokens=config.max_total_tokens,
         )
         self.timeout = config.timeout
+        # Env episode agents replace this with the eval concurrency semaphore.
+        # Interactions acquire it only around active lifecycle work, never while
+        # awaiting the caller between segments.
+        self._gate: asyncio.Semaphore | None = None
         # Env-owned standing, not config: `Env.setup` marks fixed agents
         # untrainable and traces are stamped from here; inert outside an env.
         self.trainable: bool = True
@@ -443,7 +452,7 @@ class Agent:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
         `Interaction`; `await interaction.turn("...")` sends one user turn and
-        runs one harness segment, returning the assistant's `Reply`. Who computes
+        runs one harness segment, returning its `Segment`. Who computes
         the turns is control flow, not framework machinery: an env's rollout loop,
         another agent's interaction, a game engine, a scripted closure, a human.
 
@@ -484,11 +493,14 @@ class Agent:
             on_trace=on_trace,
             **params,
         )
-        interaction = Interaction(run)
-        if not await run.open():
-            trace = await run.close()
-            if trace.runtime is not None:
-                trace.runtime.borrowed = runtime is not None
+        interaction = Interaction(run, gate=self._gate)
+        async with self._gate or nullcontext():
+            opened = await run.open()
+            if not opened:
+                trace = await run.close()
+                if trace.runtime is not None:
+                    trace.runtime.borrowed = runtime is not None
+        if not opened:
             failure = run.failure
             if failure is None:  # `open()` returning False always captures one.
                 raise RuntimeError("rollout setup failed without a captured error")
@@ -666,9 +678,9 @@ class _EpisodeAgent(Agent):
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
-        `Env.run` stays crash-safe. No gate: an interaction is held open
-        across the exchange (two of them interleave in one episode), so it must
-        not occupy an eval slot the way a one-shot `run` does."""
+        `Env.run` stays crash-safe. Setup, each active segment, and close acquire
+        the eval gate independently; the interaction holds no permit while awaiting
+        its caller, so peer interactions can interleave even at concurrency one."""
         trace: Trace | None = None
 
         def remember(current: Trace) -> None:

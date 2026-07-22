@@ -154,6 +154,7 @@ async def test_interaction(live_ctx):
     )
     async with agent.interaction(task) as interaction:
         first = await interaction.turn("hello world")
+        assert isinstance(first, vf.Segment)
         assert not first.stopped
         assert [message.role for message in first.messages] == ["assistant"]
         assert "hello world" in first.last_reply.lower()

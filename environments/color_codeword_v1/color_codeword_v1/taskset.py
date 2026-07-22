@@ -123,9 +123,9 @@ class ColorCodewordEnv(vf.SingleAgentEnv):
         # turn()); each later turn reveals its squares as the interaction's next user
         # message until every turn is answered.
         async with agents.agent.interaction(task) as interaction:
-            reply = await interaction.turn()
+            segment = await interaction.turn()
             for turns in range(1, max_turns):
-                if reply.stopped:
+                if segment.stopped:
                     break
                 colors = colors_per_turn[turns]
                 total = sum(len(colors_per_turn[t]) for t in range(turns + 1))
@@ -143,7 +143,7 @@ class ColorCodewordEnv(vf.SingleAgentEnv):
                         text=turn_text(turns, len(colors), max_turns, total)
                     )
                 ]
-                reply = await interaction.turn([vf.UserMessage(content=parts)])
+                segment = await interaction.turn([vf.UserMessage(content=parts)])
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):

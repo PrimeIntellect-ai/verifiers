@@ -17,7 +17,7 @@ from verifiers.v1.agent import (
     AgentConfig,
     Agents,
     Interaction,
-    Reply,
+    Segment,
     make_agent,
 )
 from verifiers.v1.configs.env import (
@@ -307,7 +307,7 @@ __all__ = [
     "ToolsetConfig",
     # the user channel
     "Interaction",
-    "Reply",
+    "Segment",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

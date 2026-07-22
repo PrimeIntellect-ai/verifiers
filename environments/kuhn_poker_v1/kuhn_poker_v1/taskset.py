@@ -114,10 +114,10 @@ class KuhnPokerEnv(vf.Env[KuhnPokerEnvConfig]):
                 f"Your legal actions: {' or '.join(f'[{a}]' for a in legal)}."
             )
             for _ in range(self.config.invalid_retries + 1):
-                reply = await interaction.turn(prompt)
-                if reply.stopped:
+                segment = await interaction.turn(prompt)
+                if segment.stopped:
                     return None
-                action = parse_action(reply.last_reply, legal)
+                action = parse_action(segment.last_reply, legal)
                 if action is not None:
                     return action
                 prompt = (
