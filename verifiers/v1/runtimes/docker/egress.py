@@ -255,12 +255,27 @@ class EgressProxy:
                     for value in fields.get(b"connection", [])
                     for field in value.split(b",")
                 }
+                transfer_encoding = b",".join(fields.get(b"transfer-encoding", []))
+                content_lengths = {
+                    int(value) for value in fields.get(b"content-length", [])
+                }
+                if len(content_lengths) > 1 or (transfer_encoding and content_lengths):
+                    raise ValueError("ambiguous HTTP request body")
+                if transfer_encoding and transfer_encoding.lower() != b"chunked":
+                    raise ValueError("unsupported HTTP transfer encoding")
+                content_length = next(iter(content_lengths), None)
+                if content_length is not None and content_length < 0:
+                    raise ValueError("negative HTTP content length")
+                if connection_fields & {b"content-length", b"transfer-encoding"}:
+                    raise ValueError("connection-specific HTTP body framing")
                 excluded = {
                     b"connection",
+                    b"content-length",
                     b"expect",
                     b"host",
                     b"proxy-authorization",
                     b"proxy-connection",
+                    b"transfer-encoding",
                     *connection_fields,
                 }
                 header_lines = [
@@ -268,6 +283,10 @@ class EgressProxy:
                     for line in headers.split(b"\r\n")
                     if line and line.partition(b":")[0].strip().lower() not in excluded
                 ]
+                if transfer_encoding:
+                    header_lines.append(b"Transfer-Encoding: chunked")
+                elif content_length is not None:
+                    header_lines.append(f"Content-Length: {content_length}".encode())
                 headers = (
                     b"\r\n".join(
                         [
@@ -288,18 +307,12 @@ class EgressProxy:
                 ):
                     writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
                     await writer.drain()
-                transfer_encoding = b",".join(fields.get(b"transfer-encoding", []))
-                content_lengths = {
-                    int(value) for value in fields.get(b"content-length", [])
-                }
-                if len(content_lengths) > 1 or (transfer_encoding and content_lengths):
-                    raise ValueError("ambiguous HTTP request body")
                 if transfer_encoding:
-                    if transfer_encoding.lower() != b"chunked":
-                        raise ValueError("unsupported HTTP transfer encoding")
                     while True:
                         chunk_head = await reader.readuntil(b"\r\n")
                         chunk_size = int(chunk_head.partition(b";")[0], 16)
+                        if chunk_size < 0:
+                            raise ValueError("negative HTTP chunk size")
                         upstream_writer.write(chunk_head)
                         if not chunk_size:
                             while True:
@@ -318,10 +331,8 @@ class EgressProxy:
                             raise ValueError("malformed chunked HTTP body")
                         upstream_writer.write(ending)
                         await upstream_writer.drain()
-                elif content_lengths:
-                    remaining = content_lengths.pop()
-                    if remaining < 0:
-                        raise ValueError("negative HTTP content length")
+                elif content_length is not None:
+                    remaining = content_length
                     while remaining:
                         chunk = await reader.readexactly(min(remaining, 1 << 16))
                         upstream_writer.write(chunk)
