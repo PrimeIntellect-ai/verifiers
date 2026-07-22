@@ -58,10 +58,9 @@ The names of these tools are set by the respective harness. Consult the relevant
 
 ## Runtime network policies
 
-Runtime configs expose `network_access`. Prime and Modal apply it as an all-or-nothing
-sandbox setting at provisioning time. Docker additionally supports URL-level rules and a
-trusted setup phase before enforcement; the same policy vocabulary can extend to other
-runtimes when their sandbox APIs support it.
+Prime and Modal expose provider-native `network_access` switches. Docker instead uses
+URL-level `allow` and `block` lists, with a trusted setup phase before enforcement; the
+same policy vocabulary can extend to other runtimes when their sandbox APIs support it.
 
 ### Docker URL policies
 
@@ -71,19 +70,17 @@ HTTP(S) destinations:
 ```toml
 [env.agent.harness.runtime]
 type = "docker"
-network_access = false
 allow = ["https://*.wikipedia.org"]
 block = ["https://upload.wikimedia.org"]
 ```
 
-`network_access = false` is deny-by-default: the interception URL and every MCP URL are
-added automatically, then `allow` adds user destinations. `block` can narrow that user
-allowlist. With `network_access = true`, networking stays open unless `block` is
-non-empty, in which case matching destinations are denied. User block rules win over
+Docker is deny-by-default: an empty `allow` list permits only the interception URL and
+every MCP URL, which are added automatically before user entries. A bare `"*"` permits
+all external destinations; `block` can narrow that allowlist. User block rules win over
 user allow rules; framework interception and MCP routes always remain reachable.
 Host-loopback and link-local destinations are reserved for those framework routes, so
-neither the default-allow posture nor a user `allow` rule exposes unrelated host
-services or cloud metadata endpoints.
+neither a wildcard nor another user `allow` rule exposes unrelated host services or
+cloud metadata endpoints.
 
 Filtered Docker runtimes are single-rollout. Reusing one would require reopening trusted
 setup networking to processes left by the previous agent, so each rollout gets a fresh box.
@@ -98,13 +95,13 @@ The enforcement shape follows
 [Docker Sandboxes network isolation](https://docs.docker.com/ai/sandboxes/security/isolation/):
 HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed. As in
 [Docker's policy evaluation](https://docs.docker.com/ai/sandboxes/governance/concepts/),
-user deny rules win over user allows; `network_access` selects Verifiers' default allow
-or deny posture.
+user deny rules win over user allows.
 
 Per-task `TaskData.network_allow` and `TaskData.network_block` entries are merged into
-the Docker runtime lists. Task and evaluator restrictions compose: either may disable
-public access, all allow and block entries are retained, and block entries win. Any
-explicit task URL policy requires Docker's framework-aware policy support.
+the Docker runtime lists. The task's default `network_allow=["*"]` is neutral and leaves
+the evaluator policy intact. A concrete list replaces an evaluator wildcard; two
+concrete lists are combined, all block entries are retained, and block entries win. Any
+non-wildcard task URL policy requires Docker's framework-aware policy support.
 
 The restriction begins after task and harness setup and remains active through agent
 execution, finalization, and scoring. Debug actions apply it after task setup as well.

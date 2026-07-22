@@ -42,21 +42,17 @@ class DockerConfig(BaseConfig):
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so
     this is accepted (so a task can declare it without a warning) but not enforced."""
-    network_access: bool = True
-    """False = keep internet only through setup (package installs, provisioning), then
-    allow only the interception URL, MCP URLs, and `allow` entries."""
     allow: list[str] = []
-    """URL origins or host patterns the agent may reach with `network_access=False`.
-    Wildcards are supported and `*.example.com` also matches the apex."""
+    """URL origins or host patterns the agent may reach during execution. Framework
+    routes are always added; an empty list allows only those routes and `*` allows all."""
     block: list[str] = []
     """URL origins or host patterns denied during execution. Block rules win over
     `allow`; framework interception and MCP routes always remain reachable."""
 
     @property
     def network_isolated(self) -> bool:
-        """True when the runtime narrows networking after setup: network_access=False,
-        or a block list to enforce."""
-        return not self.network_access or bool(self.block)
+        """True unless a bare wildcard permits every destination without exceptions."""
+        return "*" not in self.allow or bool(self.block)
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
@@ -171,7 +167,7 @@ class DockerRuntime(Runtime):
         if isolated:
             # Setup is trusted; colocated servers fetch their task from host interception
             # before the final framework routes are known.
-            self._proxy = EgressProxy(NetworkPolicy([], [], ["127.0.0.1"], True))
+            self._proxy = EgressProxy(NetworkPolicy(["*"], [], ["127.0.0.1"]))
             if sys.platform == "linux":
                 await self._proxy.start(listener=await self._container_listener())
             else:
@@ -274,7 +270,6 @@ class DockerRuntime(Runtime):
             self.config.allow,
             self.config.block,
             framework,
-            self.config.network_access,
         )
         if self._cut:
             return

@@ -41,10 +41,8 @@ def resolve_runtime_config(
         and getattr(config, "workdir") == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
-    task_network_policy = (
-        not task.data.network_access
-        or bool(task.data.network_allow)
-        or bool(task.data.network_block)
+    task_network_policy = "*" not in task.data.network_allow or bool(
+        task.data.network_block
     )
     if task_network_policy:
         if not isinstance(config, DockerConfig):
@@ -52,10 +50,14 @@ def resolve_runtime_config(
                 f"task {task.data.idx!r} requires a URL network policy, but the "
                 f"{config.type} runtime does not support framework-aware URL policies"
             )
-        updates["network_access"] = config.network_access and task.data.network_access
-        updates["allow"] = list(
-            dict.fromkeys([*task.data.network_allow, *config.allow])
-        )
+        if "*" in task.data.network_allow:
+            updates["allow"] = config.allow
+        elif "*" in config.allow:
+            updates["allow"] = task.data.network_allow
+        else:
+            updates["allow"] = list(
+                dict.fromkeys([*task.data.network_allow, *config.allow])
+            )
         updates["block"] = list(
             dict.fromkeys([*task.data.network_block, *config.block])
         )

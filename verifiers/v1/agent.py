@@ -102,11 +102,7 @@ def _check_borrowed_placement(
     image mismatch on a container only warns, since sharing its world is the point."""
     base_docker = base_config if isinstance(base_config, DockerConfig) else None
     base_filtered = base_docker is not None and base_docker.network_isolated
-    task_policy = (
-        not task.data.network_access
-        or bool(task.data.network_allow)
-        or bool(task.data.network_block)
-    )
+    task_policy = "*" not in task.data.network_allow or bool(task.data.network_block)
     if task_policy or base_filtered:
         config = runtime.config
         if not isinstance(config, DockerConfig):
@@ -115,25 +111,22 @@ def _check_borrowed_placement(
                 f"borrowed runtime {runtime.name!r} is not Docker-backed; use "
                 "agent.provision(task)"
             )
-        expected_access = task.data.network_access and (
-            base_docker.network_access if base_docker is not None else True
-        )
-        base_allow = base_docker.allow if base_docker is not None else []
+        base_allow = base_docker.allow if base_docker is not None else ["*"]
         base_block = base_docker.block if base_docker is not None else []
         # Do not inherit extra destinations from a box provisioned for another task.
-        expected_allow = set([*task.data.network_allow, *base_allow])
+        if "*" in task.data.network_allow:
+            expected_allow = set(base_allow)
+        elif "*" in base_allow:
+            expected_allow = set(task.data.network_allow)
+        else:
+            expected_allow = set([*task.data.network_allow, *base_allow])
         expected_block = set([*task.data.network_block, *base_block])
-        if (
-            config.network_access != expected_access
-            or set(config.allow) != expected_allow
-            or set(config.block) != expected_block
-        ):
+        if set(config.allow) != expected_allow or set(config.block) != expected_block:
             raise ValueError(
-                f"task {task.data.idx!r} requires network_access={expected_access!r}, "
-                f"allow={sorted(expected_allow)!r}, and block="
+                f"task {task.data.idx!r} requires allow={sorted(expected_allow)!r} "
+                f"and block="
                 f"{sorted(expected_block)!r}, but borrowed runtime {runtime.name!r} "
-                f"has network_access={config.network_access!r}, "
-                f"allow={config.allow!r}, and block={config.block!r}; use "
+                f"has allow={config.allow!r} and block={config.block!r}; use "
                 "agent.provision(task)"
             )
     if task.data.image is None:

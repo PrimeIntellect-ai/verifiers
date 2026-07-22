@@ -303,8 +303,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             harbor_config.require_image,
             harbor_config.ignore_dockerfile,
         ),
-        network_access=network.network_mode == NetworkMode.PUBLIC,
-        network_allow=list(network.allowed_hosts),
+        network_allow=(
+            ["*"]
+            if network.network_mode == NetworkMode.PUBLIC
+            else list(network.allowed_hosts)
+        ),
         timeout=TaskTimeout(
             harness=harness_timeout * harbor_config.timeout_multiplier
             if harness_timeout is not None

@@ -28,7 +28,7 @@ class GSM8KData(vf.TaskData):
 class GSM8KTask(vf.Task[GSM8KData]):
     async def setup(self, runtime: vf.Runtime) -> None:
         # Pre-provision the verifier's uv env while the runtime still has internet —
-        # with docker `network_access=False` it is cut before the agent runs, and
+        # with a restricted Docker allowlist it is cut before the agent runs, and
         # scoring happens after that.
         await runtime.prepare_uv_script(VERIFY)
 

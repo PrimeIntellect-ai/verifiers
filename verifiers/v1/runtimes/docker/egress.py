@@ -33,7 +33,6 @@ class NetworkPolicy:
     allow: list[str]
     block: list[str]
     routes: list[str]
-    default_allow: bool
 
     def permits(
         self, scheme: str, host: str, port: int, *, connect: bool = False
@@ -42,8 +41,11 @@ class NetworkPolicy:
             connect
             and port != 443
             and not any(
-                urlsplit(rule.lower()).scheme == "https"
-                and _rule_matches(rule, scheme, host, port)
+                rule == "*"
+                or (
+                    urlsplit(rule.lower()).scheme == "https"
+                    and _rule_matches(rule, scheme, host, port)
+                )
                 for rule in [*self.routes, *self.allow]
             )
         ):
@@ -62,9 +64,7 @@ class NetworkPolicy:
                 return False
         if any(_rule_matches(rule, scheme, host, port) for rule in self.block):
             return False
-        return self.default_allow or any(
-            _rule_matches(rule, scheme, host, port) for rule in self.allow
-        )
+        return any(_rule_matches(rule, scheme, host, port) for rule in self.allow)
 
 
 def _server_name(client_hello: bytes) -> str | None:

@@ -78,9 +78,9 @@ legacy `[environment].allow_internet` is normalized by Harbor's schema.
 
 | Harbor mode | Docker execution policy |
 |---|---|
-| `public` | Keeps the evaluator's configured Docker policy. |
-| `no-network` | Sets `network_access = false`. |
-| `allowlist` | Sets `network_access = false` and adds `allowed_hosts` to `allow`. |
+| `public` | Sets the task allowlist to `["*"]`, leaving the evaluator policy intact. |
+| `no-network` | Sets the task allowlist to `[]` (framework routes only). |
+| `allowlist` | Sets the task allowlist to `allowed_hosts`. |
 
 Trusted task and harness setup remains online. The policy starts immediately before the
 agent and stays active through finalization and scoring. Interception and MCP URLs are

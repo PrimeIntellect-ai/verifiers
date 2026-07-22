@@ -340,8 +340,8 @@ host inheritance removes names containing `API_KEY`; explicit values passed in t
 mapping are merged afterward and inherited by child processes.
 
 ### `DockerConfig` — `type: "docker"`
-Local Docker container. Unfiltered runtimes share the host network; a network policy
-uses an isolated bridge during agent execution.
+Local Docker container. A bare wildcard with no block entries shares the host network;
+every narrower policy uses an isolated bridge during agent execution.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -351,9 +351,8 @@ uses an isolated bridge during agent execution.
 | `memory` | `float \| None` | `None` | Hard memory limit in GB (`docker --memory`). None = unlimited. |
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"2"` (`docker --gpus` uses the count; needs the nvidia toolkit). |
 | `disk` | `float \| None` | `None` | Advisory disk request in GB. Docker has no portable per-container size limit, so accepted but **not enforced**. |
-| `network_access` | `bool` | `True` | `False` = internet through setup only, then allow just the interception URL, all MCP URLs, and `allow` entries. The policy remains active through finalization and scoring. |
-| `allow` | `list[str]` | `[]` | URL origins or host patterns added when `network_access=False`, e.g. `"https://*.wikipedia.org"`. Wildcards are supported; `*.example.com` also matches the apex. URL paths are ignored. An explicit HTTPS origin authorizes a nonstandard CONNECT port; CONNECT authority and TLS SNI must both match policy. Host loopback and link-local addresses are reserved for framework routes. |
-| `block` | `list[str]` | `[]` | URL origins or host patterns denied during execution. Block wins over user `allow`; interception and MCP routes always remain reachable. A non-empty list activates filtering when `network_access=True`. |
+| `allow` | `list[str]` | `[]` | URL origins or host patterns allowed during execution, e.g. `"https://*.wikipedia.org"`. Empty permits only automatically added interception/MCP routes; bare `"*"` permits all external destinations. Wildcards are supported; `*.example.com` also matches the apex. URL paths are ignored. An explicit HTTPS origin authorizes a nonstandard CONNECT port; CONNECT authority and TLS SNI must both match policy. Host loopback and link-local addresses are reserved for framework routes. |
+| `block` | `list[str]` | `[]` | URL origins or host patterns denied during execution. Block wins over user `allow`; interception and MCP routes always remain reachable. |
 
 ### `PrimeConfig` — `type: "prime"`
 Remote Prime sandbox; reached via native port exposure.
@@ -398,10 +397,10 @@ config with the row's `TaskData`:
   class's default. Any non-default runtime-config workdir wins.
 - Non-`None` `TaskData.resources` values similarly fill supported runtime fields only while those
   fields remain at their defaults. Any non-default runtime-config resource value wins.
-- Task URL policy fields require framework-aware Docker policy support. Effective
-  `network_access` is false when either the task or evaluator disables it;
-  `TaskData.network_allow` and `TaskData.network_block` merge with the runtime's `allow`
-  and `block` lists, and every block rule wins over allow rules.
+- Non-wildcard task URL policy fields require framework-aware Docker policy support.
+  `TaskData.network_allow=["*"]` is neutral; a concrete task list replaces an evaluator
+  wildcard, otherwise concrete task/runtime lists combine. `TaskData.network_block`
+  combines with runtime `block`, and every block rule wins over allow rules.
 - A resource field unsupported by the chosen runtime is ignored; evaluation warns once per
   runtime/field combination. Docker and Modal accept `disk` so portable task data validates, but
   neither enforces a disk limit.
@@ -459,9 +458,8 @@ is capped at the provider's 24-hour sandbox lifetime.
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
-| `network_access` | `bool` | `True` | Whether the task permits public access. `False` requires Docker's framework-aware execution policy; evaluator restrictions still take precedence. |
-| `network_allow` | `list[str]` | `[]` | Destinations merged into Docker's `allow` list; effective when the composed policy is deny-by-default. |
-| `network_block` | `list[str]` | `[]` | Destinations merged into Docker's `block` list. A non-empty list activates filtering even when `network_access=True`. |
+| `network_allow` | `list[str]` | `["*"]` | Docker destinations needed by the task. The wildcard is neutral and leaves evaluator policy intact; empty requests framework-only access. |
+| `network_block` | `list[str]` | `[]` | Destinations merged into Docker's `block` list. A non-empty list requires Docker filtering. |
 | `timeout` | `TaskTimeout` | `TaskTimeout()` | Per-stage timeout requests described above. |
 | `resources` | `TaskResources` | `TaskResources()` | Portable runtime resource requests described above. |
 

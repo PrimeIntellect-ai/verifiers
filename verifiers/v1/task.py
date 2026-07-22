@@ -137,11 +137,9 @@ class TaskData(StrictBaseModel):
     system_prompt: str | None = None
     image: str | None = None
     workdir: str | None = None
-    network_access: bool = True
-    """Whether this task permits public network access. False requires a runtime with
-    framework-aware filtering; the evaluator may still add explicit allowed destinations."""
-    network_allow: list[str] = []
-    """Destinations added to the Docker allowlist; effective under deny-by-default."""
+    network_allow: list[str] = ["*"]
+    """Docker destinations needed by this task. `*` leaves the evaluator policy intact;
+    an empty list requests framework-only access."""
     network_block: list[str] = []
     """Destinations added to the Docker blocklist; non-empty activates filtering."""
     timeout: TaskTimeout = TaskTimeout()
