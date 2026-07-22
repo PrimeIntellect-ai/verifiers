@@ -58,11 +58,11 @@ The names of these tools are set by the respective harness. Consult the relevant
 
 ## Skills
 
-Harnesses whose program supports SKILL.md skills natively (Claude Code, Codex, Kimi Code, Pi, Pool, rlm) take a `skills` list of local paths — each one skill (a directory with a `SKILL.md` manifest, or the manifest itself) or a directory of such skill directories — installed into the program's discovery location in the agent's runtime before the rollout:
+Harnesses whose program supports SKILL.md skills natively (Claude Code, Codex, Kimi Code, Pi, Pool, rlm) take a `skills` list of local skill folders, each uploaded into the program's skill discovery directory in the agent's runtime as `<skills dir>/<folder name>`:
 
 ```toml
 [env.agent.harness]
-skills = ["path/to/my-skill", "path/to/skills"]
+skills = ["path/to/my-skill"]
 ```
 
 Setting `skills` on a harness without native skill support fails up front.

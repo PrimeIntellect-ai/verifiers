@@ -23,6 +23,8 @@ KEY_VAR = "CODEX_INTERCEPT_KEY"
 
 CODEX_DIR = "/tmp/vf-codex"
 CODEX_BIN = f"{CODEX_DIR}/bin/codex"
+# The repo-scope discovery root (the cross-tool agentskills.io project convention).
+SKILLS_DIR = ".agents/skills"
 INSTALL = r"""
 set -e
 mkdir -p {dir}/bin
@@ -46,10 +48,11 @@ class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = False  # TODO
     SUPPORTS_MESSAGE_PROMPT = True
-    # Codex discovers the repo-scope `$CWD/.agents/skills` (the base SKILLS_DIR).
+    # Codex discovers the repo-scope `$CWD/.agents/skills`.
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         logger.info("codex: ensuring codex %s is installed", self.config.version)
         script = (
             INSTALL.replace("{version}", self.config.version)

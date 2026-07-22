@@ -24,6 +24,7 @@ RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
 RLM_HOME = ".rlm"
 RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
+SKILLS_DIR = "/task/rlm-skills"
 
 
 class RLMHarnessConfig(HarnessConfig):
@@ -73,11 +74,12 @@ class RLMHarness(Harness[RLMHarnessConfig]):
     SUPPORTS_MCP = True
     # rlm reads /task/rlm-skills (hardcoded upstream): install.sh uv-tool-installs
     # each skill package it finds there, and the prompt points the agent at the
-    # SKILL.md files. Installed before `setup` runs the guarded installer.
+    # SKILL.md files.
     SUPPORTS_SKILLS = True
-    SKILLS_DIR = "/task/rlm-skills"
 
     async def setup(self, runtime: Runtime) -> None:
+        # Before the installer: install.sh packages the skills it finds.
+        await self.install_skills(runtime, SKILLS_DIR)
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
             "command -v git >/dev/null 2>&1 || "

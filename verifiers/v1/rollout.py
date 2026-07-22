@@ -209,9 +209,6 @@ class RolloutRun:
                 boundary(HarnessError, "harness setup"),
                 asyncio.timeout_at(setup_deadline),
             ):
-                # Skills go in first: a harness's installer may consume them
-                # (rlm's install.sh packages /task/rlm-skills).
-                await self.harness.install_skills(runtime)
                 await self.harness.setup(runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 tool_servers = self.task.tool_servers()

@@ -13,7 +13,6 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import HarnessError, boundary
-from verifiers.v1.skills import load_skills
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import (
     ProgramResult,
@@ -44,10 +43,9 @@ class HarnessConfig(BaseConfig):
     """Host variables to forward without writing secrets into config; explicit `env` wins."""
     disabled_tools: list[str] | None = None
     skills: list[Path] = Field(default_factory=list)
-    """Agent skills to install into the runtime: each entry is one skill (a directory
-    with a `SKILL.md` manifest, or the manifest itself) or a directory of such skill
-    directories. Only harnesses whose program discovers skills natively
-    (`SUPPORTS_SKILLS`) accept them."""
+    """Skill folders to upload into the program's skill discovery directory — each
+    lands at `<skills dir>/<folder name>`. Only harnesses whose program discovers
+    skills natively (`SUPPORTS_SKILLS`) accept them."""
 
     @property
     def name(self) -> str:
@@ -74,12 +72,9 @@ class Harness(ABC, Generic[ConfigT]):
     where model-directed execution changes the rules: the subprocess-on-host
     warning, the judge env's sandbox requirement."""
     SUPPORTS_SKILLS: ClassVar[bool] = False
-    """Whether the program discovers SKILL.md skills installed in `SKILLS_DIR`;
-    configuring `skills` on a harness without support is rejected up front."""
-    SKILLS_DIR: ClassVar[str] = ".agents/skills"
-    """Runtime path (workspace-relative) `config.skills` are installed under: the
-    cross-tool project convention (agentskills.io) by default; a harness whose
-    program looks elsewhere overrides it."""
+    """Whether the program discovers SKILL.md skills — its `setup` calls
+    `install_skills` with the program's fixed discovery location; configuring
+    `skills` on a harness without support is rejected up front."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -116,15 +111,17 @@ class Harness(ABC, Generic[ConfigT]):
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
 
-    async def install_skills(self, runtime: Runtime) -> None:
-        """Write `config.skills` into `runtime` under `SKILLS_DIR`; framework-called
-        alongside `setup`."""
-        for skill in load_skills(self.config.skills):
-            for file in skill.files():
-                path = file.relative_to(skill.root).as_posix()
-                await runtime.write(
-                    f"{self.SKILLS_DIR}/{skill.name}/{path}", file.read_bytes()
-                )
+    async def install_skills(self, runtime: Runtime, dest: str) -> None:
+        """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
+        the program's fixed skill discovery location, which a supporting harness's
+        `setup` passes."""
+        for skill in self.config.skills:
+            for file in skill.rglob("*"):
+                if file.is_file():
+                    path = file.relative_to(skill).as_posix()
+                    await runtime.write(
+                        f"{dest}/{skill.name}/{path}", file.read_bytes()
+                    )
 
     async def run(
         self,

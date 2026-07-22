@@ -13,6 +13,7 @@ from verifiers.v1.trace import Trace
 CLAUDE_HOME = "/tmp/vf-claude-code-{version}"
 CLAUDE_BIN = f"{CLAUDE_HOME}/.local/bin/claude"
 CLAUDE_CONFIG_DIR = ".vf-claude"
+SKILLS_DIR = f"{CLAUDE_CONFIG_DIR}/skills"
 INSTALL = """
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -32,9 +33,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     SUPPORTS_MESSAGE_PROMPT = False
     # Claude Code discovers `<config dir>/skills` itself and offers them as tools.
     SUPPORTS_SKILLS = True
-    SKILLS_DIR = f"{CLAUDE_CONFIG_DIR}/skills"
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         home = CLAUDE_HOME.format(version=self.config.version)
         binary = CLAUDE_BIN.format(version=self.config.version)
         script = INSTALL.format(version=self.config.version, home=home)
