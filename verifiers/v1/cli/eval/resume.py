@@ -5,13 +5,10 @@ flags) and writes back into the same dir. `load` keeps the good saved rollouts a
 re-runs what's owed: missing rollouts (never written) and errored ones (dropped and
 redone).
 
-A saved rollout is matched to a selected task by CONTENT: `task_key` hashes the
-task's wire data, so identity is the data itself. Tasks with identical data are
-interchangeable (a collision resolves to "either one counts"), a task whose data
-changed since the interrupted run re-runs (the saved episode answered a different
-question), and nothing depends on `data.idx` being unique — or set at all. Only
-the legacy (v0) bridge, whose tasks never leave the server, still matches by row
-index (its `key_of`).
+A saved rollout is matched to a selected task by content: `task_key` hashes the
+task's wire data. Tasks with identical data are interchangeable, a task whose data
+changed since the interrupted run re-runs, and nothing depends on `data.idx`. The
+legacy (v0) bridge still matches by row index (`key_of`).
 """
 
 import hashlib
