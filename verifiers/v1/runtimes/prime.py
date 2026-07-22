@@ -287,10 +287,15 @@ class PrimeRuntime(Runtime):
         try:
             await client.delete(runtime_id)
         except Exception as exc:
-            # A 404 means the sandbox was already removed (idle timeout, max
-            # lifetime, or an earlier best-effort cleanup).  That is confirmed
-            # success — treat it as such so retries don't keep failing.
-            if "404" in str(exc):
+            # A 404 from the provider means the sandbox was already removed
+            # (idle timeout, max lifetime, or an earlier best-effort cleanup).
+            # That is confirmed success — treat it as such so retries don't keep
+            # failing.  Match the provider's own APIError with an HTTP 404
+            # prefix, not a loose substring, so unrelated errors can't be
+            # misread as the sandbox being gone.
+            from prime_sandboxes.core.client import APIError
+
+            if isinstance(exc, APIError) and str(exc).startswith("HTTP 404"):
                 logger.info("prime: sandbox %s already gone (404): %s", runtime_id, exc)
             else:
                 raise

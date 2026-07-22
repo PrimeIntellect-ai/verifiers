@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+from prime_sandboxes.core.client import APIError
+
 import pytest
 
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime
@@ -62,7 +64,7 @@ def test_prime_stop_confirmed_treats_already_gone_sandbox_as_success():
     should treat it as confirmed success, not fail forever on retries."""
     runtime = PrimeRuntime(PrimeConfig())
     runtime.info.id = "prime-runtime-id"
-    client = FakePrimeClient(RuntimeError("HTTP 404: sandbox not found"))
+    client = FakePrimeClient(APIError("HTTP 404: sandbox not found"))
     runtime._client = client
 
     asyncio.run(runtime.stop_confirmed())
@@ -74,6 +76,40 @@ def test_prime_stop_confirmed_treats_already_gone_sandbox_as_success():
     # Idempotent: a second call is a no-op (no new delete attempt).
     asyncio.run(runtime.stop_confirmed())
     assert client.deleted == ["prime-runtime-id"]
+
+
+def test_prime_stop_confirmed_rejects_loose_404_in_non_api_errors():
+    """A non-APIError whose message happens to contain '404' must NOT be
+    treated as a confirmed deletion — only the provider's own APIError with
+    an HTTP 404 prefix qualifies."""
+    runtime = PrimeRuntime(PrimeConfig())
+    runtime.info.id = "prime-runtime-id"
+    # RuntimeError with 404 in the message — must propagate, not be swallowed.
+    client = FakePrimeClient(RuntimeError("connect to port 404 failed"))
+    runtime._client = client
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="connect to port 404 failed"):
+        asyncio.run(runtime.stop_confirmed())
+    assert runtime._client is client
+    assert runtime._confirmed_stop_id is None
+
+
+def test_prime_stop_confirmed_rejects_non_404_api_errors():
+    """An APIError with a non-404 status code must propagate, not be treated
+    as confirmed deletion."""
+    runtime = PrimeRuntime(PrimeConfig())
+    runtime.info.id = "prime-runtime-id"
+    client = FakePrimeClient(APIError("HTTP 500: internal server error"))
+    runtime._client = client
+
+    import pytest as _pytest
+
+    with _pytest.raises(APIError, match="HTTP 500"):
+        asyncio.run(runtime.stop_confirmed())
+    assert runtime._client is client
+    assert runtime._confirmed_stop_id is None
 
 
 @pytest.mark.parametrize("fails", [False, True])
