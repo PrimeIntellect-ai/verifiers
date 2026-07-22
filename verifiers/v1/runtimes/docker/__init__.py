@@ -170,8 +170,9 @@ class DockerRuntime(Runtime):
             :12
         ]  # `docker run -d` prints the container id
         if isolated:
-            # Setup is trusted and stays online; install the real policy at the cut.
-            self._proxy = EgressProxy(NetworkPolicy([], [], [], True))
+            # Setup is trusted; colocated servers fetch their task from host interception
+            # before the final framework routes are known.
+            self._proxy = EgressProxy(NetworkPolicy([], [], ["127.0.0.1"], True))
             if sys.platform == "linux":
                 await self._proxy.start(listener=await self._container_listener())
             else:
@@ -254,7 +255,7 @@ class DockerRuntime(Runtime):
     async def prepare_setup(self) -> None:
         if self._proxy is None:
             return
-        self._proxy.policy = NetworkPolicy([], [], [], True)
+        self._proxy.policy = NetworkPolicy([], [], ["127.0.0.1"], True)
         if not self._cut:
             return
         assert self._gateway is not None and self._subnet is not None
