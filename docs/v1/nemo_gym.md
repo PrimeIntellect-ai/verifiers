@@ -13,12 +13,13 @@ part of the benchmark semantics.
 Run the five bundled tasks with any MCP-capable verifiers harness:
 
 ```bash
+uv sync --python 3.12 --extra nemo-gym
 uv run eval nemo-gym-weather --env.agent.harness.id bash --no-push -n 5
 ```
 
-The taskset installs the published `nemo-gym==0.4.0` package in an isolated script
-environment and starts its `ExampleMCPWeatherResourcesServer` for the duration of the
-evaluation. It does not start Gym's agent, model, Ray, or head-server stack.
+The `nemo-gym` extra installs the published `nemo-gym==0.4.0` package. The taskset
+starts its `ExampleMCPWeatherResourcesServer` for the duration of the evaluation. It
+does not start Gym's agent, model, Ray, or head-server stack.
 
 A taskset can manage another server shipped in that package by naming its resource
 class:
