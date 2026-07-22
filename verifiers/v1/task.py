@@ -138,10 +138,12 @@ class TaskData(StrictBaseModel):
     image: str | None = None
     workdir: str | None = None
     network_allow: list[str] = ["*"]
-    """Docker destinations needed by this task. `*` leaves the evaluator policy intact;
-    an empty list requests framework-only access."""
+    """Execution-time destinations requested by this task. `*` leaves the runtime
+    allowlist unchanged; a concrete list replaces a wildcard or combines with
+    existing entries."""
     network_block: list[str] = []
-    """Destinations added to the Docker blocklist; non-empty activates filtering."""
+    """Execution-time destinations denied by this task and combined with runtime
+    blocks."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 
