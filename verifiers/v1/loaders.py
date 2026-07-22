@@ -260,4 +260,4 @@ def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
 def task_type(taskset_id: str) -> type[Task]:
     """The taskset's `Task` subclass from its generic parameters — no data is
     loaded, so replay can cheaply recover the task type. Falls back to `Task`."""
-    return generic_type(taskset_class(taskset_id), Task, origin=Taskset) or Task
+    return taskset_class(taskset_id).task_type()

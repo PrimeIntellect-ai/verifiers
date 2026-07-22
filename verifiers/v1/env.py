@@ -31,7 +31,7 @@ from verifiers.v1.retries import RetryConfig, run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, resolve_server_config
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.taskset import TasksetConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.generic import deep_merge, generic_type
@@ -247,7 +247,7 @@ class Env(ABC, Generic[ConfigT]):
             )
         self.taskset = load_taskset(config.taskset)
         self._default_harness = default_agent_harness(config.taskset.id)
-        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
+        task_cls = type(self.taskset).task_type()
         self._task_cls: type[Task] = task_cls
         self._agent_specs: dict[str, AgentConfig] = _declared_agent_configs(self.config)
         if not self._agent_specs:
@@ -520,7 +520,7 @@ class Env(ABC, Generic[ConfigT]):
         """`requires_tunnel` over the consumers known before any rollout: role
         runtimes, live `shared` servers, and the task class's tool/user servers;
         a class overriding `server_config` conservatively counts as remote."""
-        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
+        task_cls = type(self.taskset).task_type()
         server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
         if server_classes and task_cls.server_config is not Task.server_config:
             return True

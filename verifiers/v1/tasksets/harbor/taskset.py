@@ -87,8 +87,8 @@ class HarborData(TaskData):
     difficulty: str | None = None
     category: str | None = None
     tags: list[str] = []
-    task_dir: str = Field("", exclude=True)
-    """Host path to the task dir; used to stage tests/ to verify, not serialized."""
+    task_dir: str = ""
+    """Host path to the task dir; used to stage tests/ to verify."""
     verifier_env: dict[str, str] = {}
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a

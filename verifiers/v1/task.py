@@ -140,6 +140,17 @@ class TaskData(StrictBaseModel):
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        excluded = [name for name, field in cls.model_fields.items() if field.exclude]
+        if excluded:
+            raise TypeError(
+                f"{cls.__name__}: task data fields cannot be excluded from serialization "
+                f"({excluded}) — a task must survive the wire whole, or the env server "
+                f"rebuilds it with silently-defaulted fields"
+            )
+
     @property
     def prompt_text(self) -> str:
         if isinstance(self.prompt, str):

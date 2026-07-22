@@ -29,8 +29,9 @@ from pydantic import SerializeAsAny
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
-from verifiers.v1.task import TaskConfig, TaskT, resolve_server_config
+from verifiers.v1.task import Task, TaskConfig, TaskT, resolve_server_config
 from verifiers.v1.types import ID
+from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.sampling import sample
 
@@ -65,6 +66,13 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
 
     def __init__(self, config: TasksetConfigT) -> None:
         self.config = config
+
+    @classmethod
+    def task_type(cls) -> type[Task]:
+        """The taskset's declared `Task` subclass, read off the `Taskset[TaskT, ...]`
+        generic — no data is loaded, so consumers (env server, replay) can cheaply
+        rebuild wire rows as the declared type."""
+        return generic_type(cls, Task, origin=Taskset) or Task
 
     def load(self) -> Iterable[TaskT]:
         raise NotImplementedError
