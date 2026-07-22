@@ -2,10 +2,10 @@ name: Sync Docs to Public Docs
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'docs/**'
+    tags:
+      # Sync docs on stable releases only, not on every commit to main.
+      - 'v*'
+      - '!v*dev*'
   workflow_dispatch:
 
 jobs:
