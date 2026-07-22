@@ -20,6 +20,9 @@ id = "primeintellect/terminal-bench-2"
 [env.agent.harness]
 id = "codex"
 version = "0.116.0"
+
+[env.agent.harness.runtime]
+type = "docker"
 ```
 
 Validate the config by using `uv run eval @ config.toml --dry-run`. To run the evaluation, use `uv run eval @ config.toml`.

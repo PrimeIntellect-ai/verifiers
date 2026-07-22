@@ -15,26 +15,28 @@ def _pair(a: str, b: str, id: str, *extra_marks):
     return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
 
 
-# harness x harness runtime: every harness once, both local runtimes hit, one remote row
-# per provider. codex/claude-code are excluded here (unreliable on a no-op echo chat
+# harness x harness runtime: every harness once, both local runtimes hit (subprocess
+# only carries the in-house loops — the rest NEEDS_CONTAINER), one remote row per
+# provider. codex/claude-code are excluded here (unreliable on a no-op echo chat
 # task) — test_agentic covers them.
 CHAT_PLACEMENTS = [
     _pair("null", "subprocess", "null-harness-in-subprocess"),
     _pair("bash", "docker", "bash-harness-in-docker"),
-    _pair("rlm", "subprocess", "rlm-harness-in-subprocess"),
+    _pair("rlm", "docker", "rlm-harness-in-docker"),
     _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]
 
 # harness x harness runtime for the shell task: every coding agent once (null is a chat
-# loop with no shell), both local runtimes hit, one remote row per provider.
+# loop with no shell), both local runtimes hit (subprocess only carries bash), one
+# remote row per provider.
 AGENTIC_PLACEMENTS = [
     _pair("bash", "subprocess", "bash-harness-in-subprocess"),
     _pair("rlm", "docker", "rlm-harness-in-docker"),
-    _pair("kimi-code", "subprocess", "kimi-code-harness-in-subprocess"),
+    _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("codex", "docker", "codex-harness-in-docker"),
-    _pair("claude-code", "subprocess", "claude-code-harness-in-subprocess"),
+    _pair("claude-code", "docker", "claude-code-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]

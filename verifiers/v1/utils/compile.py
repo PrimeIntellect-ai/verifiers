@@ -101,6 +101,12 @@ def validate_pairing(
             "`skills` is set. Run them with a harness whose program discovers "
             "skills (e.g. --env.agent.harness.id claude-code)."
         )
+    if harness.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
+        raise ValueError(
+            f"Harness {harness.config.id!r} needs a container runtime "
+            "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
+            "use --env.agent.harness.runtime.type docker or prime."
+        )
     if not harness.SUPPORTS_USER_SIM and task_cls.user is not None:
         raise ValueError(
             f"Harness {harness.config.id!r} does not drive a user simulator, but "
