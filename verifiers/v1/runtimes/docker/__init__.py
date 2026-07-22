@@ -318,7 +318,7 @@ class DockerRuntime(Runtime):
         if self._proxy is None:
             return {}
         host = "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
-        proxy = f"http://{host}:{self._proxy.port}"
+        proxy = f"http://verifiers:{self._proxy.token}@{host}:{self._proxy.port}"
         return {
             "HTTP_PROXY": proxy,
             "HTTPS_PROXY": proxy,

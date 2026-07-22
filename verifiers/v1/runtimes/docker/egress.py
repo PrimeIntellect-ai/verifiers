@@ -1,8 +1,11 @@
 """In-process HTTP(S) policy proxy for network-filtered Docker runtimes."""
 
 import asyncio
+import base64
 import contextlib
 import fnmatch
+import hmac
+import secrets
 import socket
 import ssl
 from dataclasses import dataclass
@@ -12,6 +15,16 @@ from urllib.parse import urlsplit, urlunsplit
 import h11
 
 HOST_ALIAS = "vf.host.internal"
+_HEADER_TIMEOUT = 10
+_IO_TIMEOUT = 300
+
+
+async def _read(reader: asyncio.StreamReader) -> bytes:
+    return await asyncio.wait_for(reader.read(1 << 16), _IO_TIMEOUT)
+
+
+async def _drain(writer: asyncio.StreamWriter) -> None:
+    await asyncio.wait_for(writer.drain(), _IO_TIMEOUT)
 
 
 def _rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
@@ -88,11 +101,11 @@ async def _read_client_hello(
     tls = context.wrap_bio(incoming, ssl.MemoryBIO(), server_side=True)
     records = bytearray()
     while server_name is None:
-        header = await asyncio.wait_for(reader.readexactly(5), 10)
+        header = await asyncio.wait_for(reader.readexactly(5), _HEADER_TIMEOUT)
         length = int.from_bytes(header[3:5])
         if header[0] != 22 or length > (1 << 14) + 2048:
             raise ValueError("expected a TLS handshake record")
-        payload = await asyncio.wait_for(reader.readexactly(length), 10)
+        payload = await asyncio.wait_for(reader.readexactly(length), _HEADER_TIMEOUT)
         records.extend(header)
         records.extend(payload)
         if len(records) > 1 << 20:
@@ -113,6 +126,10 @@ async def _read_client_hello(
 class EgressProxy:
     def __init__(self, policy: NetworkPolicy) -> None:
         self.policy = policy
+        self.token = secrets.token_urlsafe(32)
+        self._authorization = b"Basic " + base64.b64encode(
+            f"verifiers:{self.token}".encode()
+        )
         self.server: asyncio.Server | None = None
         self.port = 0
 
@@ -139,12 +156,31 @@ class EgressProxy:
         upstream_writer: asyncio.StreamWriter | None = None
         response_started = False
         try:
-            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
+            head = await asyncio.wait_for(
+                reader.readuntil(b"\r\n\r\n"), _HEADER_TIMEOUT
+            )
             client = h11.Connection(h11.SERVER)
             client.receive_data(head)
             request = client.next_event()
             if not isinstance(request, h11.Request):
                 raise ValueError("expected an HTTP request")
+            authorization = next(
+                (
+                    value
+                    for name, value in request.headers
+                    if name.lower() == b"proxy-authorization"
+                ),
+                b"",
+            )
+            if not hmac.compare_digest(authorization, self._authorization):
+                response_started = True
+                writer.write(
+                    b"HTTP/1.1 407 Proxy Authentication Required\r\n"
+                    b'Proxy-Authenticate: Basic realm="verifiers"\r\n'
+                    b"Content-Length: 0\r\n\r\n"
+                )
+                await _drain(writer)
+                return
             method = request.method.decode("ascii")
             target = request.target.decode("ascii")
             connect = method == "CONNECT"
@@ -163,8 +199,11 @@ class EgressProxy:
             addresses = []
             if permitted:
                 dial_host = "127.0.0.1" if host.lower() == HOST_ALIAS else host
-                addresses = await asyncio.get_running_loop().getaddrinfo(
-                    dial_host, port, type=socket.SOCK_STREAM
+                addresses = await asyncio.wait_for(
+                    asyncio.get_running_loop().getaddrinfo(
+                        dial_host, port, type=socket.SOCK_STREAM
+                    ),
+                    _IO_TIMEOUT,
                 )
                 framework = any(
                     _rule_matches(route, scheme, host, port)
@@ -180,25 +219,28 @@ class EgressProxy:
             if not permitted:
                 response_started = True
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                await writer.drain()
+                await _drain(writer)
                 return
             for family, _, _, _, address in addresses:
                 try:
-                    upstream_reader, upstream_writer = await asyncio.open_connection(
-                        address[0],
-                        address[1],
-                        family=family,
-                        flags=socket.AI_NUMERICHOST,
+                    upstream_reader, upstream_writer = await asyncio.wait_for(
+                        asyncio.open_connection(
+                            address[0],
+                            address[1],
+                            family=family,
+                            flags=socket.AI_NUMERICHOST,
+                        ),
+                        _HEADER_TIMEOUT,
                     )
                     break
-                except OSError:
+                except (OSError, TimeoutError):
                     continue
             if upstream_reader is None or upstream_writer is None:
                 raise ConnectionError(f"could not connect to {host}:{port}")
             if connect:
                 response_started = True
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                await writer.drain()
+                await _drain(writer)
                 client_hello, server_name = await _read_client_hello(reader)
                 if server_name is None:
                     with contextlib.suppress(ValueError):
@@ -209,7 +251,7 @@ class EgressProxy:
                 ):
                     return
                 upstream_writer.write(client_hello)
-                await upstream_writer.drain()
+                await _drain(upstream_writer)
                 await _relay(reader, writer, upstream_reader, upstream_writer)
             else:
                 path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
@@ -255,7 +297,7 @@ class EgressProxy:
                         )
                     )
                 )
-                await upstream_writer.drain()
+                await _drain(upstream_writer)
                 if any(
                     name.lower() == b"expect" and value.lower() == b"100-continue"
                     for name, value in request.headers
@@ -265,33 +307,33 @@ class EgressProxy:
                             h11.InformationalResponse(status_code=100, headers=[])
                         )
                     )
-                    await writer.drain()
+                    await _drain(writer)
                 while True:
                     event = client.next_event()
                     if event is h11.NEED_DATA:
-                        client.receive_data(await reader.read(1 << 16))
+                        client.receive_data(await _read(reader))
                     elif isinstance(event, h11.Data):
                         upstream_writer.write(upstream.send(event))
-                        await upstream_writer.drain()
+                        await _drain(upstream_writer)
                     elif isinstance(event, h11.EndOfMessage):
                         upstream_writer.write(upstream.send(event))
                         break
                     else:
                         raise ValueError("incomplete HTTP request body")
-                await upstream_writer.drain()
+                await _drain(upstream_writer)
                 # Plain HTTP gets exactly one policy check and one request. Never copy
                 # pipelined bytes into the first request's already-selected upstream.
-                while chunk := await upstream_reader.read(1 << 16):
+                while chunk := await _read(upstream_reader):
                     response_started = True
                     writer.write(chunk)
-                    await writer.drain()
+                    await _drain(writer)
         except Exception:
             if not response_started:
                 with contextlib.suppress(Exception):
                     writer.write(
                         b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
                     )
-                    await writer.drain()
+                    await _drain(writer)
         finally:
             if upstream_writer is not None:
                 upstream_writer.close()
@@ -306,9 +348,9 @@ async def _relay(
 ) -> None:
     async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            while chunk := await reader.read(1 << 16):
+            while chunk := await _read(reader):
                 writer.write(chunk)
-                await writer.drain()
+                await _drain(writer)
         finally:
             writer.close()
 
