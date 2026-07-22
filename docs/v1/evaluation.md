@@ -78,9 +78,9 @@ Docker is deny-by-default: an empty `allow` list permits only the interception U
 every MCP URL, which are added automatically before user entries. A bare `"*"` permits
 all external destinations; `block` can narrow that allowlist. User block rules win over
 user allow rules; framework interception and MCP routes always remain reachable.
-Host-loopback and link-local destinations are reserved for those framework routes, so
-neither a wildcard nor another user `allow` rule exposes unrelated host services or
-cloud metadata endpoints.
+Non-global destinations—including host-loopback, private, and link-local addresses—are
+reserved for framework routes, so neither a wildcard nor another user `allow` rule
+exposes host/LAN services or cloud metadata endpoints.
 
 Filtered Docker runtimes are single-rollout. Reusing one would require reopening trusted
 setup networking to processes left by the previous agent, so each rollout gets a fresh box.

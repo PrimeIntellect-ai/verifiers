@@ -193,16 +193,10 @@ class EgressProxy:
                 for *_, address in addresses:
                     resolved = ip_address(address[0])
                     mapped = getattr(resolved, "ipv4_mapped", None)
-                    host_only = (
-                        resolved.is_loopback
-                        or resolved.is_link_local
-                        or (mapped and (mapped.is_loopback or mapped.is_link_local))
+                    framework_only = not resolved.is_global or (
+                        mapped is not None and not mapped.is_global
                     )
-                    if (
-                        resolved.is_unspecified
-                        or (mapped and mapped.is_unspecified)
-                        or (not framework and host_only)
-                    ):
+                    if not framework and framework_only:
                         permitted = False
                         break
             if not permitted:
