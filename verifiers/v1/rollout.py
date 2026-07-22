@@ -45,7 +45,6 @@ from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
 from verifiers.v1.utils.version import verifiers_commit
 
 if TYPE_CHECKING:
-    # Annotation-only: agent.py imports this module at runtime.
     from verifiers.v1.agent import AgentConfig
 
 logger = logging.getLogger(__name__)
