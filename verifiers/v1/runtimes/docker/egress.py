@@ -193,7 +193,7 @@ class EgressProxy:
                 scheme = parsed.scheme.lower()
                 host = parsed.hostname or ""
                 port = parsed.port or (443 if scheme == "https" else 80)
-            permitted = scheme in ("http", "https") and self.policy.permits(
+            permitted = (connect or scheme == "http") and self.policy.permits(
                 scheme, host, port, connect=connect
             )
             addresses = []
