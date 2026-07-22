@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
     from mcp.types import CallToolResult, Tool as MCPTool
 
+    from verifiers.v1.runtimes import Runtime
+
 
 class NeMoGymTaskConfig(TaskConfig):
     resources_url: str = "http://127.0.0.1:8000"
@@ -216,7 +218,7 @@ def _trace_to_nemo_response(
 
 
 class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
-    async def setup(self, trace: Trace) -> None:
+    async def setup(self, trace: Trace, runtime: Runtime) -> None:
         state = trace.state
         state.resources_url = self.config.resources_url.rstrip("/")
         state.headers = dict(self.config.headers)
