@@ -72,9 +72,6 @@ class RLMHarnessConfig(HarnessConfig):
 class RLMHarness(Harness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    # rlm reads /task/rlm-skills (hardcoded upstream): install.sh uv-tool-installs
-    # each skill package it finds there, and the prompt points the agent at the
-    # SKILL.md files.
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:

@@ -36,7 +36,6 @@ class PoolHarness(Harness[PoolHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_MESSAGE_PROMPT = True
-    # Pool discovers the project `.poolside/skills` directory.
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:

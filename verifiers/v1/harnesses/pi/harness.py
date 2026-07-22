@@ -26,8 +26,6 @@ HOME_VAR = "VF_PI_ORIGINAL_HOME"
 
 PI_DIR = "/tmp/vf-pi"
 PI_BIN = f"{PI_DIR}/pi"
-# Workspace drop point (the cross-tool agentskills.io project convention); Pi is
-# handed the installed skills explicitly over `--skill`.
 SKILLS_DIR = ".agents/skills"
 MCP_VERSION = "2.11.0"
 MCP_ADAPTER = f"{PI_DIR}/mcp/node_modules/pi-mcp-adapter/index.ts"

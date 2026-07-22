@@ -31,7 +31,6 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     SUPPORTS_MCP = True
     # images would require streaming inputs
     SUPPORTS_MESSAGE_PROMPT = False
-    # Claude Code discovers `<config dir>/skills` itself and offers them as tools.
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
