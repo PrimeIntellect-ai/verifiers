@@ -12,6 +12,7 @@ from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
+    from verifiers.v1.agent import AgentConfig
     from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
@@ -602,15 +603,3 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
 WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""
-
-# `AgentConfig` lives above this module (agent.py imports the rollout engine,
-# which imports the record): bind it once every class here exists. Mid-cycle —
-# agent.py itself pulled this module in — the import fails and agent.py
-# finishes the build instead.
-try:
-    from verifiers.v1.agent import AgentConfig  # noqa: E402
-except ImportError:
-    pass
-else:
-    AgentInfo.model_rebuild()
-    Trace.model_rebuild()
