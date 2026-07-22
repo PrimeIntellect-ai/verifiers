@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
+import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +27,8 @@ from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import AssistantMessage, ToolMessage
 from verifiers.utils.serve_utils import get_free_port
+
+NEMO_GYM_INSTALL_HINT = "uv sync --python 3.12 --extra nemo-gym"
 
 if TYPE_CHECKING:
     from mcp import ClientSession
@@ -310,6 +314,11 @@ class NeMoGymEnv(SingleAgentEnv):
         config = taskset.config.task
         if config.resources_url is not None:
             return
+        if importlib.util.find_spec("nemo_gym") is None:
+            raise RuntimeError(
+                "Managed NeMo Gym tasksets require the `nemo-gym` extra. "
+                f"Install it with: `{NEMO_GYM_INSTALL_HINT}`"
+            )
         entrypoint = taskset.resource_server
         if entrypoint is None:
             raise ValueError("set --env.taskset.task.resources-url")
@@ -322,10 +331,7 @@ class NeMoGymEnv(SingleAgentEnv):
             "NEMO_GYM_PORT": str(port),
             "NEMO_GYM_RESOURCE_SERVER": entrypoint,
         }
-        script = Path(__file__).with_name("server.py")
-        command = await runtime.prepare_uv_script(
-            script.read_bytes(), {"UV_FROZEN": "0"}
-        )
+        command = [sys.executable, "-m", "verifiers.v1.tasksets.nemo_gym.server"]
         await runtime.run_background(
             command,
             server_env,

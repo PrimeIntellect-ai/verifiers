@@ -107,11 +107,16 @@ notebook = [
 openenv = [
     "openenv>=0.4.1",
 ]
+nemo-gym = [
+    "nemo-gym==0.4.0 ; python_full_version >= '3.12'",
+]
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
 default-groups = ["dev", "examples"]
+# The resource-only integration does not use NeMo Gym's OpenAI client.
+override-dependencies = ["openai>=2.9.0"]
 
 [[tool.uv.index]]
 name = "pypi"
