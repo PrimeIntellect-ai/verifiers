@@ -115,8 +115,33 @@ preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
 default-groups = ["dev", "examples"]
-# The resource-only integration does not use NeMo Gym's OpenAI client.
-override-dependencies = ["openai>=2.9.0"]
+
+# NeMo Gym declares its full platform stack; this integration only starts resource servers.
+[[tool.uv.dependency-metadata]]
+name = "nemo-gym"
+version = "0.4.0"
+requires-python = ">=3.12"
+requires-dist = [
+    "aiohttp>=3.14.1",
+    "fastapi",
+    "gprof2dot",
+    "hydra-core",
+    "itsdangerous",
+    "mcp>=1.27,<2",
+    "omegaconf",
+    "openai>=2.9",
+    "orjson",
+    "pandas",
+    "pydantic",
+    "pydot",
+    "ray>=2.55.1",
+    "requests",
+    "rich",
+    "typing-extensions",
+    "uvicorn",
+    "wandb",
+    "yappi",
+]
 
 [[tool.uv.index]]
 name = "pypi"
