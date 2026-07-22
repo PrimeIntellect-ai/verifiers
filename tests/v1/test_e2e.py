@@ -48,6 +48,16 @@ USER_RUNTIMES = [
     pytest.param("modal", marks=[_m.modal], id="harness-in-modal"),
 ]
 
+# ACP-backed harnesses: each must preserve an exchange across process relaunches and
+# retain MCP access after resuming. Cover every harness on the reliable local runtime,
+# plus one remote placement for the sandbox/tunnel boundary.
+ACP_RESUME_PLACEMENTS = [
+    _pair("kimi-code", "subprocess", "kimi-code-acp-in-subprocess"),
+    _pair("pi", "subprocess", "pi-acp-in-subprocess"),
+    _pair("pool", "subprocess", "pool-acp-in-subprocess"),
+    _pair("pool", "prime", "pool-acp-in-prime"),
+]
+
 # harness runtime x tool placement: every axis value once plus the two-container case
 # (harness and tool in separate docker boxes) and a prime-colocated row (a tool in its
 # OWN prime sandbox needs port exposure; colocated rides the harness's box).
@@ -166,6 +176,33 @@ async def test_interaction(live_ctx):
     assert trace is not None and trace.errors == []
     assert trace.stop_condition == "user_closed"  # closing the interaction ended it
     assert trace.num_turns == 2
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    "harness,harness_runtime", ACP_RESUME_PLACEMENTS, indirect=True
+)
+async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
+    """Each ACP harness preserves context and MCP access across two segments."""
+    (trace,) = await run_v1(
+        "echo-acp-resume-v1",
+        harness=harness,
+        harness_overrides={"runtime": {"type": harness_runtime}},
+        output_dir=tmp_path,
+        max_turns=8,
+        max_tokens=8192,
+        rollout_timeout=600,
+    )
+    assert trace.ok, trace.errors
+    assert trace.stop_condition == "user_closed"
+    assert trace.rewards["resumed"] == 1.0
+    assert trace.tools  # ACP-native tools, or Pi's MCP adapter meta-tool
+    segments = trace.info["acp_segments"]
+    assert len(segments) == 2
+    assert segments[0]["terminated"] is False
+    assert segments[1]["terminated"] is False
+    assert "tool" in segments[1]["roles"]
+    assert segments[1]["tool_outputs"]
 
 
 @pytest.mark.e2e

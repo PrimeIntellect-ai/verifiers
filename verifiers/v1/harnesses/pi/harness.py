@@ -51,11 +51,12 @@ if [ -f /etc/alpine-release ]; then
 else
     command -v curl >/dev/null 2>&1 \
         || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
+    case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
     if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_PI_NODE_VERSION" ]; then
         case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
         rm -rf "$node"
         mkdir -p "$node"
-        curl -fsSL "https://nodejs.org/dist/v$VF_PI_NODE_VERSION/node-v$VF_PI_NODE_VERSION-linux-${node_arch}.tar.gz" \
+        curl -fsSL "https://nodejs.org/dist/v$VF_PI_NODE_VERSION/node-v$VF_PI_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
             | tar -xz -C "$node" --strip-components=1
     fi
     node_bin="$node/bin"

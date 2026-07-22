@@ -231,6 +231,8 @@ markers = [
     "bash: v1 e2e cases on the bash harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",
+    "pi: v1 e2e cases on the pi harness",
+    "pool: v1 e2e cases on the pool harness",
     "codex: v1 e2e cases on the codex harness",
     "unit: marks tests as unit tests",
     "asyncio: marks tests as async tests",
