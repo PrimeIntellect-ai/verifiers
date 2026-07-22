@@ -2,9 +2,10 @@
 
 Replay clears each trace's scores and recomputes everything computable from the saved
 transcript — trace-only handlers plus the layered config's judges. Runtime-requiring
-signals (and group rewards, which need the whole group) don't run offline, so a replay
-carries offline scores only; the source run keeps the runtime-recorded values. Its saved
-config is the base for replay-specific overrides.
+signals don't run offline, so a replay carries offline scores only; the source run keeps
+the runtime-recorded values. Its saved config is the base for replay-specific overrides.
+Multi-agent runs don't support replay: re-scoring is per trace, and the env's
+cross-trace `score()` can't run offline.
 """
 
 import asyncio
@@ -22,7 +23,7 @@ from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
 from verifiers.v1.cli.output import (
     CONFIG_FILE,
     append_trace,
-    read_traces,
+    read_episodes,
     save_config,
     write_config,
 )
@@ -42,9 +43,11 @@ USAGE = (
 
 
 def _narrow(config_path: Path) -> type[ReplayConfig]:
-    """Narrow replay config to the saved taskset's config type."""
+    """Narrow replay config to the saved taskset's config type. The source may be
+    an eval run (taskset on the [env] block) or an earlier replay (root taskset)."""
     data = tomllib.loads(config_path.read_text())
-    taskset_id = (data.get("taskset") or {}).get("id")
+    taskset = data.get("taskset") or (data.get("env") or {}).get("taskset") or {}
+    taskset_id = taskset.get("id")
     if not taskset_id:
         return ReplayConfig
     ftype = vf.taskset_config_type(taskset_id)
@@ -62,28 +65,42 @@ def output_dir(config: ReplayConfig) -> Path:
 
 async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trace]:
     logger.debug("replay config:\n%s", config.model_dump_json(indent=2))
+    # Refuse multi-agent up front, from the SOURCE run's saved config — the replay
+    # layer's taskset is overridable and must not decide what the run was.
+    # Everything below may assume plain single-agent episodes.
+    saved = tomllib.loads((source / CONFIG_FILE).read_text())
+    saved_env = saved.get("env") or {}
+    saved_taskset = saved.get("taskset") or saved_env.get("taskset") or {}
+    env_cls = vf.environment_class(
+        saved_taskset.get("id") or "", saved_env.get("id") or ""
+    )
+    if not issubclass(env_cls, vf.SingleAgentEnv):
+        raise SystemExit(
+            f"replay: {source} is a multi-agent run ({env_cls.__name__}); offline "
+            "re-scoring runs per trace and would drop the env's cross-trace "
+            "score() — multi-agent runs don't support replay"
+        )
     task_cls = vf.task_type(config.taskset.id)
     data_cls = task_data_cls(task_cls)
     # `WireTaskData` reads any taskset's saved task without importing its Task type.
-    traces = read_traces(source, Trace[WireTaskData, state_cls(task_cls)])
+    # An episode may hold no traces (its env hooks failed before any agent ran);
+    # there's nothing to re-score, so it drops out in the flatten. Each kept trace
+    # remembers its episode's env identity — the replay output re-stamps it.
+    episodes = read_episodes(source, Trace[WireTaskData, state_cls(task_cls)])
+    sourced = [(trace, e.env) for e in episodes for trace in e.traces]
     if config.num_traces is not None:
-        traces = traces[: config.num_traces]
+        sourced = sourced[: config.num_traces]
+    traces = [trace for trace, _ in sourced]
 
-    # `trace.task.data` is pure data; re-scoring with the taskset's behavior needs the
-    # declared `TaskData` type — which every saved row is (one task type per taskset; its
-    # `load()` constructs it). The rebuilt row feeds ONLY the behavior wrapper at score
-    # time — `trace.task` keeps its wire form, because the trace persists through the
-    # `Trace[WireTaskData, ...]` schema it was read as: a sibling `TaskData` assigned onto
-    # it would have its subclass fields silently dropped from the replay's own output
-    # (they're real fields, not `model_extra`). A row that can't be rebuilt from the wire
-    # (a load-time-only field excluded from serialization, like harbor's `task_dir`) is
-    # scored by the base `Task` on the wire row (judges + base signals only; the
-    # subclass's own `@reward`s don't run — runtime-dependent ones would be skipped
-    # offline anyway).
+    # Re-scoring with the taskset's behavior needs the declared `TaskData` type, but
+    # the rebuilt row feeds ONLY the behavior wrapper: `trace.task` keeps its wire
+    # form — the trace persists through the `Trace[WireTaskData, ...]` schema it was
+    # read as, and a sibling `TaskData` assigned onto it would have its subclass
+    # fields silently dropped from the replay's own output. A row that can't be
+    # rebuilt (a load-time-only field excluded from serialization) is scored by the
+    # base `Task` on the wire row (judges + base signals only).
     def rebuild(trace: Trace) -> vf.TaskData:
         if trace.task.type != task_cls.__name__:
-            # The trace records which class produced it — a mismatch means this row is
-            # about to re-score under different behavior than it was generated with.
             logger.warning(
                 "replay: task %s was produced by %s but re-scores as %s (the taskset's declared type)",
                 trace.task.data.idx,
@@ -104,13 +121,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
 
     rows = [rebuild(trace) for trace in traces]
     # Judges are config, not wire data: `Task.score` resolves them from the replay
-    # config's `taskset.task.judges` (the source run's config.toml layered under any CLI
-    # overrides) — so a re-tuned judge overrides the recorded run's and a newly-plugged
-    # one joins, with no trace surgery.
-    # `num_rescores` re-scores each trace that many times, each on its own copy.
+    # config's `taskset.task.judges`, so a re-tuned judge overrides the recorded
+    # run's with no trace surgery. `num_rescores` copies each trace per re-score.
     work = [
-        (t.model_copy(deep=True), row)
-        for t, row in zip(traces, rows)
+        (t.model_copy(deep=True), row, env)
+        for (t, env), row in zip(sourced, rows)
         for _ in range(config.num_rescores)
     ]
 
@@ -126,11 +141,13 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     states = [
-        ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _ in work
+        ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _, _ in work
     ]
     lock = asyncio.Lock()
 
-    async def rescore(trace: Trace, row: vf.TaskData, st: ReplayProgress) -> None:
+    async def rescore(
+        trace: Trace, row: vf.TaskData, env: str, st: ReplayProgress
+    ) -> None:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             # Generation failures have no complete transcript to score.
@@ -138,16 +155,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
-                # Offline re-score from scratch: everything computable from the saved
-                # transcript recomputes — trace-only signals plus the layered config's
-                # judges. Runtime-requiring signals simply don't run, so a replay's
-                # scores are the offline-recomputable ones only; consult the source run
-                # for runtime-recorded values.
+                # Clear the recorded scores; only offline-recomputable ones come back.
                 trace.info.pop("judge", None)
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
-                # The behavior wrapper around the rebuilt row: the declared Task for a
-                # rebuilt row, the base Task (judges + base signals) for a WireTaskData
-                # fallback; the replay config's task subtree supplies the knobs.
+                # The declared Task for a rebuilt row, the base Task for the
+                # WireTaskData fallback.
                 task = (task_cls if isinstance(row, data_cls) else Task)(
                     row, config=config.taskset.task
                 )
@@ -169,7 +181,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 "idx=%s %s (%.1fs)", trace.task.data.idx, st.state, st.end - st.start
             )
         # Persist each result as it lands so an interrupted replay keeps its progress.
-        await append_trace(out, trace, lock)
+        await append_trace(out, trace, lock, env=env)
 
     display = (
         replay_dashboard(states, config.name, str(source), str(out), start)
@@ -177,9 +189,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         else contextlib.nullcontext()
     )
     async with display:
-        await asyncio.gather(*(rescore(t, row, s) for (t, row), s in zip(work, states)))
+        await asyncio.gather(
+            *(rescore(t, row, env, s) for (t, row, env), s in zip(work, states))
+        )
     logger.info("replay: done in %.1fs -> %s", time.time() - start, out)
-    return [t for t, _ in work]
+    return [t for t, _, _ in work]
 
 
 def main(argv: list[str] | None = None) -> None:

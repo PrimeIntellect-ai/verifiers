@@ -1,5 +1,3 @@
-"""Built-in V1 tasksets."""
-
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTaskset
 from verifiers.v1.tasksets.lean import (
     LeanConfig,

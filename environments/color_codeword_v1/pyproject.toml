@@ -3,7 +3,7 @@ name = "color-codeword-v1"
 version = "0.1.0"
 description = "color-codeword-v1 — a multi-turn VLM codeword-decoding task, driven by a colocated user simulator."
 requires-python = ">=3.10"
-dependencies = ["verifiers", "pillow"]
+dependencies = ["verifiers", "pillow>=11.0.0"]
 
 [build-system]
 requires = ["hatchling"]

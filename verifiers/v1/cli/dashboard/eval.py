@@ -14,9 +14,10 @@ from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
+from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.rollout import Phase, Rollout
+from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import (
@@ -69,34 +70,58 @@ _MARK = {
 }
 
 
+def _seat_value(config: EvalConfig, read):
+    """A cap as the overview shows it: the declared seats' shared value, the
+    string 'per-seat' when they disagree (caps live on the seats)."""
+    from verifiers.v1.env import _declared_agent_configs
+
+    values = {read(spec) for spec in _declared_agent_configs(config.env).values()}
+    return values.pop() if len(values) == 1 else "per-seat"
+
+
 def _limits(config: EvalConfig) -> list[str]:
-    """Per-rollout caps for the overview (concurrency first, then turns, tokens). An unset cap
-    reads as 'no ...' rather than being hidden."""
+    """Per-run caps for the overview (concurrency first, then turns, tokens), read
+    off the declared seats. An unset cap reads as 'no ...' rather than being hidden."""
     toks = []
-    if config.max_input_tokens:
-        toks.append(f"in≤{config.max_input_tokens}")
-    if config.max_output_tokens:
-        toks.append(f"out≤{config.max_output_tokens}")
-    if config.max_total_tokens:
-        toks.append(f"total≤{config.max_total_tokens}")
+    for label, field in (
+        ("in", "max_input_tokens"),
+        ("out", "max_output_tokens"),
+        ("total", "max_total_tokens"),
+    ):
+        v = _seat_value(config, lambda spec, field=field: getattr(spec, field))
+        if v == "per-seat":
+            toks.append(f"{label} per-seat")
+        elif v:
+            toks.append(f"{label}≤{v}")
+    turns = _seat_value(config, lambda spec: spec.max_turns)
     return [
         f"≤{config.max_concurrent} concurrent"
         if config.max_concurrent
         else "no concurrency cap",
-        f"{config.max_turns} turns" if config.max_turns else "no turn cap",
+        "per-seat turn caps"
+        if turns == "per-seat"
+        else (f"{turns} turns" if turns else "no turn cap"),
         f"{', '.join(toks)} tokens" if toks else "no token cap",
     ]
 
 
 def _timeouts(config: EvalConfig) -> list[str]:
-    """Per-stage rollout timeouts for the overview, each stage enumerated (unset → 'no <stage>
-    timeout')."""
-    return [
-        f"{stage} {v:g}s"
-        if (v := getattr(config.timeout, stage))
-        else f"no {stage} timeout"
-        for stage in ("setup", "rollout", "finalize", "scoring")
-    ]
+    """Per-stage run timeouts for the overview (each seat's own), plus the env's
+    finalize() bound (unset → 'no <stage> timeout')."""
+    rows = []
+    for stage in ("setup", "rollout", "finalize", "scoring"):
+        v = _seat_value(config, lambda spec, stage=stage: getattr(spec.timeout, stage))
+        if v == "per-seat":
+            rows.append(f"{stage} per-seat")
+        elif v:
+            rows.append(f"{stage} {v:g}s")
+        else:
+            rows.append(f"no {stage} timeout")
+    finalize = config.env.timeout.finalize
+    rows.append(
+        f"env finalize {finalize:g}s" if finalize else "no env finalize timeout"
+    )
+    return rows
 
 
 def _aligned(rows: list[list[str]]) -> list[str]:
@@ -132,9 +157,15 @@ def _interrupt_footer() -> Group | None:
 
 
 def _warning(config: EvalConfig) -> Text | None:
-    """A local-runtime caution for a code-running harness (none for the tool-less `null`),
-    shown above the overview rather than as a row in it."""
-    if config.harness.id != "null" and config.harness.runtime.type == "subprocess":
+    """A local-runtime caution when any code-running seat resolves to the subprocess
+    runtime (the tool-less chat loops are exempt), shown above the overview rather
+    than as a row in it."""
+    from verifiers.v1.loaders import harness_class
+
+    if any(
+        h.runtime.type == "subprocess" and harness_class(h.id).EXECUTES_CODE
+        for h in config.env.agent_harnesses().values()
+    ):
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
             "evaluation. Use subprocess only for debugging, or use docker or prime for an "
@@ -153,7 +184,7 @@ def overrides(
     field's declared default. Not `model_fields_set`: a `--resume` run reloads its config via
     `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
     `model_fields_set` would flag them all. `default` is the reference instance, threaded through
-    recursion so a pinned nested default (`taskset.task.user`) reads as
+    recursion so a pinned nested default (`taskset.task.tools`) reads as
     unchanged. `skip` holds dotted paths (`harness.runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
@@ -199,22 +230,38 @@ def Overview(config: EvalConfig) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
-    grid.add_row(
-        "env",
-        f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
+    seats = config.env.agent_harnesses()
+    taskset = config.env.taskset
+    env_label = taskset.name if taskset is not None else "no taskset"
+    if config.env.id:
+        env_label = f"{env_name(config.env.id)}+{env_label}"
+    # One seat story when every seat resolves the same way (the common case); one
+    # row per seat when they diverge (a judge on its own harness/runtime).
+    stories = list(
+        dict.fromkeys(
+            f"{h.name} harness  ·  {h.runtime.type} runtime" for h in seats.values()
+        )
     )
+    if len(stories) == 1:
+        grid.add_row("env", f"{env_label}  ·  {stories[0]}")
+    else:
+        grid.add_row("env", env_label)
+        for role, h in seats.items():
+            grid.add_row(f"  {role}", f"{h.name} harness  ·  {h.runtime.type} runtime")
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
     # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
     # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
     # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
-    # here), but only for the harness — `taskset.task.user.runtime.type` has no other display.
-    if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
-        grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
-    if harness_over := overrides(
-        config.harness, skip=frozenset({"id", "runtime.type"})
+    # here), but only for the harness — `taskset.task.tools.runtime.type` has no other display.
+    if taskset is not None and (
+        taskset_over := overrides(taskset, skip=frozenset({"id"}))
     ):
-        grid.add_row("harness", escape("  ·  ".join(harness_over)))
+        grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
+    for role, h in seats.items():
+        if harness_over := overrides(h, skip=frozenset({"id", "runtime.type"})):
+            label = f"{role}.harness" if len(seats) > 1 else "harness"
+            grid.add_row(label, escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
@@ -238,18 +285,29 @@ def _push_footer(push: "PushState | None") -> Group | None:
 
 
 def Progress(
-    rollouts: list[Rollout],
+    slots: list[RunSlot],
     start: float,
     page: tuple[int, int] | None = None,
 ) -> Group:
-    # On resume, `rollouts` includes the previous session's kept rollouts (as `Finished`), so
+    # On resume, `slots` includes the previous session's kept rollouts (as finished slots), so
     # progress, reward, err, and the breakdown cover the whole run, not just this session's.
-    done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
-    total = len(rollouts)
-    # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
-    # global avg (errored count as 0) in parens. `err` is the share that errored.
-    reward = format_mean(done, lambda t: t.reward)
-    err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
+    done = [s for s in slots if s.done]  # fully scored episodes
+    done_traces = [t for s in done for t in s.traces]
+    # Score aggregates read the policy's traces: auxiliary roles (a judge's verdict
+    # run, a modeled user) are `trainable=False` and carry no rewards, so counting
+    # them dilutes every mean with structural zeros. An all-untrainable run (every
+    # role frozen) falls back to all traces rather than showing nothing.
+    scored = [t for t in done_traces if t.trainable] or done_traces
+    total = len(slots)
+    # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
+    # the global avg (errored count as 0) in parens. `err` is the share of episodes that
+    # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
+    reward = format_mean(scored, lambda t: t.reward)
+    err = (
+        f"{sum(s.episode is None or not s.episode.ok for s in done) / len(done):.2f}"
+        if done
+        else "—"
+    )
     stats = (
         f"{len(done)}/{total} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
@@ -263,11 +321,34 @@ def Progress(
         ProgressBar(total=total or 1, completed=len(done)),
         Text(stats),
     )
-    breakdown = _breakdown(done)
+    breakdown = _breakdown(scored, done_traces)
     return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
-def _breakdown(done: list[Trace]) -> Table | None:
+def _score_segments(traces: list[Trace], source: str) -> str | None:
+    """`name mean` segments for every reward/metric key seen across `traces`,
+    first-seen order (a trace records only the functions that ran for it, so keys
+    can vary); None when no trace recorded anything."""
+    names: list[str] = []
+    for trace in traces:
+        names.extend(n for n in getattr(trace, source) if n not in names)
+    if not names:
+        return None
+    segments = []
+    for name in names:
+        mean = format_mean(
+            traces, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
+        )
+        segments.append(f"{name} {mean}")
+    return "  ·  ".join(segments)
+
+
+def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
+    """Score rows read the policy view (`scored` — trainable traces); with several
+    roles in play they split per role, each role averaging over its OWN traces (no
+    dilution, so the split covers every role — an untrainable seat's received
+    rewards stay visible). Resource rows read every completed trace: a judge's
+    tokens were spent regardless of trainability."""
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim", min_width=_LABEL_WIDTH)
     grid.add_column()
@@ -275,21 +356,20 @@ def _breakdown(done: list[Trace]) -> Table | None:
     # show); usage/time below still cover errored rollouts (their resources were spent regardless).
     has_clean = any(not t.has_error for t in done)
     score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
+    by_agent: dict[str | None, list[Trace]] = {}
+    for trace in done:
+        by_agent.setdefault(trace.agent_name, []).append(trace)
     for label, source in score_rows:
-        # every key seen across traces, first-seen order (a trace records only the functions
-        # that ran for it, so keys can vary)
-        names: list[str] = []
-        for trace in done:
-            names.extend(n for n in getattr(trace, source) if n not in names)
-        if not names:
-            continue
-        segments = []
-        for name in names:
-            mean = format_mean(
-                done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
-            )
-            segments.append(f"{name} {mean}")
-        grid.add_row(label, "  ·  ".join(segments))
+        if len(by_agent) > 1:
+            segments = [
+                f"[dim]{name or '—'}:[/dim] {means}"
+                for name, traces in by_agent.items()
+                if (means := _score_segments(traces, source)) is not None
+            ]
+            if segments:
+                grid.add_row(label, "    ".join(segments))
+        elif (means := _score_segments(scored, source)) is not None:
+            grid.add_row(label, means)
 
     # Resource use over every completed rollout (errored ones still spent tokens/time): tokens and
     # cost are summed; each timing phase is averaged over the rollouts that have it timed (averaged
@@ -393,23 +473,49 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
     return prompt, completion, cached, reasoning, nbranches
 
 
-def _started(rollout: Rollout) -> float:
-    # Sort key: when a rollout began (its boot start; setup for pre-boot-span traces on
-    # resume). A still-pending rollout has no trace yet, so it sorts last (+inf) — behind
-    # everything already in flight, in task order.
-    if rollout.trace is None:
+def _stage(trace: Trace) -> str:
+    """The stage a live (not-yet-done) rollout is in, derived from its trace's timing
+    spans — the engine opens and closes each span exactly at the stage transitions, so
+    the current stage is the latest span started but not yet ended. A completed trace
+    whose slot isn't done is waiting on its episode's other traces (and the env's
+    `score()`) — that's scoring."""
+    if trace.is_completed:
+        return "scoring"
+    for stage, span in (
+        ("scoring", trace.timing.scoring),
+        ("finalize", trace.timing.finalize),
+        ("running", trace.timing.generation),
+        ("setup", trace.timing.setup),
+        ("boot", trace.timing.boot),
+    ):
+        if span.start and not span.end:
+            break
+    else:
+        stage = "boot"  # trace minted, first span not yet opened (an instant)
+    # A boot stuck on a first-use platform image build reads differently from a
+    # normal boot — it can sit there for ~10 minutes (prime runtime only).
+    if stage == "boot" and getattr(trace.runtime, "image_cached", None) is False:
+        return "build"
+    return stage
+
+
+def _started(slot: RunSlot) -> float:
+    # Sort key: when a rollout began (its first trace's boot start; setup for
+    # pre-boot-span traces on resume). A still-pending rollout has no trace yet, so it
+    # sorts last (+inf) — behind everything already in flight, in task order.
+    if not slot.traces:
         return float("inf")
-    return rollout.trace.timing.boot.start or rollout.trace.timing.setup.start
+    return min(t.timing.boot.start or t.timing.setup.start for t in slot.traces)
 
 
-def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
+def _groups(slots: list[RunSlot]) -> list[list[RunSlot]]:
     # The n rollouts of each task, grouped together (so they sit adjacent); groups ordered by
-    # earliest start, rollouts within a group by start. Every rollout carries its `task` from
+    # earliest start, rollouts within a group by start. Every slot carries its `task` from
     # construction, so ones still queued behind the concurrency cap (no trace yet) are grouped
     # and shown too — as `[pending]`. Finished ones stay (never removed).
-    by_task: dict[int, list[Rollout]] = {}
-    for rollout in rollouts:
-        by_task.setdefault(rollout.task.data.idx, []).append(rollout)
+    by_task: dict[int, list[RunSlot]] = {}
+    for slot in slots:
+        by_task.setdefault(slot.task.data.idx, []).append(slot)
     groups = list(by_task.values())
     for group in groups:
         group.sort(key=_started)
@@ -423,84 +529,108 @@ def _brace(i: int, size: int) -> str:
     return "╭" if i == 0 else "╰" if i == size - 1 else "│"
 
 
-def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
-    # (brace, state, left sections, result, time)
+def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
+    # (brace, state, left sections, result, time); a slot contributes one row per live
+    # trace (a multi-agent episode shows each role's trace), braced per task.
     rows: list[tuple[str, str, list[str], str, str]] = []
     for group in groups:
-        for i, rollout in enumerate(group):
-            t = rollout.trace
-            task = rollout.task.data
-            label = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
-            if (
-                t is None
-            ):  # queued behind the concurrency cap — only its task is known yet
-                rows.append(
-                    (
-                        _brace(i, len(group)),
-                        "pending",
-                        [f"task {label}", *[""] * 7],
-                        "",
-                        "",
+        group_rows: list[tuple[str, list[str], str, str]] = []
+        for slot in group:
+            task = slot.task.data
+            base = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
+            if not slot.traces:
+                if slot.done:  # the env's rollout() itself failed before any trace
+                    error = slot.episode.error if slot.episode is not None else None
+                    group_rows.append(
+                        (
+                            "error",
+                            [f"task {base}", *[""] * 7],
+                            error.type if error is not None else "error",
+                            "",
+                        )
                     )
-                )
+                else:  # queued behind the concurrency cap — only its task is known yet
+                    group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
                 continue
-            if rollout.phase == Phase.DONE:  # fully scored — reward is final
-                state = "error" if t.has_error else "success"
-                result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
-                if t.has_error:
-                    stop = ""  # error shown instead
+            for t in slot.traces:
+                label = f"{base} agent={t.agent_name}" if t.agent_name else base
+                if slot.done:  # fully scored — reward is final
+                    state = "error" if t.has_error else "success"
+                    # A trace that recorded nothing shows no reward: a judge or
+                    # modeled-user seat's `reward=0.00` would read as a score.
+                    result = (
+                        t.error.type
+                        if t.has_error
+                        else (f"reward={t.reward:.2f}" if t.rewards else "")
+                    )
+                    if t.has_error:
+                        stop = ""  # error shown instead
+                    else:
+                        stop = t.stop_condition or ""
+                        if (
+                            t.is_truncated
+                        ):  # flag a clipped rollout next to its stop condition
+                            stop = f"{stop} (truncated)".strip()
+                elif t.is_completed and (err := t.error) is not None:
+                    # An errored trace whose episode is still running its other
+                    # traces (or `score()`) is already a failure — show it, don't
+                    # let it sit as "scoring" until the whole episode lands.
+                    state, result, stop = "error", err.type, ""
                 else:
-                    stop = t.stop_condition or ""
-                    if (
-                        t.is_truncated
-                    ):  # flag a clipped rollout next to its stop condition
-                        stop = f"{stop} (truncated)".strip()
-            else:
-                state, result, stop = rollout.phase, "", ""
-                # A boot stuck on a first-use platform image build reads differently from a
-                # normal boot — it can sit here for ~10 minutes (prime runtime only).
-                if state == Phase.BOOT and (
-                    getattr(t.runtime, "image_cached", None) is False
-                ):
-                    state = "build"
-            runtime_id = t.runtime.id if t.runtime is not None else None
-            runtime = f"{runtime_type}({runtime_id})" if runtime_id else runtime_type
-            turns = t.num_turns
-            start = t.timing.boot.start or t.timing.setup.start
-            end = (
-                t.timing.scoring.end
-                or t.timing.finalize.end
-                or t.timing.generation.end
-                # a rollout that errored in boot/setup has only that span's end — freeze there
-                # once done, else (still running) the timer would grow off `now` forever
-                or ((t.timing.setup.end or t.timing.boot.end) if t.is_completed else 0)
-                or now
-            )
-            prompt, completion, cached, reasoning, nbranches = _tokens(t)
-            cost = t.usage.cost if t.usage else None
-            tokens = ""
-            if prompt or completion:
-                tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
-                details = []
-                if cached is not None:
-                    details.append(f"{format_count(cached)} cached")
-                if reasoning is not None:
-                    details.append(f"{format_count(reasoning)} reasoning")
-                if details:
-                    tokens += f" ({', '.join(details)})"
-            left = [
-                f"task {label}",
-                t.id[:8],
-                runtime,
-                f"{turns} turn{'s' * (turns != 1)}",
-                f"{nbranches} branch{'es' * (nbranches != 1)}",
-                tokens,
-                f"{format_cost_usd(cost)}" if cost is not None else "",
-                stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
-            ]
-            # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
-            elapsed = format_time(end - start) if start else ""
-            rows.append((_brace(i, len(group)), state, left, result, elapsed))
+                    state, result, stop = _stage(t), "", ""
+                # The trace's own stamp, not the run-level runtime: a role's harness
+                # may resolve elsewhere (the judge env's sandboxed judge on a
+                # subprocess run).
+                if t.runtime is not None:
+                    runtime = (
+                        f"{t.runtime.type}({t.runtime.id})"
+                        if t.runtime.id
+                        else t.runtime.type
+                    )
+                else:
+                    runtime = runtime_type
+                turns = t.num_turns
+                start = t.timing.boot.start or t.timing.setup.start
+                end = (
+                    t.timing.scoring.end
+                    or t.timing.finalize.end
+                    or t.timing.generation.end
+                    # a rollout that errored in boot/setup has only that span's end — freeze there
+                    # once done, else (still running) the timer would grow off `now` forever
+                    or (
+                        (t.timing.setup.end or t.timing.boot.end)
+                        if t.is_completed
+                        else 0
+                    )
+                    or now
+                )
+                prompt, completion, cached, reasoning, nbranches = _tokens(t)
+                cost = t.usage.cost if t.usage else None
+                tokens = ""
+                if prompt or completion:
+                    tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
+                    details = []
+                    if cached is not None:
+                        details.append(f"{format_count(cached)} cached")
+                    if reasoning is not None:
+                        details.append(f"{format_count(reasoning)} reasoning")
+                    if details:
+                        tokens += f" ({', '.join(details)})"
+                left = [
+                    f"task {label}",
+                    t.id[:8],
+                    runtime,
+                    f"{turns} turn{'s' * (turns != 1)}",
+                    f"{nbranches} branch{'es' * (nbranches != 1)}",
+                    tokens,
+                    f"{format_cost_usd(cost)}" if cost is not None else "",
+                    stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
+                ]
+                # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
+                elapsed = format_time(end - start) if start else ""
+                group_rows.append((state, left, result, elapsed))
+        for i, (state, left, result, elapsed) in enumerate(group_rows):
+            rows.append((_brace(i, len(group_rows)), state, left, result, elapsed))
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(ratio=1, no_wrap=True)  # brace + mark + dot-separated sections
     grid.add_column(justify="right", no_wrap=True)  # result (reward / error)
@@ -556,27 +686,33 @@ class Pager:
         return self.page
 
 
+def _rows_of(group: list[RunSlot]) -> int:
+    """How many display rows a task's slots take: one per trace, one for a slot with
+    none yet (pending) or none at all (the env's hook failed before any trace)."""
+    return sum(max(1, len(slot.traces)) for slot in group)
+
+
 def _paginate(
-    groups: list[list[Rollout]], rows_per_page: int, pager: Pager, now: float
-) -> tuple[list[list[Rollout]], int, int]:
+    groups: list[list[RunSlot]], rows_per_page: int, pager: Pager, now: float
+) -> tuple[list[list[RunSlot]], int, int]:
     """Pack groups (a task's rollouts kept together) into pages of at most `rows_per_page` rows,
     selecting the one `pager` points at. Returns (this page's groups, 0-based index, page count) —
     a single page when everything already fits."""
-    if sum(len(g) for g in groups) <= rows_per_page:
+    if sum(_rows_of(g) for g in groups) <= rows_per_page:
         # Everything fits: arrows stay inert, and clear the anchor so paging re-opens on page 1 if
         # rollouts overflow again later (e.g. a terminal resize) rather than off the stale origin.
         pager.count = 1
         pager.origin = None
         return groups, 0, 1
-    pages: list[list[list[Rollout]]] = []
-    current: list[list[Rollout]] = []
+    pages: list[list[list[RunSlot]]] = []
+    current: list[list[RunSlot]] = []
     used = 0
     for group in groups:
-        if current and used + len(group) > rows_per_page:
+        if current and used + _rows_of(group) > rows_per_page:
             pages.append(current)
             current, used = [], 0
         current.append(group)
-        used += len(group)
+        used += _rows_of(group)
     if current:
         pages.append(current)
     pager.count = len(pages)
@@ -585,7 +721,7 @@ def _paginate(
 
 
 def _render(
-    rollouts: list[Rollout],
+    slots: list[RunSlot],
     config: EvalConfig,
     start: float,
     pager: Pager,
@@ -599,14 +735,14 @@ def _render(
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
     footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
     footer = Group(*footers) if footers else None
-    top = Group(header, Progress(rollouts, start), Rule(style="dim"))
+    top = Group(header, Progress(slots, start), Rule(style="dim"))
     reserved = len(_CONSOLE.render_lines(top))
     if footer is not None:
         reserved += len(_CONSOLE.render_lines(footer))
     rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
-    page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, pager, now)
+    page_groups, index, count = _paginate(_groups(slots), rows_per_page, pager, now)
     progress = Progress(
-        rollouts,
+        slots,
         start,
         page=(index + 1, count) if count > 1 else None,
     )
@@ -614,7 +750,16 @@ def _render(
         header,
         progress,
         Rule(style="dim"),
-        Rows(page_groups, now, config.harness.runtime.type),
+        Rows(
+            page_groups,
+            now,
+            "/".join(
+                dict.fromkeys(
+                    h.runtime.type for h in config.env.agent_harnesses().values()
+                )
+            )
+            or "subprocess",
+        ),
     ]
     if footer is not None:
         parts.append(footer)
@@ -623,14 +768,14 @@ def _render(
 
 @contextlib.asynccontextmanager
 async def dashboard(
-    rollouts: list[Rollout],
+    slots: list[RunSlot],
     config: EvalConfig,
     start: float,
     push: "PushState | None" = None,
 ):
     pager = Pager()
     async with live_view(
-        lambda: _render(rollouts, config, start, pager, push),
+        lambda: _render(slots, config, start, pager, push),
         on_key=pager.on_key,
     ):
         yield

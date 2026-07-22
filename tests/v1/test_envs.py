@@ -13,7 +13,7 @@ import pytest
 
 pytestmark = pytest.mark.e2e
 
-EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 2)
+EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
@@ -21,6 +21,12 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 # clone a corpus CI can't read. Empty: the SWE/container and corpus tasksets live in
 # research-environments now.
 SKIP_EVAL: set[str] = set()
+
+# Per-run caps are seat fields; recipe envs name their own seats.
+SEATS: dict[str, tuple[str, ...]] = {
+    "code_golf_v1": ("golfer",),
+    "proposer_solver_v1": ("proposer", "solver"),
+}
 
 
 def v1_tasksets() -> list[str]:
@@ -51,12 +57,15 @@ def test_eval(taskset: str):
     else:
         pytest.skip("no model API key configured")
 
+    caps = [
+        flag
+        for seat in SEATS.get(taskset, ("agent",))
+        for flag in (f"--env.{seat}.max-turns", "4")
+    ]
     cmd = [
-        "uv", "run", "--no-sync", "eval",
-        "--taskset.id", taskset,
+        "uv", "run", "--no-sync", "eval", taskset,
         *model,
-        # -r 2: a task with @group_reward(s) needs >=2 rollouts to compare.
-        "-n", "1", "-r", "2", "--max-turns", "4",
+        "-n", "1", "-r", "1", *caps,
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:

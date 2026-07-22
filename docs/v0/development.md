@@ -213,7 +213,7 @@ the current golden path.
 - Core runtime or shared config parsing: run the focused unit tests plus `uv run pre-commit run --all-files`.
 - Example environment behavior: run the focused tests and a real `prime eval run` smoke when credentials and endpoint access are available.
 - Environment packaging: exercise `tests/v1/test_envs.py` for the changed environment so a fresh venv installs the environment package and its dependencies.
-- Docs or generated agent guidance: run `uv run python scripts/sync.py` and include the regenerated files.
+- Docs or agent guidance (`AGENTS.md`): edit the Markdown directly and keep it minimal.
 - Release prep: verify the version source, release notes commit range, `uv build`, and final worktree status.
 - PR/CI follow-up: inspect the live review thread, check run, or log before patching, then rerun the smallest check that proves the fix.
 
@@ -240,7 +240,6 @@ uv sync --extra ta   # for TextArenaEnv
 uv sync --extra rg   # for ReasoningGymEnv
 uv sync --extra modal     # for the v1 Modal runtime
 uv sync --extra notebook  # for generate_sync() in Jupyter
-uv sync --extra quest     # for QUEST PDF evaluation
 uv sync --python 3.12 --extra harbor  # for the Harbor Python package and CLI
 ```
 

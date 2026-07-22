@@ -1,12 +1,3 @@
-"""Tunnels: make the host interception server reachable from remote consumers.
-
-`Tunnel` is the contract; `TunnelConfig` the discriminated union choosing one per
-interception server — `PrimeTunnel` (prime_tunnel/frpc, framework-minted) or `CustomTunnel`
-(a bring-your-own endpoint: a pre-started tunnel, reverse proxy, or direct bind). Each
-`InterceptionServer` owns one tunnel; only `PrimeTunnel` can be created on demand, so the
-elastic pool admits no other kind.
-"""
-
 from typing import Annotated
 
 from pydantic import Field

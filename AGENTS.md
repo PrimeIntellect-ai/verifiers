@@ -1,39 +1,28 @@
 # AGENTS.md
 
-<!-- Generated for repository development workflows. Do not edit directly. -->
+## Writing code
 
-## Shared Best Practices (All Contexts)
+- **Code is the source of truth**: before writing anything, read the v1 code for existing helpers, harnesses, and interfaces instead of reinventing them. Prefer verifiers-native task, trace, server, harness, and runtime interfaces over repeated path/import/discovery plumbing in user packages.
+- **Minimal config surface**: expose as few knobs as possible, but as many as needed.
+- **Keep tasksets small**: a basic taskset fits in a few dozen idiomatic lines — typed data/task/config classes, `load()`, and decorated scoring on the task. Don't override `Taskset.__init__` (implement `load()`); don't override `Harness.__init__` or `User.__init__` (use `setup()`).
 
-- Create new environments with `prime env init <MY_ENV_NAME>`.
-- Use `prime <command> --plain` to get better formatted command outputs.
-- Use the bundled skills first for create, browse, review, eval, optimization, training, and brainstorming workflows.
-- Go through the verifiers code as the source of truth.
-- Use toml files and validate them first before you run them.
-- Always look at the verifiers v1 code first to see whether helper functions or harnesses exist for your given task.
-- Never mix v1 and legacy verifiers functions in one environment. Always prefer and use v1.* code.
+## Running code
 
-## Style Rules
+- **Always use uv**: run code and commands with `uv run`, never raw `python`. Make sure `uv` is installed ([docs](https://docs.astral.sh/uv/getting-started/installation/)).
+- **Scaffold environments**: create a new taskset/environment with `uv run init <name>` (`uv run init -h` lists options like `-T`/`-U`/`-H`), and run evals with `uv run eval <taskset>`.
+- **Validate TOML first**: validate config `.toml` files before running them.
+- **Don't add dependencies**: never add dependencies or optional extras to the top-level `pyproject.toml`.
 
-Use these rules when shaping public v1 APIs, configs, and environment files.
+## Docs
 
-- Prefer verifiers-native task, trace, server, harness, and runtime interfaces over repeated path/import/discovery plumbing in user packages.
-- Expose as few knobs in the configs as possible, but as many as needed.
-- Use strict Pydantic models for structured config, tasks, messages, and state.
-- A basic taskset should fit in a few dozen idiomatic lines: typed data/task/config classes, `load()`, and decorated scoring on the task.
-- Do not override `Taskset.__init__`; implement `load()`. Do not override `Harness.__init__` or `User.__init__`; use `setup()`.
-- Refer to the code as the source of truth.
-- Avoid mutable module globals. Process-level locks/rate limiters and immutable constants are the narrow exceptions.
+- **Kept intentionally minimal**: `docs/`, `skills/`, and `configs/` are deliberately sparse. Don't touch them unless your change breaks their assumptions.
+- **Docs reflect `main`, not history**: describe the current state of the codebase only — no removed/legacy fields, migration paths, or "this used to be X" anecdotes.
 
-## Repository Development Notes
+## Skills
 
-Use this guidance when contributing to the `verifiers` repository itself.
+- **Use bundled skills first**: the skills in `skills/` cover the core workflows — `create-environments` (build or migrate a v1 taskset/environment/harness), `evaluate-environments` (configure and run evals), and `brainstorm` (ideation and research planning). Reach for them before doing the work by hand.
 
-- Ensure that `uv` is installed, see [uv docs](https://docs.astral.sh/uv/getting-started/installation/) for further information.
-- Always run `uv run pre-commit install` before making any changes.
-- Run the documented contributor checks for touched areas: `uv run ruff check --fix .`, `uv run pytest tests/`, and `uv run pre-commit run --all-files` as needed. (See `docs/v0/development.md`.)
-- The documentation (in `docs/`, `skills/`, `configs/`) is intentionally kept minimal. Do not touch them unless your changes break with these assumptions.
-- verifiers has two API surfaces under `verifiers/`: `verifiers/v1`, which is referred to as "v1", while the rest is "legacy". Unless specifically requested, always use and assume v1.
-- verifiers v1 uses Pydantic objects everywhere, so you should, too, when working in v1. Mimic the style of the existing code.
-- Do not add unit tests to your PRs. v1 has a few end to end tests, which are sufficient. Unit tests clog up the repository. You can, however, write temporary scripts to test.
-- The repository uses Python 3.11 or older, so you are encouraged to use modern Python functions to cut down on lines.
-- Do not add dependencies, optional extras etc. to the main pyproject.toml.
+## Testing
+
+- **Prefer e2e tests over unit tests**: v1's end-to-end tests are sufficient — extra unit tests clog the repo. Editing existing tests is fine; to check your own work, write a temporary script instead of committing new tests.
+- **Run the contributor checks**: run `uv run pre-commit install` once, then for touched areas `uv run ruff check --fix .`, `uv run pytest tests/`, and `uv run pre-commit run --all-files` (see `docs/v0/development.md`).

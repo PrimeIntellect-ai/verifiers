@@ -23,17 +23,18 @@ class ReplayConfig(BaseConfig):
     )
     """How many saved traces to re-score (None = all)."""
     num_rescores: int = Field(1, validation_alias=AliasChoices("num_rescores", "r"))
-    """Re-score each selected trace this many times — e.g. to measure judge variance across
-    repeated gradings of the same trace. Named distinctly from eval's `num_rollouts` so the
-    replayed run's own `num_rollouts` (in the base `config.toml`) is ignored, not inherited."""
+    """Re-score each selected trace this many times (e.g. to measure judge variance).
+    Named distinctly from eval's `num_rollouts` so the source run's value is
+    ignored, not inherited."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max traces re-scored (judge calls) in flight at once."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
-    dry_run: bool = False
-    """Resolve + validate the config and write it to the output dir, then exit (no re-scoring)."""
+    dry_run: bool = Field(False, exclude=True)
+    """Resolve + validate the config and write it to the output dir, then exit (no
+    re-scoring). Excluded from the saved config so re-running it actually re-scores."""
     rich: bool = True
     """Show a live dashboard (one row per trace) instead of per-trace log lines."""
     output_dir: Path | None = Field(
@@ -51,5 +52,11 @@ class ReplayConfig(BaseConfig):
     def _resolve_taskset(cls, data):
         from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
+        if isinstance(data, dict) and not data.get("taskset"):
+            # The base layer is usually a saved eval config, which keeps its
+            # taskset on the [env] block — lift it onto replay's root surface.
+            env = data.get("env")
+            if isinstance(env, dict) and env.get("taskset"):
+                data["taskset"] = env["taskset"]
         narrow_plugin_field(data, "taskset", taskset_config_type)
         return data

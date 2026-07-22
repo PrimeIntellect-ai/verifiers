@@ -2,26 +2,38 @@
 
 GEPA optimizes one taskset's `Task.system_prompt` by alternating rollouts (`evaluate`) with a
 teacher LM reflecting on the reflective dataset (`make_reflective_dataset`) — see
-`verifiers.v1.gepa.adapter.GEPAAdapter`. This inherits `EnvConfig`'s fields (`taskset`,
-`harness`, `max_turns`, token limits, timeouts) as top-level flags, the same way `EvalConfig`
-does, and adds the optimization loop's own knobs (model, reflection model, train/val split,
-budget). There is no worker pool here (`EnvServerConfig` is not a base) — GEPA always runs
-in-process, since its adapter protocol is itself synchronous (see `GEPAAdapter`)."""
+`verifiers.v1.gepa.adapter.GEPAAdapter`. Like `EvalConfig`, it owns an `env` field (the
+environment: its taskset, seats, limits) and adds the optimization loop's own knobs (model,
+reflection model, train/val split, budget). There is no worker pool here (`EnvServerConfig`
+is not a base) — GEPA always runs in-process, since its adapter protocol is itself
+synchronous (see `GEPAAdapter`)."""
 
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
+from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import EvalClientConfig
+from verifiers.v1.configs.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.env import EnvConfig
+from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
 
-class GEPAConfig(EnvConfig):
+class GEPAConfig(BaseConfig):
     """The GEPA run plus its environment. `model` runs the rollouts under optimization;
     `reflection_model` (defaults to `model`) proposes new system prompts from the reflective
     dataset. `model` defaults to the same id as `EvalConfig`."""
+
+    env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
+    """The environment under optimization — the same `[env]` block as an eval's
+    (`--env.taskset.*`, seats, limits), narrowed to the selected env's config class."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_env(cls, data):
+        return resolve_env_field(data, narrowed_env_annotation(cls))
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
@@ -68,8 +80,9 @@ class GEPAConfig(EnvConfig):
     )
     """Where to write results (config.toml + the streamed traces.jsonl, alongside GEPA's own
     candidates.json / run_log.json). None = a fresh per-run dir under
-    `outputs/<taskset>--<model>--<harness>/<uuid>` (via `output_path`)."""
+    `outputs/<env>--<model>--<harness>/<uuid>` (via `output_path`)."""
     save_results: bool = True
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
-    dry_run: bool = False
-    """Resolve + validate the config and dump it, then exit."""
+    dry_run: bool = Field(False, exclude=True)
+    """Resolve + validate the config and dump it, then exit. Excluded from the
+    saved config so re-running `@ config.toml` runs for real."""

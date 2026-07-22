@@ -23,7 +23,7 @@ The command also supports:
   - Use this to create custom tools which are installed into supported harnesses via MCP.
 - `-U`, `--add-user` — also scaffold a `vf.User` simulator at `servers/user.py`
   - Use this to simulate a user interacting with the model. Not all harnesses support user simulation.
-- `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--harness.id <name>`
+- `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--env.agent.harness.id <name>`
   - Prefer a built-in harness unless the model needs to run inside a custom program.
 
 Most tasksets do not need specific tools, user simulations or custom harnesses.
@@ -109,7 +109,7 @@ class AdditionConfig(vf.TasksetConfig):
     task: AdditionTaskConfig = AdditionTaskConfig()
 ```
 
-These values can be overridden with `--taskset.num-tasks` and `--taskset.task.tolerance`, or with the equivalent TOML fields.
+These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
 
 ## Lazy and infinite tasksets
 
@@ -234,4 +234,10 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
         ]
 ```
 
-To override the judge model, set `taskset.task.judge.model` in your config (it is a string).
+To override the judge model, set `env.taskset.task.judge.model` in your config (it is a string).
+
+## Beyond one agent
+
+One episode doesn't have to be one agent run: agents, the control flow between
+agents, and cross-agent rewards are the environment's job — see
+[The Env](env.md).
