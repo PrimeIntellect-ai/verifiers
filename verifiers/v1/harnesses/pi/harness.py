@@ -13,6 +13,7 @@ import shlex
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.skills import load_skills
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
 
@@ -95,6 +96,9 @@ class PiHarness(Harness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_MESSAGE_PROMPT = True
+    # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
+    # so the installed skills are passed explicitly via `--skill` at launch.
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info(
@@ -234,6 +238,11 @@ class PiHarness(Harness[PiHarnessConfig]):
             if self.config.disabled_tools
             else []
         )
+        skill_args = [
+            arg
+            for skill in load_skills(self.config.skills)
+            for arg in ("--skill", f"{self.SKILLS_DIR}/{skill.name}")
+        ]
         system_args = ["--append-system-prompt", system_prompt] if system_prompt else []
         argv = [
             "sh",
@@ -252,6 +261,7 @@ class PiHarness(Harness[PiHarnessConfig]):
             ctx.model,
             *mcp_args,
             *tool_args,
+            *skill_args,
             *system_args,
             *image_args,
         ]

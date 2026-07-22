@@ -46,6 +46,8 @@ class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = False  # TODO
     SUPPORTS_MESSAGE_PROMPT = True
+    # Codex discovers the repo-scope `$CWD/.agents/skills` (the base SKILLS_DIR).
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("codex: ensuring codex %s is installed", self.config.version)
@@ -73,9 +75,11 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         task = trace.task.data
-        if task.prompt is not None and not isinstance(task.prompt, str):
-            # `resolve_prompt` cannot fold system text (the task's or the skills
-            # announcement) into a Messages prompt; the join below handles both.
+        if (
+            task.system_prompt is not None
+            and task.prompt is not None
+            and not isinstance(task.prompt, str)
+        ):
             system_prompt, prompt = task.system_prompt, task.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(task)
@@ -83,7 +87,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         image_dir = f".vf-codex-images-{trace.id}"
         if prompt is not None and not isinstance(prompt, str):
             # Codex seeds one initial turn, so Messages system text joins its prompt.
-            texts = [t for t in (system_prompt, self.skills_prompt()) if t]
+            texts = [system_prompt] if system_prompt else []
             image_index = 0
             for message in prompt:
                 if message.role not in ("system", "user"):

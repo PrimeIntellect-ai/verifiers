@@ -13,7 +13,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import HarnessError, boundary
-from verifiers.v1.skills import load_skills, skills_prompt
+from verifiers.v1.skills import load_skills
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import (
     ProgramResult,
@@ -46,8 +46,8 @@ class HarnessConfig(BaseConfig):
     skills: list[Path] = Field(default_factory=list)
     """Agent skills to install into the runtime: each entry is one skill (a directory
     with a `SKILL.md` manifest, or the manifest itself) or a directory of such skill
-    directories. Programs without native skill discovery are pointed at the installed
-    skills through the prompt, so they need file access to use them."""
+    directories. Only harnesses whose program discovers skills natively
+    (`SUPPORTS_SKILLS`) accept them."""
 
     @property
     def name(self) -> str:
@@ -73,11 +73,13 @@ class Harness(ABC, Generic[ConfigT]):
     every real harness; the tool-less chat loops (`null`) override to False. Read
     where model-directed execution changes the rules: the subprocess-on-host
     warning, the judge env's sandbox requirement."""
-    SKILLS_DIR: ClassVar[str] = ".vf-skills"
-    """Runtime path (workspace-relative) `config.skills` are installed under."""
-    DISCOVERS_SKILLS: ClassVar[bool] = False
-    """Whether the program discovers skills in `SKILLS_DIR` natively; when False the
-    installed skills are announced through the prompt instead."""
+    SUPPORTS_SKILLS: ClassVar[bool] = False
+    """Whether the program discovers SKILL.md skills installed in `SKILLS_DIR`;
+    configuring `skills` on a harness without support is rejected up front."""
+    SKILLS_DIR: ClassVar[str] = ".agents/skills"
+    """Runtime path (workspace-relative) `config.skills` are installed under: the
+    cross-tool project convention (agentskills.io) by default; a harness whose
+    program looks elsewhere overrides it."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -96,9 +98,6 @@ class Harness(ABC, Generic[ConfigT]):
                 "task.prompt must be a string or None."
             )
         system = task.system_prompt
-        skills = self.skills_prompt()
-        if skills:
-            system = f"{system}\n\n{skills}" if system else skills
         if system is None or self.APPENDS_SYSTEM_PROMPT:
             return system if self.APPENDS_SYSTEM_PROMPT else None, prompt
         if not isinstance(prompt, str):
@@ -107,23 +106,15 @@ class Harness(ABC, Generic[ConfigT]):
                 f"{'Messages' if prompt is not None else 'None'} prompt; set "
                 "APPENDS_SYSTEM_PROMPT to emit it as a system message."
             )
-        if task.system_prompt is not None:
-            logger.warning(
-                "Harness %r does not support a separate system prompt; prepending "
-                "task.system_prompt to the user prompt.",
-                self.config.id,
-            )
+        logger.warning(
+            "Harness %r does not support a separate system prompt; prepending "
+            "task.system_prompt to the user prompt.",
+            self.config.id,
+        )
         return None, f"{system}\n\n{prompt}"
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
-
-    def skills_prompt(self) -> str | None:
-        """The prompt section announcing `config.skills`, `None` when there are none
-        or the program discovers them in `SKILLS_DIR` natively."""
-        if not self.config.skills or self.DISCOVERS_SKILLS:
-            return None
-        return skills_prompt(load_skills(self.config.skills), self.SKILLS_DIR)
 
     async def install_skills(self, runtime: Runtime) -> None:
         """Write `config.skills` into `runtime` under `SKILLS_DIR`; framework-called

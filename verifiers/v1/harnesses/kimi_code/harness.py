@@ -39,6 +39,9 @@ class KimiCodeHarnessConfig(HarnessConfig):
 class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = True
+    # Kimi Code discovers user skills in `$KIMI_CODE_HOME/skills` (print mode too).
+    SUPPORTS_SKILLS = True
+    SKILLS_DIR = f"{KIMI_HOME}/skills"
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info(

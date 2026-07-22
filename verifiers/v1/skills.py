@@ -68,19 +68,3 @@ def _frontmatter(text: str) -> dict[str, str]:
         if sep and key.strip() and not key[0].isspace():
             meta[key.strip()] = value.strip().strip("'\"")
     return meta
-
-
-def skills_prompt(skills: list[Skill], dest: str) -> str:
-    """The prompt section announcing installed skills to a program without native
-    skill discovery."""
-    listing = "\n".join(
-        f"- {skill.name}: {skill.description} ({dest}/{skill.name}/{MANIFEST})"
-        for skill in skills
-    )
-    return (
-        f"# Skills\n\n"
-        f"Skills are directories of instructions for specific kinds of tasks, "
-        f"installed under `{dest}/`:\n\n{listing}\n\n"
-        f"When a task matches a skill's description, read its {MANIFEST} first "
-        f"and follow its instructions."
-    )

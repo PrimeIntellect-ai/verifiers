@@ -71,6 +71,12 @@ def validate_pairing(
             f"{task_cls.__name__} exposes tool servers (MCP). Run it with a harness that "
             f"supports MCP (e.g. --env.agent.harness.id bash), or use tasks without tools."
         )
+    if not harness.SUPPORTS_SKILLS and harness.config.skills:
+        raise ValueError(
+            f"Harness {harness.config.id!r} has no native skill support, but "
+            "`skills` is set. Run them with a harness whose program discovers "
+            "skills (e.g. --env.agent.harness.id claude-code)."
+        )
     if not harness.SUPPORTS_USER_SIM and task_cls.user is not None:
         raise ValueError(
             f"Harness {harness.config.id!r} does not drive a user simulator, but "
