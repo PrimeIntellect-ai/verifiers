@@ -11,21 +11,23 @@ from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
-from verifiers.v1.decorators import has_decorated
-from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.env import EnvConfig
+from verifiers.v1.loaders import load_environment
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
     InfoResponse,
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
-from verifiers.v1.task import Task, task_data_cls
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
+
+MAX_LAZY_TASKS = 1_000_000
+"""Most tasks an infinite taskset's generator is willing to build (and cache) per worker."""
 
 
 class EnvServer:
@@ -33,12 +35,22 @@ class EnvServer:
         self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
     ) -> None:
         self.address = address
-        self.taskset_id = config.taskset.id
-        self.env = Environment(config)
-        self.task_cls = type(self.env.taskset).task_type()
-        self.data_cls = task_data_cls(self.task_cls)
+        self.taskset_id = config.taskset.id if config.taskset is not None else ""
+        self.env = load_environment(config)
+        # A finite taskset materializes up front; an infinite one is pulled off its
+        # generator on demand, so `num_tasks=None` on the wire means infinite.
+        self._task_iter = iter(self.env.taskset.load())
+        self._tasks: list = []
         self.num_tasks: int | None = None
-        self.requires_group_scoring = has_decorated(self.task_cls, "group_reward")
+        if not type(self.env.taskset).INFINITE:
+            self._tasks = list(self._task_iter)
+            self.num_tasks = len(self._tasks)
+        # v1 envs never group-score (siblings score inside the env's own rollout);
+        # only the legacy (v0) bridge sets this.
+        self.requires_group_scoring = False
+        self._gate = (
+            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+        )
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -57,9 +69,8 @@ class EnvServer:
     @classmethod
     def run_server(cls, address_queue=None, **kwargs) -> None:
         """Run a spawned server and report its concrete address when requested."""
-        # A worker may still pull datasets (legacy bridge) and is killed at teardown; pin
-        # tqdm to a threading lock first so it never leaks a multiprocessing semaphore
-        # (resource_tracker warning at shutdown).
+        # Pin tqdm to a threading lock first, so the taskset load never leaks a
+        # multiprocessing semaphore (resource_tracker warning at shutdown).
         use_threading_tqdm_lock()
         server = cls(**kwargs)
         if address_queue is not None:
@@ -72,16 +83,24 @@ class EnvServer:
             # of a spurious multiprocessing traceback, matching serve_env's own handling.
             pass
 
-    def _build_task(self, task_data: dict | None) -> Task:
-        """Rebuild a request's task from its wire data: validate into the taskset's declared
-        `TaskData` type and wrap it in the declared `Task` with the config's task subtree —
-        the same construction the taskset's own `load()` performs."""
-        if task_data is None:
-            raise ValueError(
-                "v1 env server requests carry task_data (task_idx addresses the legacy bridge)"
-            )
-        data = self.data_cls.model_validate(task_data)
-        return self.task_cls(data, self.env.config.taskset.task)
+    def _task(self, idx: int):
+        """The task at `idx`; an infinite taskset generates (and caches) up to `idx`
+        on demand. Generation must be deterministic — every pool worker runs its own
+        `load()`, so idx-addressing relies on all producing the same sequence. The
+        `MAX_LAZY_TASKS` cap fails a runaway driver's request instead of hanging the
+        worker generating toward it."""
+        while len(self._tasks) <= idx:
+            if idx >= MAX_LAZY_TASKS:
+                raise IndexError(
+                    f"task_idx {idx} exceeds the lazy-generation cap ({MAX_LAZY_TASKS})"
+                )
+            try:
+                self._tasks.append(next(self._task_iter))
+            except StopIteration:
+                raise IndexError(
+                    f"task_idx {idx} out of range ({len(self._tasks)} tasks)"
+                ) from None
+        return self._tasks[idx]
 
     def _client(self, client_config: ClientConfig, model: str) -> Client:
         """Cache clients because renderer initialization builds a tokenizer pool."""
@@ -98,25 +117,26 @@ class EnvServer:
         )
 
     def serving(self):
-        """Context for the server's eval-level serving resources (shared tool servers +
-        interception), entered for the server's lifetime so they're reused across
-        requests; episodes built inside it inherit them (see `Environment.serving`). The
-        legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
+        """The env's serving resources, entered for the server's lifetime so they're
+        reused across requests. The legacy v0 bridge overrides this (no v1 serving)."""
         return self.env.serving()
 
-    async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
+    async def _run(self, req: RunRequest) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._build_task(req.task_data), ctx, n=1)
-        traces = await episode.run()
-        # Trust the concrete trace; serialize it once before client-side re-typing.
-        return RunRolloutResponse.model_construct(trace=traces[0])
+        (slot,) = self.env.slots(self._task(req.task_idx))
+        # The gate spans requests: `--env.max-concurrent` bounds this worker's
+        # agent runs the same way the in-process eval's semaphore does.
+        episode = await self.env.run_slot(slot, ctx, self._gate)
+        # Trust the env-minted episode; serialize it once before client-side re-typing.
+        return RunResponse.model_construct(episode=episode)
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
-        ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._build_task(req.task_data), ctx, n=req.n)
-        traces = await episode.run()
-        # Avoid a dump-and-validate copy for every trusted trace in the group.
-        return RunGroupResponse.model_construct(traces=traces)
+        # The route survives for the legacy (v0) bridge (`LegacyEnvServer` overrides
+        # this); a dispatcher calling it on a v1 env gets a loud error.
+        raise RuntimeError(
+            "run_group is a legacy (v0) route; v1 envs score sibling-dependent "
+            "signals inside their own rollout — request run instead"
+        )
 
     async def _handle(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
@@ -131,10 +151,8 @@ class EnvServer:
                     num_tasks=self.num_tasks,
                     requires_group_scoring=self.requires_group_scoring,
                 )
-            elif route == "run_rollout":
-                response = await self._run_rollout(
-                    RunRolloutRequest.model_validate(raw)
-                )
+            elif route == "run":
+                response = await self._run(RunRequest.model_validate(raw))
             elif route == "run_group":
                 response = await self._run_group(RunGroupRequest.model_validate(raw))
             else:
@@ -164,7 +182,7 @@ class EnvServer:
             "EnvServer up: taskset=%s address=%s tasks=%s group_scoring=%s",
             self.taskset_id,
             self.address,
-            self.num_tasks if self.num_tasks is not None else "client-side",
+            self.num_tasks if self.num_tasks is not None else "infinite",
             self.requires_group_scoring,
         )
         poller = zmq.asyncio.Poller()

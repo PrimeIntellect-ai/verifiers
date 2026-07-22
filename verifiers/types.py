@@ -203,6 +203,7 @@ class RoutedExpertsPayload(TypedDict):
     data: Any
     shape: list[int]
     start: int
+    dtype: str
 
 
 class ResponseTokens(CustomBaseModel):

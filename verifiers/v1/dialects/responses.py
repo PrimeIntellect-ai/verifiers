@@ -21,10 +21,6 @@ from openai.types.responses import (
     ResponseUsage,
 )
 from openai.types.responses.response_input_param import FunctionCallOutput
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
-)
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
@@ -36,6 +32,7 @@ from verifiers.v1.types import (
     ImageUrlSource,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     SystemMessage,
     TextContentPart,
@@ -58,11 +55,27 @@ _TERMINAL_MARKERS = tuple(
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
 
 
+class ProviderUsageInputTokensDetails(BaseModel):
+    """Permissive input token details: OpenAI-compatible providers may omit fields
+    the pinned SDK declares required (e.g. ``cache_write_tokens``)."""
+
+    model_config = ConfigDict(extra="allow")
+    cache_write_tokens: int | None = None
+    cached_tokens: int | None = None
+
+
+class ProviderUsageOutputTokensDetails(BaseModel):
+    """Permissive output token details: providers may omit ``reasoning_tokens``."""
+
+    model_config = ConfigDict(extra="allow")
+    reasoning_tokens: int | None = None
+
+
 class ProviderUsage(ResponseUsage):
     """Responses usage with optional detail objects for OpenAI-compatible providers."""
 
-    input_tokens_details: InputTokensDetails | None = None
-    output_tokens_details: OutputTokensDetails | None = None
+    input_tokens_details: ProviderUsageInputTokensDetails | None = None
+    output_tokens_details: ProviderUsageOutputTokensDetails | None = None
 
 
 class OpenAIResponse(BaseModel):
@@ -265,6 +278,20 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
+    sampling_fields = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "max_tool_calls",
+            "reasoning",
+            "text",
+            "tool_choice",
+            "parallel_tool_calls",
+            "top_logprobs",
+            "truncation",
+        }
+    )
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse
@@ -273,6 +300,22 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
         return any(marker in chunk for marker in _TERMINAL_MARKERS)
+
+    def parse_sampling(self, body: dict) -> Sampling:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
+        # (e.g. `summary`) as the wire sent them.
+        if isinstance(reasoning := settings.get("reasoning"), dict):
+            reasoning = dict(reasoning)
+            if reasoning.get("effort"):
+                settings["reasoning_effort"] = reasoning.pop("effort")
+            if reasoning:
+                settings["reasoning"] = reasoning
+            else:
+                settings.pop("reasoning")
+        if "max_output_tokens" in settings:
+            settings["max_tokens"] = settings.pop("max_output_tokens")
+        return Sampling.model_validate(settings)
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         prompt: Messages = []

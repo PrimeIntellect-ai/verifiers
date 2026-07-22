@@ -25,19 +25,6 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
     return methods
 
 
-def has_decorated(cls: type, attr: str) -> bool:
-    """Whether `cls` defines any method tagged with `attr` — `discover_decorated` for a
-    class, no instance needed. An undecorated override still suppresses a decorated base
-    method."""
-    names = {
-        name
-        for klass in cls.__mro__
-        for name, fn in vars(klass).items()
-        if callable(fn) and hasattr(fn, attr)
-    }
-    return any(hasattr(getattr(cls, name), attr) for name in names)
-
-
 def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
     params = inspect.signature(fn).parameters
     return fn(**{name: value for name, value in available.items() if name in params})
@@ -86,7 +73,10 @@ def metric(func: F, priority: int = 0) -> F: ...
 @overload
 def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def metric(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
-    """Mark a metric `(self, trace) -> float` (recorded, not summed)."""
+    """Mark a `Task`/`Harness` metric `(self, trace) -> float` (recorded, not
+    summed) — per-trace judgement; it declares what it needs by name (`task`,
+    `trace`, `runtime`). Cross-agent judgement is an `Env`'s `finalize()`,
+    imperatively."""
     decorator = mark("metric", metric_priority=priority)
     return decorator if func is None else decorator(func)
 
@@ -100,20 +90,8 @@ def reward(
 def reward(
     func: F | None = None, weight: float = 1.0, priority: int = 0
 ) -> F | Callable[[F], F]:
-    """Mark a weighted per-rollout reward returning a float or keyed scores."""
+    """Mark a weighted `Task` reward returning a float or keyed scores — per-trace
+    judgement over the trace's own run. Cross-agent judgement is an
+    `Env`'s `finalize()`, imperatively."""
     decorator = mark("reward", reward_priority=priority, _vf_weight=weight)
-    return decorator if func is None else decorator(func)
-
-
-@overload
-def group_reward(func: F, weight: float = 1.0, priority: int = 0) -> F: ...
-@overload
-def group_reward(
-    func: None = None, weight: float = 1.0, priority: int = 0
-) -> Callable[[F], F]: ...
-def group_reward(
-    func: F | None = None, weight: float = 1.0, priority: int = 0
-) -> F | Callable[[F], F]:
-    """Mark a weighted group reward returning one score per trace."""
-    decorator = mark("group_reward", group_reward_priority=priority, _vf_weight=weight)
     return decorator if func is None else decorator(func)

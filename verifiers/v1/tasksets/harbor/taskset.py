@@ -48,8 +48,14 @@ class HarborConfig(TasksetConfig):
     """Optional Harbor `--registry-url` selector for a raw registry.json URL."""
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
+    ignore_timeouts: bool = True
+    """Drop each task's declared agent and verifier timeouts so rollouts run
+    unbounded (unless run-level `--timeout.*` limits are set). Task timeouts are
+    authored against Harbor's runtime and confound model capability with inference
+    speed; set False to apply them anyway."""
     timeout_multiplier: float = Field(1.0, gt=0)
-    """Scale each task's agent and verifier timeouts."""
+    """Scale each task's agent and verifier timeouts. Only applies with
+    `ignore_timeouts=False`."""
     resource_multiplier: float = Field(1.0, gt=0)
     """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
     require_image: bool = False
@@ -81,8 +87,8 @@ class HarborData(TaskData):
     difficulty: str | None = None
     category: str | None = None
     tags: list[str] = []
-    task_dir: str = ""
-    """Host path to the task dir; used to stage tests/ to verify."""
+    task_dir: str = Field("", exclude=True)
+    """Host path to the task dir; used to stage tests/ to verify, not serialized."""
     verifier_env: dict[str, str] = {}
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -227,7 +233,7 @@ def resolve_image(
             f"{task_dir.name}: environment is a Dockerfile, not a pullable "
             "[environment].docker_image — building Dockerfiles isn't supported, so this "
             "task can't run (it would otherwise score against the wrong default image). "
-            "Pass --taskset.ignore-dockerfile to run it on the harness runtime's image instead."
+            "Pass --env.taskset.ignore-dockerfile to run it on the harness runtime's image instead."
         )
     if require_image:
         raise ValueError(
@@ -273,8 +279,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     # Older registry entries stored one author in [metadata].
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
-    harness_timeout = config.get("agent", {}).get("timeout_sec")
-    scoring_timeout = config.get("verifier", {}).get("timeout_sec")
+    if harbor_config.ignore_timeouts:
+        harness_timeout = scoring_timeout = None
+    else:
+        harness_timeout = config.get("agent", {}).get("timeout_sec")
+        scoring_timeout = config.get("verifier", {}).get("timeout_sec")
     return HarborData(
         idx=idx,
         name=task.get("name") or task_dir.name,

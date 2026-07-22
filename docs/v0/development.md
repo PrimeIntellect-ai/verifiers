@@ -110,14 +110,14 @@ uv run pytest tests/ -xvs
 # Run tests matching a pattern
 uv run pytest tests/ -k "xml_parser"
 
-# Run environment tests
-uv run pytest tests/test_envs.py -vv
+# Run V1 environment tests
+uv run pytest tests/v1/test_envs.py -vv
 
 # Run environment tests across all CPU cores
-uv run pytest -n auto tests/test_envs.py -vv
+uv run pytest -n auto tests/v1/test_envs.py -vv
 
 # Run specific environment tests
-uv run pytest tests/test_envs.py -k math_python
+uv run pytest tests/v1/test_envs.py -k gsm8k_v1
 ```
 
 The test suite includes 380+ tests covering parsers, rubrics, environments, and utilities.
@@ -212,8 +212,8 @@ the current golden path.
 
 - Core runtime or shared config parsing: run the focused unit tests plus `uv run pre-commit run --all-files`.
 - Example environment behavior: run the focused tests and a real `prime eval run` smoke when credentials and endpoint access are available.
-- Environment packaging: exercise `tests/test_envs.py` for the changed environment so a fresh venv installs the environment package and its dependencies.
-- Docs or generated agent guidance: run `uv run python scripts/sync.py` and include the regenerated files.
+- Environment packaging: exercise `tests/v1/test_envs.py` for the changed environment so a fresh venv installs the environment package and its dependencies.
+- Docs or agent guidance (`AGENTS.md`): edit the Markdown directly and keep it minimal.
 - Release prep: verify the version source, release notes commit range, `uv build`, and final worktree status.
 - PR/CI follow-up: inspect the live review thread, check run, or log before patching, then rerun the smallest check that proves the fix.
 
@@ -240,7 +240,6 @@ uv sync --extra ta   # for TextArenaEnv
 uv sync --extra rg   # for ReasoningGymEnv
 uv sync --extra modal     # for the v1 Modal runtime
 uv sync --extra notebook  # for generate_sync() in Jupyter
-uv sync --extra quest     # for QUEST PDF evaluation
 uv sync --python 3.12 --extra harbor  # for the Harbor Python package and CLI
 ```
 
@@ -306,8 +305,8 @@ uv run pytest tests/ -xvs             # Debug mode
 uv run pytest tests/ --cov=verifiers  # With coverage
 
 # Run environment tests
-uv run pytest tests/test_envs.py -vv              # All environments
-uv run pytest tests/test_envs.py -k math_python   # Specific environment
+uv run pytest tests/v1/test_envs.py -vv             # All environments
+uv run pytest tests/v1/test_envs.py -k gsm8k_v1     # Specific environment
 
 # Linting
 uv run ruff check --fix .             # Fix lint errors

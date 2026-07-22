@@ -6,6 +6,7 @@ the interaction by setting shared state that the task checks with `@stop`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, TypeVar
 
@@ -43,10 +44,33 @@ class User(ServerBase[ConfigT, StateT]):
         from verifiers.v1.dialects.chat import message_to_wire
 
         user = self
+        last_turn: tuple[int, str] | None = None
+        last_payload = ""
+        lock = asyncio.Lock()
 
-        async def respond(message: str) -> str:
+        async def advance(message: str) -> str:
             messages = await user.respond(message)
             wire = [m if isinstance(m, dict) else message_to_wire(m) for m in messages]
             return json.dumps({"messages": wire})
 
-        mcp.add_tool(self._with_state(respond), name="respond")
+        # State sync (pull/commit) lives *inside* the lock, so `advance` is one atomic turn.
+        synced = self._with_state(advance)
+
+        async def respond(message: str, seq: int = -1) -> str:
+            # Replay cache: the host retries a turn whose response was lost on the wire. The
+            # simulator already advanced for that turn, so serve the recorded payload instead
+            # of advancing it twice. `seq` is the caller's conversation position. The whole turn
+            # — including the shared-state commit — runs under the lock, and the cache is
+            # published only after it commits, so a racing retry (racing a slow first attempt)
+            # either drives a fresh turn or joins the fully-committed one, never a mid-commit
+            # read. The server process is per-rollout (`serve_user`), so cache and lock span
+            # exactly one conversation.
+            nonlocal last_turn, last_payload
+            async with lock:
+                if seq >= 0 and (seq, message) == last_turn:
+                    return last_payload
+                last_payload = await synced(message)
+                last_turn = (seq, message)
+                return last_payload
+
+        mcp.add_tool(respond, name="respond")

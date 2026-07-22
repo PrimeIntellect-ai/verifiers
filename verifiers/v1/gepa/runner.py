@@ -11,18 +11,17 @@ import logging
 from gepa.api import optimize
 from gepa.core.result import GEPAResult
 
-from verifiers.v1.cli.output import append_trace, output_path, save_config
+from verifiers.v1.cli.output import append_episode, output_path, save_config
 from verifiers.v1.clients import ModelContext, resolve_client
-from verifiers.v1.env import Environment
+from verifiers.v1.env import Env
 from verifiers.v1.gepa.adapter import GEPAAdapter
 from verifiers.v1.gepa.config import GEPAConfig
 from verifiers.v1.gepa.dataset import (
-    reject_group_reward_tasksets,
     resolve_gepa_seed_prompt,
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
-from verifiers.v1.trace import Trace
+from verifiers.v1.episode import Episode
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +35,11 @@ class _GEPALog:
         logger.info(message)
 
 
-def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
+def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
     all_tasks = env.taskset.select(config.num_train + config.num_val, config.shuffle)
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
     selected_tasks = [*train_tasks, *val_tasks]
-    reject_group_reward_tasksets(
-        selected_tasks
-    )  # GEPA scores n=1 per task; groups need >=2
     # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
     # a taskset with per-task system prompts could otherwise seed from a task in neither split.
     seed_prompt = resolve_gepa_seed_prompt(selected_tasks, config.initial_prompt)
@@ -65,13 +61,13 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
-    # Stream every rollout's trace to traces.jsonl as it finalizes — the same persist hook
-    # run_eval passes to Episode.run (each trace records its candidate prompt).
+    # Stream every rollout's episode to traces.jsonl as it finalizes — the same persist hook
+    # run_eval passes to `env.run_slot` (each trace records its candidate prompt).
     write_lock = asyncio.Lock()
 
-    async def on_complete(trace: Trace) -> None:
+    async def on_complete(episode: Episode) -> None:
         if run_dir is not None:
-            await append_trace(run_dir, trace, write_lock)
+            await append_episode(run_dir, episode, write_lock)
 
     # The client opens an httpx pool at construction, so build it inside the try that closes it —
     # a failure while building ctx/reflection_lm must not leak the pool.

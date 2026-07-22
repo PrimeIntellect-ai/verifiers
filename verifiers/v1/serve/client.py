@@ -29,10 +29,11 @@ from verifiers.v1.serve.types import (
     InfoResponse,
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 from verifiers.v1.task import WireTaskData
+from verifiers.v1.episode import WireEpisode
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SamplingConfig
 
@@ -136,53 +137,35 @@ class EnvClient:
         )
 
     async def info(self) -> InfoResponse:
-        """Return whether tasks group-score (+ `num_tasks`, legacy bridge only)."""
+        """Return the taskset `num_tasks` + whether its tasks group-score (legacy v0 only)."""
         return await self._request(InfoRequest(), InfoResponse)
 
-    async def run_rollout(
-        self,
-        client: ClientConfig,
-        model: str,
-        sampling: SamplingConfig,
-        task_data: dict | None = None,
-        # TODO: remove task_idx addressing once v0 (the legacy bridge) is deprecated.
-        task_idx: int | None = None,
-    ) -> Trace[WireTaskData]:
-        """Run one rollout; return a typed `Trace[WireTaskData]`. A v1 server takes the
-        task itself (`task_data`, its dumped `TaskData`); the legacy bridge addresses
-        its server-side dataset by `task_idx`."""
+    async def run(
+        self, task_idx: int, client: ClientConfig, model: str, sampling: SamplingConfig
+    ) -> WireEpisode:
+        """Run one rollout for `task_idx`; return its episode record — flat traces
+        (typed `Trace[WireTaskData]`) plus the shared stamp."""
         response = await self._request(
-            RunRolloutRequest(
-                task_data=task_data,
-                task_idx=task_idx,
-                client=client,
-                model=model,
-                sampling=sampling,
+            RunRequest(
+                task_idx=task_idx, client=client, model=model, sampling=sampling
             ),
-            RunRolloutResponse,
+            RunResponse,
         )
-        return response.trace
+        return response.episode
 
     async def run_group(
         self,
+        task_idx: int,
         n: int,
         client: ClientConfig,
         model: str,
         sampling: SamplingConfig,
-        task_data: dict | None = None,
-        # TODO: remove task_idx addressing once v0 (the legacy bridge) is deprecated.
-        task_idx: int | None = None,
     ) -> list[Trace[WireTaskData]]:
-        """Run `n` rollouts of one task as a scored group; return typed
-        `Trace[WireTaskData]`s. Task addressing as in `run_rollout`."""
+        """Run `n` rollouts for `task_idx` as a scored group — the legacy (v0) route;
+        a v1 server refuses it. Returns typed `Trace[WireTaskData]`s."""
         response = await self._request(
             RunGroupRequest(
-                task_data=task_data,
-                task_idx=task_idx,
-                n=n,
-                client=client,
-                model=model,
-                sampling=sampling,
+                task_idx=task_idx, n=n, client=client, model=model, sampling=sampling
             ),
             RunGroupResponse,
         )

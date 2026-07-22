@@ -39,6 +39,12 @@ from verifiers.types import (
 from verifiers.utils.save_utils import state_to_output
 
 
+def pytest_configure(config) -> None:
+    config.addinivalue_line(
+        "markers", "claude_code: v1 e2e cases on the claude-code harness"
+    )
+
+
 @pytest.fixture
 def basic_parser():
     """Return a basic Parser instance."""

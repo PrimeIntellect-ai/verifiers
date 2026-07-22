@@ -26,11 +26,11 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pydantic import ConfigDict, Field, field_serializer, field_validator
+from pydantic.json_schema import SkipJsonSchema
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
 from verifiers.v1.types import (
     AssistantMessage,
-    FinishReason,
     KeptTokens,
     Message,
     Response,
@@ -38,7 +38,6 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
-    Usage,
 )
 
 if TYPE_CHECKING:
@@ -103,24 +102,19 @@ class MessageNode(StrictBaseModel):
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
-    finish_reason: FinishReason = None
-    """The response's finish reason (assistant nodes only) — kept for truncation detection."""
-    multi_modal_data: MultiModalData | None = None
+    multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
     trainer. `Branch.multi_modal_data` concatenates them along the path into the training
     `mm_kwargs`. Rides the wire as raw bytes (msgpack `bin`) since pydantic can't JSON the numpy;
     kept off disk by the dump-site `exclude` in prime-rl (the tensors bloat the rollout jsonl)."""
-    usage: Usage | None = None
-    """Provider-reported token usage for this message's response (assistant nodes). Preserved
-    on the wire and on disk, including cache-read tokens when the provider reports them."""
-    routed_experts: np.ndarray | None = None
+    routed_experts: SkipJsonSchema[np.ndarray | None] = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
-    kept_tokens: KeptTokens | None = None
+    kept_tokens: SkipJsonSchema[KeptTokens | None] = None
     """Kept-set sampling masks for this node's sampled tokens, decoded: `ids` flat int32
     in position order, `counts` the per-token kept-set sizes (aligned with `logprobs`;
     0 = no mask). Assistant nodes only; consumed via `Branch.kept_tokens` for
@@ -294,10 +288,6 @@ class PendingTurn:
     def tail(self) -> list[Message]:
         return self.prompt[self.tail_start :]
 
-    @property
-    def parent(self) -> int | None:
-        return self.prefix_node_ids[-1] if self.prefix_node_ids else None
-
     def previous_token_ids(self) -> tuple[list[int], list[int]] | None:
         """Return `(previous_prompt_ids, previous_completion_ids)` for a bridge anchor.
 
@@ -342,10 +332,12 @@ class PendingTurn:
             for span in tail_spans
         ]
 
-    def commit(self, response: Response, tools: list[Tool] | None = None) -> None:
-        _commit_turn(self, response)
+    def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
+        """Add this turn to the graph; returns the committed assistant node's id."""
+        assistant_id = _commit_turn(self, response)
         if tools:
             self.trace.tools = tools
+        return assistant_id
 
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
@@ -448,7 +440,9 @@ def _attribute_routed_experts(
     if payload is None:
         return
     raw = binascii.a2b_base64(payload["data"])
-    arr = np.frombuffer(raw, dtype=np.uint8).reshape(payload["shape"])
+    arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
+        payload["shape"]
+    )
     off = path_len - int(payload.get("start", 0) or 0)
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
@@ -483,7 +477,7 @@ def _attribute_kept_tokens(
     node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
 
 
-def _commit_turn(turn: PendingTurn, response: Response) -> None:
+def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
@@ -570,8 +564,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
             else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
-            finish_reason=response.finish_reason,
-            usage=response.usage,
         )
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
@@ -592,6 +584,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     # Attribute this turn's kept-set sampling masks onto the assistant node (they are
     # completion-aligned, so only the sampled node carries them).
     _attribute_kept_tokens(trace, assistant_id, tokens.kept_tokens if tokens else None)
+
+    return assistant_id
 
 
 # --- walking the graph (views) ---------------------------------------------------------

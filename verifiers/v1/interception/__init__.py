@@ -1,13 +1,3 @@
-"""The interception layer.
-
-`server` catches a harness's model calls and proxies them to the client, multiplexing many
-rollouts on one server keyed by their secret — and is itself the single-server
-`Interception`. `pool` composes such servers, statically (a fixed set, e.g. bring-your-own
-endpoints) or elastically (grown on demand). `tunnel` makes a server reachable from remote
-consumers; `requires_tunnel` decides whether that's needed. `make_interception` picks the
-shape from the `InterceptionConfig` type.
-"""
-
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated
 
@@ -70,7 +60,7 @@ def make_interception(
     `make_runtime`). With `requires_tunnel` (some consumer is off the host network — see
     the `requires_tunnel` util) each server is exposed via its configured tunnel; without
     it they get none and are reached at localhost. The caller computes it (see
-    `Environment._requires_tunnel`)."""
+    `Env._requires_tunnel`)."""
     if isinstance(config, InterceptionServerConfig):
         return InterceptionServer(config, requires_tunnel)
     if isinstance(config, StaticInterceptionPoolConfig):

@@ -8,16 +8,16 @@ uv run gepa reverse-text-v1
 
 `gepa` runs GEPA where a number of rollouts are done before a teacher LLM reflects on the results to propose a better `Task.system_prompt` without any gradient based training. It runs against native v1 tasksets.
 
-GEPA reuses the same `taskset` / `harness` / `client` / `sampling` config as eval, so the `.toml` config remains very similar:
+GEPA reuses the same `env` (taskset + agent) / `client` / `sampling` config as eval, so the `.toml` config remains very similar:
 
 ```toml
 model = "deepseek/deepseek-v4-flash"
 
-[taskset]
+[env.taskset]
 id = "reverse-text-v1"
 
-[harness]
-id = "default"
+[env.agent.harness]
+id = "bash"
 
 [sampling]
 temperature = 1.0
@@ -35,7 +35,7 @@ Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA,
 
 ## Output
 
-Results go under `outputs/<taskset>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is printed when the run finishes.
+Results go under `outputs/<env>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is printed when the run finishes.
 
 ## Limitations
 

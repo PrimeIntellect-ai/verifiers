@@ -1,7 +1,7 @@
 [project]
 name = "code-golf-v1"
 version = "0.1.0"
-description = "code-golf-v1 — write a short, fast program (showcases group rewards)."
+description = "code-golf-v1 — write a short, fast program (showcases cross-agent sibling-comparison rewards)."
 requires-python = ">=3.10"
 dependencies = ["verifiers"]
 

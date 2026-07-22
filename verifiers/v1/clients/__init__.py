@@ -1,5 +1,3 @@
-"""The client abstraction and its OpenAI-compatible + renderer implementations."""
-
 from verifiers.v1.clients.client import Client, ModelContext
 from verifiers.v1.clients.config import (
     BaseClientConfig,

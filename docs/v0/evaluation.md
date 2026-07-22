@@ -307,14 +307,14 @@ When resuming, the current run configuration should match the original run. Mism
 
 ```bash
 # Start a large evaluation with checkpointing
-prime eval run math-python -n 500 -r 3 -s
+prime eval run my-env -n 500 -r 3 -s
 
 # If interrupted, find the run directory
-ls ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/
+ls ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/
 
 # Resume from the checkpoint
-prime eval run math-python -n 500 -r 3 -s \
-  --resume ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/abc12345
+prime eval run my-env -n 500 -r 3 -s \
+  --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
 ```
 
 The `--state-columns` flag allows saving environment-specific state fields that your environment stores during rollouts:

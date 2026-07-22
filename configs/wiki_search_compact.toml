@@ -4,8 +4,8 @@
 #   uv run eval @ configs/wiki_search_compact.toml
 num_tasks = 1
 
-[taskset]
+[env.taskset]
 id = "wiki-search-v1"
 
-[harness]
+[env.agent.harness]
 id = "compact"
