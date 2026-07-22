@@ -116,12 +116,22 @@ class Harness(ABC, Generic[ConfigT]):
         the program's fixed skill discovery location, which a supporting harness's
         `setup` passes."""
         for skill in self.config.skills:
-            for file in skill.rglob("*"):
-                if file.is_file():
-                    path = file.relative_to(skill).as_posix()
-                    await runtime.write(
-                        f"{dest}/{skill.name}/{path}", file.read_bytes()
-                    )
+            # Resolve so `.`/`..` entries get their real folder name (and can't
+            # place files outside `dest`).
+            skill = skill.resolve()
+            if not skill.is_dir():
+                raise ValueError(f"skill {str(skill)!r} is not a folder")
+            executables = []
+            for file in sorted(skill.rglob("*")):
+                if not file.is_file():
+                    continue
+                target = f"{dest}/{skill.name}/{file.relative_to(skill).as_posix()}"
+                await runtime.write(target, file.read_bytes())
+                if os.access(file, os.X_OK):
+                    executables.append(target)
+            if executables:
+                # `write` moves bytes, not modes; restore the execute bits scripts need.
+                await runtime.run(["chmod", "+x", *executables], {})
 
     async def run(
         self,

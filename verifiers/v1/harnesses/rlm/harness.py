@@ -75,6 +75,13 @@ class RLMHarness(Harness[RLMHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        if self.config.skills and runtime.type == "subprocess":
+            # The fixed absolute path would land on the host, shared across rollouts.
+            raise RuntimeError(
+                f"rlm reads skills from {SKILLS_DIR}, which the subprocess (host) "
+                "runtime would write onto the host; use a container runtime "
+                "(--env.agent.harness.runtime.type docker|prime|modal)."
+            )
         # Before the installer: install.sh packages the skills it finds.
         await self.install_skills(runtime, SKILLS_DIR)
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
