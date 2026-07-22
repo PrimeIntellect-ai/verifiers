@@ -26,6 +26,7 @@ from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.retries import RetryConfig, backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun
 from verifiers.v1.runtimes import (
+    DockerConfig,
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
@@ -95,9 +96,23 @@ class AgentConfig(BaseConfig):
 
 def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
     """A borrowed box is never re-provisioned, so a task's placement fields can't
-    be honored. A task `image` on a subprocess box raises (a wiring bug — it goes
-    to the caller, not the trace); a container box whose image differs only warns,
-    since placing a run into an existing world is the point of borrowing."""
+    be honored. Reject requirements that cannot be applied to the running box; an
+    image mismatch on a container only warns, since sharing its world is the point."""
+    if not task.data.network_access:
+        config = runtime.config
+        if not isinstance(config, DockerConfig) or config.network_access:
+            raise ValueError(
+                f"task {task.data.idx!r} requires filtered networking, but borrowed "
+                f"runtime {runtime.name!r} was not provisioned deny-by-default; use "
+                "agent.provision(task)"
+            )
+        missing = [host for host in task.data.network_allow if host not in config.allow]
+        if missing:
+            raise ValueError(
+                f"task {task.data.idx!r} requires network allow entries {missing!r}, "
+                f"but borrowed runtime {runtime.name!r} was not provisioned with them; "
+                "use agent.provision(task)"
+            )
     if task.data.image is None:
         return
     if isinstance(runtime.config, SubprocessConfig):
