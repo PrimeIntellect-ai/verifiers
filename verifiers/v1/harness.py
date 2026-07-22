@@ -6,20 +6,26 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import ModelContext
+from verifiers.v1.clients import ClientConfig, ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import HarnessError, boundary
+from verifiers.v1.retries import RetryConfig
 from verifiers.v1.utils.install import env_name
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import (
+    ProgramResult,
+    Runtime,
+    RuntimeConfig,
+    SubprocessConfig,
+)
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import ID, Messages
+from verifiers.v1.types import ID, Messages, SamplingConfig
 
 if TYPE_CHECKING:
     # Annotation-only: the runtime import goes trace -> harness (AgentInfo embeds
-    # HarnessConfig), not the other way around.
+    # AgentConfig), not the other way around.
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -59,6 +65,59 @@ class HarnessConfig(BaseConfig):
     def resolved_env(self) -> dict[str, str]:
         forwarded = {k: os.environ[k] for k in self.forward_env if k in os.environ}
         return {**forwarded, **self.env}
+
+
+class TimeoutConfig(BaseConfig):
+    """Per-agent wall-clock timeouts per rollout stage, in seconds (None = no
+    limit); each stage falls back to the task's own `TaskTimeout` when unset."""
+
+    setup: float | None = None  # one shared budget: task setup + provisioning
+    rollout: float | None = None
+    finalize: float | None = None
+    scoring: float | None = None
+
+
+class AgentConfig(BaseConfig):
+    """One env agent: who plays it, and its per-run caps. It pins only what
+    makes it a different actor; everything unpinned falls back — the model context
+    to the run's own, the harness to the taskset's default. Lives next to
+    `HarnessConfig` (not in `agent.py`) so the trace record can embed it
+    (`AgentInfo.config`) without an import cycle."""
+
+    harness: SerializeAsAny[HarnessConfig] | None = None
+    """The agent's program (None = the taskset's default harness)."""
+    runtime: RuntimeConfig = SubprocessConfig()
+    """Runtime for the harness program — the policy each run provisions its box
+    from; tool servers choose their placement separately."""
+    model: str | None = None
+    """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
+    client: ClientConfig | None = None
+    """Endpoint override (None = the run's client)."""
+    sampling: SamplingConfig | None = None
+    """Sampling override (None = the run's sampling)."""
+    timeout: TimeoutConfig = TimeoutConfig()
+    retries: RetryConfig = RetryConfig()
+    """Whole-run retries: rerun this agent's rollout while its trace ends with a
+    retryable error (never into a borrowed box)."""
+    max_turns: int | None = None
+    """Max model turns per run (None = no limit). Framework-enforced (the
+    interception server refuses turns past it), so it applies to any harness."""
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    max_total_tokens: int | None = None
+    """Token caps per run (None = no limit); framework-enforced between turns."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_harness(cls, data):
+        """Narrow a pinned `harness` to its concrete config type by `id` (absent
+        stays None = the taskset's default). The lazy import keeps class-body
+        `AgentConfig()` defaults constructible while this module initializes."""
+        if isinstance(data, dict) and data.get("harness") is not None:
+            from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
+
+            narrow_plugin_field(data, "harness", harness_config_type, "bash")
+        return data
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)

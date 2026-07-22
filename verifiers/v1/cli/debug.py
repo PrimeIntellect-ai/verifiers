@@ -214,7 +214,6 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         resolve_runtime_config(config.runtime, task),
         name=f"debug-{task.data.idx}-{uuid4().hex[:8]}",
     )
-    trace.runtime = runtime.info
     setup_timeout = (
         config.timeout.setup
         if config.timeout.setup is not None

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.harness import AgentConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -27,7 +27,6 @@ from verifiers.v1.types import (
     KeptTokens,
     Messages,
     Sampling,
-    SamplingConfig,
     StrictBaseModel,
     Tool,
     ToolMessage,
@@ -96,7 +95,7 @@ class ModelCall(StrictBaseModel):
     a call that committed no turn (see `error`)."""
     model: str | None = None
     """The model requested from the provider. The rollout's model override makes this
-    `agent.model` on every call; recorded per call because it is cheap and provable."""
+    `agent.config.model` on every call; recorded per call because it is cheap and provable."""
     sampling: Sampling | None = None
     """The call's effective settings, scraped off the wire request by the dialect's
     `sampling_fields` whitelist — the eval-imposed knobs plus whatever the harness set
@@ -307,16 +306,19 @@ class VersionInfo(StrictBaseModel):
 
 
 class AgentInfo(StrictBaseModel):
-    """The agent that produced this trace's sampled turns — its resolved identity
-    plus its standing in the episode; the `Episode` envelope links siblings."""
+    """The agent that produced this trace's sampled turns — the resolved
+    `AgentConfig` it ran as, the box it ran in, and its standing in the episode;
+    the `Episode` envelope links siblings."""
 
-    model: str
-    """The model identifier requested from the client."""
-    sampling: SamplingConfig | None = None
-    """The resolved sampling settings the rollout ran with."""
-    harness: HarnessConfig | None = None
-    """The driving harness's config. Typed as the base config, so a custom harness's
-    extra fields don't serialize — records round-trip without importing the harness."""
+    config: AgentConfig
+    """The agent's resolved config, lossless — the exact value that rebuilds this
+    agent (`Agent(trace.agent.config)`): harness, runtime policy, model, sampling,
+    caps. Re-validating a record narrows `config.harness` by its id, so a typed
+    read needs the harness package importable (a custom harness's extra knobs
+    serialize and read back typed)."""
+    runtime: RuntimeInfo | None = None
+    """The box the rollout ran in — `config.runtime` resolved for the task, plus
+    the provisioned resource ID; None until provisioning."""
     name: str = "agent"
     """The env agent that produced this trace — the config field name (`solver`,
     `judge`); the default outside an env and for `SingleAgentEnv`'s sole agent.
@@ -343,8 +345,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """Unique id for this rollout, auto-generated per trace."""
     task: TraceTask[DataT]
     """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
-    runtime: RuntimeInfo | None = None
-    """The runtime's full config plus its provisioned resource ID."""
     version: int = TRACE_VERSION
     """The trace record schema this trace serializes as."""
     verifiers: VersionInfo | None = None
@@ -353,7 +353,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     run: RunInfo | None = None
     """The run this trace belongs to (eval or train), consumer-stamped."""
     agent: AgentInfo | None = None
-    """The agent (model, sampling, harness) that produced the sampled turns."""
+    """The agent (config: harness x model x runtime, plus the provisioned box) that
+    produced the sampled turns."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
     tools: list[Tool] | None = None
@@ -416,6 +417,12 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def trainable(self) -> bool:
         """Whether this trace's tokens train the run's policy (`agent.trainable`)."""
         return self.agent.trainable if self.agent is not None else True
+
+    @property
+    def runtime(self) -> RuntimeInfo | None:
+        """The box this rollout ran in (`agent.runtime`); None until provisioning
+        and on traces with no agent info (the legacy bridge)."""
+        return self.agent.runtime if self.agent is not None else None
 
     def _last_assistant(self) -> MessageNode | None:
         """Most recent model-produced node, ignoring prompt-supplied assistant messages."""
