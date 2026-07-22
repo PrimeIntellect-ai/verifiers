@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTaskData
@@ -34,7 +34,9 @@ class InfoRequest(BaseRequest):
 
 class InfoResponse(BaseResponse):
     num_tasks: int | None = None
-    """Task count; `None` means the taskset is infinite (bound runs with `num_tasks`)."""
+    """Task count. Only the legacy bridge (whose dataset lives server-side) reports
+    one; a v1 server is stateless — its tasks live on the client — so this stays
+    `None`."""
     requires_group_scoring: bool = False
     """Whether tasks must be run as whole groups — legacy (v0) envs only; a v1
     server always reports False (sibling-dependent signals run inside the env's
@@ -42,11 +44,24 @@ class InfoResponse(BaseResponse):
 
 
 class RunRequest(BaseRequest):
+    """One env-rollout. v1 ships the task itself (`task_data`, the dumped `TaskData`
+    the server validates into the taskset's declared type); the legacy bridge
+    addresses its server-side dataset by row (`task_idx`)."""
+
     method: ClassVar[str] = "run"
-    task_idx: int = Field(ge=0)
+    task_data: dict | None = None
+    task_idx: int | None = Field(None, ge=0)
     client: ClientConfig
     model: str
     sampling: SamplingConfig
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "RunRequest":
+        if (self.task_data is None) == (self.task_idx is None):
+            raise ValueError(
+                "exactly one of task_data (v1) or task_idx (legacy) must be set"
+            )
+        return self
 
 
 class RunResponse(BaseResponse):

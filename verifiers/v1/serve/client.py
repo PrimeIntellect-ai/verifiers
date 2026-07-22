@@ -141,13 +141,25 @@ class EnvClient:
         return await self._request(InfoRequest(), InfoResponse)
 
     async def run(
-        self, task_idx: int, client: ClientConfig, model: str, sampling: SamplingConfig
+        self,
+        client: ClientConfig,
+        model: str,
+        sampling: SamplingConfig,
+        task_data: dict | None = None,
+        # TODO: remove task_idx addressing once v0 (the legacy bridge) is deprecated.
+        task_idx: int | None = None,
     ) -> WireEpisode:
-        """Run one rollout for `task_idx`; return its episode record — flat traces
-        (typed `Trace[WireTaskData]`) plus the shared stamp."""
+        """Run one rollout; return its episode record — flat traces (typed
+        `Trace[WireTaskData]`) plus the shared stamp. A v1 server takes the task
+        itself (`task_data`, its dumped `TaskData`); the legacy bridge addresses
+        its server-side dataset by `task_idx`."""
         response = await self._request(
             RunRequest(
-                task_idx=task_idx, client=client, model=model, sampling=sampling
+                task_data=task_data,
+                task_idx=task_idx,
+                client=client,
+                model=model,
+                sampling=sampling,
             ),
             RunResponse,
         )
