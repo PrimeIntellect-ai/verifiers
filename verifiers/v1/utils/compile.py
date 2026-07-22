@@ -6,7 +6,12 @@ import logging
 from collections.abc import Collection
 
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig, runtime_is_local
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    RuntimeConfig,
+    SubprocessConfig,
+    runtime_is_local,
+)
 from verifiers.v1.task import Task
 
 logger = logging.getLogger(__name__)
@@ -16,9 +21,10 @@ def resolve_runtime_config(
     base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
 ) -> RuntimeConfig:
     """Resolve a task's runtime config from `base`: inject the task's `image` (an
-    image needs a container — refuse subprocess), apply its `workdir` and requested
-    `resources` where the runtime supports them. Precedence: cli/toml > task >
-    default; an unsupported resource warns once (deduped via `warned`)."""
+    image needs a container — refuse subprocess), apply its network policy, `workdir`,
+    and requested `resources` where the runtime supports them. Precedence: cli/toml >
+    task > default except that restrictions compose; an unsupported resource warns once
+    (deduped via `warned`)."""
     config = base
     updates: dict = {}
     if task.data.image is not None:
@@ -35,6 +41,24 @@ def resolve_runtime_config(
         and getattr(config, "workdir") == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
+    task_network_policy = "*" not in task.data.network_allow or bool(
+        task.data.network_block
+    )
+    if task_network_policy:
+        if not isinstance(config, DockerConfig):
+            raise ValueError(
+                f"task {task.data.idx!r} requires a URL network policy, but the "
+                f"{config.type} runtime does not support framework-aware URL policies"
+            )
+        if "*" not in task.data.network_allow:
+            updates["allow"] = (
+                task.data.network_allow
+                if "*" in config.allow
+                else list(dict.fromkeys([*task.data.network_allow, *config.allow]))
+            )
+        updates["block"] = list(
+            dict.fromkeys([*task.data.network_block, *config.block])
+        )
     for resource, value in task.data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(resource)
         if spec is None:

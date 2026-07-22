@@ -103,10 +103,9 @@ class BaseRuntimeInfo(BaseConfig):
 
 class Runtime(ABC):
     is_local: ClassVar[bool] = True
-    """Whether this runtime shares the host network — a program inside it reaches a host service
-    at localhost (no tunnel) and a service inside it is reachable at localhost. True for
-    subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
-    need a tunnel each way: a host `Tunnel` (interception.tunnel) inward, `expose` outward)."""
+    """Whether this runtime exchanges host-local URLs without a public tunnel. True for
+    subprocess and Docker (directly or through Docker's policy proxy); remote runtimes
+    override to False and use a host `Tunnel` inward plus `expose` outward."""
 
     info: BaseRuntimeInfo
 
@@ -243,19 +242,30 @@ class Runtime(ABC):
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
 
+    async def prepare_setup(self) -> None:
+        """Claim the runtime for trusted setup; restricted runtimes may reject reuse."""
+
+    async def prepare_execution(self, routes: list[str]) -> None:
+        """Last setup step, right before the agent starts. Restricted runtimes enforce
+        their policy here while keeping the interception and MCP `routes` reachable."""
+
+    @property
+    def network_isolated(self) -> bool:
+        """Whether the agent phase uses filtered networking (see `prepare_execution`)."""
+        return False
+
     @property
     def published_port(self) -> int | None:
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for host-networked runtimes (subprocess/docker), which pick a free port and are
-        reached over the shared host network."""
+        `None` for local runtimes (subprocess/docker), which pick a free port."""
         return None
 
     async def expose(self, port: int) -> str | None:
         """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
-        or None when local (it's on the host network — reach it at localhost). A remote runtime
-        overrides this with the provider's native port exposure (modal `tunnels()`, prime
-        `client.expose`), torn down with the sandbox in `stop()`. The reverse of a host `Tunnel`
-        (interception.tunnel, which reaches a host port from inside a runtime)."""
+        or None when local. A remote runtime overrides this with the provider's native port
+        exposure (modal `tunnels()`, prime `client.expose`), torn down with the sandbox in
+        `stop()`. The reverse of a host `Tunnel` (interception.tunnel, which reaches a host
+        port from inside a runtime)."""
         return None
