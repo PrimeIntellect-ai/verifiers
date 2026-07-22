@@ -115,7 +115,7 @@ For all parameters, look up the [reference](references/REFERENCE.md). Leaving th
 
 ## Reproducible TOML
 
-You can also use a TOML: 
+You can also use a TOML:
 
 ```toml
 model = "openai/gpt-5-mini"

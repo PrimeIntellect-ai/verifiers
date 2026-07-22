@@ -20,6 +20,7 @@ This guide covers setup, testing, and contributing to the verifiers package.
 ## Setup
 
 ### Prerequisites
+
 - Python 3.13 recommended for CI parity with Ty checks
 - [uv](https://docs.astral.sh/uv/) package manager
 
@@ -228,12 +229,14 @@ safe.
 ## Common Issues
 
 ### Import Errors
+
 ```bash
 # Ensure package is installed in development mode
 uv sync
 ```
 
 ### Integration Tests
+
 ```bash
 # Install optional dependencies for specific integrations
 uv sync --extra ta   # for TextArenaEnv
@@ -244,6 +247,7 @@ uv sync --python 3.12 --extra harbor  # for the Harbor Python package and CLI
 ```
 
 ### Test Failures
+
 ```bash
 # Debug specific test
 uv run pytest tests/test_file.py::test_name -vvs --pdb
@@ -322,7 +326,7 @@ prime eval view                              # Browse evals in the tree browser
 ### CLI Tools
 
  | Command | Description |
-|---------|-------------|
+| --------- | ------------- |
 | `prime eval run` | Run evaluations on environments |
 | `prime env init` | Initialize new environment from template |
 | `prime env install` | Install environment module |

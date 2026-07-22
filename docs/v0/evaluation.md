@@ -5,6 +5,7 @@
 This section explains how to run evaluations with Verifiers environments. See [Environments](environments.md) for information on building your own environments.
 
 ## Table of Contents
+
 - [Basic Usage](#basic-usage)
 - [Hosted Evaluations](#hosted-evaluations)
 - [Command Reference](#command-reference)
@@ -56,7 +57,7 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 ### Environment Selection
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
@@ -64,6 +65,7 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
 The positional argument accepts two formats:
+
 - **Single environment**: `gsm8k` — evaluates one environment
 - **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
 
@@ -117,7 +119,7 @@ env.set_concurrency(256)
 ### Model Configuration
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
@@ -183,7 +185,7 @@ When using eval TOML configs, you can set `endpoint_id` in `[[eval]]` sections t
 ### Sampling Parameters
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--max-tokens` | `-t` | model default | Maximum tokens to generate |
 | `--temperature` | `-T` | model default | Sampling temperature |
 | `--sampling-args` | `-S` | — | JSON object for additional sampling parameters |
@@ -215,7 +217,7 @@ client translate them for the selected provider.
 ### Evaluation Scope
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--num-examples` | `-n` | 5 | Number of dataset examples to evaluate |
 | `--rollouts-per-example` | `-r` | 3 | Rollouts per example (for pass@k, variance) |
 | `--shuffle` | — | false | Shuffle the evaluation dataset before selecting examples |
@@ -228,7 +230,7 @@ When `--shuffle` is enabled, Verifiers shuffles the full evaluation dataset firs
 ### Concurrency
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--max-concurrent` | `-c` | 32 | Maximum concurrent requests |
 | `--max-concurrent-generation` | — | same as `-c` | Concurrent generation requests |
 | `--max-concurrent-scoring` | — | same as `-c` | Concurrent scoring requests |
@@ -252,7 +254,7 @@ When an eval runs against a Prime Inference endpoint and the model id has pricin
 ### Output and Saving
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--verbose` | `-v` | false | Enable debug logging |
 | `--fullscreen` | `-f` | false | Use alternate screen buffer (fullscreen) for the Rich display |
 | `--disable-tui` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
@@ -391,7 +393,7 @@ a legacy alias and normalizes to the same internal field. All other fields are
 optional:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `id` | string | Environment module name |
 | `name` | string | Optional eval label for display and saved result paths |
 | `args` | table | Arguments passed to `load_environment()` |

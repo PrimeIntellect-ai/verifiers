@@ -33,6 +33,7 @@ Most tasksets do not need specific tools, user simulations or custom harnesses.
 ## An example taskset
 
 Tasksets are made of the following components:
+
 - The **Taskset** loads the actual **Tasks** from a dataset using the `load()` function. It can be configured with the **TasksetConfig**, to e.g. load a certain split. Configs are exposed to the user and thus should only contain configurable values.
 - A **Task** defines the scoring, stop conditions, setup, judging etc. of the task to solve. It also gets the tools or user config. It gets configured by a **TaskConfig**, e.g., to set a specific judge model.
 - The **TaskData** is the immutable object that holds the actual data, i.e., the prompts, images, expected outputs etc., as well as other information such as timeouts (if set).
@@ -152,6 +153,7 @@ Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar
 Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
 
 You can create them like this (remember the bootstrapping with `uv run init MY_ENV -T`):
+
 ```python
 DATABASE = None
 

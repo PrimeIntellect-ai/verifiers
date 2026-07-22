@@ -5,17 +5,19 @@
 Verifiers is our library for creating environments to train and evaluate LLMs.
 
 Environments contain everything required to run and evaluate a model on a particular task:
+
 - A *dataset* of task inputs
 - A *harness* for the model (tools, sandboxes, context management, etc.)
 - A reward function or *rubric* to score the model's performance
 
-Environments can be used for training models with reinforcement learning (RL), evaluating capabilities, generating synthetic data, experimenting with agent harnesses, and more. 
+Environments can be used for training models with reinforcement learning (RL), evaluating capabilities, generating synthetic data, experimenting with agent harnesses, and more.
 
 Verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) and our [Hosted Training](https://app.primeintellect.ai/dashboard/training) platform.
 
 ## Getting Started
 
 Ensure you have `uv` installed, as well as the `prime` [CLI](https://docs.primeintellect.ai/cli-reference/introduction) tool:
+
 ```bash
 # install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -24,13 +26,16 @@ uv tool install prime
 # log in to the Prime Intellect platform
 prime login
 ```
+
 To set up a new workspace for developing environments, do:
+
 ```bash
 # ~/dev/my-lab
 prime lab setup 
 ```
 
 This sets up a Python project if needed (with `uv init`), installs `verifiers` (with `uv add verifiers`), creates the recommended workspace structure, and downloads useful starter files:
+
 ```
 configs/
 ├── endpoints.toml      # OpenAI-compatible API endpoint configuration
@@ -46,6 +51,7 @@ CLAUDE.md               # Claude-specific pointer to AGENTS.md
 ```
 
 Alternatively, add `verifiers` to an existing project:
+
 ```bash
 uv add verifiers && prime lab setup --skip-install
 ```
@@ -58,12 +64,14 @@ Optional features are installed with extras:
 | `notebook` | `uv add "verifiers[notebook]"` | `Environment.generate_sync()` inside Jupyter or another active event loop |
 
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
+
 ```bash
 prime env init my-env # creates a v0 stub in ./environments/my_env
 ```
 
 This will create a new module called `my_env` with a runnable environment
 template.
+
 ```
 environments/my_env/
 ├── my_env.py           # Main implementation
@@ -74,6 +82,7 @@ environments/my_env/
 Environment modules should expose a `load_environment` function which returns an
 environment object. For simple legacy environments, this can still be a direct
 constructor:
+
 ```python
 # my_env.py
 import verifiers as vf
@@ -89,23 +98,29 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 ```
 
 To run a local evaluation with any OpenAI-compatible model, do:
+
 ```bash
 prime eval run my-env -m openai/gpt-5-nano # run and save eval results locally
 ```
+
 Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
 
 View local evaluation results in the terminal UI:
+
 ```bash
 prime eval view
 ```
+
 The TUI opens a single run browser (`environment -> model -> run`). Press `Enter` on a run to open rollout details, `b` to go back, `tab` to cycle panes, `e` and `x` to expand or collapse history, `pageup` and `pagedown` to scroll history, and `c` for Copy Mode.
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
+
 ```bash
 prime env push my-env # equivalent to --path ./environments/my_env
 ```
 
 To run an evaluation directly from the Environments Hub, do:
+
 ```bash
 prime eval run primeintellect/math-python
 ```

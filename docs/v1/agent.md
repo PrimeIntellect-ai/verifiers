@@ -22,7 +22,7 @@ accepts live resources to borrow instead of creating its own.
 
 ### Interception Server
 
-Pass `interception=` to reuse interception servers. 
+Pass `interception=` to reuse interception servers.
 
 ```python
 from verifiers.v1.interception import InterceptionServer

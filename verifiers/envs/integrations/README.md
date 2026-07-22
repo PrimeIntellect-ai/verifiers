@@ -3,7 +3,7 @@
 Integrations with third-party environment libraries, which may require additional dependencies.
 
 | Environment | Extra | Install Command |
-|-------------|-------|-----------------|
+| ------------- | ------- | ----------------- |
 | `TextArenaEnv` | `ta` | `uv add 'verifiers[ta]'` |
 | `ReasoningGymEnv` | `rg` | `uv add 'verifiers[rg]'` |
 | `BrowserEnv` | `browser` | `uv add 'verifiers[browser]'` |
@@ -57,7 +57,7 @@ env = BrowserEnv(
 ### DOM Mode Options
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| ----------- | --------- | ------------- |
 | `stagehand_model` | `"openai/gpt-4o-mini"` | Model Stagehand uses for page understanding |
 | `model_api_key` | `MODEL_API_KEY` env | API key for Stagehand's model |
 | `proxy_model_to_stagehand` | `False` | Route LLM calls through verifiers client |
@@ -80,7 +80,7 @@ CUA mode automatically deploys the CUA server to Browserbase sandboxes using a p
 #### Execution Modes
 
 | Mode | Parameter | Startup | Use Case |
-|------|-----------|---------|----------|
+| ------ | ----------- | --------- | ---------- |
 | **Pre-built Image** (default) | `use_prebuilt_image=True` | ~5-10s | Production, fastest startup |
 | **Binary Upload** | `use_prebuilt_image=False` | ~30-60s | Custom server modifications |
 | **Manual Server** | `use_sandbox=False` | Manual | Local development/debugging |

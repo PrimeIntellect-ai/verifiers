@@ -39,7 +39,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 `verifiers/v1/configs/eval.py` — `EvalConfig(EnvServerConfig)`. The single config object the eval CLI parses. Inherits [`EnvServerConfig`](#envserverconfig--the-pool) (the `env` block + `--pool.*` + the legacy v0 fields) and adds the run knobs. Everything environment-shaped lives under `--env.*` / `[env]`.
 
 | Field | Type | Default | Aliases | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `uuid` | `str` | `uuid4()` | — | Auto-generated run id; the leaf of the output dir. Excluded from the saved config. |
 | `model` | `str` | `"deepseek/deepseek-v4-flash"` | `model`, `m` | Model id. |
 | `client` | `ClientConfig` | `EvalClientConfig()` | — | The model client (discriminated union — see [Client config](#client-config)). |
@@ -67,7 +67,7 @@ Inherited from `EnvServerConfig`: [`env`](#envconfig--the-environment), [`pool`]
 `verifiers/v1/types.py` — `SamplingConfig(BaseModel)` (alias `Sampling`). Used as `EvalConfig.sampling` and embedded in [`JudgeSamplingConfig`](#judge-config). `extra='allow'`, so provider-specific keys pass through.
 
 | Field | Type | Default | Aliases | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `temperature` | `float \| None` | `None` | — | Sampling temperature. |
 | `top_p` | `float \| None` | `None` | — | Nucleus sampling. |
 | `reasoning_effort` | `str \| None` | `None` | — | Provider reasoning-effort level. |
@@ -81,20 +81,23 @@ Inherited from `EnvServerConfig`: [`env`](#envconfig--the-environment), [`pool`]
 `verifiers/v1/clients/config.py`. Discriminated on `type` (`eval` | `train`); selected with `--client.type`.
 
 ### `BaseClientConfig` (common)
+
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `base_url` | `str` | `https://api.pinference.ai/api/v1` | OpenAI-compatible endpoint. Falls back to the active Prime CLI config (or `PRIME_INFERENCE_URL`). |
 | `api_key_var` | `str` | `"PRIME_API_KEY"` | Env var the key is read from. |
 | `headers` | `dict[str, str]` | `{}` | Extra HTTP headers on every request. `X-Prime-Team-ID` auto-set for pinference hosts. |
 
 ### `EvalClientConfig(BaseClientConfig)` — `type: "eval"` (default)
+
 The default: forward each request to a matching endpoint. No extra fields.
 
 ### `TrainClientConfig(BaseClientConfig)` — `type: "train"`
+
 A vLLM `/inference/v1/generate` endpoint with client-side tokenization (responses carry token ids + logprobs). Needs a running vLLM engine.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `renderer` | `RendererConfig \| None` | `None` | The `renderers.RendererConfig`. `None` auto-resolves from the model (falls back to the default renderer — no tool support — for unknown models). |
 | `pool_size` | `int` | `1` | Renderer slots shared across concurrent rollouts (client-side tokenization). |
 | `renderer_model_name` | `str \| None` | `None` | Model the tokenizer/renderer pool is built for. Pin to the base model so a LoRA adapter name never drives tokenizer loading. Falls back to the per-request model. |
@@ -113,7 +116,7 @@ the row's behavior, tools, user simulator, and scoring; only its `TaskData` is s
 trace.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Environment` subclass, else `SingleAgentEnv`). |
 | `taskset` | `TasksetConfig \| None` | `None` | The seed taskset every rollout starts from; resolved to its concrete subclass by `--env.taskset.id` (positional shorthand: `eval <taskset-id>`). See [Taskset config](#taskset-config). `None` only for a taskset-less env; every bundled env requires one. |
 | *(agents)* | `AgentConfig` | env-declared | Each declared agent: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the agentic-judge env, the env's own names elsewhere. See [Agent config](#agent-config). |
@@ -132,7 +135,7 @@ does not: an unpinned agent runs the taskset's default harness; a declared pin i
 author's per-agent default; partial overrides deep-merge onto it (an `id` switch replaces it).
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `harness` | `HarnessConfig \| None` | `None` | The agent's program + runtime policy; resolved to its concrete subclass by `--env.<agent>.harness.id`. `None` = the taskset's default harness (its bundled one, else `bash`). See [Harness config](#harness-config). |
 | `model` | `str \| None` | `None` | Pin a model for this agent (None = the run's `--model`). |
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
@@ -151,7 +154,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 `verifiers.load_environment` env through the legacy bridge.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `id` | `ID \| None` | `None` | Classic v0 env id (`name`, `org/name`, or `org/name@version`). |
 | `args` | `dict` | `{}` | Construction kwargs forwarded to `load_environment(id, **args)`. |
 | `extra_env_kwargs` | `dict` | `{}` | Post-load kwargs applied via `env.set_kwargs(**...)` (e.g. `max_total_completion_tokens`, `max_seq_len`, `timeout_seconds`). |
@@ -164,7 +167,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `env` | `EnvConfig` | `SingleAgentEnvConfig()` | The environment (above). `SerializeAsAny`, so the resolved subclass's agents and knobs survive `model_dump` onto the wire. |
 | `pool` | `PoolConfig` | `ElasticPoolConfig()` | See [Pool config](#pool-config). |
 
@@ -175,7 +178,7 @@ fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrat
 `verifiers/v1/env.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). An **agent** field (`--env.<agent>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `setup` | `float \| None` | `None` | Shared wall-clock budget for `Task.setup` and harness provisioning. |
 | `rollout` | `float \| None` | `None` | Max wall-clock for the rollout (the harness run). |
 | `finalize` | `float \| None` | `None` | Max wall-clock for the task's `finalize` hook. |
@@ -192,10 +195,11 @@ fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrat
 `verifiers/v1/retries.py`. Per-call model/runtime retries are owned by the harness/runtime SDKs; the framework keeps only **whole-run** retries, in two atoms sharing one shape: each agent's own (`--env.<agent>.retries.*` — rerun that agent's rollout; never into a borrowed box) and the env's whole-episode fallback (`--env.retries.*` — for faults no agent owns; a retried episode reruns whole).
 
 ### `RolloutRetryConfig`
+
 Rerun when the run ends with a captured error. Matching is by the error's **exception type name**.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `max_retries` | `int` | `0` (≥0) | Retries beyond the first attempt (0 = no retry). |
 | `include` | `list[str]` | `[]` | Only retry errors whose type is listed. Empty = retry anything not excluded. |
 | `exclude` | `list[str]` | `[]` | Never retry these types (wins over `include`). |
@@ -207,6 +211,7 @@ Rerun when the run ends with a captured error. Matching is by the error's **exce
 `verifiers/v1/env.py`. Discriminated on `type`; selected with `--pool.type static|elastic`. Drives the env-server worker pool (the `--server` path).
 
 ### `StaticPoolConfig` — `type: "static"`
+
 Fixed pool: pre-spawn `num_workers` up front.
 
 | Field | Type | Default | Notes |
@@ -214,10 +219,11 @@ Fixed pool: pre-spawn `num_workers` up front.
 | `num_workers` | `int` | `4` (≥1) | Worker processes to pre-spawn (1 = a single in-process server, no pool). |
 
 ### `ElasticPoolConfig` — `type: "elastic"` (default)
+
 Elastic pool: start at one worker and scale up on demand.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `max_workers` | `int \| None` | `None` | Upper bound on workers (None = unbounded). |
 | `multiplex` | `int` | `128` (≥1) | Rollouts per worker for the scale-up trigger: add a worker once in-flight rollouts reach 90% of `workers * multiplex`. |
 
@@ -231,7 +237,7 @@ and similar load-time choices. The concrete subclass is selected through `env.ta
 its fields become typed dotted flags such as `--env.taskset.split test`.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `id` | `ID` | `""` | Local package or Hub `org/name[@version]`; selects the taskset and its config type. Set via `--env.taskset.id` or the positional `eval <taskset-id>`. |
 | `task` | `TaskConfig` | `TaskConfig()` | Task-facing config passed to every constructed task. `SerializeAsAny` preserves a narrowed subclass. Set through `--env.taskset.task.*`. |
 
@@ -258,8 +264,9 @@ that subclass. These are run-wide knobs, not per-row data; the row itself belong
 `verifiers/v1/harness.py` — `HarnessConfig(BaseConfig)`. The base; **subclass per harness to add run knobs**. A harness belongs to an agent: the concrete subclass is resolved by `--env.<agent>.harness.id` (`--env.agent.harness.id` on the single-agent env); an unpinned agent runs the taskset's bundled harness, else `bash`. Mirrors `TasksetConfig`.
 
 ### Base `HarnessConfig`
+
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `id` | `ID` | `"bash"` | The harness id, which selects it. Set via `--env.<agent>.harness.id`. |
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--env.<agent>.harness.runtime.type docker\|prime\|modal`. |
 | `env` | `dict[str, str]` | `{}` | Additional env vars for the harness program. Harness-owned endpoint/auth/model vars take precedence. |
@@ -276,14 +283,16 @@ A harness class also declares capability flags (ClassVars, not user-settable):
 All inherit the base `HarnessConfig` fields (`id`, `runtime`, `env`, `forward_env`, `disabled_tools`).
 
 #### `BashHarnessConfig` — `id: "bash"` (the fallback)
+
 A growing-message-list chat loop with a local `bash` tool, plus optional `edit`/`search`. A uv script (deps: `openai`, `mcp`).
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `edit` | `bool` | `True` | Offer the local `edit` tool (single-occurrence string replacement) alongside `bash`. |
 | `search` | `bool` | `False` | Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the eval environment. |
 
 #### `NullHarnessConfig` — `id: "null"`
+
 A growing-message-list chat loop with the task- and taskset-scoped MCP tools, and **no built-in
 tools of its own**. It runs as a uv script whose dependencies are `openai` and `mcp`, so setup
 bootstraps everything it needs in the selected runtime. `NullHarnessConfig` adds no fields beyond
@@ -291,6 +300,7 @@ the base `HarnessConfig` fields. Use it for pure chat or tasksets whose entire t
 provided through MCP; use an agentic harness for shell/edit capabilities.
 
 #### `CodexHarnessConfig` — `id: "codex"`
+
 Installs the Codex CLI into the runtime and runs `codex exec`.
 
 | Field | Type | Default | Notes |
@@ -298,16 +308,18 @@ Installs the Codex CLI into the runtime and runs `codex exec`.
 | `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
 #### `RLMHarnessConfig` — `id: "rlm"`
+
 Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `HarnessConfig.env` passes any other `RLM_*` var through verbatim.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"main"` | Git ref (branch/tag/commit) of rlm to install. |
 | `max_depth` | `int` | `0` | Recursion depth rlm may spawn sub-harnesses to (`RLM_MAX_DEPTH`). |
 | `skills` | `list["edit" \| "search"]` | `[]` | Built-in rlm skills to enable (`RLM_SKILLS`). Empty enables none. |
 | `summarize_at_tokens` | `int \| (int, int) \| None` | `None` | Auto-compaction threshold (`RLM_SUMMARIZE_AT_TOKENS`): compact once context grows past this many tokens. An int is fixed; a `(lo, hi)` pair draws a per-group threshold (seeded by task index). `None` disables. Ints must be positive. |
 
 #### `MiniSWEAgentHarnessConfig` — `id: "mini-swe-agent"`
+
 Runs the native bash-tool agent through LiteLLM.
 
 | Field | Type | Default | Notes |
@@ -315,6 +327,7 @@ Runs the native bash-tool agent through LiteLLM.
 | `version` | `str` | `"2.4.5"` | mini-swe-agent release to install, pinned. |
 
 #### `Terminus2HarnessConfig` — `id: "terminus-2"`
+
 Runs Harbor's tmux agent through LiteLLM.
 
 | Field | Type | Default | Notes |
@@ -322,6 +335,7 @@ Runs Harbor's tmux agent through LiteLLM.
 | `version` | `str` | `"0.14.0"` | Harbor release to install, pinned. |
 
 #### `KimiCodeHarnessConfig` — `id: "kimi-code"`
+
 Installs the Kimi Code CLI and runs it headlessly.
 
 | Field | Type | Default | Notes |
@@ -335,15 +349,17 @@ Installs the Kimi Code CLI and runs it headlessly.
 `verifiers/v1/runtimes/`. Discriminated on `type`; selected with the agent's `--env.<agent>.harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime` and `UserConfig.runtime`.
 
 ### `SubprocessConfig` — `type: "subprocess"` (default)
+
 Run on the host in a fresh `/tmp/<name>` workspace per rollout. **No extra fields.** Implicit
 host inheritance removes names containing `API_KEY`; explicit values passed in the runtime `env`
 mapping are merged afterward and inherited by child processes.
 
 ### `DockerConfig` — `type: "docker"`
+
 Local Docker container sharing the host network (`--network host`).
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `image` | `str` | `"python:3.11-slim"` | Container image. |
 | `workdir` | `str` | `"/app"` | Working directory. |
 | `cpu` | `float \| None` | `None` | Pin to this many CPU cores (`docker --cpus`). None = unlimited. |
@@ -352,10 +368,11 @@ Local Docker container sharing the host network (`--network host`).
 | `disk` | `float \| None` | `None` | Advisory disk request in GB. Docker has no portable per-container size limit, so accepted but **not enforced**. |
 
 ### `PrimeConfig` — `type: "prime"`
+
 Remote Prime sandbox; reached via native port exposure.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `image` | `str` | `"python:3.11-slim"` | Container image. |
 | `workdir` | `str` | `"/app"` | Working directory. |
 | `network_access` | `bool` | `True` | Allow outbound network from the sandbox. |
@@ -371,10 +388,11 @@ Remote Prime sandbox; reached via native port exposure.
 | `creates_per_min` | `int \| None` | `None` | Pace sandbox creation to this many per minute, host-wide across every env-server worker (None/≤0 disables). Tunnel creation is limited separately and globally. |
 
 ### `ModalConfig` — `type: "modal"`
+
 Remote Modal sandbox; reached via Modal's own port forwarding (`encrypted_ports`).
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `image` | `str` | `"python:3.11-slim"` | Container image (registry). |
 | `workdir` | `str` | `"/app"` | Working directory. |
 | `network_access` | `bool` | `True` | Allow outbound network (`block_network` is the negation). |
@@ -416,34 +434,37 @@ trace. Replay validates each recorded row as the taskset's declared `TaskData`, 
 declared task class, and propagates validation failures instead of changing task types.
 
 ### `TaskResources` (frozen)
+
 Portable runtime resources requested by one row. CPU is measured in cores; memory and disk are in
 gigabytes. `None` means “do not override the chosen runtime/provider default.” Values are applied
 only to runtime fields that remain at their defaults; any non-default runtime-config value wins.
 Unsupported fields are ignored; evaluation warns once per runtime/field combination.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `cpu` | `float \| None` | `None` | CPU cores. Docker treats this as a hard `--cpus` limit; sandbox providers receive the same core count. |
 | `memory` | `float \| None` | `None` | Memory in GB. Docker enforces it as a hard limit; Modal receives the value converted to MB. |
 | `gpu` | `str \| None` | `None` | GPU spec such as `"A100"` or `"A100:2"` (`type[:count]`; a bare count lets supported providers choose the type). |
 | `disk` | `float \| None` | `None` | Disk in GB. Enforced by Prime; accepted but advisory/not enforced by Docker and Modal. |
 
 ### `TaskTimeout` (frozen)
+
 Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For eval, a non-`None`
 value in the agent's `TimeoutConfig` (`--env.<agent>.timeout.*`) wins; otherwise the corresponding
 row value is used. If both are `None`, that stage has no framework timeout. Remote harness execution
 is capped at the provider's 24-hour sandbox lifetime.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `setup` | `float \| None` | `None` | Task and harness setup stage. Overridden by the agent's `timeout.setup`; validate uses it for `Task.setup` when `CheckTimeoutConfig.setup` is unset. |
 | `harness` | `float \| None` | `None` | Harness execution. Overridden by the agent's `timeout.rollout`. |
 | `finalize` | `float \| None` | `None` | Task `finalize` hook. Overridden by the agent's `timeout.finalize`. |
 | `scoring` | `float \| None` | `None` | Task rewards/metrics/judges and harness metrics. Overridden by the agent's `timeout.scoring`. |
 
 ### `TaskData` (frozen)
+
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `idx` | `int` | — | Stable integer index within the taskset. Used for selection, grouping, display, and reproducibility. |
 | `name` | `str \| None` | `None` | Optional human-readable label used in logs and dashboards. |
 | `description` | `str \| None` | `None` | Optional human-readable description. |
@@ -479,7 +500,7 @@ runtime; this is useful when both must see the same filesystem or processes, but
 must then upload and install verifiers plus the taskset package for every rollout.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `colocated` | `bool` | `False` | Run inside the harness's own runtime and reach the tool on an in-runtime local port. The separate `runtime` field is ignored. |
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The server's own runtime when not colocated. Select Docker/Prime/Modal to isolate it from the host. See [Runtime configs](#runtime-configs). |
 | `url` | `str \| None` | `None` | Existing streamable-HTTP MCP endpoint. When set, verifiers connects to it instead of launching the class, so placement fields do not take effect. |
@@ -497,7 +518,7 @@ attaches each calling rollout's state channel to the shared URL so those values 
 There is no `colocated` option because a shared server has no single harness runtime.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The framework-launched server's own runtime. Host subprocess is cheapest; a remote runtime pays setup once per worker. See [Runtime configs](#runtime-configs). |
 | `url` | `str \| None` | `None` | Existing streamable-HTTP MCP endpoint reused across workers and rollouts instead of launching a server. |
 
@@ -511,7 +532,7 @@ There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tool
 `UserConfig` controls a simulator declared on `Task.user`; its matching config field belongs on `TaskConfig` under `--env.taskset.task.*`.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `colocated` | `bool` | `False` | Run the user simulator inside the harness's runtime (its port is published back to the host so the framework can still drive it). |
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The user simulator's own runtime, used unless `colocated`. See [Runtime configs](#runtime-configs). |
 
@@ -535,7 +556,7 @@ Prime CLI/environment fallback as the rollout client. Subclass `JudgeConfig` for
 needed by a custom or plugin judge.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `id` | `ID` | `""` | Judge plugin id: built-in (`reference`, `rubric`), local package, or Hub package. Required in `TaskConfig.judges`; empty is allowed for direct calls from task code. |
 | `name` | `str` | `""` | Reward-key override for a plugged judge. When empty, the plugin id supplies the key. |
 | `weight` | `float` | `1.0` | Weight applied when the plugged judge records its verdict into aggregate `trace.reward`. |
@@ -571,7 +592,7 @@ is supplied, billed judge usage is recorded even if parsing later fails. Plugin 
 `verifiers/v1/interception/server.py` — `RolloutLimits` (frozen dataclass). Not directly user-settable; built from the `max_*` fields of the run's agent ([`AgentConfig`](#agent-config)). Checked before each turn is served; the first limit reached refuses the turn (the same mechanism as a `@stop`) and becomes the trace's stop condition. Token caps are **soft by one turn** (the turn that crosses a cap still completes).
 
 | Field | Type | Default | Maps from | Caps |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `max_turns` | `int \| None` | `None` | `AgentConfig.max_turns` | `trace.num_turns` |
 | `max_input_tokens` | `int \| None` | `None` | `AgentConfig.max_input_tokens` | `trace.num_input_tokens` |
 | `max_output_tokens` | `int \| None` | `None` | `AgentConfig.max_output_tokens` | `trace.num_output_tokens` |
@@ -584,7 +605,7 @@ is supplied, billed judge usage is recorded even if parsing later fails. Plugin 
 `verifiers/v1/configs/serve.py` — `ServeConfig(EnvServerConfig)`. The env-server CLI. Inherits the `env` block + pool, so `--env.*` / `--pool.*` are the same flags as eval. Adds only CLI-specific serving knobs.
 
 | Field | Type | Default | Aliases | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `address` | `str` | `"tcp://127.0.0.1:5000"` | `address`, `a` | ZMQ address the ROUTER binds. |
 | `verbose` | `bool` | `False` | `verbose`, `v` | Log at debug level. |
 | `dry_run` | `bool` | `False` | — | Resolve + validate and dump, then exit. |
@@ -612,7 +633,7 @@ config or traces to disk. Its output is the live dashboard when `rich` is enable
 log line per task.
 
 | Field | Type | Default | Aliases | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `taskset` | `TasksetConfig` | `TasksetConfig()` | — | Selected by `--taskset.id` or the bare positional id. Narrowed to the concrete taskset config before validation and serialized as that subclass. |
 | `runtime` | `RuntimeConfig` | `DockerConfig()` | — | Runtime used for setup and validation. Docker is the default because gold checks often need the row's image; use subprocess only when no selected task requires a container. Row image/workdir/resources are resolved as described above. |
 | `timeout` | `CheckTimeoutConfig` | `CheckTimeoutConfig()` | — | Nested setup and check budgets; see below. |
@@ -627,7 +648,7 @@ log line per task.
 ### `CheckTimeoutConfig`
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `setup` | `float \| None` | `None` | Maximum seconds for `Task.setup`. When unset, validation falls back to the row's `TaskData.timeout.setup`; if that is also `None`, setup is unlimited. |
 | `total` | `float \| None` | `None` | Maximum seconds for the gold check's `Task.validate` call. `None` means no limit. The setup-only mode has no action after setup, so this field does not apply there. |
 

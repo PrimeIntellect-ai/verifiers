@@ -125,7 +125,7 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 **Fields set during initialization:**
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `input` | `RolloutInput` | Nested input data |
 | `client` | `Client` | Client instance |
 | `model` | `str` | Model name |
@@ -140,7 +140,7 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 **Fields set after scoring:**
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `completion` | `Messages \| None` | Final completion |
 | `reward` | `float \| None` | Final reward |
 | `advantage` | `float \| None` | Advantage over group mean |
@@ -276,7 +276,7 @@ class TokenUsage(TypedDict, total=False):
 ```
 
 | Field | Description |
-|-------|-------------|
+| ------- | ------------- |
 | `input_tokens` | Sum of prompt tokens across all turns. Shared context is counted each time it appears in a prompt. |
 | `output_tokens` | Sum of completion tokens across all turns. |
 | `final_input_tokens` | Non-completion tokens in the final turn's context (system prompts, user messages, tool results, etc.). |
@@ -384,7 +384,7 @@ Abstract base class for all environments.
 **Generation methods:**
 
 | Method | Returns | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `generate(inputs, client, model, ...)` | `GenerateOutputs` | Run rollouts asynchronously. `client` accepts `Client \| ClientConfig`. |
 | `generate_sync(inputs, client, ...)` | `GenerateOutputs` | Synchronous wrapper; inside an active event loop, install `verifiers[notebook]` |
 | `evaluate(client, model, ...)` | `GenerateOutputs` | Evaluate on eval_dataset |
@@ -393,7 +393,7 @@ Abstract base class for all environments.
 **Dataset methods:**
 
 | Method | Returns | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `get_dataset(n=-1, seed=None)` | `Dataset` | Get training dataset (optionally first n, shuffled) |
 | `get_eval_dataset(n=-1, seed=None)` | `Dataset` | Get evaluation dataset |
 | `make_dataset(...)` | `Dataset` | Static method to create dataset from inputs |
@@ -401,7 +401,7 @@ Abstract base class for all environments.
 **Rollout methods (used internally or by subclasses):**
 
 | Method | Returns | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `rollout(input, client, model, sampling_args)` | `State` | Abstract: run single rollout |
 | `init_state(input, client, model, sampling_args)` | `State` | Create initial state from input |
 | `get_model_response(state, prompt, ...)` | `Response` | Get model response for prompt |
@@ -415,7 +415,7 @@ Calling `generate_sync()` from Jupyter or another active event loop requires
 **Configuration methods:**
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `set_kwargs(**kwargs)` | Set attributes using setter methods when available |
 | `set_concurrency(concurrency)` | Set `concurrency` and scale all registered thread-pool executors to match |
 | `add_rubric(rubric)` | Add or merge rubric |
@@ -452,7 +452,7 @@ async def env_response(self, messages: Messages, state: State, **kwargs) -> Mess
 **Hooks:**
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `setup_state(state)` | Initialize per-rollout state |
 | `get_prompt_messages(state)` | Customize prompt construction |
 | `render_completion(state)` | Customize completion rendering |
@@ -480,7 +480,7 @@ Tool calling with stateless Python functions. Automatically converts functions t
 **Methods:**
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `add_tool(tool)` | Add a tool at runtime |
 | `remove_tool(tool)` | Remove a tool at runtime |
 | `call_tool(name, args, id)` | Override to customize tool execution |
@@ -517,7 +517,7 @@ Sandboxed container execution using `prime` sandboxes.
 **Key parameters:**
 
 | Parameter | Type | Description |
-|-----------|------|-------------|
+| ----------- | ------ | ------------- |
 | `sandbox_name` | `str` | Name prefix for sandbox instances |
 | `docker_image` | `str` | Docker image to use for the sandbox |
 | `cpu_cores` | `int` | Number of CPU cores |
@@ -637,7 +637,7 @@ parser = vf.XMLParser(fields=["reasoning", ("code", "answer")])
 **Methods:**
 
 | Method | Returns | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | `parse(text)` | `SimpleNamespace` | Parse XML into object with field attributes |
 | `parse_answer(completion)` | `str \| None` | Extract answer field from completion |
 | `get_format_str()` | `str` | Get format description string |
@@ -678,7 +678,7 @@ Combines multiple reward functions with weights. Default weight is `1.0`. Functi
 **Methods:**
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `add_reward_func(func, weight=1.0)` | Add a reward function |
 | `add_metric(func, weight=0.0)` | Add a metric (no reward contribution) |
 | `add_class_object(name, obj)` | Add object accessible in reward functions |
@@ -755,7 +755,7 @@ Abstract base class for all model clients. Wraps a provider-specific SDK client 
 **Abstract methods (for subclass implementors):**
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `setup_client(config)` | Create the native SDK client from `ClientConfig` |
 | `to_native_prompt(messages)` | Convert `Messages` → native prompt format + extra kwargs |
 | `to_native_tool(tool)` | Convert `Tool` → native tool format |
@@ -767,7 +767,7 @@ Abstract base class for all model clients. Wraps a provider-specific SDK client 
 ### Built-in Client Implementations
 
 | Class | `client_type` | SDK Client | Description |
-|-------|---------------|------------|-------------|
+| ------- | --------------- | ------------ | ------------- |
 | `OpenAIChatCompletionsClient` | `"openai_chat_completions"` | `AsyncOpenAI` | Chat Completions API (default) |
 | `OpenAICompletionsClient` | `"openai_completions"` | `AsyncOpenAI` | Legacy Completions API |
 | `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route (`/v1/chat/completions/tokens`) — server-side templating + token IDs returned alongside content |
@@ -842,6 +842,7 @@ class ClientConfig(BaseModel):
 `preserve_all_thinking` and `preserve_thinking_between_tool_calls` are forwarded to the underlying renderer when `client_type == "renderer"`. They control whether past-assistant `reasoning_content` is re-emitted on subsequent renders — `preserve_all_thinking` keeps every past-assistant turn's thinking, and `preserve_thinking_between_tool_calls` keeps thinking only inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response). Both default to `False` (template default applies).
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
+
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`
 - **Team ID**: `PRIME_TEAM_ID` env var > `~/.prime/config.json` > not set
 
