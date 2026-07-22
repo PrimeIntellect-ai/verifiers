@@ -37,7 +37,10 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
     finished: list[Episode] = []
     if config.resume is not None:
-        keys = [resume.task_key(t.data.model_dump(mode="json")) for t in tasks]
+        keys = [
+            resume.task_key(t.data.model_dump(mode="json", exclude_none=True))
+            for t in tasks
+        ]
         finished, owed = resume.load(out, keys, config.num_rollouts, env.complete)
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
@@ -185,7 +188,10 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 )
                 counts = resume.distribute(idxs, owed, config.num_rollouts)
             else:
-                keys = [resume.task_key(t.data.model_dump(mode="json")) for t in tasks]
+                keys = [
+                    resume.task_key(t.data.model_dump(mode="json", exclude_none=True))
+                    for t in tasks
+                ]
                 finished, owed = resume.load(out, keys, config.num_rollouts)
                 counts = resume.distribute(keys, owed, config.num_rollouts)
             if not owed:  # already complete - report it and exit successfully

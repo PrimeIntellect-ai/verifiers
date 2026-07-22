@@ -33,21 +33,9 @@ K = TypeVar("K", bound=Hashable)
 
 
 def task_key(data: Mapping) -> str:
-    """Content identity of one task's wire data: the hash of its canonical,
-    None-stripped JSON. Saved rows drop None-valued fields (`exclude_none`) while a
-    live `model_dump` keeps them, so absent ≡ None; key equality is data equality."""
-
-    def strip(value):
-        if isinstance(value, Mapping):
-            return {k: strip(v) for k, v in value.items() if v is not None}
-        if isinstance(value, list):
-            return [strip(v) for v in value]
-        return value
-
-    canonical = json.dumps(
-        strip(data), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    """Content identity of one task's wire data — an `exclude_none` dump, the shape
+    saved rows already have on disk. `sort_keys` so field order can't split identity."""
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 def distribute(
