@@ -36,7 +36,7 @@ prime lab setup
 
 This sets up a Python project if needed (with `uv init`), installs `verifiers` (with `uv add verifiers`), creates the recommended workspace structure, and downloads useful starter files:
 
-```
+```text
 configs/
 ├── endpoints.toml      # OpenAI-compatible API endpoint configuration
 ├── rl/                 # Example configs for Hosted Training
@@ -71,7 +71,7 @@ prime env init my-env # creates a v0 stub in ./environments/my_env
 
 This will create a new module called `my_env` with a runnable environment template.
 
-```
+```text
 environments/my_env/
 ├── my_env.py           # Main implementation
 ├── pyproject.toml      # Dependencies and metadata

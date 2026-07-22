@@ -51,7 +51,7 @@ env = BrowserEnv(
 
 ## Architecture
 
-```
+```text
 External Agent -> Fastify API -> BrowserSessionManager -> Stagehand Page -> Browser
 ```
 
@@ -64,7 +64,7 @@ npm install @browserbasehq/stagehand fastify
 ## Environment Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| ---------- | --------- | ------------- |
 | `CUA_SERVER_PORT` | `3000` | Server port |
 | `CUA_SERVER_HOST` | `0.0.0.0` | Server host |
 
@@ -171,7 +171,7 @@ Returns:
 ### Keyboard Actions
 
 | Action | Parameters | Description |
-|--------|------------|-------------|
+| -------- | ------------ | ------------- |
 | `type` | `text` | Type text into focused element |
 | `keypress` | `keys` (string or array) | Press keyboard keys |
 
@@ -187,7 +187,7 @@ Returns:
 ### Utility Actions
 
 | Action | Parameters | Description |
-|--------|------------|-------------|
+| -------- | ------------ | ------------- |
 | `wait` | `timeMs?` (default: 1000) | Wait for duration |
 | `screenshot` | - | No-op (always returned in response) |
 
@@ -261,7 +261,7 @@ Errors return appropriate HTTP status codes:
 
 ## File Structure
 
-```
+```text
 cua-server/
 ├── index.ts           # Entry point
 ├── server.ts          # Fastify routes

@@ -354,12 +354,12 @@ For simple cases, metrics can be added directly to a rubric via `add_metric()` a
 
 Many environment types automatically include a monitor rubric that tracks metrics specific to their level of the environment class hierarchy:
 
-| Environment    | Tracked Metrics                                             |
+| Environment | Tracked Metrics |
 | -------------- | ----------------------------------------------------------- |
-| `MultiTurnEnv` | `num_turns`                                                 |
-| `ToolEnv`      | `total_tool_calls`, per-tool counts                         |
-| `SandboxEnv`   | `sandbox_ready_wait_time`, `sandbox_command_execution_time` |
-| `PythonEnv`    | `python_ready_wait_time`                                    |
+| `MultiTurnEnv` | `num_turns` |
+| `ToolEnv` | `total_tool_calls`, per-tool counts |
+| `SandboxEnv` | `sandbox_ready_wait_time`, `sandbox_command_execution_time` |
+| `PythonEnv` | `python_ready_wait_time` |
 
 These metrics appear automatically in rollout results alongside any custom reward functions.
 
@@ -672,7 +672,7 @@ prime env init my-env       # v0 stub
 
 This creates the following structure:
 
-```
+```text
 environments/my_env/
 ├── my_env.py          # environment implementation
 ├── pyproject.toml     # package metadata and dependencies
