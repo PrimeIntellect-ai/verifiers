@@ -71,8 +71,7 @@ The positional argument accepts two formats:
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
 
-For legacy or direct-constructor environments, the `--env-args` flag passes
-arguments to your `load_environment()` function:
+For legacy or direct-constructor environments, the `--env-args` flag passes arguments to your `load_environment()` function:
 
 ```bash
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
@@ -209,10 +208,7 @@ enable_thinking = true
 id = "my-env"
 ```
 
-`reasoning_effort` and `enable_thinking` stay in `sampling_args` and are also
-mirrored into `extra_body.chat_template_kwargs` for OpenAI-compatible servers
-that read chat template options there. Keeping the top-level values lets the
-client translate them for the selected provider.
+`reasoning_effort` and `enable_thinking` stay in `sampling_args` and are also mirrored into `extra_body.chat_template_kwargs` for OpenAI-compatible servers that read chat template options there. Keeping the top-level values lets the client translate them for the selected provider.
 
 ### Evaluation Scope
 
@@ -388,9 +384,7 @@ A minimal config requires only a single `[[eval]]` section:
 id = "gsm8k"
 ```
 
-Each `[[eval]]` section usually contains an `id` field. `env_id` is accepted as
-a legacy alias and normalizes to the same internal field. All other fields are
-optional:
+Each `[[eval]]` section usually contains an `id` field. `env_id` is accepted as a legacy alias and normalizes to the same internal field. All other fields are optional:
 
 | Field | Type | Description |
 | ------- | ------ | ------------- |
@@ -436,8 +430,7 @@ difficulty = "hard"
 split = "test"
 ```
 
-The legacy inline `sampling_args = { ... }` spelling is still accepted and
-normalizes the same way as `[sampling]` / `[eval.sampling]`.
+The legacy inline `sampling_args = { ... }` spelling is still accepted and normalizes the same way as `[sampling]` / `[eval.sampling]`.
 
 ### Ablation Sweeps
 

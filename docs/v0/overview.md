@@ -69,8 +69,7 @@ Environments built with Verifiers are self-contained Python modules. To initiali
 prime env init my-env # creates a v0 stub in ./environments/my_env
 ```
 
-This will create a new module called `my_env` with a runnable environment
-template.
+This will create a new module called `my_env` with a runnable environment template.
 
 ```
 environments/my_env/
@@ -79,9 +78,7 @@ environments/my_env/
 └── README.md           # Documentation
 ```
 
-Environment modules should expose a `load_environment` function which returns an
-environment object. For simple legacy environments, this can still be a direct
-constructor:
+Environment modules should expose a `load_environment` function which returns an environment object. For simple legacy environments, this can still be a direct constructor:
 
 ```python
 # my_env.py

@@ -48,17 +48,13 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 - `owner/name` installs a Hub package on demand.
 - `owner/name@version` pins a Hub version.
 
-The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent —
-`--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a
-multi-agent one (there is no run-level `--harness.*`):
+The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
 
 ```bash
 prime eval run owner/name --env.agent.harness.id codex --env.agent.harness.runtime.type prime
 ```
 
-The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`
-keeps the taskset's own story (its exported `Environment` subclass, else the single-agent
-env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
+The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id` keeps the taskset's own story (its exported `Environment` subclass, else the single-agent env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
 
 ```bash
 prime eval run my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling

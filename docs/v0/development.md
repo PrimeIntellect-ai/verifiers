@@ -201,13 +201,9 @@ def test_with_mock(mock_client):
 
 ### Public Surface
 
-Treat public config, docs, starter examples, skills, and generated agent
-guidance as one surface. If a behavior changes for users, update all matching
-surfaces in the same patch.
+Treat public config, docs, starter examples, skills, and generated agent guidance as one surface. If a behavior changes for users, update all matching surfaces in the same patch.
 
-For TOML config, keep one shape across eval, GEPA, RL, and Hosted Training.
-Normalize old or alternate inputs at the loader boundary, then keep examples on
-the current golden path.
+For TOML config, keep one shape across eval, GEPA, RL, and Hosted Training. Normalize old or alternate inputs at the loader boundary, then keep examples on the current golden path.
 
 ### Validation By Change Type
 
@@ -220,11 +216,7 @@ the current golden path.
 
 ### Downstream Checks
 
-Before changing dependencies, optional extras, lockfiles, exported config fields,
-or upload/eval metadata, trace the consumers in `prime-cli`, `prime-rl`, Hosted
-Training, and public docs when they are in scope. Update the consumer or document
-the compatibility boundary rather than assuming transitive behavior remains
-safe.
+Before changing dependencies, optional extras, lockfiles, exported config fields, or upload/eval metadata, trace the consumers in `prime-cli`, `prime-rl`, Hosted Training, and public docs when they are in scope. Update the consumer or document the compatibility boundary rather than assuming transitive behavior remains safe.
 
 ## Common Issues
 

@@ -137,9 +137,7 @@ Locally, export these in your shell. On the [Environments Hub](https://app.prime
 
 Drop-in adapter for [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environments. Always runs in Prime Sandboxes and uses OpenEnv's schema to choose between simulation (step/reset) and MCP tool-calling.
 
-The Verifiers adapter uses OpenEnv's public async clients. The bundled OpenEnv
-project under `proj/` declares its own server dependencies for the sandbox
-image.
+The Verifiers adapter uses OpenEnv's public async clients. The bundled OpenEnv project under `proj/` declares its own server dependencies for the sandbox image.
 
 ### Quick Start
 
@@ -197,5 +195,4 @@ Define a prompt renderer that converts each OpenEnv observation into a non-empty
 - `environments/openenv_echo/proj`: verbatim copy of OpenEnv `envs/echo_env` (MCP contract).
 - `environments/openenv_textarena/proj`: verbatim copy of OpenEnv `envs/textarena_env` (gym contract, default `Wordle-v0`).
 
-Include both `proj/` and `.build.json` in your environment package so installs
-from the Environments Hub work without extra setup.
+Include both `proj/` and `.build.json` in your environment package so installs from the Environments Hub work without extra setup.

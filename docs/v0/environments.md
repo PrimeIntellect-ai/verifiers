@@ -275,9 +275,7 @@ rubric = vf.Rubric(funcs=[correct_answer, diversity_bonus])
 
 ### Shared Objects
 
-In rubric environments, reward functions can request static helper objects that
-live within the Rubric class. These are stored in the Rubric's `class_objects`
-dictionary, and can be added after initialization via `add_class_object()`:
+In rubric environments, reward functions can request static helper objects that live within the Rubric class. These are stored in the Rubric's `class_objects` dictionary, and can be added after initialization via `add_class_object()`:
 
 ```python
 rubric = vf.Rubric(funcs=[my_reward_func])
@@ -288,18 +286,9 @@ async def my_reward_func(completion, my_helper) -> float:
     return await my_helper.score(completion)
 ```
 
-For taskset/harness environments, keep shared dependencies behind the taskset or
-harness that owns them. Bindings are the canonical way to inject shared
-resources into rewards, updates, tools, and programs. Configured binding
-objects should use serializable loader paths when they cross a TOML or CLI
-boundary; Python-only construction may use factory callables directly when a
-resource cannot be serialized. Required Taskset and Toolset factory parameters
-must be supplied through bindings.
+For taskset/harness environments, keep shared dependencies behind the taskset or harness that owns them. Bindings are the canonical way to inject shared resources into rewards, updates, tools, and programs. Configured binding objects should use serializable loader paths when they cross a TOML or CLI boundary; Python-only construction may use factory callables directly when a resource cannot be serialized. Required Taskset and Toolset factory parameters must be supplied through bindings.
 
-Judges are used for tasks where deterministic evaluation is impractical, and an
-LLM is used to score responses. **JudgeRubric** stores an LLM client inside the
-rubric, and provides a `judge` callable to reward
-functions for scoring responses:
+Judges are used for tasks where deterministic evaluation is impractical, and an LLM is used to score responses. **JudgeRubric** stores an LLM client inside the rubric, and provides a `judge` callable to reward functions for scoring responses:
 
 ```python
 judge_rubric = vf.JudgeRubric(
@@ -558,11 +547,7 @@ def load_environment():
     return MyGameEnv(dataset=dataset, rubric=rubric, extract_action=extract_action)
 ```
 
-`env_response` receives the full conversation history thus far (and `state`) and
-returns a list of _new_ messages to append. For tool environments,
-`env_response` typically executes tool calls and returns results. For games or
-other custom protocols, this might involve extracting structured output and
-returning state updates or feedback.
+`env_response` receives the full conversation history thus far (and `state`) and returns a list of _new_ messages to append. For tool environments, `env_response` typically executes tool calls and returns results. For games or other custom protocols, this might involve extracting structured output and returning state updates or feedback.
 
 Several other methods can optionally be overridden for more control in complex custom environments:
 
@@ -787,9 +772,7 @@ combined = vf.EnvGroup(
 )
 ```
 
-The group concatenates all sub-environment datasets and injects
-`info["env_id"]` as internal routing metadata. It is not a top-level input,
-state, or output field. Metrics from all environments are tracked together.
+The group concatenates all sub-environment datasets and injects `info["env_id"]` as internal routing metadata. It is not a top-level input, state, or output field. Metrics from all environments are tracked together.
 
 ## Performance
 

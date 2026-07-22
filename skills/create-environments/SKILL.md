@@ -54,8 +54,7 @@ Ask the user about unresolved semantic choices instead of inventing them. Presen
 
 A package exports one `vf.Taskset` subclass — and optionally one `vf.Environment` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new taskset using `uv run init`.
 
-Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader
-resolves classes and their config types from `__all__` and generic bases.
+Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader resolves classes and their config types from `__all__` and generic bases.
 
 Use:
 

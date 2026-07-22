@@ -1,8 +1,6 @@
 # Legacy Composable Task / Agent Architecture
 
-This is the legacy experimental taskset/harness stack. New environments should
-use the `verifiers.v1` `Taskset` / `Harness` format (`vf.Env`, `vf.Taskset`,
-and `vf.Harness`) instead.
+This is the legacy experimental taskset/harness stack. New environments should use the `verifiers.v1` `Taskset` / `Harness` format (`vf.Env`, `vf.Taskset`, and `vf.Harness`) instead.
 
 This stack separates **what to solve** (the task) from **how to solve it** (the agent) by reusing the battle-tested `CliAgentEnv` and delegating task-specific behavior to a `TaskSet`.
 
@@ -113,21 +111,16 @@ class MySWETaskSet(SandboxTaskSet):
 
 ## Scoring
 
-Each taskset provides its own rubric via `get_rubric()`. The rubric owns **all
-scoring logic** — running tests, reading files, computing rewards. It is NOT
-just a state reader.
+Each taskset provides its own rubric via `get_rubric()`. The rubric owns **all scoring logic** — running tests, reading files, computing rewards. It is NOT just a state reader.
 
-Use `keep_sandbox_for_scoring=True` on the environment so the sandbox stays
-alive after the rollout for the rubric to use.
+Use `keep_sandbox_for_scoring=True` on the environment so the sandbox stays alive after the rollout for the rubric to use.
 
 ```
 Rollout completes → sandbox kept alive → rubric.score_rollout() runs tests
     → rubric.cleanup() deletes sandbox
 ```
 
-This enables **retrying scoring independently of the rollout**: if scoring
-fails (transient sandbox error), the rubric can retry without re-running the
-agent.
+This enables **retrying scoring independently of the rollout**: if scoring fails (transient sandbox error), the rubric can retry without re-running the agent.
 
 ### Writing a rubric
 
@@ -155,8 +148,7 @@ class MySWERubric(vf.Rubric):
 
 ## State context
 
-All `SandboxTaskSet` methods (`setup`, `validate_instance`) and rubric reward
-functions receive `state` which contains:
+All `SandboxTaskSet` methods (`setup`, `validate_instance`) and rubric reward functions receive `state` which contains:
 
 - `state["sandbox_client"]` — the async sandbox client
 - `state["sandbox_id"]` — current sandbox ID

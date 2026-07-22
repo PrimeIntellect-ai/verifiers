@@ -76,12 +76,7 @@ class SystemPromptConfig:
     messages: list[JsonData] = []
 ```
 
-v1 system prompt type. Plain strings are prompt text. Use
-`vf.SystemPromptConfig(path="system_prompt.txt")` for file-backed prompts, or
-override `load_system_prompt(config)` when prompt construction belongs to the
-class. System prompt resolution is per task: task prompt overrides taskset
-prompt for the taskset side, then the harness applies
-`system_prompt_strategy`. The default strategy is `HT`.
+v1 system prompt type. Plain strings are prompt text. Use `vf.SystemPromptConfig(path="system_prompt.txt")` for file-backed prompts, or override `load_system_prompt(config)` when prompt construction belongs to the class. System prompt resolution is per task: task prompt overrides taskset prompt for the taskset side, then the harness applies `system_prompt_strategy`. The default strategy is `HT`.
 
 ### RewardFunc
 
@@ -409,8 +404,7 @@ Abstract base class for all environments.
 | `run_rollout(sem, input, client, model, sampling_args)` | `State` | Run rollout with semaphore |
 | `run_group(group_inputs, client, model, ...)` | `list[State]` | Generate and score one group |
 
-Calling `generate_sync()` from Jupyter or another active event loop requires
-`uv add "verifiers[notebook]"`.
+Calling `generate_sync()` from Jupyter or another active event loop requires `uv add "verifiers[notebook]"`.
 
 **Configuration methods:**
 
@@ -590,9 +584,7 @@ env_group = vf.EnvGroup(
 )
 ```
 
-Combines multiple environments for mixed-task training. Combined datasets use
-`info["env_id"]` as internal routing metadata; it is not a top-level input,
-state, or output field.
+Combines multiple environments for mixed-task training. Combined datasets use `info["env_id"]` as internal routing metadata; it is not a top-level input, state, or output field.
 
 ---
 
@@ -906,8 +898,7 @@ class EndpointConfig(BaseModel):
 Endpoints = dict[str, list[EndpointConfig]]
 ```
 
-`api_key_var` is a credential reference. Endpoint configs never serialize the
-materialized API key.
+`api_key_var` is a credential reference. Endpoint configs never serialize the materialized API key.
 
 `Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
 

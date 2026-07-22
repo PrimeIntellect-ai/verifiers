@@ -24,11 +24,7 @@ EvalConfig                          (the run)
 └─ pool: PoolConfig                 (static | elastic) — env-server only
 ```
 
-There is no run-level harness: each agent pins its own (`--env.agent.harness.*` on the
-single-agent env), an unpinned agent runs the taskset's default harness (its bundled
-one, else `bash`), and a declared pin is the env author's default. The
-retired flat axes error with a pointer: `--taskset.*` → `--env.taskset.*`,
-`--harness.*` → `--env.<agent>.harness.*`.
+There is no run-level harness: each agent pins its own (`--env.agent.harness.*` on the single-agent env), an unpinned agent runs the taskset's default harness (its bundled one, else `bash`), and a declared pin is the env author's default. The retired flat axes error with a pointer: `--taskset.*` → `--env.taskset.*`, `--harness.*` → `--env.<agent>.harness.*`.
 
 Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-server-cli) (env server) and [`ValidateConfig`](#validateconfig--the-validate-cli) (per-task validation). All three live in `verifiers/v1/configs/`.
 
@@ -106,14 +102,7 @@ A vLLM `/inference/v1/generate` endpoint with client-side tokenization (response
 
 ## EnvConfig — the environment
 
-`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`, the run's whole `[env]` block. One subclass
-per `Environment` class (bound via `Environment[YourConfig]`): the base carries which env
-(`id`), the seed taskset, and the env-agnostic run limits; the subclass declares each agent as
-an `AgentConfig` field plus the env's own knobs (`--env.n`, `--env.weight`, ...). The run's
-`env` field is narrowed to the selected env's config class by `--env.id` (else the taskset id,
-else `SingleAgentEnvConfig`), so everything renders typed in `-h`. Each loaded `Task` supplies
-the row's behavior, tools, user simulator, and scoring; only its `TaskData` is stored on the
-trace.
+`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`, the run's whole `[env]` block. One subclass per `Environment` class (bound via `Environment[YourConfig]`): the base carries which env (`id`), the seed taskset, and the env-agnostic run limits; the subclass declares each agent as an `AgentConfig` field plus the env's own knobs (`--env.n`, `--env.weight`, ...). The run's `env` field is narrowed to the selected env's config class by `--env.id` (else the taskset id, else `SingleAgentEnvConfig`), so everything renders typed in `-h`. Each loaded `Task` supplies the row's behavior, tools, user simulator, and scoring; only its `TaskData` is stored on the trace.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -128,11 +117,7 @@ Per-run caps (turns, tokens, stage timeouts, retries) are agent fields, not env 
 
 ### Agent config
 
-`verifiers/v1/agent.py` — `AgentConfig(BaseConfig)`. One per declared agent, addressed
-`--env.<agent>.*`. The **model context** defaults to the run's own (the serve protocol carries
-model/client/sampling per rollout request — what makes self-play trainable). The **harness**
-does not: an unpinned agent runs the taskset's default harness; a declared pin is the env
-author's per-agent default; partial overrides deep-merge onto it (an `id` switch replaces it).
+`verifiers/v1/agent.py` — `AgentConfig(BaseConfig)`. One per declared agent, addressed `--env.<agent>.*`. The **model context** defaults to the run's own (the serve protocol carries model/client/sampling per rollout request — what makes self-play trainable). The **harness** does not: an unpinned agent runs the taskset's default harness; a declared pin is the env author's per-agent default; partial overrides deep-merge onto it (an `id` switch replaces it).
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -143,15 +128,11 @@ author's per-agent default; partial overrides deep-merge onto it (an `id` switch
 | `timeout` | `TimeoutConfig` | `TimeoutConfig()` | Per-stage wall-clock timeouts for this agent's runs (`setup`/`rollout`/`finalize`/`scoring`; each stage falls back to the task's own). |
 | `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-agent caps (None = no limit); map onto [`RolloutLimits`](#rollout-limits), each checked between turns (soft by one turn). |
 
-Trainability is not a config field: it is env truth, set in place by the env's
-`setup(agents)` hook (default: every agent trains) and stamped on each trace. An env
-that wants the flip run-configurable exposes its own switch (e.g. proposer-solver's
-`--env.train_solver false`).
+Trainability is not a config field: it is env truth, set in place by the env's `setup(agents)` hook (default: every agent trains) and stamped on each trace. An env that wants the flip run-configurable exposes its own switch (e.g. proposer-solver's `--env.train_solver false`).
 
 ### Legacy (v0) backwards-compat fields
 
-On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a classic
-`verifiers.load_environment` env through the legacy bridge.
+On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a classic `verifiers.load_environment` env through the legacy bridge.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -163,8 +144,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 
 ### EnvServerConfig — the pool
 
-`EnvServerConfig(BaseConfig)`. The `env` block plus the worker pool sizing and the legacy v0
-fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator.
+`EnvServerConfig(BaseConfig)`. The `env` block plus the worker pool sizing and the legacy v0 fields. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -231,10 +211,7 @@ Elastic pool: start at one worker and scale up on demand.
 
 ## Taskset config
 
-`verifiers/v1/taskset.py` — `TasksetConfig(BaseConfig)`. Subclass it for values used while
-`Taskset.load()` builds the task list: dataset id, split, seed, sample count, difficulty filters,
-and similar load-time choices. The concrete subclass is selected through `env.taskset.id`, so
-its fields become typed dotted flags such as `--env.taskset.split test`.
+`verifiers/v1/taskset.py` — `TasksetConfig(BaseConfig)`. Subclass it for values used while `Taskset.load()` builds the task list: dataset id, split, seed, sample count, difficulty filters, and similar load-time choices. The concrete subclass is selected through `env.taskset.id`, so its fields become typed dotted flags such as `--env.taskset.split test`.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -243,15 +220,11 @@ its fields become typed dotted flags such as `--env.taskset.split test`.
 
 `.name` → the package name (id with org / version stripped).
 
-A taskset implements `load()` and declares exactly one task type through its generic base. It may
-also declare task-agnostic tool classes on `Taskset.tools`; those servers are shared by the
-rollouts handled by one environment worker.
+A taskset implements `load()` and declares exactly one task type through its generic base. It may also declare task-agnostic tool classes on `Taskset.tools`; those servers are shared by the rollouts handled by one environment worker.
 
 ### Task config
 
-`TaskConfig` contains knobs read by task behavior. Subclass it for scoring parameters and
-task-scoped `ToolsetConfig` or `UserConfig` fields, then narrow the taskset config's `task` field to
-that subclass. These are run-wide knobs, not per-row data; the row itself belongs on `TaskData`.
+`TaskConfig` contains knobs read by task behavior. Subclass it for scoring parameters and task-scoped `ToolsetConfig` or `UserConfig` fields, then narrow the taskset config's `task` field to that subclass. These are run-wide knobs, not per-row data; the row itself belongs on `TaskData`.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -275,8 +248,7 @@ that subclass. These are run-wide knobs, not per-row data; the row itself belong
 
 `.name` → the package name; `.resolved_env` → `env` merged with forwarded `forward_env` vars.
 
-A harness class also declares capability flags (ClassVars, not user-settable):
-`APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_USER_SIM`, `SUPPORTS_MESSAGE_PROMPT`.
+A harness class also declares capability flags (ClassVars, not user-settable): `APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_USER_SIM`, `SUPPORTS_MESSAGE_PROMPT`.
 
 ### Built-in harness configs
 
@@ -293,11 +265,7 @@ A growing-message-list chat loop with a local `bash` tool, plus optional `edit`/
 
 #### `NullHarnessConfig` — `id: "null"`
 
-A growing-message-list chat loop with the task- and taskset-scoped MCP tools, and **no built-in
-tools of its own**. It runs as a uv script whose dependencies are `openai` and `mcp`, so setup
-bootstraps everything it needs in the selected runtime. `NullHarnessConfig` adds no fields beyond
-the base `HarnessConfig` fields. Use it for pure chat or tasksets whose entire tool surface is
-provided through MCP; use an agentic harness for shell/edit capabilities.
+A growing-message-list chat loop with the task- and taskset-scoped MCP tools, and **no built-in tools of its own**. It runs as a uv script whose dependencies are `openai` and `mcp`, so setup bootstraps everything it needs in the selected runtime. `NullHarnessConfig` adds no fields beyond the base `HarnessConfig` fields. Use it for pure chat or tasksets whose entire tool surface is provided through MCP; use an agentic harness for shell/edit capabilities.
 
 #### `CodexHarnessConfig` — `id: "codex"`
 
@@ -350,9 +318,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 ### `SubprocessConfig` — `type: "subprocess"` (default)
 
-Run on the host in a fresh `/tmp/<name>` workspace per rollout. **No extra fields.** Implicit
-host inheritance removes names containing `API_KEY`; explicit values passed in the runtime `env`
-mapping are merged afterward and inherited by child processes.
+Run on the host in a fresh `/tmp/<name>` workspace per rollout. **No extra fields.** Implicit host inheritance removes names containing `API_KEY`; explicit values passed in the runtime `env` mapping are merged afterward and inherited by child processes.
 
 ### `DockerConfig` — `type: "docker"`
 
@@ -403,8 +369,7 @@ Remote Modal sandbox; reached via Modal's own port forwarding (`encrypted_ports`
 | `disk` | `float` | `5.0` | Disk in GB. Modal sandboxes have no disk knob, so **accepted but not enforced**. |
 | `creates_per_sec` | `float \| None` | `40.0` | Pace sandbox creation to this many per second, host-wide across every env-server worker (None/≤0 disables). |
 
-Before each rollout or validation check, `resolve_runtime_config` combines the selected runtime
-config with the row's `TaskData`:
+Before each rollout or validation check, `resolve_runtime_config` combines the selected runtime config with the row's `TaskData`:
 
 - `TaskData.image` is the row's required execution image and replaces the runtime's base image. A
   row with an image cannot use the subprocess runtime.
@@ -413,32 +378,21 @@ config with the row's `TaskData`:
 - Non-`None` `TaskData.resources` values similarly fill supported runtime fields only while those
   fields remain at their defaults. Any non-default runtime-config resource value wins.
 - A resource field unsupported by the chosen runtime is ignored; evaluation warns once per
-  runtime/field combination. Docker and Modal accept `disk` so portable task data validates, but
-  neither enforces a disk limit.
+  runtime/field combination. Docker and Modal accept `disk` so portable task data validates, but neither enforces a disk limit.
 
-This resolution produces a copied runtime config; it does not mutate the frozen row or the shared
-base config.
+This resolution produces a copied runtime config; it does not mutate the frozen row or the shared base config.
 
 ---
 
 ## Task resources & timeouts
 
-`verifiers/v1/task.py`. `TaskData` is the frozen, serializable row stored on `trace.task` and sent
-across worker/runtime boundaries. Taskset packages subclass it for typed row-specific fields
-such as reference answers, repository metadata, or judge inputs. Those fields are not CLI flags;
-they are produced by `Taskset.load()`.
+`verifiers/v1/task.py`. `TaskData` is the frozen, serializable row stored on `trace.task` and sent across worker/runtime boundaries. Taskset packages subclass it for typed row-specific fields such as reference answers, repository metadata, or judge inputs. Those fields are not CLI flags; they are produced by `Taskset.load()`.
 
-`Task` is the behavior wrapper around that row. It owns hooks and scoring and reads uniform,
-run-configurable knobs from `TaskConfig`, but the `Task` object itself is not serialized onto the
-trace. Replay validates each recorded row as the taskset's declared `TaskData`, reattaches the
-declared task class, and propagates validation failures instead of changing task types.
+`Task` is the behavior wrapper around that row. It owns hooks and scoring and reads uniform, run-configurable knobs from `TaskConfig`, but the `Task` object itself is not serialized onto the trace. Replay validates each recorded row as the taskset's declared `TaskData`, reattaches the declared task class, and propagates validation failures instead of changing task types.
 
 ### `TaskResources` (frozen)
 
-Portable runtime resources requested by one row. CPU is measured in cores; memory and disk are in
-gigabytes. `None` means “do not override the chosen runtime/provider default.” Values are applied
-only to runtime fields that remain at their defaults; any non-default runtime-config value wins.
-Unsupported fields are ignored; evaluation warns once per runtime/field combination.
+Portable runtime resources requested by one row. CPU is measured in cores; memory and disk are in gigabytes. `None` means “do not override the chosen runtime/provider default.” Values are applied only to runtime fields that remain at their defaults; any non-default runtime-config value wins. Unsupported fields are ignored; evaluation warns once per runtime/field combination.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -449,10 +403,7 @@ Unsupported fields are ignored; evaluation warns once per runtime/field combinat
 
 ### `TaskTimeout` (frozen)
 
-Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For eval, a non-`None`
-value in the agent's `TimeoutConfig` (`--env.<agent>.timeout.*`) wins; otherwise the corresponding
-row value is used. If both are `None`, that stage has no framework timeout. Remote harness execution
-is capped at the provider's 24-hour sandbox lifetime.
+Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For eval, a non-`None` value in the agent's `TimeoutConfig` (`--env.<agent>.timeout.*`) wins; otherwise the corresponding row value is used. If both are `None`, that stage has no framework timeout. Remote harness execution is capped at the provider's 24-hour sandbox lifetime.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -475,29 +426,19 @@ is capped at the provider's 24-hour sandbox lifetime.
 | `timeout` | `TaskTimeout` | `TaskTimeout()` | Per-stage timeout requests described above. |
 | `resources` | `TaskResources` | `TaskResources()` | Portable runtime resource requests described above. |
 
-`TaskData.prompt_text` renders a string prompt directly or joins the textual content of a
-`Messages` prompt. Judges use it as the default question text when no dedicated question field is
-configured.
+`TaskData.prompt_text` renders a string prompt directly or joins the textual content of a `Messages` prompt. Judges use it as the default question text when no dedicated question field is configured.
 
 ---
 
 ## Toolset config
 
-`verifiers/v1/mcp/toolset.py`. Tool scope is structural: a class declared on `Task.tools` is
-task-scoped, while a class declared on `Taskset.tools` is shared by one environment worker. The
-framework finds the matching config field by the toolset's generic config type. Subclass either
-config to add knobs consumed by the tool's `@vf.tool` methods.
+`verifiers/v1/mcp/toolset.py`. Tool scope is structural: a class declared on `Task.tools` is task-scoped, while a class declared on `Taskset.tools` is shared by one environment worker. The framework finds the matching config field by the toolset's generic config type. Subclass either config to add knobs consumed by the tool's `@vf.tool` methods.
 
 ### `ToolsetConfig` — `Task.tools`
 
-A task-scoped server is launched per rollout. Its matching config field normally lives on
-`TaskConfig`, under `--env.taskset.task.*`.
+A task-scoped server is launched per rollout. Its matching config field normally lives on `TaskConfig`, under `--env.taskset.task.*`.
 
-The default placement is the toolset's own subprocess runtime on the host, where verifiers and the
-taskset package are already installed. The harness reaches that server over the host network
-when local or through a tunnel when remote. `colocated` instead runs the server inside the harness
-runtime; this is useful when both must see the same filesystem or processes, but a remote sandbox
-must then upload and install verifiers plus the taskset package for every rollout.
+The default placement is the toolset's own subprocess runtime on the host, where verifiers and the taskset package are already installed. The harness reaches that server over the host network when local or through a tunnel when remote. `colocated` instead runs the server inside the harness runtime; this is useful when both must see the same filesystem or processes, but a remote sandbox must then upload and install verifiers plus the taskset package for every rollout.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -507,23 +448,16 @@ must then upload and install verifiers plus the taskset package for every rollou
 
 ### `SharedToolsetConfig` — `Taskset.tools`
 
-A taskset-scoped tool uses one framework-launched server per environment worker, or reuses a
-configured external `url` without launching a server. Its matching config field lives directly on
-the taskset config, not under `task`.
+A taskset-scoped tool uses one framework-launched server per environment worker, or reuses a configured external `url` without launching a server. Its matching config field lives directly on the taskset config, not under `task`.
 
-The framework-launched form is intended for expensive task-agnostic setup such as loading a corpus,
-index, or graph: `setup()` runs once per worker and `setup_task()` is not called because no single
-row owns the server. A vf-native shared tool may still use mutable `self.state`; the framework
-attaches each calling rollout's state channel to the shared URL so those values remain per rollout.
-There is no `colocated` option because a shared server has no single harness runtime.
+The framework-launched form is intended for expensive task-agnostic setup such as loading a corpus, index, or graph: `setup()` runs once per worker and `setup_task()` is not called because no single row owns the server. A vf-native shared tool may still use mutable `self.state`; the framework attaches each calling rollout's state channel to the shared URL so those values remain per rollout. There is no `colocated` option because a shared server has no single harness runtime.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The framework-launched server's own runtime. Host subprocess is cheapest; a remote runtime pays setup once per worker. See [Runtime configs](#runtime-configs). |
 | `url` | `str \| None` | `None` | Existing streamable-HTTP MCP endpoint reused across workers and rollouts instead of launching a server. |
 
-There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tools` or
-`Taskset.tools` and use the matching config type to choose its scope.
+There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tools` or `Taskset.tools` and use the matching config type to choose its scope.
 
 ---
 
@@ -540,20 +474,13 @@ There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tool
 
 ## Judge config
 
-`verifiers/v1/judge.py`. `TaskConfig.judges` holds plugged judge configs that `Task.score`
-constructs and runs after the task's own rewards. Each list entry needs an `id`; the loader resolves
-that plugin's concrete `JudgeConfig` subclass before validation, just like tasksets and harnesses.
-Duplicate reward keys are rejected unless entries receive distinct `name` values.
+`verifiers/v1/judge.py`. `TaskConfig.judges` holds plugged judge configs that `Task.score` constructs and runs after the task's own rewards. Each list entry needs an `id`; the loader resolves that plugin's concrete `JudgeConfig` subclass before validation, just like tasksets and harnesses. Duplicate reward keys are rejected unless entries receive distinct `name` values.
 
-A task may instead declare a custom `JudgeConfig` field on its own `TaskConfig`, construct the
-judge inside a reward, and call `evaluate()` directly. That direct-use config may leave `id` empty.
+A task may instead declare a custom `JudgeConfig` field on its own `TaskConfig`, construct the judge inside a reward, and call `evaluate()` directly. That direct-use config may leave `id` empty.
 
 ### `JudgeConfig(BaseClientConfig)`
 
-Inherits `base_url`, `api_key_var`, and `headers` from
-[`BaseClientConfig`](#client-config). The default Prime endpoint, key, and team header use the same
-Prime CLI/environment fallback as the rollout client. Subclass `JudgeConfig` for additional knobs
-needed by a custom or plugin judge.
+Inherits `base_url`, `api_key_var`, and `headers` from [`BaseClientConfig`](#client-config). The default Prime endpoint, key, and team header use the same Prime CLI/environment fallback as the rollout client. Subclass `JudgeConfig` for additional knobs needed by a custom or plugin judge.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -567,9 +494,7 @@ needed by a custom or plugin judge.
 
 ### `JudgeSamplingConfig(SamplingConfig)`
 
-The same extensible shape as the rollout's [`SamplingConfig`](#sampling-config): `temperature`,
-`top_p`, `reasoning_effort`, and `max_tokens`, plus provider-specific keys because
-`extra='allow'`. Values passed directly to `complete()` override these configured defaults.
+The same extensible shape as the rollout's [`SamplingConfig`](#sampling-config): `temperature`, `top_p`, `reasoning_effort`, and `max_tokens`, plus provider-specific keys because `extra='allow'`. Values passed directly to `complete()` override these configured defaults.
 
 ### Judge class behavior
 
@@ -578,12 +503,9 @@ A judge class may define:
 - `prompt: str | None` — the default template formatted by `build_messages(**fields)`. A configured
   `prompt` or `prompt_file` overrides it for that instance.
 - `schema: type[BaseModel] | None` — a Pydantic schema for structured output. `evaluate()` sends it
-  through the OpenAI-compatible parsed-completion path and places the validated object on
-  `JudgeResponse.parsed`; without a schema, `parse()` receives the text response.
+  through the OpenAI-compatible parsed-completion path and places the validated object on `JudgeResponse.parsed`; without a schema, `parse()` receives the text response.
 
-`evaluate()` renders the prompt, performs one judge completion, and calls `parse()`. When a trace
-is supplied, billed judge usage is recorded even if parsing later fails. Plugin judges implement
-`score(task, trace)` so `Task.score` can record the verdict under the configured key and weight.
+`evaluate()` renders the prompt, performs one judge completion, and calls `parse()`. When a trace is supplied, billed judge usage is recorded even if parsing later fails. Plugin judges implement `score(task, trace)` so `Task.score` can record the verdict under the configured key and weight.
 
 ---
 
@@ -616,21 +538,14 @@ Plus all inherited `EnvServerConfig` fields (`env`, `pool`, legacy).
 
 ## ValidateConfig — the validate CLI
 
-`verifiers/v1/configs/validate.py` — `ValidateConfig(BaseConfig)`. Model-free validation has no
-harness, model client, or sampling. For every selected task, the default mode runs two independent
-checks in separate fresh runtimes:
+`verifiers/v1/configs/validate.py` — `ValidateConfig(BaseConfig)`. Model-free validation has no harness, model client, or sampling. For every selected task, the default mode runs two independent checks in separate fresh runtimes:
 
 1. **gold:** start the runtime, run `Task.setup`, call `Task.validate`, then tear down;
 2. **setup:** start another runtime, run `Task.setup`, mark it valid if setup returns, then tear down.
 
-The independent result separates basic provisioning/setup viability from the task's gold-check
-result. A task whose `validate()` returns `False` is `invalid`; a timeout is `timeout`; an exception
-is `error`. The base `Task.validate()` returns `True`, so tasks without a custom gold check still
-receive the setup checks.
+The independent result separates basic provisioning/setup viability from the task's gold-check result. A task whose `validate()` returns `False` is `invalid`; a timeout is `timeout`; an exception is `error`. The base `Task.validate()` returns `True`, so tasks without a custom gold check still receive the setup checks.
 
-Use `only_gold` or `only_setup` to select one mode; setting both is rejected. The CLI writes no
-config or traces to disk. Its output is the live dashboard when `rich` is enabled, otherwise one
-log line per task.
+Use `only_gold` or `only_setup` to select one mode; setting both is rejected. The CLI writes no config or traces to disk. Its output is the live dashboard when `rich` is enabled, otherwise one log line per task.
 
 | Field | Type | Default | Aliases | Notes |
 | --- | --- | --- | --- | --- |
@@ -657,27 +572,14 @@ log line per task.
 ## Notes & conventions
 
 - **Plugin resolution.** The run's `env` field narrows to the selected env's config class
-  (`--env.id`, else the taskset's exported env, else `SingleAgentEnvConfig`) *before*
-  validation; inside it, `taskset` narrows by its id and each pinned agent `harness` by its id.
-  Entries in `TaskConfig.judges` are similarly narrowed by each judge `id`. This is why local
-  and Hub plugin fields remain typed and appear in CLI validation instead of living in an
-  untyped arguments dictionary.
+  (`--env.id`, else the taskset's exported env, else `SingleAgentEnvConfig`) *before* validation; inside it, `taskset` narrows by its id and each pinned agent `harness` by its id. Entries in `TaskConfig.judges` are similarly narrowed by each judge `id`. This is why local and Hub plugin fields remain typed and appear in CLI validation instead of living in an untyped arguments dictionary.
 - **Dotted flags.** Every nested field is part of the same CLI tree
-  (`--env.agent.harness.runtime.type docker`, `--env.taskset.split test`,
-  `--pool.max_workers 8`, `--env.agent.retries.max_retries 2`). An `@ file.toml` describes
-  the identical tree; explicit CLI values layer over values loaded from the file.
+  (`--env.agent.harness.runtime.type docker`, `--env.taskset.split test`, `--pool.max_workers 8`, `--env.agent.retries.max_retries 2`). An `@ file.toml` describes the identical tree; explicit CLI values layer over values loaded from the file.
 - **Runtime precedence.** An explicit, non-default CLI/TOML `workdir` or resource field wins over
-  `TaskData`; otherwise a non-`None` row value fills it, and otherwise the runtime/provider default
-  remains. `TaskData.image` is the required image for that row and replaces the runtime's base
-  image. Unsupported resource fields are ignored; evaluation warns once per runtime/field.
+  `TaskData`; otherwise a non-`None` row value fills it, and otherwise the runtime/provider default remains. `TaskData.image` is the required image for that row and replaces the runtime's base image. Unsupported resource fields are ignored; evaluation warns once per runtime/field.
 - **Timeout precedence.** For eval stages, a non-`None` agent-level `TimeoutConfig` value
-  (`--env.<agent>.timeout.*`) wins over the corresponding `TaskData.timeout` value; if both are
-  `None`, there is no framework timeout. The setup value is one deadline shared by task setup and
-  harness provisioning.
-  Validate uses `CheckTimeoutConfig.setup`, then falls back to `TaskData.timeout.setup`, while
-  `CheckTimeoutConfig.total` independently bounds `Task.validate`.
+  (`--env.<agent>.timeout.*`) wins over the corresponding `TaskData.timeout` value; if both are `None`, there is no framework timeout. The setup value is one deadline shared by task setup and harness provisioning. Validate uses `CheckTimeoutConfig.setup`, then falls back to `TaskData.timeout.setup`, while `CheckTimeoutConfig.total` independently bounds `Task.validate`.
 - **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `env.<agent>.harness.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
 - **Frozen models.** `TaskData`, `TaskResources`, and `TaskTimeout` are immutable wire input, not
-  mutable runtime state. Put per-rollout coordination on typed `trace.state`. `RolloutLimits` is an
-  immutable framework limit derived from the env's `max_*` fields.
+  mutable runtime state. Put per-rollout coordination on typed `trace.state`. `RolloutLimits` is an immutable framework limit derived from the env's `max_*` fields.
 - **Legacy v0.** Set the run-level `id` (leave `env.taskset` unset) to run a classic `load_environment` env through the bridge. `--resume` is not supported for legacy evals.
