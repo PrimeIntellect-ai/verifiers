@@ -22,7 +22,7 @@ from verifiers.v1.runtimes.base import (
     Runtime,
     parse_gpu,
 )
-from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy
+from verifiers.v1.runtimes.docker.egress import EgressProxy, NetworkPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -249,9 +249,13 @@ class DockerRuntime(Runtime):
     def network_isolated(self) -> bool:
         return self.config.network_isolated
 
+    async def prepare_setup(self) -> None:
+        if self._proxy is not None:
+            self._proxy.policy = NetworkPolicy([], [], [], True)
+
     async def prepare_execution(self, routes: list[str]) -> None:
         """Allow the declared framework routes, then leave the proxy as the only route."""
-        if not self.network_isolated or self._cut:
+        if not self.network_isolated:
             return
         assert self._proxy is not None
         framework: list[str] = []
@@ -264,6 +268,8 @@ class DockerRuntime(Runtime):
             framework,
             self.config.network_access,
         )
+        if self._cut:
+            return
         script = (
             "set -eu; HOST=$1; "
             "PORT=$2; "

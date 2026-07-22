@@ -102,13 +102,33 @@ class EgressProxy:
                 scheme = parsed.scheme.lower()
                 host = parsed.hostname or ""
                 port = parsed.port or (443 if scheme == "https" else 80)
-            if scheme not in ("http", "https") or not self.policy.permits(
+            permitted = scheme in ("http", "https") and self.policy.permits(
                 scheme, host, port, connect=method == "CONNECT"
-            ):
+            )
+            addresses = []
+            if permitted:
+                addresses = await asyncio.get_running_loop().getaddrinfo(
+                    host, port, type=socket.SOCK_STREAM
+                )
+                framework = any(
+                    _rule_matches(route, scheme, host, port)
+                    for route in self.policy.routes
+                )
+                if not framework:
+                    for *_, address in addresses:
+                        resolved = ip_address(address[0])
+                        mapped = getattr(resolved, "ipv4_mapped", None)
+                        if resolved.is_loopback or (mapped and mapped.is_loopback):
+                            permitted = False
+                            break
+            if not permitted:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
                 return
-            upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
+            family, _, _, _, address = addresses[0]
+            upstream_reader, upstream_writer = await asyncio.open_connection(
+                address[0], address[1], family=family, flags=socket.AI_NUMERICHOST
+            )
             if method == "CONNECT":
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()

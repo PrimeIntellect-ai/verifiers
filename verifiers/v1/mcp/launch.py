@@ -268,6 +268,9 @@ async def serve(
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
     async with contextlib.AsyncExitStack() as stack:
+        # Colocated servers inherit the harness cut. A separately provisioned filtered
+        # Docker server has neither that lifecycle nor a published port after isolation;
+        # reject it instead of silently leaving its requested policy unenforced.
         if (
             isinstance(cfg.runtime, DockerConfig)
             and cfg.runtime.network_isolated

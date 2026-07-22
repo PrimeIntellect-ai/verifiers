@@ -56,13 +56,20 @@ disabled_tools = ["shell_tool"]
 
 The names of these tools are set by the respective harness. Consult the relevant documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
 
-## Docker network policies
+## Runtime network policies
+
+Runtime configs expose `network_access`. Prime and Modal apply it as an all-or-nothing
+sandbox setting at provisioning time. Docker additionally supports URL-level rules and a
+trusted setup phase before enforcement; the same policy vocabulary can extend to other
+runtimes when their sandbox APIs support it.
+
+### Docker URL policies
 
 Docker harnesses can keep trusted setup online, then restrict the agent to declared
 HTTP(S) destinations:
 
 ```toml
-[harness.runtime]
+[env.agent.harness.runtime]
 type = "docker"
 network_access = false
 allow = ["https://*.wikipedia.org"]

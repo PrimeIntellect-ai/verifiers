@@ -243,6 +243,9 @@ class Runtime(ABC):
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
 
+    async def prepare_setup(self) -> None:
+        """Open the runtime's trusted setup phase. Reused runtimes may restore access."""
+
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
         their policy here while keeping the interception and MCP `routes` reachable."""
