@@ -1,6 +1,7 @@
 from verifiers.v1.tasksets.nemo_gym.taskset import (
     NeMoGymConfig,
     NeMoGymData,
+    NeMoGymEnv,
     NeMoGymState,
     NeMoGymTask,
     NeMoGymTaskConfig,
@@ -10,6 +11,7 @@ from verifiers.v1.tasksets.nemo_gym.taskset import (
 __all__ = [
     "NeMoGymConfig",
     "NeMoGymData",
+    "NeMoGymEnv",
     "NeMoGymState",
     "NeMoGymTask",
     "NeMoGymTaskConfig",

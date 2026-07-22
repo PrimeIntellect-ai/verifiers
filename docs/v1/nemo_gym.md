@@ -10,26 +10,30 @@ part of the benchmark semantics.
 
 ## Weather example
 
-Start the bundled example's resources server:
-
-```bash
-uv run verifiers/v1/tasksets/nemo_gym_weather/server.py
-```
-
-Then run its five example tasks with any MCP-capable verifiers harness:
+Run the five bundled tasks with any MCP-capable verifiers harness:
 
 ```bash
 uv run eval nemo-gym-weather --env.agent.harness.id bash --no-push -n 5
 ```
 
-The launcher installs the published `nemo-gym==0.4.0` package and starts only the
-`example_mcp_weather` resources server. It does not start Gym's agent, model, or head
-server stack.
+The taskset installs the published `nemo-gym==0.4.0` package in an isolated script
+environment and starts its `ExampleMCPWeatherResourcesServer` for the duration of the
+evaluation. It does not start Gym's agent, model, Ray, or head-server stack.
+
+A taskset can manage another server shipped in that package by naming its resource
+class:
+
+```python
+class Taskset(NeMoGymTaskset):
+    resource_server = "resources_servers.my_server.app:MyResourcesServer"
+```
+
+Export `NeMoGymEnv` beside that taskset so Verifiers owns its startup and cleanup.
 
 ## Custom resources server
 
-Start the resources server separately and point the generic taskset at its JSONL
-dataset and URL:
+The generic taskset connects to an existing resources server. Point it at the Gym
+JSONL dataset and server URL:
 
 ```toml
 model = "openai/gpt-5-mini"

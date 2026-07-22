@@ -1,30 +1,30 @@
-"""NeMo Gym resources-server tasks driven by Verifiers harnesses.
-
-NeMo Gym remains authoritative for per-rollout state, tools, and verification. The
-resources server is external because Gym does not expose a stable resource-only
-launcher; Verifiers owns the model loop, trace, runtime, and harness.
-"""
+"""NeMo Gym resource-server tasks driven by Verifiers harnesses."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urljoin
 
 import httpx
 from pydantic import Field
+from typing_extensions import TypeVar
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.dialects.responses import ResponsesDialect, messages_to_wire
+from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
+from verifiers.v1.runtimes import SubprocessConfig, make_runtime
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, ToolMessage, content_text
+from verifiers.v1.types import AssistantMessage, ToolMessage
+from verifiers.utils.serve_utils import get_free_port
 
 if TYPE_CHECKING:
     from mcp import ClientSession
@@ -35,8 +35,8 @@ if TYPE_CHECKING:
 
 
 class NeMoGymTaskConfig(TaskConfig):
-    resources_url: str = "http://127.0.0.1:8000"
-    """Base URL of an already-running NeMo Gym resources server."""
+    resources_url: str | None = None
+    """Base URL of an existing server; managed tasksets fill this automatically."""
 
     headers: dict[str, str] = Field(default_factory=dict)
     """Headers added to seed, direct-tool, MCP, and verification requests."""
@@ -190,13 +190,7 @@ def _trace_to_nemo_response(
                 )
             output.extend(dict(item) for item in messages_to_wire([message]))
         elif started and isinstance(message, ToolMessage):
-            output.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id,
-                    "output": content_text(message.content),
-                }
-            )
+            output.extend(dict(item) for item in messages_to_wire([message]))
 
     for item in output:
         name = str(item.get("name", ""))
@@ -220,6 +214,8 @@ def _trace_to_nemo_response(
 class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         state = trace.state
+        if self.config.resources_url is None:
+            raise ValueError("set resources_url or use a managed NeMo Gym taskset")
         state.resources_url = self.config.resources_url.rstrip("/")
         state.headers = dict(self.config.headers)
         state.request_timeout = self.config.request_timeout
@@ -272,7 +268,13 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         return float(result["reward"])
 
 
-class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
+NeMoGymConfigT = TypeVar("NeMoGymConfigT", bound=NeMoGymConfig, default=NeMoGymConfig)
+
+
+class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfigT]):
+    resource_server: ClassVar[str | None] = None
+    """Import reference for a package-provided resource server, if managed."""
+
     tools = (_NeMoGymToolset,)
 
     def load(self) -> Iterator[NeMoGymTask]:
@@ -296,6 +298,58 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
 
         if not count:
             raise ValueError(f"NeMo Gym dataset is empty: {path}")
+
+
+class NeMoGymEnv(SingleAgentEnv):
+    """Start a taskset's NeMo resource server once per environment worker."""
+
+    _nemo_runtime: Runtime | None = None
+
+    async def start(self) -> None:
+        taskset = cast(NeMoGymTaskset, self.taskset)
+        config = taskset.config.task
+        if config.resources_url is not None:
+            return
+        entrypoint = taskset.resource_server
+        if entrypoint is None:
+            raise ValueError("set --env.taskset.task.resources-url")
+
+        runtime = make_runtime(SubprocessConfig())
+        self._nemo_runtime = runtime
+        await runtime.start()
+        port = get_free_port()
+        server_env = {
+            "NEMO_GYM_PORT": str(port),
+            "NEMO_GYM_RESOURCE_SERVER": entrypoint,
+        }
+        script = Path(__file__).with_name("server.py")
+        command = await runtime.prepare_uv_script(
+            script.read_bytes(), {"UV_FROZEN": "0"}
+        )
+        await runtime.run_background(
+            command,
+            server_env,
+            "nemo_gym.log",
+        )
+        config.resources_url = f"http://127.0.0.1:{port}"
+
+        async with httpx.AsyncClient(timeout=1) as client:
+            for _ in range(60):
+                try:
+                    if (await client.get(config.resources_url)).is_success:
+                        return
+                except httpx.HTTPError:
+                    pass
+                await asyncio.sleep(0.5)
+        log = (await runtime.read("nemo_gym.log")).decode(errors="replace")[-2000:]
+        raise RuntimeError(f"NeMo Gym server did not start:\n{log}")
+
+    async def stop(self) -> None:
+        if self._nemo_runtime is None:
+            return
+        runtime, self._nemo_runtime = self._nemo_runtime, None
+        cast(NeMoGymTaskset, self.taskset).config.task.resources_url = None
+        await runtime.stop()
 
 
 if __name__ == "__main__":
