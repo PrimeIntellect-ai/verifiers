@@ -76,11 +76,11 @@ class UserSimEnv(vf.Env[UserSimEnvConfig]):
             # The tau convention: the assistant "answers the phone", the user
             # states the goal. The greeting exists only on the user's side. A
             # run-away exchange ends through the user agent's own `max_turns`
-            # (its segment comes back `stopped`), not a separate counter.
+            # (its segment comes back `terminated`), not a separate counter.
             ask = await sim.turn("Hello! How can I help you today?")
-            while not ask.stopped and ask.last_reply.strip() != self.config.done_marker:
+            while not ask.terminated and ask.last_reply.strip() != self.config.done_marker:
                 answer = await assistant.turn(ask.last_reply)
-                if answer.stopped:
+                if answer.terminated:
                     break
                 ask = await sim.turn(answer.last_reply)
 

@@ -21,7 +21,7 @@ user, and each `turn()` runs one harness segment before returning a `vf.Segment`
 ```python
 async with agent.interaction(task) as interaction:
     segment = await interaction.turn("hello")
-    if not segment.stopped:
+    if not segment.terminated:
         segment = await interaction.turn(f"you said: {segment.last_reply}")
 
 trace = interaction.trace

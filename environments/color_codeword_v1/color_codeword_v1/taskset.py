@@ -125,7 +125,7 @@ class ColorCodewordEnv(vf.SingleAgentEnv):
         async with agents.agent.interaction(task) as interaction:
             segment = await interaction.turn()
             for turns in range(1, max_turns):
-                if segment.stopped:
+                if segment.terminated:
                     break
                 colors = colors_per_turn[turns]
                 total = sum(len(colors_per_turn[t]) for t in range(turns + 1))

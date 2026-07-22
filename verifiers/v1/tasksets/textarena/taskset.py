@@ -72,7 +72,7 @@ class TextArenaEnv(vf.Env[TextArenaEnvConfig]):
         # turn()); the engine steps host-side and answers with each observation.
         async with agents.player.interaction(task) as interaction:
             segment = await interaction.turn()
-            while not segment.stopped:
+            while not segment.terminated:
                 game.step(segment.last_reply)
                 if game.state.done:
                     outcome["reward"] = float((game.state.rewards or {}).get(0, 0.0))

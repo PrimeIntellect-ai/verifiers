@@ -116,7 +116,7 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
 
             async with agents.player.interaction(task) as interaction:
                 segment = await interaction.turn(payload())
-                while not segment.stopped and not result.done:
+                while not segment.terminated and not result.done:
                     action = segment.last_reply.strip()
                     if not action:
                         # No action can advance OpenEnv. End this run explicitly

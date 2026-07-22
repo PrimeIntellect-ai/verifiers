@@ -115,7 +115,7 @@ class KuhnPokerEnv(vf.Env[KuhnPokerEnvConfig]):
             )
             for _ in range(self.config.invalid_retries + 1):
                 segment = await interaction.turn(prompt)
-                if segment.stopped:
+                if segment.terminated:
                     return None
                 action = parse_action(segment.last_reply, legal)
                 if action is not None:

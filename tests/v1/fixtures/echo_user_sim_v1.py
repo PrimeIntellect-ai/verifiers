@@ -43,7 +43,7 @@ class EchoUserSimEnv(vf.SingleAgentEnv):
         # first turn opens the conversation.
         async with agents.agent.interaction(task) as interaction:
             for phrase in task.data.phrases:
-                if (await interaction.turn(phrase)).stopped:
+                if (await interaction.turn(phrase)).terminated:
                     break
 
 

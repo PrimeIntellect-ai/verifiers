@@ -137,14 +137,14 @@ class Segment:
 
     `messages` carries every model-sampled assistant message and intervening tool
     result produced by the segment, in order; `last_reply` is quick sugar for its
-    final assistant text. `stopped` marks the exchange over — the run ended (a
+    final assistant text. `terminated` marks the exchange over — the run ended (a
     limit, a `@stop`, or the harness finishing) instead of producing another
-    segment; a stopped `Segment` carries no messages (the last real segment was
+    segment; a terminated `Segment` carries no messages (the last real segment was
     already delivered), and the interaction's `trace` holds the full exchange.
     """
 
     messages: Messages
-    stopped: bool = False
+    terminated: bool = False
 
     @property
     def last_reply(self) -> str:
@@ -174,7 +174,7 @@ class Interaction:
     ) -> None:
         self._run = run
         self._gate = gate
-        self._over = False  # a stopped segment was already delivered
+        self._over = False  # a terminated segment was already delivered
         self._started = False  # a segment has run (the exchange is under way)
         self._lock = asyncio.Lock()
 
@@ -186,7 +186,7 @@ class Interaction:
         """Send one user turn (a string, or full `Messages` for multimodal /
         multi-message turns); run one segment; return its `Segment`. A
         prompted task speaks FIRST: take its opening reply with a bare `turn()`
-        before answering. A `stopped` segment means the run ended instead of
+        before answering. A `terminated` segment means the run ended instead of
         answering (the message went unconsumed)."""
         async with self._lock:
             async with self._gate or nullcontext():
@@ -222,7 +222,7 @@ class Interaction:
         await self._run.step(messages)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
-            # exchange, that surfaces as the NEXT turn's stopped segment.
+            # exchange, that surfaces as the NEXT turn's terminated segment.
             segment_messages: Messages = []
             saw_assistant = False
             for node in self.trace.nodes[nodes_before:]:
@@ -233,7 +233,7 @@ class Interaction:
                     segment_messages.append(node.message)
             return Segment(messages=segment_messages)
         self._over = True
-        return Segment(messages=[], stopped=True)
+        return Segment(messages=[], terminated=True)
 
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks

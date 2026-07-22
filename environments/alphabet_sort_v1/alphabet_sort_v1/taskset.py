@@ -105,7 +105,7 @@ class AlphabetSortEnv(vf.SingleAgentEnv):
         # prompt, so the first turn opens the conversation with the initial sort.
         async with agents.agent.interaction(task) as interaction:
             for prompt in task.data.info["user_turns"]:
-                if (await interaction.turn(prompt)).stopped:
+                if (await interaction.turn(prompt)).terminated:
                     break
 
 
