@@ -8,6 +8,7 @@ from pydantic import Field
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 CLAUDE_HOME = "/tmp/vf-claude-code-{version}"
@@ -30,7 +31,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     # images would require streaming inputs
-    SUPPORTS_MESSAGE_PROMPT = False
+    SUPPORTS_RESUME = False
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -58,8 +59,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
-        system_prompt, instruction = self.resolve_prompt(trace.task.data)
+        system_prompt, instruction = self.resolve_text_prompt(data)
         if ctx.client.base_url == "https://api.pinference.ai/api/v1":
             # remove the /v1 from pinference
             ctx.client.base_url = ctx.client.base_url.removesuffix("/v1")

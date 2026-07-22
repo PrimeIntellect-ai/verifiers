@@ -8,7 +8,7 @@ The root config the eval CLI parses is [`EvalConfig`](#evalconfig--the-run). It 
 EvalConfig                          (the run)
 ├─ model, sampling, client, num_tasks, num_rollouts, shuffle, max_concurrent, …
 ├─ env: EnvConfig                   (subclass resolved by --env.id, else the taskset's env)
-│  ├─ id                            (which Environment — empty = the taskset's story)
+│  ├─ id                            (which Env — empty = the taskset's story)
 │  ├─ taskset: TasksetConfig | None (subclass resolved by --env.taskset.id / positional)
 │  │  └─ task: TaskConfig           (judges, scoring knobs, task-scoped server config)
 │  ├─ <agent>: AgentConfig          (per-agent harness/model/client/sampling +
@@ -16,10 +16,10 @@ EvalConfig                          (the run)
 │  │  ├─ harness: HarnessConfig     (subclass resolved by --env.<agent>.harness.id)
 │  │  │  └─ runtime: RuntimeConfig  (subprocess | docker | prime | modal)
 │  │  ├─ timeout: TimeoutConfig     (per-stage: setup/rollout/finalize/scoring)
-│  │  ├─ retries: RolloutRetryConfig (per-agent whole-run retries)
+│  │  ├─ retries: RetryConfig       (per-agent whole-run retries)
 │  │  └─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
-│  ├─ timeout: EnvTimeoutConfig     (episode / finalize — the env's own hooks)
-│  ├─ retries: RolloutRetryConfig   (whole-episode fallback for faults no agent owns)
+│  ├─ timeout: TimeoutConfig        (episode / finalize — the env's own hooks)
+│  ├─ retries: RetryConfig          (whole-episode fallback for faults no agent owns)
 │  └─ interception
 └─ pool: PoolConfig                 (static | elastic) — env-server only
 ```
@@ -50,7 +50,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 | `server` | `bool` | `False` | — | Drive rollouts through the env-server worker pool (sized by `pool`) instead of in-process — the path prime-rl trains through. Incompatible with `--rich`. |
 | `push` | `bool` | `True` | — | Upload the finished run to the private Evaluations tab. Disable with `--no-push`. |
 | `output_dir` | `Path \| None` | `None` | `output_dir`, `o` | Where to write the run (`config.toml` + `traces.jsonl`). None = a fresh per-run dir under `outputs/<env>--<model>--<harness>/<uuid>`. |
-| `resume` | `Path \| None` | `None` | — | Set by `--resume <dir>`: re-run missing/errored rollouts, episode-atomically (a multi-trace rollout is kept or redone as a unit; `Environment.complete` is the keep verdict). Excluded from the saved config; takes no other args. |
+| `resume` | `Path \| None` | `None` | — | Set by `--resume <dir>`: re-run missing/errored rollouts, episode-atomically (a multi-trace rollout is kept or redone as a unit; `Env.complete` is the keep verdict). Excluded from the saved config; takes no other args. |
 
 Validator: `--rich` + `--server` together is rejected (the dashboard is in-process only).
 
@@ -102,15 +102,21 @@ A vLLM `/inference/v1/generate` endpoint with client-side tokenization (response
 
 ## EnvConfig — the environment
 
-`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`, the run's whole `[env]` block. One subclass per `Environment` class (bound via `Environment[YourConfig]`): the base carries which env (`id`), the seed taskset, and the env-agnostic run limits; the subclass declares each agent as an `AgentConfig` field plus the env's own knobs (`--env.n`, `--env.weight`, ...). The run's `env` field is narrowed to the selected env's config class by `--env.id` (else the taskset id, else `SingleAgentEnvConfig`), so everything renders typed in `-h`. Each loaded `Task` supplies the row's behavior, tools, user simulator, and scoring; only its `TaskData` is stored on the trace.
+`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`, the run's whole `[env]` block. One subclass
+per `Env` class (bound via `Env[YourConfig]`): the base carries which env
+(`id`), the seed taskset, and the env-agnostic run limits; the subclass declares each agent as
+an `AgentConfig` field plus the env's own knobs (`--env.n`, `--env.weight`, ...). The run's
+`env` field is narrowed to the selected env's config class by `--env.id` (else the taskset id,
+else `SingleAgentEnvConfig`), so everything renders typed in `-h`. Each loaded `Task` supplies
+the row's behavior, tools, and scoring; only its `TaskData` is stored on the trace.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `id` | `ID` | `""` | Which `Environment` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Environment` subclass, else `SingleAgentEnv`). |
+| `id` | `ID` | `""` | Which `Env` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Env` subclass, else `SingleAgentEnv`). |
 | `taskset` | `TasksetConfig \| None` | `None` | The seed taskset every rollout starts from; resolved to its concrete subclass by `--env.taskset.id` (positional shorthand: `eval <taskset-id>`). See [Taskset config](#taskset-config). `None` only for a taskset-less env; every bundled env requires one. |
 | *(agents)* | `AgentConfig` | env-declared | Each declared agent: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the agentic-judge env, the env's own names elsewhere. See [Agent config](#agent-config). |
-| `timeout` | `EnvTimeoutConfig` | `EnvTimeoutConfig()` | The env's own hook bounds: `--env.timeout.episode` (the whole `run()` hook) and `--env.timeout.finalize` (the `finalize()` hook). Per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`). |
-| `retries` | `RolloutRetryConfig` | `RolloutRetryConfig()` | Whole-EPISODE retries, the coarse fallback for faults no agent owns. See [Retry config](#retry-config). Set via `--env.retries.*`. |
+| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | The env's own hook bounds: `--env.timeout.episode` (the whole `run()` hook) and `--env.timeout.finalize` (the `finalize()` hook). Per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`). |
+| `retries` | `RetryConfig` | `RetryConfig()` | Whole-EPISODE retries, the coarse fallback for faults no agent owns. See [Retry config](#retry-config). Set via `--env.retries.*`. |
 | `interception` | `InterceptionConfig` | `ElasticInterceptionPoolConfig()` | The interception shape: `elastic` (default — servers grown on demand, `multiplex` rollouts each), `server` (one server, tunnel choice incl. bring-your-own endpoint), or `static` (a fixed list). |
 
 Per-run caps (turns, tokens, stage timeouts, retries) are agent fields, not env fields — see [Agent config](#agent-config).
@@ -125,7 +131,7 @@ Per-run caps (turns, tokens, stage timeouts, retries) are agent fields, not env 
 | `model` | `str \| None` | `None` | Pin a model for this agent (None = the run's `--model`). |
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
 | `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
-| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | Per-stage wall-clock timeouts for this agent's runs (`setup`/`rollout`/`finalize`/`scoring`; each stage falls back to the task's own). |
+| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | Per-stage wall-clock timeouts for this agent's runs (`setup`/`rollout`/`finalize`/`scoring`; each stage falls back to the task's own). An interaction spends its rollout budget cumulatively across active harness segments; time awaiting its caller is paused. |
 | `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-agent caps (None = no limit); map onto [`RolloutLimits`](#rollout-limits), each checked between turns (soft by one turn). |
 
 Trainability is not a config field: it is env truth, set in place by the env's `setup(agents)` hook (default: every agent trains) and stamped on each trace. An env that wants the flip run-configurable exposes its own switch (e.g. proposer-solver's `--env.train_solver false`).
@@ -155,7 +161,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 
 ## Timeout config
 
-`verifiers/v1/env.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). An **agent** field (`--env.<agent>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default.
+`verifiers/v1/agent.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). An **agent** field (`--env.<agent>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default. For an interaction, `rollout` is one cumulative budget across active harness segments and pauses while the caller computes the next user turn.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -164,7 +170,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 | `finalize` | `float \| None` | `None` | Max wall-clock for the task's `finalize` hook. |
 | `scoring` | `float \| None` | `None` | Max wall-clock for task rewards/metrics/judges and harness metrics. |
 
-`EnvTimeoutConfig` (the env's `--env.timeout.*`) keeps only `episode` — the bound on the whole `run()` interaction — and `finalize` — the bound on the env's `finalize()` hook.
+The separate `verifiers/v1/env.py` `TimeoutConfig` (the env's `--env.timeout.*`) keeps only `episode` — the bound on the whole `run()` interaction — and `finalize` — the bound on the env's `finalize()` hook.
 
 > Remote sandboxes cap any harness timeout at 24 hours (provider max lifetime).
 
@@ -174,7 +180,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 
 `verifiers/v1/retries.py`. Per-call model/runtime retries are owned by the harness/runtime SDKs; the framework keeps only **whole-run** retries, in two atoms sharing one shape: each agent's own (`--env.<agent>.retries.*` — rerun that agent's rollout; never into a borrowed box) and the env's whole-episode fallback (`--env.retries.*` — for faults no agent owns; a retried episode reruns whole).
 
-### `RolloutRetryConfig`
+### `RetryConfig`
 
 Rerun when the run ends with a captured error. Matching is by the error's **exception type name**.
 
@@ -224,7 +230,9 @@ A taskset implements `load()` and declares exactly one task type through its gen
 
 ### Task config
 
-`TaskConfig` contains knobs read by task behavior. Subclass it for scoring parameters and task-scoped `ToolsetConfig` or `UserConfig` fields, then narrow the taskset config's `task` field to that subclass. These are run-wide knobs, not per-row data; the row itself belongs on `TaskData`.
+`TaskConfig` contains knobs read by task behavior. Subclass it for scoring parameters and
+task-scoped `ToolsetConfig` fields, then narrow the taskset config's `task` field to
+that subclass. These are run-wide knobs, not per-row data; the row itself belongs on `TaskData`.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -248,7 +256,8 @@ A taskset implements `load()` and declares exactly one task type through its gen
 
 `.name` → the package name; `.resolved_env` → `env` merged with forwarded `forward_env` vars.
 
-A harness class also declares capability flags (ClassVars, not user-settable): `APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_USER_SIM`, `SUPPORTS_MESSAGE_PROMPT`.
+A harness class also declares capability flags (ClassVars, not user-settable):
+`APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_RESUME`.
 
 ### Built-in harness configs
 
@@ -314,7 +323,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 ## Runtime configs
 
-`verifiers/v1/runtimes/`. Discriminated on `type`; selected with the agent's `--env.<agent>.harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime` and `UserConfig.runtime`.
+`verifiers/v1/runtimes/`. Discriminated on `type`; selected with the agent's `--env.<agent>.harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime`.
 
 ### `SubprocessConfig` — `type: "subprocess"` (default)
 
@@ -426,7 +435,7 @@ Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For
 | `idx` | `int` | — | Stable integer index within the taskset. Used for selection, grouping, display, and reproducibility. |
 | `name` | `str \| None` | `None` | Optional human-readable label used in logs and dashboards. |
 | `description` | `str \| None` | `None` | Optional human-readable description. |
-| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` lets the user simulator open via `respond("")`. |
+| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a structured initial conversation when the harness accepts that prompt shape; `None` means the caller opens the conversation (`agent.interaction()` — the env's control flow supplies each turn). |
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
@@ -470,14 +479,8 @@ There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tool
 
 ---
 
-## User config
-
-`UserConfig` controls a simulator declared on `Task.user`; its matching config field belongs on `TaskConfig` under `--env.taskset.task.*`.
-
-| Field | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `colocated` | `bool` | `False` | Run the user simulator inside the harness's runtime (its port is published back to the host so the framework can still drive it). |
-| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The user simulator's own runtime, used unless `colocated`. See [Runtime configs](#runtime-configs). |
+User simulation has no server or placement config: the run's user is a callable the env's
+control flow supplies (`agent.interaction()`); see the `user-sim` bundled env.
 
 ---
 

@@ -54,7 +54,9 @@ The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agen
 prime eval run owner/name --env.agent.harness.id codex --env.agent.harness.runtime.type prime
 ```
 
-The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id` keeps the taskset's own story (its exported `Environment` subclass, else the single-agent env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
+The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`
+keeps the taskset's own story (its exported `Env` subclass, else the single-agent
+env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
 
 ```bash
 prime eval run my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling

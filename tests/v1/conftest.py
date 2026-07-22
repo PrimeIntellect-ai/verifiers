@@ -6,7 +6,7 @@ not unit tests of individual components. They need a model API key (`PRIME_API_K
 without one the `e2e`-marked tests skip (config parsing still runs).
 
 `run_v1` / `run_v0` mirror the eval CLI's two paths (`run_eval` for a v1 taskset,
-`run_legacy_eval` for a v0 env). Placement coverage (harness x harness runtime x user/tool
+`run_legacy_eval` for a v0 env). Placement coverage (harness x harness runtime x tool
 server runtime) is PAIRWISE, not a full cross product: each test carries a curated list of
 combinations (in test_e2e.py) that hits every axis value and the cross-boundary pairs with
 distinct networking. The full cross bought flake exposure and CI minutes, not coverage — add
@@ -24,11 +24,11 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
-harnesses `null` / `bash` / `rlm` / `kimi_code` / `codex` / `claude_code`. A mark is applied per
-axis, so it selects every case touching that value on ANY axis; for one exact combination use `-k`
-on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real
-remote sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs
-`-m "not prime and not modal"`.
+harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `pool` / `codex` / `claude_code`.
+A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
+combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
+prime/modal provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only
+— CI runs `-m "not prime and not modal"`.
 """
 
 import os
@@ -57,15 +57,6 @@ def harness_runtime(request) -> str:
 
 
 @pytest.fixture
-def user_runtime(request) -> dict:
-    """A `taskset.task.user` override placing the user simulator: `colocated` (inside the harness's
-    runtime) or its own runtime, by type."""
-    if request.param == "colocated":
-        return {"colocated": True}
-    return {"colocated": False, "runtime": {"type": request.param}}
-
-
-@pytest.fixture
 def tool_runtime(request) -> dict:
     """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
     runtime) or its own runtime, by type."""
@@ -83,9 +74,9 @@ def harness(request) -> str:
 
 
 def pytest_configure(config) -> None:
-    """Self-launching tool/user servers run `python -m <module>` in a fresh subprocess, which
+    """Self-launching tool servers run `python -m <module>` in a fresh subprocess, which
     inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
-    `PYTHONPATH` so a fixture server module (e.g. `echo_user_sim_v1`, `tool_response_image_v1`)
+    `PYTHONPATH` so a fixture server module (e.g. `tool_response_image_v1`)
     resolves there too — an installed example package (e.g. `glossary_v1`) already would."""
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")
@@ -107,12 +98,12 @@ def pytest_collection_modifyitems(config, items) -> None:
 
 
 def _configure_prime_runtimes(config: dict) -> None:
-    """Configure every prime runtime config (nested — harness / tool / user): tag a `vf-ci` label
+    """Configure every prime runtime config (nested — harness / tool): tag a `vf-ci` label
     for optional cleanup, and pin a region that supports port exposure."""
     if isinstance(config, dict):
         if config.get("type") == "prime":
             config.setdefault("labels", ["vf-ci"])
-            # `us` is required for prime's port exposure, which a tool/user server hosted in a
+            # `us` is required for prime's port exposure, which a tool server hosted in a
             # sandbox needs to be reachable from outside it.
             config.setdefault("region", "us")
         for value in config.values():
@@ -219,6 +210,24 @@ def run_v1_server():
         return [t for r in records for t in r.traces]
 
     return _run
+
+
+@pytest.fixture
+async def live_ctx():
+    """A live `ModelContext` (the e2e default model + endpoint, greedy) for driving
+    `Agent` directly — the agent-surface counterpart of `run_v1`."""
+    from verifiers.v1.clients import EvalClientConfig, ModelContext, resolve_client
+    from verifiers.v1.types import SamplingConfig
+
+    client = resolve_client(EvalClientConfig())
+    try:
+        yield ModelContext(
+            model="deepseek/deepseek-v4-flash",
+            client=client,
+            sampling=SamplingConfig(max_tokens=2048, temperature=0),
+        )
+    finally:
+        await client.close()
 
 
 @pytest.fixture

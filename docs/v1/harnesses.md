@@ -8,6 +8,7 @@ verifiers supports a range of harnesses out of the box, including Claude Code, C
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 class MyHarnessConfig(HarnessConfig):
@@ -19,8 +20,8 @@ class MyHarness(Harness[MyHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     # When the taskset exports a toolset, they are added as MCP. To show that your harness is able to install MCPs, you have to set this flag to true.
     SUPPORTS_MCP = True
-    # Allow the task to simulate a user and thus drive the execution of the harness
-    SUPPORTS_USER_SIM = True
+    # Allow transcript-backed resume by relaunching on a Messages prompt.
+    SUPPORTS_RESUME = True
 
     async def setup(self, runtime: Runtime) -> None:
         # Install the harness in its rollout runtime
@@ -34,13 +35,14 @@ class MyHarness(Harness[MyHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
         # Run the harness in its respective runtime to completion
         # The model (interception) endpoint is in endpoint
         # mcp_urls are the URLs of the tools from the toolset (if registered)
 
         # Resolve the task's prompt (and system prompt) for this harness
-        _, prompt = self.resolve_prompt(trace.task.data)
+        _, prompt = self.resolve_prompt(data)
 
         # Example: Use the harness, but overwrite the endpoint to use the interception server and the custom model name
         env = {
@@ -51,4 +53,8 @@ class MyHarness(Harness[MyHarnessConfig]):
         }
         # Run the harness to completion inside the selected runtime.
         return await runtime.run_program(["<HARNESS_BINARY>", str(prompt or "")], env)
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        # Remove any per-rollout state that must not survive in a borrowed runtime.
+        ...
 ```
