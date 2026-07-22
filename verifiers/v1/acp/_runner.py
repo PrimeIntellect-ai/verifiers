@@ -41,9 +41,10 @@ class VerifiersClient(Client):
             update.content, TextContentBlock
         ):
             return
-        if update.message_id is not None and update.message_id != self.message_id:
+        message_id = getattr(update, "message_id", None)
+        if message_id is not None and message_id != self.message_id:
             self.visible_reply = ""
-            self.message_id = update.message_id
+            self.message_id = message_id
         self.visible_reply += update.content.text
 
     async def request_permission(
