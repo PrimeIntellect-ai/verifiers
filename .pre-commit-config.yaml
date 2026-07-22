@@ -1,8 +1,10 @@
 default_install_hook_types: [pre-commit, pre-push]
-# Exclude Harbor task assets from linting
-exclude: ^environments/.*/tasks/
-
 repos:
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.1
+    hooks:
+      - id: markdownlint-cli2
+
   - repo: local
     hooks:
       - id: ruff-check
@@ -10,11 +12,13 @@ repos:
         entry: uv run ruff check --fix
         language: system
         types_or: [python, pyi]
+        exclude: ^environments/.*/tasks/
       - id: ruff-format
         name: ruff format
         entry: uv run ruff format
         language: system
         types_or: [python, pyi]
+        exclude: ^environments/.*/tasks/
       - id: ty
         name: ty (ci parity)
         entry: uv run --python 3.13 ty check verifiers

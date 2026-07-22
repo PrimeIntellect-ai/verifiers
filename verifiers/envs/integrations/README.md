@@ -139,7 +139,7 @@ Drop-in adapter for [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environme
 
 The Verifiers adapter uses OpenEnv's public async clients. The bundled OpenEnv project under `proj/` declares its own server dependencies for the sandbox image.
 
-### Quick Start
+### OpenEnv Quick Start
 
 Initialize an OpenEnv environment with the template:
 

@@ -1,0 +1,50 @@
+config:
+  MD013: false
+  MD033:
+    allowed_elements:
+      - Warning
+  MD060:
+    style: compact
+overrides:
+  - filter:
+      - README.md
+    config:
+      MD033:
+        allowed_elements:
+          - img
+          - p
+          - picture
+          - source
+      MD041: false
+    combine: merge
+  - filter:
+      - CLAUDE.md
+    config:
+      MD041: false
+    combine: merge
+  - filter:
+      - skills/brainstorm/SKILL.md
+    config:
+      MD007: false
+      MD029: false
+    combine: merge
+  - filter:
+      - skills/evaluate-environments/SKILL.md
+    config:
+      MD029: false
+    combine: merge
+  - filter:
+      - verifiers/envs/experimental/composable/tasksets/swe/README.md
+    config:
+      MD033:
+        allowed_elements:
+          - a
+          - code
+          - strong
+          - table
+          - tbody
+          - td
+          - th
+          - thead
+          - tr
+    combine: merge

@@ -4,7 +4,7 @@ A complete reference of every settable config field for **evaluating tasksets in
 
 The root config the eval CLI parses is [`EvalConfig`](#evalconfig--the-run). It composes the environment (`env` — the whole `[env]` block: taskset, agents, limits) with the run knobs (model, sampling, counts) and the worker pool. The tree:
 
-```
+```text
 EvalConfig                          (the run)
 ├─ model, sampling, client, num_tasks, num_rollouts, shuffle, max_concurrent, …
 ├─ env: EnvConfig                   (subclass resolved by --env.id, else the taskset's env)
@@ -195,7 +195,7 @@ Rerun when the run ends with a captured error. Matching is by the error's **exce
 Fixed pool: pre-spawn `num_workers` up front.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `num_workers` | `int` | `4` (≥1) | Worker processes to pre-spawn (1 = a single in-process server, no pool). |
 
 ### `ElasticPoolConfig` — `type: "elastic"` (default)
@@ -227,7 +227,7 @@ A taskset implements `load()` and declares exactly one task type through its gen
 `TaskConfig` contains knobs read by task behavior. Subclass it for scoring parameters and task-scoped `ToolsetConfig` or `UserConfig` fields, then narrow the taskset config's `task` field to that subclass. These are run-wide knobs, not per-row data; the row itself belongs on `TaskData`.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `judges` | `Judges` | `[]` | Judge plugins run by `Task.score`; set through `--env.taskset.task.judges`. |
 
 ---
@@ -272,7 +272,7 @@ A growing-message-list chat loop with the task- and taskset-scoped MCP tools, an
 Installs the Codex CLI into the runtime and runs `codex exec`.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
 #### `RLMHarnessConfig` — `id: "rlm"`
@@ -291,7 +291,7 @@ Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `Harness
 Runs the native bash-tool agent through LiteLLM.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"2.4.5"` | mini-swe-agent release to install, pinned. |
 
 #### `Terminus2HarnessConfig` — `id: "terminus-2"`
@@ -299,7 +299,7 @@ Runs the native bash-tool agent through LiteLLM.
 Runs Harbor's tmux agent through LiteLLM.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"0.14.0"` | Harbor release to install, pinned. |
 
 #### `KimiCodeHarnessConfig` — `id: "kimi-code"`
@@ -307,7 +307,7 @@ Runs Harbor's tmux agent through LiteLLM.
 Installs the Kimi Code CLI and runs it headlessly.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"0.27.0"` | Kimi Code release to install, pinned. |
 
 ---
