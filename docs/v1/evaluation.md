@@ -20,6 +20,9 @@ id = "primeintellect/terminal-bench-2"
 [env.agent.harness]
 id = "codex"
 version = "0.116.0"
+
+[env.agent.harness.runtime]
+type = "docker"
 ```
 
 Validate the config by using `uv run eval @ config.toml --dry-run`. To run the evaluation, use `uv run eval @ config.toml`.
@@ -55,6 +58,17 @@ disabled_tools = ["shell_tool"]
 ```
 
 The names of these tools are set by the respective harness. Consult the relevant documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
+
+## Skills
+
+Harnesses whose program supports SKILL.md skills natively (e.g. Claude Code, Codex) take a `skills` list of local skill folders, each uploaded into the program's skill discovery directory in the agent's runtime as `<skills dir>/<folder name>`:
+
+```toml
+[env.agent.harness]
+skills = ["path/to/my-skill"]
+```
+
+Setting `skills` on a harness without native skill support fails up front.
 
 ## Runtime network policies
 

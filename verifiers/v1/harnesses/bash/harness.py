@@ -41,6 +41,7 @@ class BashHarness(Harness[BashHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
+    NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)

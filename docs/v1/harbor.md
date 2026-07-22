@@ -76,7 +76,7 @@ Harbor's effective agent network policy is applied to Docker harness runtimes. A
 legacy `[environment].allow_internet` is normalized by Harbor's schema.
 
 | Harbor mode | Docker execution policy |
-|---|---|
+| --- | --- |
 | `public` | Sets the task allowlist to `["*"]`, leaving the evaluator policy intact. |
 | `no-network` | Sets the task allowlist to `[]` (framework routes only). |
 | `allowlist` | Sets the task allowlist to `allowed_hosts`. |

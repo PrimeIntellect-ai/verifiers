@@ -13,6 +13,7 @@ from verifiers.v1.trace import Trace
 CLAUDE_HOME = "/tmp/vf-claude-code-{version}"
 CLAUDE_BIN = f"{CLAUDE_HOME}/.local/bin/claude"
 CLAUDE_CONFIG_DIR = ".vf-claude"
+SKILLS_DIR = f"{CLAUDE_CONFIG_DIR}/skills"
 INSTALL = """
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -30,8 +31,10 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     SUPPORTS_MCP = True
     # images would require streaming inputs
     SUPPORTS_MESSAGE_PROMPT = False
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         home = CLAUDE_HOME.format(version=self.config.version)
         binary = CLAUDE_BIN.format(version=self.config.version)
         script = INSTALL.format(version=self.config.version, home=home)
@@ -66,13 +69,13 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "CLAUDE_CONFIG_DIR": CLAUDE_CONFIG_DIR,
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_AUTOUPDATER": "1",
             "IS_SANDBOX": "1",
         }
         argv = [
             CLAUDE_BIN.format(version=self.config.version),
             "--print",
-            "--bare",
             "--dangerously-skip-permissions",
             "--no-session-persistence",
             "--model",

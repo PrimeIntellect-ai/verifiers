@@ -4,6 +4,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from pydantic import Field
@@ -41,6 +42,10 @@ class HarnessConfig(BaseConfig):
     forward_env: list[str] = Field(default_factory=list)
     """Host variables to forward without writing secrets into config; explicit `env` wins."""
     disabled_tools: list[str] | None = None
+    skills: list[Path] = Field(default_factory=list)
+    """Skill folders to upload into the program's skill discovery directory — each
+    lands at `<skills dir>/<folder name>`. Only harnesses whose program discovers
+    skills natively (`SUPPORTS_SKILLS`) accept them."""
 
     @property
     def name(self) -> str:
@@ -66,6 +71,15 @@ class Harness(ABC, Generic[ConfigT]):
     every real harness; the tool-less chat loops (`null`) override to False. Read
     where model-directed execution changes the rules: the subprocess-on-host
     warning, the judge env's sandbox requirement."""
+    SUPPORTS_SKILLS: ClassVar[bool] = False
+    """Whether the program discovers SKILL.md skills — its `setup` calls
+    `install_skills` with the program's fixed discovery location; configuring
+    `skills` on a harness without support is rejected up front."""
+    NEEDS_CONTAINER: ClassVar[bool] = True
+    """Whether the program must run in a container runtime: True for every harness
+    that installs and drives a third-party program — on the host (subprocess) it
+    leaks host state (auth, config, processes) both ways. Only the minimal
+    in-house loops (`bash`, `null`) override to False."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -101,6 +115,28 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
+
+    async def install_skills(self, runtime: Runtime, dest: str) -> None:
+        """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
+        the program's fixed skill discovery location, which a supporting harness's
+        `setup` passes."""
+        for skill in self.config.skills:
+            # Resolve so `.`/`..` entries get their real folder name (and can't
+            # place files outside `dest`).
+            skill = skill.resolve()
+            if not skill.is_dir():
+                raise ValueError(f"skill {str(skill)!r} is not a folder")
+            executables = []
+            for file in sorted(skill.rglob("*")):
+                if not file.is_file():
+                    continue
+                target = f"{dest}/{skill.name}/{file.relative_to(skill).as_posix()}"
+                await runtime.write(target, file.read_bytes())
+                if os.access(file, os.X_OK):
+                    executables.append(target)
+            if executables:
+                # `write` moves bytes, not modes; restore the execute bits scripts need.
+                await runtime.run(["chmod", "+x", *executables], {})
 
     async def run(
         self,
