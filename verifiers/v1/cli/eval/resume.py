@@ -92,21 +92,15 @@ def load(
     whole_task: bool = False,
     key_of: Callable[[Mapping], K] | None = None,
 ) -> tuple[list[Episode], dict[K, int]]:
-    """Load the good saved rollouts as finished episodes and diff them against the
-    run's target: returns (kept episodes, rollouts owed per task key). A rollout is
-    kept or redone as a unit — the episode — so a multi-trace rollout interrupted
-    mid-write is simply owed again. `selected_keys` is one key per selected task,
-    in selection order (duplicates allowed: a key selected k times is owed up to
-    `k * num_rollouts`; spread the result back over the tasks with `distribute`).
-    `key_of` maps a saved row's task-data mapping to its key — default `task_key`,
-    the content hash; the legacy bridge passes row indices. `complete` is the
-    environment's keep-verdict (`Env.complete`); without it (the server path) the
-    default is `episode.ok`, so an errored rollout is dropped and re-run.
-    `whole_task` redoes a partially-kept task as a unit — the legacy group-scored
-    path, where `run_group` always serves the full n. Rewrites `traces.jsonl` to
-    just the kept rows via a temp file + atomic rename, so an interrupted resume
-    can't corrupt the prior results; the resumed rollouts then append. Pre-episode
-    files (one bare trace per line) load each trace as a single-trace episode."""
+    """Load the good saved rollouts and diff them against the run's target: returns
+    (kept episodes, rollouts owed per task key). `selected_keys` is one key per
+    selected task (duplicates allowed — a key selected k times is owed up to
+    `k * num_rollouts`; spread back over the tasks with `distribute`). `key_of` maps
+    a saved row's task data to its key (default `task_key`; the legacy bridge uses
+    row indices). `complete` is the keep-verdict (default `episode.ok`); `whole_task`
+    redoes a partially-kept task whole (legacy group scoring). Rewrites
+    `traces.jsonl` to the kept rows via a temp file + atomic rename; a torn or
+    malformed row is owed again, never a crash."""
     path = resume_dir / TRACES_FILE
     targets = {
         key: count * num_rollouts for key, count in Counter(selected_keys).items()
