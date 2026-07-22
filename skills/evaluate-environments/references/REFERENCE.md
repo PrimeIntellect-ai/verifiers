@@ -131,7 +131,7 @@ Per-run caps (turns, tokens, stage timeouts, retries) are agent fields, not env 
 | `model` | `str \| None` | `None` | Pin a model for this agent (None = the run's `--model`). |
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
 | `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
-| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | Per-stage wall-clock timeouts for this agent's runs (`setup`/`rollout`/`finalize`/`scoring`; each stage falls back to the task's own). |
+| `timeout` | `TimeoutConfig` | `TimeoutConfig()` | Per-stage wall-clock timeouts for this agent's runs (`setup`/`rollout`/`finalize`/`scoring`; each stage falls back to the task's own). An interaction spends its rollout budget cumulatively across active harness segments; time awaiting its caller is paused. |
 | `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-agent caps (None = no limit); map onto [`RolloutLimits`](#rollout-limits), each checked between turns (soft by one turn). |
 
 Trainability is not a config field: it is env truth, set in place by the env's `setup(agents)` hook (default: every agent trains) and stamped on each trace. An env that wants the flip run-configurable exposes its own switch (e.g. proposer-solver's `--env.train_solver false`).
@@ -161,7 +161,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 
 ## Timeout config
 
-`verifiers/v1/agent.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). An **agent** field (`--env.<agent>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default.
+`verifiers/v1/agent.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). An **agent** field (`--env.<agent>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default. For an interaction, `rollout` is one cumulative budget across active harness segments and pauses while the caller computes the next user turn.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |

@@ -117,14 +117,18 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
             async with agents.player.interaction(task) as interaction:
                 reply = await interaction.turn(payload())
                 while not reply.stopped and not result.done:
-                    if reply.last_reply.strip():
-                        result = await client.step(
-                            parse_action(reply.last_reply, action_schema)
-                        )
-                        # OpenEnv reports per-step rewards; v1 scores their total.
-                        total += result.reward or 0.0
-                        if result.done:
-                            break
+                    action = reply.last_reply.strip()
+                    if not action:
+                        # No action can advance OpenEnv. End this run explicitly
+                        # instead of replaying the same observation forever when
+                        # the agent has no turn or episode cap.
+                        interaction.trace.stop("empty_action")
+                        break
+                    result = await client.step(parse_action(action, action_schema))
+                    # OpenEnv reports per-step rewards; v1 scores their total.
+                    total += result.reward or 0.0
+                    if result.done:
+                        break
                     reply = await interaction.turn(payload())
         trace = interaction.trace
         trace.record_reward("openenv_reward", total)

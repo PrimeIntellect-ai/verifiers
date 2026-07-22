@@ -132,7 +132,7 @@ class RolloutRun:
         self.runtime_config = runtime_config
         self._has_user = has_user
         self._setup_timeout = setup_timeout
-        self._harness_timeout = harness_timeout
+        self._harness_time_remaining = harness_timeout
         self._finalize_timeout = finalize_timeout
         self._scoring_timeout = scoring_timeout
         self._shared_tools = shared_tools or {}
@@ -166,9 +166,10 @@ class RolloutRun:
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
         self.deadline_at: float | None = None
-        """The exchange's absolute deadline (event-loop clock) from
-        `harness_timeout`, fixed when generation starts; None = unbounded. Segments
-        and user consults both run against it."""
+        """The active harness segment's absolute deadline (event-loop clock), or
+        None between segments / when unbounded. An interaction spends one cumulative
+        `harness_timeout` budget only while its own segments run, so time awaiting
+        the caller (including another interleaved agent) cannot starve it."""
 
     @property
     def ok(self) -> bool:
@@ -296,8 +297,6 @@ class RolloutRun:
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.generation.start = now
-        if self._harness_timeout is not None:
-            self.deadline_at = asyncio.get_running_loop().time() + self._harness_timeout
         return True
 
     async def step(self, messages: Messages | None = None) -> bool:
@@ -311,6 +310,13 @@ class RolloutRun:
             return False
         trace = self.trace
         turns_before = trace.num_turns
+        loop = asyncio.get_running_loop()
+        segment_start = loop.time()
+        self.deadline_at = (
+            None
+            if self._harness_time_remaining is None
+            else segment_start + max(0.0, self._harness_time_remaining)
+        )
         # Prefer an intercepted model/tool error to the harness exit it caused.
         # A timeout still scores the partial trajectory.
         try:
@@ -329,9 +335,7 @@ class RolloutRun:
             # Only the rollout deadline reads as a clean truncation; a TimeoutError
             # from the harness's own I/O with no expired deadline is a failure —
             # recording it as a stop would score a broken run as a partial success.
-            if self.deadline_at is not None and (
-                asyncio.get_running_loop().time() >= self.deadline_at
-            ):
+            if self.deadline_at is not None and (loop.time() >= self.deadline_at):
                 trace.stop("harness_timeout")
             else:
                 self.fail(e)
@@ -344,6 +348,12 @@ class RolloutRun:
             else:
                 self.fail(e)
             return False
+        finally:
+            if self._harness_time_remaining is not None:
+                self._harness_time_remaining = max(
+                    0.0, self._harness_time_remaining - (loop.time() - segment_start)
+                )
+            self.deadline_at = None
         if self._session.error is not None:
             self.fail(self._session.error)
             return False

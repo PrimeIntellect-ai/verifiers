@@ -58,7 +58,9 @@ logger = logging.getLogger(__name__)
 
 class TimeoutConfig(BaseConfig):
     """Per-agent wall-clock timeouts per rollout stage, in seconds (None = no
-    limit); each stage falls back to the task's own `TaskTimeout` when unset."""
+    limit); each stage falls back to the task's own `TaskTimeout` when unset. An
+    interaction's rollout budget is cumulative across its active harness segments
+    and pauses while the caller computes the next user turn."""
 
     setup: float | None = None  # one shared budget: task setup + provisioning
     rollout: float | None = None
