@@ -127,11 +127,6 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     if not legacy:
         from verifiers.v1.loaders import load_taskset
 
-        if config.env.taskset is None:
-            raise ValueError(
-                "a served env needs a seed taskset — set --env.taskset.id (or the "
-                "positional `eval <taskset-id>`)"
-            )
         # The client owns the taskset: load it here, once — the server (and its pool
         # workers) never load data, they rebuild each dispatched task from its request.
         tasks = load_taskset(config.env.taskset).select(

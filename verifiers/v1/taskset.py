@@ -69,9 +69,6 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
 
     @classmethod
     def task_type(cls) -> type[Task]:
-        """The taskset's declared `Task` subclass, read off the `Taskset[TaskT, ...]`
-        generic — no data is loaded, so consumers (env server, replay) can cheaply
-        rebuild wire rows as the declared type."""
         return generic_type(cls, Task, origin=Taskset) or Task
 
     def load(self) -> Iterable[TaskT]:

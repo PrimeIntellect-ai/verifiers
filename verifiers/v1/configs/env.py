@@ -138,9 +138,7 @@ class EnvServerConfig(BaseConfig):
     @property
     def is_legacy(self) -> bool:
         """A v0/legacy env (run via the bridge): a legacy `id` is set and no v1 taskset."""
-        return self.id is not None and (
-            self.env.taskset is None or not self.env.taskset.id
-        )
+        return self.id is not None and not self.env.taskset.id
 
     @property
     def env_id(self) -> str:
@@ -152,7 +150,7 @@ class EnvServerConfig(BaseConfig):
     def _refuse_legacy_id_with_taskset(self):
         """A legacy `id` next to a v1 `env.taskset` would be silently inert
         (`is_legacy` is False and the v0 env never loads); refuse the mix."""
-        if self.id is not None and self.env.taskset is not None and self.env.taskset.id:
+        if self.id is not None and self.env.taskset.id:
             raise ValueError(
                 f"--id {self.id!r} is the legacy (v0) env id and can't combine with "
                 f"the v1 taskset {self.env.taskset.id!r}. Pairing an env with a "

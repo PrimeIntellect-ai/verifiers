@@ -33,10 +33,21 @@ class EnvServer:
         self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
     ) -> None:
         self.address = address
-        self.taskset_id = config.taskset.id if config.taskset is not None else ""
+        self.taskset_id = config.taskset.id
         self.env = load_environment(config)
         self.task_cls = type(self.env.taskset).task_type()
         self.data_cls = task_data_cls(self.task_cls)
+        # A dispatched task is its client-side model_dump(): a field excluded from
+        # serialization would vanish on the wire and rebuild silently defaulted, so
+        # refuse to serve such a taskset.
+        excluded = [
+            name for name, field in self.data_cls.model_fields.items() if field.exclude
+        ]
+        if excluded:
+            raise ValueError(
+                f"{self.data_cls.__name__} excludes {excluded} from serialization — "
+                "a served task must survive the wire whole (drop exclude=True)"
+            )
         self.num_tasks: int | None = None
         # v1 envs never group-score (siblings score inside the env's own rollout);
         # only the legacy (v0) bridge sets this.
@@ -87,7 +98,6 @@ class EnvServer:
                 "v1 env server requests carry task_data (task_idx addresses the legacy bridge)"
             )
         data = self.data_cls.model_validate(task_data)
-        assert self.env.config.taskset is not None  # load_environment refused None
         return self.task_cls(data, self.env.config.taskset.task)
 
     def _client(self, client_config: ClientConfig, model: str) -> Client:
