@@ -2,7 +2,6 @@
 
 import os
 from importlib import import_module
-from typing import get_type_hints
 
 import uvicorn
 from omegaconf import OmegaConf
@@ -16,9 +15,8 @@ PORT = int(os.environ.get("NEMO_GYM_PORT", "8000"))
 
 def main() -> None:
     module_name, class_name = os.environ["NEMO_GYM_RESOURCE_SERVER"].split(":", 1)
-    module = import_module(module_name)
-    server_class = getattr(module, class_name)
-    config_class = get_type_hints(server_class)["config"]
+    server_class = getattr(import_module(module_name), class_name)
+    config_class = server_class.model_fields["config"].annotation
     name = module_name.split(".")[-2]
     server = server_class(
         config=config_class(name=name, host=HOST, port=PORT, entrypoint="app.py"),

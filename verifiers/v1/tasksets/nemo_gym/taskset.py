@@ -158,27 +158,26 @@ def _trace_to_nemo_response(
         message = node.message
         if isinstance(message, AssistantMessage) and node.sampled:
             started = True
-            if message.provider_state and not all(
-                isinstance(item, dict) and item.get("type") in response_item_types
+            if message.provider_state and all(
+                item.get("type") in response_item_types
                 for item in message.provider_state
             ):
-                message = message.model_copy(update={"provider_state": None})
-            if message.reasoning_content and not message.provider_state:
+                output.extend(dict(item) for item in message.provider_state)
+                continue
+            if message.reasoning_content:
                 output.append(
                     {
                         "id": f"rs_{trace.id}_{len(output)}",
                         "type": "reasoning",
                         "summary": [
-                            {
-                                "type": "summary_text",
-                                "text": message.reasoning_content,
-                            }
+                            {"type": "summary_text", "text": message.reasoning_content}
                         ],
                     }
                 )
-            output.extend(dict(item) for item in messages_to_wire([message]))
-        elif started and isinstance(message, ToolMessage):
-            output.extend(dict(item) for item in messages_to_wire([message]))
+            message = message.model_copy(update={"provider_state": None})
+        elif not (started and isinstance(message, ToolMessage)):
+            continue
+        output.extend(dict(item) for item in messages_to_wire([message]))
 
     for item in output:
         name = str(item.get("name", ""))
@@ -208,7 +207,6 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         state.headers = dict(self.config.headers)
         state.request_timeout = self.config.request_timeout
         state.direct_tools = self.data.row["responses_create_params"].get("tools") or []
-        state.cookies.clear()
 
         response = await _post(state, "seed_session", self.data.row)
         response.raise_for_status()
@@ -237,9 +235,6 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         )
         response.raise_for_status()
         result = response.json()
-        if not isinstance(result, dict):
-            raise TypeError("NeMo Gym /verify response must be an object")
-
         details = {
             key: value
             for key, value in result.items()
@@ -307,18 +302,15 @@ class NeMoGymEnv(SingleAgentEnv):
         if entrypoint is None:
             raise ValueError("set --env.taskset.task.resources-url")
 
-        runtime = make_runtime(SubprocessConfig())
-        self._nemo_runtime = runtime
+        runtime = self._nemo_runtime = make_runtime(SubprocessConfig())
         await runtime.start()
         port = get_free_port()
-        server_env = {
-            "NEMO_GYM_PORT": str(port),
-            "NEMO_GYM_RESOURCE_SERVER": entrypoint,
-        }
-        command = [sys.executable, "-m", "verifiers.v1.tasksets.nemo_gym.server"]
         await runtime.run_background(
-            command,
-            server_env,
+            [sys.executable, "-m", "verifiers.v1.tasksets.nemo_gym.server"],
+            {
+                "NEMO_GYM_PORT": str(port),
+                "NEMO_GYM_RESOURCE_SERVER": entrypoint,
+            },
             "nemo_gym.log",
         )
         config.resources_url = f"http://127.0.0.1:{port}"
