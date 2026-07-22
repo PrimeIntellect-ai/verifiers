@@ -145,13 +145,12 @@ class RLMHarness(Harness[RLMHarnessConfig]):
     @metric
     async def rlm(self, runtime: Runtime) -> dict[str, float]:
         # Stateless continuation creates one session per segment; report the latest.
-        result = await runtime.run(
-            ["sh", "-c", f"ls -t {RLM_HOME}/sessions/*/meta.json | head -1"], {}
-        )
+        latest = f'cat "$(ls -t {RLM_HOME}/sessions/*/meta.json | head -1)"'
+        result = await runtime.run(["sh", "-c", latest], {})
         if result.exit_code != 0 or not result.stdout.strip():
             return {}
         try:
-            meta = json.loads(await runtime.read(result.stdout.strip()))
+            meta = json.loads(result.stdout)
         except json.JSONDecodeError:
             return {}
         return {

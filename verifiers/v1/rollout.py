@@ -23,7 +23,6 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
 
 from verifiers import __version__
 from verifiers.v1.harness import Harness
@@ -45,6 +44,7 @@ from verifiers.v1.interception import (
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.runtimes import (
+    ProgramResult,
     Runtime,
     RuntimeConfig,
     make_runtime,
@@ -57,13 +57,6 @@ from verifiers.v1.types import Messages
 from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class SegmentResult:
-    """The harness output addressed to the exchange's user."""
-
-    visible_reply: str | None = None
 
 
 def _as_messages(raw: Messages) -> Messages:
@@ -301,7 +294,7 @@ class RolloutRun:
             self.deadline_at = asyncio.get_running_loop().time() + self._harness_timeout
         return True
 
-    async def step(self, messages: Messages | None = None) -> SegmentResult | None:
+    async def step(self, messages: Messages | None = None) -> ProgramResult | None:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
         for an exchange the user opens, this is also the first segment, on an
@@ -352,7 +345,7 @@ class RolloutRun:
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
         if trace.num_turns > turns_before:
-            return SegmentResult(visible_reply=result.visible_reply)
+            return result
         return None
 
     async def abort(self) -> None:

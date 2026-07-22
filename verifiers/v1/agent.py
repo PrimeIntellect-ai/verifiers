@@ -197,13 +197,7 @@ class ChatSession:
         if result is not None:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's stopped reply.
-            return Reply(
-                text=(
-                    result.visible_reply
-                    if result.visible_reply is not None
-                    else self.trace.last_reply
-                )
-            )
+            return Reply(text=result.visible_reply or self.trace.last_reply)
         self._over = True
         return Reply(text="", stopped=True)
 

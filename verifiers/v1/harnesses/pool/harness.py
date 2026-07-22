@@ -1,19 +1,18 @@
-"""Run Poolside's `pool exec` against interception as an OpenAI-compatible provider."""
+"""Run Poolside's native ACP server against interception."""
 
 import json
 import shlex
 
 from pydantic import Field
 
+from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
 
 POOL_DIR = "/tmp/vf-pool-{version}"
-SETTINGS_PATH = ".poolside/settings.local.yaml"
 INSTALL = r"""
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -25,6 +24,8 @@ curl -fsSL "https://github.com/poolsideai/pool/releases/download/v{version}/pool
 mv "{dir}/pool-$os-$arch" "{dir}/pool"
 chmod +x "{dir}/pool"
 """
+
+POOL_ACP = ACP()
 
 
 class PoolHarnessConfig(HarnessConfig):
@@ -54,6 +55,7 @@ class PoolHarness(Harness[PoolHarnessConfig]):
         if result.exit_code != 0:
             detail = (result.stderr or result.stdout).strip()[-500:]
             raise RuntimeError(f"Pool install failed: {detail}")
+        await POOL_ACP.setup(self, runtime)
 
     async def launch(
         self,
@@ -66,42 +68,6 @@ class PoolHarness(Harness[PoolHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        if prompt is None:
-            raise ValueError("Pool requires a task prompt (it has no user simulator)")
-        texts = [system_prompt] if system_prompt else []
-        if isinstance(prompt, str):
-            texts.append(prompt)
-        else:
-            for message in prompt:
-                if not isinstance(message, (SystemMessage, UserMessage)):
-                    raise ValueError(
-                        "pool exec only supports system and user initial messages"
-                    )
-                parts = (
-                    [TextContentPart(text=message.content)]
-                    if isinstance(message.content, str)
-                    else message.content
-                )
-                for part in parts:
-                    if not isinstance(part, TextContentPart):
-                        raise ValueError("pool exec does not support image prompts")
-                    texts.append(part.text)
-        text = "\n\n".join(text for text in texts if text)
-
-        settings = {
-            "mcp_servers": {
-                name: {"transport": {"type": "http", "url": url}}
-                for name, url in mcp_urls.items()
-            },
-            # Values are Pool tool names such as `shell`, `read`, or `edit`.
-            "tools": {
-                name: {"disabled": True} for name in self.config.disabled_tools or []
-            },
-        }
-        await runtime.write(SETTINGS_PATH, json.dumps(settings).encode())
-
-        prompt_path = f".vf-pool/prompt-{trace.id}.txt"
-        await runtime.write(prompt_path, text.encode())
         env = {
             **self.config.resolved_env,
             # Standalone provider mode sends this bearer and model to interception.
@@ -109,24 +75,25 @@ class PoolHarness(Harness[PoolHarnessConfig]):
             "POOLSIDE_STANDALONE_BASE_URL": endpoint,
             "POOLSIDE_STANDALONE_MODEL": ctx.model,
         }
-        directory = POOL_DIR.format(version=self.config.version)
-        argv = [
-            f"{directory}/pool",
-            "exec",
-            "--unsafe-auto-allow",
-            "--sandbox",
-            "disabled",
-            "--prompt-file",
-            prompt_path,
+        pool_home = f".vf-pool/{trace.id}"
+        # Values are Pool tool names such as `shell`, `read`, or `edit`.
+        tools = {name: {"disabled": True} for name in self.config.disabled_tools or []}
+        settings = shlex.quote(json.dumps({"tools": tools}))
+        command = [
+            "sh",
+            "-c",
+            f'export HOME="$PWD/{pool_home}/home" '
+            f'XDG_CONFIG_HOME="$PWD/{pool_home}/config" '
+            f'XDG_STATE_HOME="$PWD/{pool_home}/state"; '
+            f"exec {POOL_DIR.format(version=self.config.version)}/pool acp "
+            f"--sandbox disabled --settings {settings}",
         ]
-        # Keep Pool's home, config, logs, and trajectories inside the rollout workspace.
-        isolate = (
-            'export HOME="$PWD/.vf-pool/home" '
-            'XDG_CONFIG_HOME="$PWD/.vf-pool/config" '
-            'XDG_STATE_HOME="$PWD/.vf-pool/state"; exec "$@"'
+        return await POOL_ACP.run(
+            runtime,
+            env,
+            command,
+            prompt,
+            mcp_urls=mcp_urls,
+            system_prompt=system_prompt,
+            session_path=f"{pool_home}/acp-session",
         )
-        result = await runtime.run_program(["sh", "-c", isolate, "pool", *argv], env)
-        # Exit 4 means the agent declined the task, not that the harness failed.
-        if result.exit_code == 4:
-            return ProgramResult(0, result.stdout, result.stderr)
-        return result

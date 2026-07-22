@@ -1,20 +1,25 @@
-"""Kimi receives interception through `KIMI_MODEL_*`; task MCP config uses an isolated home."""
+"""Kimi receives interception through `KIMI_MODEL_*` and runs through native ACP."""
 
 import json
 import logging
 import shlex
 
+from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
-from verifiers.v1.trace import Trace
 from verifiers.v1.task import TaskData
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
 BINARY = "/tmp/vf-kimi-code/bin/kimi"
 KIMI_HOME = ".vf-kimi-code"
+ACP_COMMAND = [
+    "sh",
+    "-c",
+    f'KIMI_CODE_HOME="$PWD/$KIMI_CODE_HOME" exec {BINARY} acp',
+]
 
 INSTALL = r"""
 set -e
@@ -32,9 +37,11 @@ env \
     bash "$installer"
 """
 
+KIMI_ACP = ACP()
+
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: str = "0.27.0"
+    version: str = "0.29.0"
     """Kimi Code release to install, pinned for reproducibility."""
 
 
@@ -57,6 +64,7 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             raise RuntimeError(
                 f"Kimi Code install failed: {install.stderr.strip()[-500:]}"
             )
+        await KIMI_ACP.setup(self, runtime)
 
     async def launch(
         self,
@@ -69,17 +77,6 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        if prompt is None:
-            raise ValueError("Kimi Code requires a prompt")
-        messages = [
-            *([{"role": "system", "content": system_prompt}] if system_prompt else []),
-            *(
-                [{"role": "user", "content": prompt}]
-                if isinstance(prompt, str)
-                else [message_to_wire(message) for message in prompt]
-            ),
-        ]
-        prompt = json.dumps(messages, ensure_ascii=False)
         kimi_home = f"{KIMI_HOME}/{trace.id}"
         env = {
             **self.config.resolved_env,
@@ -92,7 +89,6 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             "KIMI_DISABLE_TELEMETRY": "1",
             "KIMI_CODE_NO_AUTO_UPDATE": "1",
         }
-        mcp = {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
         # Values are Kimi permission patterns such as `Bash` or `Bash(rm -rf*)`.
         # https://moonshotai.github.io/kimi-code/en/configuration/config-files#permission
         permission_rules = "\n".join(
@@ -109,7 +105,12 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         )
         if permission_rules:
             await runtime.write(f"{kimi_home}/config.toml", permission_rules.encode())
-        await runtime.write(f"{kimi_home}/mcp.json", json.dumps(mcp).encode())
-        # Kimi ACP currently requires an interactive account login. Until it can
-        # use the intercepted provider, replay the transcript explicitly.
-        return await runtime.run_program([BINARY, "--prompt", prompt], env)
+        return await KIMI_ACP.run(
+            runtime,
+            env,
+            ACP_COMMAND,
+            prompt,
+            mcp_urls=mcp_urls,
+            system_prompt=system_prompt,
+            session_path=f"{kimi_home}/acp-session",
+        )

@@ -38,10 +38,11 @@ INSTALL = r"""
 set -e
 packages=/tmp/vf-pi/mcp
 node=/tmp/vf-pi/node
+node_ok() { node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; }
 
 if [ -f /etc/alpine-release ]; then
     apk add --no-cache curl ca-certificates nodejs-current npm >/dev/null
-    if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; then
+    if ! node_ok; then
         sed -E -i 's/v[0-9]+\.[0-9]+/v3.22/g' /etc/apk/repositories
         apk upgrade --available --no-cache >/dev/null
         apk add --no-cache nodejs-current npm >/dev/null
@@ -60,17 +61,15 @@ else
     node_bin="$node/bin"
 fi
 export PATH="$node_bin:$PATH"
-node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)' \
-    || { echo "pi-acp requires Node.js 22.19 or newer" >&2; exit 1; }
+node_ok || { echo "pi-acp requires Node.js 22.19 or newer" >&2; exit 1; }
 
-pi_version="$(node -p "require('$packages/node_modules/@earendil-works/pi-coding-agent/package.json').version" 2>/dev/null || true)"
-mcp_version="$(node -p "require('$packages/node_modules/pi-mcp-adapter/package.json').version" 2>/dev/null || true)"
-acp_version="$(node -p "require('$packages/node_modules/pi-acp/package.json').version" 2>/dev/null || true)"
-if [ "$pi_version" != "$VF_PI_VERSION" ] || [ "$mcp_version" != "$VF_PI_MCP_VERSION" ] || [ "$acp_version" != "$VF_PI_ACP_VERSION" ]; then
+versions="$VF_PI_VERSION:$VF_PI_MCP_VERSION:$VF_PI_ACP_VERSION"
+if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
         "@earendil-works/pi-coding-agent@$VF_PI_VERSION" \
         "pi-mcp-adapter@$VF_PI_MCP_VERSION" \
         "pi-acp@$VF_PI_ACP_VERSION" >/dev/null
+    printf %s "$versions" > "$packages/.versions"
 fi
 """
 
@@ -215,21 +214,17 @@ class PiHarness(Harness[PiHarnessConfig]):
             "--model",
             ctx.model,
             *mcp_args,
-            *(
-                ["--exclude-tools", ",".join(self.config.disabled_tools)]
-                if self.config.disabled_tools
-                else []
-            ),
-            *(["--append-system-prompt", system_prompt] if system_prompt else []),
         ]
+        if self.config.disabled_tools:
+            pi_args += ["--exclude-tools", ",".join(self.config.disabled_tools)]
+        if system_prompt:
+            pi_args += ["--append-system-prompt", system_prompt]
         pi_wrapper = f"{agent_dir}/pi"
         await runtime.write(
             pi_wrapper,
             f'#!/bin/sh\n{restore_home}exec {shlex.join(pi_args)} "$@"\n'.encode(),
         )
-        chmod = await runtime.run(["chmod", "+x", pi_wrapper], {})
-        if chmod.exit_code != 0:
-            raise RuntimeError(f"Pi wrapper setup failed: {chmod.stderr}")
+        await runtime.run(["chmod", "+x", pi_wrapper], {})
         env["PI_ACP_PI_COMMAND"] = pi_wrapper
         return await PI_ACP.run(
             runtime,

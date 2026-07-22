@@ -29,9 +29,7 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
     SUPPORTS_MCP = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(
-            PROGRAM_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
-        )
+        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
 
     async def launch(
         self,
@@ -45,7 +43,6 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
     ) -> ProgramResult:
         _, prompt = self.resolve_prompt(data)
         env = {
-            **self.config.resolved_env,
             "OPENAI_BASE_URL": endpoint,
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
@@ -56,7 +53,5 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
             env["MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        program = await runtime.prepare_uv_script(
-            PROGRAM_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
-        )
+        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
         return await runtime.run_program([*program, prompt], env)

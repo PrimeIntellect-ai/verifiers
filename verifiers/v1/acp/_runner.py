@@ -24,13 +24,10 @@ from acp.schema import (
     AllowedOutcome,
     ClientCapabilities,
     DeniedOutcome,
-    FileSystemCapabilities,
     HttpMcpServer,
     PermissionOption,
-    ReadTextFileResponse,
     RequestPermissionResponse,
     TextContentBlock,
-    WriteTextFileResponse,
 )
 
 
@@ -48,30 +45,6 @@ class VerifiersClient(Client):
             self.visible_reply = ""
             self.message_id = update.message_id
         self.visible_reply += update.content.text
-
-    async def read_text_file(
-        self,
-        session_id: str,
-        path: str,
-        line: int | None = None,
-        limit: int | None = None,
-        **kwargs: Any,
-    ) -> ReadTextFileResponse:
-        lines = Path(path).read_text().splitlines(keepends=True)
-        start = (line or 1) - 1
-        return ReadTextFileResponse(
-            content="".join(lines[start : start + limit if limit is not None else None])
-        )
-
-    async def write_text_file(
-        self,
-        session_id: str,
-        path: str,
-        content: str,
-        **kwargs: Any,
-    ) -> WriteTextFileResponse:
-        Path(path).write_text(content)
-        return WriteTextFileResponse()
 
     async def request_permission(
         self,
@@ -96,10 +69,11 @@ def content_blocks(messages: list[dict], supports_images: bool) -> list:
     blocks = []
     transcript = len(messages) != 1 or messages[0].get("role") != "user"
     for message in messages:
-        if blocks:
-            blocks.append(text_block("\n\n"))
         if transcript:
-            blocks.append(text_block(f"[{message.get('role', 'message')}]\n"))
+            separator = "\n\n" if blocks else ""
+            blocks.append(
+                text_block(f"{separator}[{message.get('role', 'message')}]\n")
+            )
         content = message.get("content") or ""
         parts = (
             [{"type": "text", "text": content}] if isinstance(content, str) else content
@@ -142,9 +116,7 @@ async def run_client(config: dict) -> None:
     ) as (connection, _process):
         initialized = await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
-            client_capabilities=ClientCapabilities(
-                fs=FileSystemCapabilities(read_text_file=True, write_text_file=True)
-            ),
+            client_capabilities=ClientCapabilities(),
         )
         capabilities = initialized.agent_capabilities
         prompt_capabilities = capabilities and capabilities.prompt_capabilities
@@ -161,12 +133,18 @@ async def run_client(config: dict) -> None:
             )
             session_id = session.session_id
         else:
-            if not capabilities or not capabilities.load_session:
-                raise RuntimeError("ACP agent does not support loading sessions")
             session_id = session_path.read_text().strip()
-            await connection.load_session(
-                cwd=os.getcwd(), session_id=session_id, mcp_servers=mcp_servers
-            )
+            session_capabilities = capabilities and capabilities.session_capabilities
+            if session_capabilities and session_capabilities.resume is not None:
+                await connection.resume_session(
+                    cwd=os.getcwd(), session_id=session_id, mcp_servers=mcp_servers
+                )
+            elif capabilities and capabilities.load_session:
+                await connection.load_session(
+                    cwd=os.getcwd(), session_id=session_id, mcp_servers=mcp_servers
+                )
+            else:
+                raise RuntimeError("ACP agent does not support resuming sessions")
 
         messages = config["messages"]
         if not is_new:
