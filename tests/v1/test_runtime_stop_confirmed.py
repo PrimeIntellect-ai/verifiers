@@ -101,6 +101,22 @@ def test_modal_stop_confirmed_sets_stopped_flag():
     assert runtime.stopped is True
 
 
+def test_prime_stop_confirmed_closes_client_when_provider_id_missing():
+    """When start failed before setting info.id, stop_confirmed must close the
+    live client before raising, so the client does not leak."""
+    runtime = PrimeRuntime(PrimeConfig())
+    runtime.info.id = None
+    client = FakePrimeClient()
+    runtime._client = client
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="provider ID"):
+        asyncio.run(runtime.stop_confirmed())
+    assert runtime._client is None
+    assert client.closed is True
+
+
 def test_prime_stop_confirmed_rejects_loose_404_in_non_api_errors():
     """A non-APIError whose message happens to contain '404' must NOT be
     treated as a confirmed deletion — only the provider's own APIError with

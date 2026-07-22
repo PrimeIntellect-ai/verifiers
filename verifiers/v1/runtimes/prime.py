@@ -281,6 +281,11 @@ class PrimeRuntime(Runtime):
                 "prime sandbox deletion cannot be confirmed without its live client"
             )
         if runtime_id is None:
+            # Provisioning failed before a provider ID was assigned; release
+            # the live client so it doesn't leak.
+            self._client = None
+            with contextlib.suppress(Exception):
+                await client.aclose()
             raise RuntimeError(
                 "prime sandbox deletion cannot be confirmed without a provider ID"
             )
