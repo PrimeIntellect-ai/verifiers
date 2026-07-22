@@ -6,8 +6,7 @@ import asyncio
 import importlib.util
 import json
 import sys
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urljoin
@@ -20,6 +19,7 @@ from verifiers.v1.decorators import reward
 from verifiers.v1.dialects.responses import ResponsesDialect, messages_to_wire
 from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
+from verifiers.v1.mcp.launch import mcp_session
 from verifiers.v1.runtimes import SubprocessConfig, make_runtime
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskConfig, TaskData
@@ -31,7 +31,6 @@ from verifiers.utils.serve_utils import get_free_port
 NEMO_GYM_INSTALL_HINT = "uv sync --python 3.12 --extra nemo-gym"
 
 if TYPE_CHECKING:
-    from mcp import ClientSession
     from mcp.server.fastmcp import FastMCP
     from mcp.types import CallToolResult, Tool as MCPTool
 
@@ -84,11 +83,7 @@ async def _post(state: NeMoGymState, path: str, body: dict[str, Any]) -> httpx.R
 
 
 class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
-    """Expose one rollout's Gym tools through the standard V1 MCP boundary.
-
-    Gym's MCP endpoint is stateless HTTP; its signed seed header restores the hidden
-    rollout session on every request.
-    """
+    """Bridge rollout-specific Gym tools into the standard V1 MCP boundary."""
 
     TOOL_PREFIX = None
 
@@ -97,30 +92,15 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
         server.list_tools()(self._with_state(self.list_tools))
         server.call_tool(validate_input=False)(self._with_state(self.call_tool))
 
-    @asynccontextmanager
-    async def _upstream(self) -> AsyncIterator[ClientSession]:
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
-
-        url = self.state.mcp_url
-        if url is None:
-            raise RuntimeError("NeMo Gym did not provide an MCP URL")
-        async with (
-            httpx.AsyncClient(
-                headers=self.state.mcp_headers,
-                timeout=self.state.request_timeout,
-            ) as client,
-            streamable_http_client(url, http_client=client) as (read, write, _),
-            ClientSession(read, write) as session,
-        ):
-            await session.initialize()
-            yield session
-
     async def list_tools(self) -> list[MCPTool]:
         from mcp.types import Tool
 
         if self.state.mcp_url is not None:
-            async with self._upstream() as session:
+            async with mcp_session(
+                self.state.mcp_url,
+                headers=self.state.mcp_headers,
+                timeout=self.state.request_timeout,
+            ) as session:
                 tools = (await session.list_tools()).tools
         else:
             tools = [
@@ -139,7 +119,11 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
         from mcp.types import CallToolResult, TextContent
 
         if self.state.mcp_url is not None:
-            async with self._upstream() as session:
+            async with mcp_session(
+                self.state.mcp_url,
+                headers=self.state.mcp_headers,
+                timeout=self.state.request_timeout,
+            ) as session:
                 return await session.call_tool(name, arguments)
 
         response = await _post(self.state, name, arguments)

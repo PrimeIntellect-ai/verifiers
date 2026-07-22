@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import httpx
+
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
@@ -28,6 +30,8 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.base import _ENSURE_UV
 
 if TYPE_CHECKING:
+    from mcp import ClientSession
+
     from verifiers.v1.mcp.toolset import Toolset
 
 logger = logging.getLogger(__name__)
@@ -433,3 +437,36 @@ async def serve_tools(
                 )
                 logger.info("tool server '%s': %s", name, urls[name])
         yield urls
+
+
+@contextlib.asynccontextmanager
+async def mcp_session(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float | httpx.Timeout = httpx.Timeout(600.0, connect=5.0),
+) -> AsyncIterator[ClientSession]:
+    """One fresh session to an MCP server, opened and closed within the caller's task so AnyIO
+    cancellation scopes stay correctly nested. A teardown failure after the body completed is
+    suppressed — the result is already in hand, and closing noise must not fail (or replay) an
+    already-answered call."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import (
+        create_mcp_http_client,
+        streamable_http_client,
+    )
+
+    stack = contextlib.AsyncExitStack()
+    try:
+        http_client = await stack.enter_async_context(
+            create_mcp_http_client(headers=headers, timeout=timeout)
+        )
+        read, write, *_ = await stack.enter_async_context(
+            streamable_http_client(url, http_client=http_client)
+        )
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        yield session
+    finally:
+        with contextlib.suppress(Exception):
+            await stack.aclose()
