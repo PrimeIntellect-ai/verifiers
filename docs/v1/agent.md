@@ -7,13 +7,13 @@ An `Agent` is a configured **harness** (the program that drives the model), a
 ```python
 import verifiers.v1 as vf
 
-solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"))
-trace = await solver.run(vf.Task(vf.TaskData(prompt="What is 2+2?")))
+async with vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2")) as solver:
+    trace = await solver.run(vf.Task(vf.TaskData(prompt="What is 2+2?")))
 ```
 
 Every run is a standard rollout producing a `vf.Trace`. By default, the agent
-is self-contained: each run brings up the machinery it needs — interception
-server, network tunnel — and tears it down afterwards.
+is self-contained: its context owns the model client and shared interception
+server, while each run owns its runtime and any per-run interception machinery.
 
 ## Borrowed Resources
 
@@ -91,15 +91,16 @@ places a run into it instead of provisioning a fresh one. Chained agents then
 share one file system — here, the judge inspects what the solver left behind:
 
 ```python
-solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"))
-judge = vf.make_agent(vf.AgentConfig(model="openai/gpt-5.4-mini"))
-
 task = vf.Task(vf.TaskData(prompt="Sum the first 100 primes into answer.txt"))
 audit = vf.Task(vf.TaskData(prompt="Recompute the sum and verify answer.txt"))
 
-async with solver.provision(task) as box:
-    solution = await solver.run(task, runtime=box)
-    verdict = await judge.run(audit, runtime=box)
+async with (
+    vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2")) as solver,
+    vf.make_agent(vf.AgentConfig(model="openai/gpt-5.4-mini")) as judge,
+):
+    async with solver.provision(task) as box:
+        solution = await solver.run(task, runtime=box)
+        verdict = await judge.run(audit, runtime=box)
 ```
 
 The box lives exactly as long as the `async with`: borrowed runs never

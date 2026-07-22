@@ -147,7 +147,8 @@ class Agent:
             harness_config = harness_config_type("bash")(id="bash")
         self.config = config
         self.harness = load_harness(harness_config)
-        if client is None:
+        self._owns_client = client is None
+        if self._owns_client:
             client = resolve_client(config.client or EvalClientConfig())
         self.ctx = ModelContext(
             model=config.model,
@@ -186,14 +187,20 @@ class Agent:
                 # A failed __aenter__ gets no __aexit__ from `async with`: unwind
                 # here, or the agent stays "already entered" forever.
                 self._entered, self._server = False, None
+                if self._owns_client:
+                    await self.ctx.client.close()
                 raise
         return self
 
     async def __aexit__(self, *exc) -> None:
         self._entered = False
         server, self._server = self._server, None
-        if server is not None:
-            await server.__aexit__(*exc)
+        try:
+            if server is not None:
+                await server.__aexit__(*exc)
+        finally:
+            if self._owns_client:
+                await self.ctx.client.close()
 
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping
