@@ -81,9 +81,9 @@ added automatically, then `allow` adds user destinations. `block` can narrow tha
 allowlist. With `network_access = true`, networking stays open unless `block` is
 non-empty, in which case matching destinations are denied. User block rules win over
 user allow rules; framework interception and MCP routes always remain reachable.
-Host-loopback destinations are reserved for those framework routes, so neither the
-default-allow posture nor a user `allow` rule exposes unrelated services on the
-Verifiers host.
+Host-loopback and link-local destinations are reserved for those framework routes, so
+neither the default-allow posture nor a user `allow` rule exposes unrelated host
+services or cloud metadata endpoints.
 
 Filtered Docker runtimes are single-rollout. Reusing one would require reopening trusted
 setup networking to processes left by the previous agent, so each rollout gets a fresh box.
