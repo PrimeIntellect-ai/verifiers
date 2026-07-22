@@ -73,11 +73,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         task = trace.task.data
-        if (
-            task.system_prompt is not None
-            and task.prompt is not None
-            and not isinstance(task.prompt, str)
-        ):
+        if task.prompt is not None and not isinstance(task.prompt, str):
+            # `resolve_prompt` cannot fold system text (the task's or the skills
+            # announcement) into a Messages prompt; the join below handles both.
             system_prompt, prompt = task.system_prompt, task.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(task)
@@ -85,7 +83,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         image_dir = f".vf-codex-images-{trace.id}"
         if prompt is not None and not isinstance(prompt, str):
             # Codex seeds one initial turn, so Messages system text joins its prompt.
-            texts = [system_prompt] if system_prompt else []
+            texts = [t for t in (system_prompt, self.skills_prompt()) if t]
             image_index = 0
             for message in prompt:
                 if message.role not in ("system", "user"):

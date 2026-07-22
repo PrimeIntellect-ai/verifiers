@@ -31,9 +31,9 @@ class RLMHarnessConfig(HarnessConfig):
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
-    skills: list[BuiltinSkill] = []
+    builtin_skills: list[BuiltinSkill] = []
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
-    The tool set is fixed (ipython); only built-in skills are selectable."""
+    The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
     summarize_at_tokens: int | tuple[int, int] | None = None
     """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
     past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
@@ -63,7 +63,7 @@ class RLMHarnessConfig(HarnessConfig):
         if self.disabled_tools:
             raise ValueError(
                 "the rlm harness has a fixed tool set (ipython) and does not support "
-                "`disabled_tools`; use `skills` to enable built-in skills instead."
+                "`disabled_tools`; use `builtin_skills` to enable built-in skills instead."
             )
         return self
 
@@ -123,8 +123,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
-        if self.config.skills:
-            env["RLM_SKILLS"] = ",".join(self.config.skills)
+        if self.config.builtin_skills:
+            env["RLM_SKILLS"] = ",".join(self.config.builtin_skills)
         if mcp_urls:
             env["RLM_MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}

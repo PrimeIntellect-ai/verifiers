@@ -55,3 +55,14 @@ disabled_tools = ["shell_tool"]
 ```
 
 The names of these tools are set by the respective harness. Consult the relevant documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
+
+## Skills
+
+Every harness takes a `skills` list of local paths — each one skill (a directory with a `SKILL.md` manifest, or the manifest itself) or a directory of such skill directories — installed into the agent's runtime before the rollout:
+
+```toml
+[env.agent.harness]
+skills = ["path/to/my-skill", "path/to/skills"]
+```
+
+Harnesses with native skill support (Claude Code) discover them directly; the rest are pointed at the installed skills through the prompt and read them with their file tools.

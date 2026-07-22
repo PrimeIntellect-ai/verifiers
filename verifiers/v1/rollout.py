@@ -210,6 +210,7 @@ class RolloutRun:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
+                await self.harness.install_skills(runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 tool_servers = self.task.tool_servers()
             user = self.task.user_server()
