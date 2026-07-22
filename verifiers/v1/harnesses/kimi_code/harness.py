@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 BINARY = "/tmp/vf-kimi-code/bin/kimi"
 KIMI_HOME = ".vf-kimi-code"
+SKILLS_DIR = f"{KIMI_HOME}/skills"
 
 INSTALL = r"""
 set -e
@@ -39,8 +40,10 @@ class KimiCodeHarnessConfig(HarnessConfig):
 class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = True
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         logger.info(
             "kimi-code: ensuring Kimi Code %s is installed", self.config.version
         )

@@ -13,6 +13,7 @@ from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
 
 POOL_DIR = "/tmp/vf-pool-{version}"
 SETTINGS_PATH = ".poolside/settings.local.yaml"
+SKILLS_DIR = ".poolside/skills"
 INSTALL = r"""
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -35,8 +36,10 @@ class PoolHarness(Harness[PoolHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_MESSAGE_PROMPT = True
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         directory = POOL_DIR.format(version=self.config.version)
         binary = f"{directory}/pool"
         script = INSTALL.replace("{version}", self.config.version).replace(

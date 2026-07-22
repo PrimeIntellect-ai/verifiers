@@ -26,6 +26,7 @@ HOME_VAR = "VF_PI_ORIGINAL_HOME"
 
 PI_DIR = "/tmp/vf-pi"
 PI_BIN = f"{PI_DIR}/pi"
+SKILLS_DIR = ".agents/skills"
 MCP_VERSION = "2.11.0"
 MCP_ADAPTER = f"{PI_DIR}/mcp/node_modules/pi-mcp-adapter/index.ts"
 
@@ -95,8 +96,12 @@ class PiHarness(Harness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_MESSAGE_PROMPT = True
+    # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
+    # so the installed skills are passed explicitly via `--skill` at launch.
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         logger.info(
             "pi: ensuring Pi %s and pi-mcp-adapter %s are installed",
             self.config.version,
@@ -234,6 +239,12 @@ class PiHarness(Harness[PiHarnessConfig]):
             if self.config.disabled_tools
             else []
         )
+        skill_args = [
+            arg
+            for skill in self.config.skills
+            # Resolve like `install_skills` so the path matches what it wrote.
+            for arg in ("--skill", f"{SKILLS_DIR}/{skill.resolve().name}")
+        ]
         system_args = ["--append-system-prompt", system_prompt] if system_prompt else []
         argv = [
             "sh",
@@ -252,6 +263,7 @@ class PiHarness(Harness[PiHarnessConfig]):
             ctx.model,
             *mcp_args,
             *tool_args,
+            *skill_args,
             *system_args,
             *image_args,
         ]
