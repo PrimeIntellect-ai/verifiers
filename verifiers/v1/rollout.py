@@ -11,9 +11,9 @@ never race or amputate it.
 `RolloutRun` is the engine, a staged lifecycle: `open()` boots the world, each
 `step()` runs one segment, `close()` finalizes, scores, and tears the world down —
 each stage under its own timeout. `Agent` is its only driver: `Agent.run` is the
-one-call single-segment form, `Agent.chat` holds the run open and lets the caller
-supply each user turn, one `turn()` per segment — who answers the program (an
-env's control flow, a simulator agent, a game engine, a human) is the caller's
+one-call single-segment form, `Agent.interaction` holds the run open and lets the
+caller supply each user turn, one `turn()` per segment — who answers the program
+(an env's control flow, a simulator agent, a game engine, a human) is the caller's
 business, never this module's.
 """
 

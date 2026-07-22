@@ -73,7 +73,7 @@ class TextArenaEnv(vf.Env[TextArenaEnvConfig]):
         async with agents.player.interaction(task) as interaction:
             reply = await interaction.turn()
             while not reply.stopped:
-                game.step(reply.text)
+                game.step(reply.last_reply)
                 if game.state.done:
                     outcome["reward"] = float((game.state.rewards or {}).get(0, 0.0))
                     outcome["reason"] = str(game.state.game_info[0]["reason"])

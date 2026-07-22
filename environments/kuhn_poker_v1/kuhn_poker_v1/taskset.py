@@ -117,7 +117,7 @@ class KuhnPokerEnv(vf.Env[KuhnPokerEnvConfig]):
                 reply = await interaction.turn(prompt)
                 if reply.stopped:
                     return None
-                action = parse_action(reply.text, legal)
+                action = parse_action(reply.last_reply, legal)
                 if action is not None:
                     return action
                 prompt = (

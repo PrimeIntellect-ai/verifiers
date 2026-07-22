@@ -155,10 +155,12 @@ async def test_interaction(live_ctx):
     async with agent.interaction(task) as interaction:
         first = await interaction.turn("hello world")
         assert not first.stopped
-        assert "hello world" in first.text.lower()
+        assert [message.role for message in first.messages] == ["assistant"]
+        assert "hello world" in first.last_reply.lower()
         second = await interaction.turn("goodbye world")
         assert not second.stopped
-        assert "goodbye world" in second.text.lower()
+        assert [message.role for message in second.messages] == ["assistant"]
+        assert "goodbye world" in second.last_reply.lower()
     trace = interaction.trace
     assert trace is not None and trace.errors == []
     assert trace.stop_condition == "user_closed"  # closing the interaction ended it

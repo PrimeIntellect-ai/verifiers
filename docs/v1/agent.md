@@ -22,10 +22,14 @@ user, and each `turn()` runs one harness segment before returning a `vf.Reply`.
 async with agent.interaction(task) as interaction:
     reply = await interaction.turn("hello")
     if not reply.stopped:
-        reply = await interaction.turn(f"you said: {reply.text}")
+        reply = await interaction.turn(f"you said: {reply.last_reply}")
 
 trace = interaction.trace
 ```
+
+Each `Reply.messages` contains the assistant messages, tool calls, and tool
+results produced by that harness segment. `Reply.last_reply` is shorthand for
+the final assistant message's text.
 
 A prompted task speaks first through a bare `turn()`; a prompt-less task starts
 with `turn(message)`. Leaving the context closes the exchange as `user_closed`

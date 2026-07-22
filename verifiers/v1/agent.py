@@ -39,7 +39,14 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages, Sampling, SamplingConfig, UserMessage
+from verifiers.v1.types import (
+    AssistantMessage,
+    Messages,
+    Sampling,
+    SamplingConfig,
+    ToolMessage,
+    UserMessage,
+)
 from verifiers.v1.utils.compile import (
     cap_remote_harness_timeout,
     resolve_runtime_config,
@@ -124,14 +131,26 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
 
 @dataclass(frozen=True)
 class Reply:
-    """One assistant turn, as `Interaction.turn` returns it. `stopped` marks the
-    exchange over — the run ended (a limit, a `@stop`, or the harness finishing)
-    instead of producing another turn; a stopped `Reply` carries no text (the last
-    real turn was already delivered), and the interaction's `trace` holds the full
-    exchange."""
+    """One harness segment's agent/tool output, as `Interaction.turn` returns it.
 
-    text: str
+    `messages` carries every model-sampled assistant message and intervening tool
+    result produced by the segment, in order; `last_reply` is quick sugar for its
+    final assistant text. `stopped` marks the exchange over — the run ended (a
+    limit, a `@stop`, or the harness finishing) instead of producing another
+    segment; a stopped `Reply` carries no messages (the last real segment was
+    already delivered), and the interaction's `trace` holds the full exchange.
+    """
+
+    messages: Messages
     stopped: bool = False
+
+    @property
+    def last_reply(self) -> str:
+        """The final assistant message's text, matching `Trace.last_reply`."""
+        for message in reversed(self.messages):
+            if isinstance(message, AssistantMessage):
+                return (message.content or "").strip()
+        return ""
 
 
 class Interaction:
@@ -193,13 +212,22 @@ class Interaction:
             messages = _as_messages(message)
         self._started = True
         turns_before = self.trace.num_turns
+        nodes_before = len(self.trace.nodes)
         await self._run.step(messages)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's stopped reply.
-            return Reply(text=self.trace.last_reply)
+            reply_messages: Messages = []
+            saw_assistant = False
+            for node in self.trace.nodes[nodes_before:]:
+                if node.sampled:
+                    reply_messages.append(node.message)
+                    saw_assistant = True
+                elif saw_assistant and isinstance(node.message, ToolMessage):
+                    reply_messages.append(node.message)
+            return Reply(messages=reply_messages)
         self._over = True
-        return Reply(text="", stopped=True)
+        return Reply(messages=[], stopped=True)
 
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks

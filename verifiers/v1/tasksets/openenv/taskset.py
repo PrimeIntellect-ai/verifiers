@@ -117,9 +117,9 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
             async with agents.player.interaction(task) as interaction:
                 reply = await interaction.turn(payload())
                 while not reply.stopped and not result.done:
-                    if reply.text.strip():
+                    if reply.last_reply.strip():
                         result = await client.step(
-                            parse_action(reply.text, action_schema)
+                            parse_action(reply.last_reply, action_schema)
                         )
                         # OpenEnv reports per-step rewards; v1 scores their total.
                         total += result.reward or 0.0
