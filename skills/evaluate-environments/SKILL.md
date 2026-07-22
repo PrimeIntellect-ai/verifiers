@@ -48,9 +48,7 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 - `owner/name` installs a Hub package on demand.
 - `owner/name@version` pins a Hub version.
 
-The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent —
-`--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a
-multi-agent one (there is no run-level `--harness.*`):
+The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
 
 ```bash
 prime eval run owner/name --env.agent.harness.id codex --env.agent.harness.runtime.type prime
@@ -115,7 +113,7 @@ For all parameters, look up the [reference](references/REFERENCE.md). Leaving th
 
 ## Reproducible TOML
 
-You can also use a TOML: 
+You can also use a TOML:
 
 ```toml
 model = "openai/gpt-5-mini"

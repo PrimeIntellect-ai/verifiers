@@ -19,7 +19,9 @@ Run an interactive idea session with the user to turn their idea into a concrete
 ## Discovery workflow
 
 1. Find out what the user wants:
+
   - Is it running existing evaluations or training with common tasksets? If so, use the Environment Hub to see whether those tasksets already exist.
   - Is it optimizing an existing workflow? In this case, prompt optimization with GEPA is the right tool.
   - Else: For training and evaluations, building a taskset together is the right call.
+
 2. After you have found this out, look at the other skills and choose the appropriate one to proceed on the technical level, while still keeping the interactive session with the user alive.

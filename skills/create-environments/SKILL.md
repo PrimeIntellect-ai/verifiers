@@ -37,6 +37,7 @@ Use the naming convention `<env>.x86.<task>:latest` for the image name (e.g. `ab
 ## Define the needed values first
 
 Before starting with the implementation, think about the following things:
+
 - What is the dataset about, which fields does it have?
 - Does it come with custom tools that are strictly necessary and not added by common harnesses? For example, a lot of harnesses come with bash or web search tools, which makes custom tools obsolete. Always prefer harnesses over custom tools
 - Is the conversation driven by a user (scripted turns, a game engine, a modeled user)? That is env control flow (a chat-session loop in `run()`), not a server.
@@ -52,8 +53,7 @@ Ask the user about unresolved semantic choices instead of inventing them. Presen
 
 A package exports one `vf.Taskset` subclass — and optionally one `vf.Env` subclass (multi-agent control flow) and/or one `vf.Harness` subclass — through `__all__`. The taskset export happens automatically when you bootstrap a new taskset using `uv run init`.
 
-Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader
-resolves classes and their config types from `__all__` and generic bases.
+Do not add `load_environment()`, `load_taskset()`, or `load_harness()` functions. The v1 loader resolves classes and their config types from `__all__` and generic bases.
 
 Use:
 
@@ -183,7 +183,6 @@ Choose placement from the tool's lifetime and filesystem needs:
 - **Task-scoped, colocated:** set `colocated = true` on its `ToolsetConfig` when the tool must see the harness's filesystem or processes. It still launches once per rollout.
 - **Taskset-scoped, shared:** parameterize the toolset with `vf.SharedToolsetConfig`, put the matching config field directly on `TasksetConfig`, and declare the class on `Taskset.tools`.
 - **Existing remote service:** set `url` on the matching toolset config. Verifiers connects to the streamable-HTTP MCP endpoint instead of launching the class locally.
-
 
 ## User simulation
 

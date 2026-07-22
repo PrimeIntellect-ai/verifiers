@@ -4,7 +4,6 @@ verifiers supports a range of harnesses out of the box, including Claude Code, C
 
 ## A minimal harness implementation
 
-
 ```python
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
