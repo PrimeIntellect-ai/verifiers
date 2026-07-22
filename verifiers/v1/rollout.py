@@ -13,9 +13,10 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import TYPE_CHECKING
 
 from verifiers import __version__
-from verifiers.v1.harness import AgentConfig, Harness
+from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
@@ -42,6 +43,10 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
 from verifiers.v1.utils.version import verifiers_commit
+
+if TYPE_CHECKING:
+    # Annotation-only: agent.py imports this module at runtime.
+    from verifiers.v1.agent import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +94,7 @@ class RolloutRun:
         self,
         *,
         task: Task,
-        agent_config: AgentConfig,
+        agent_config: "AgentConfig",
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
