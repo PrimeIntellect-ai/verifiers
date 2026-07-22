@@ -284,7 +284,16 @@ class PrimeRuntime(Runtime):
             raise RuntimeError(
                 "prime sandbox deletion cannot be confirmed without a provider ID"
             )
-        await client.delete(runtime_id)
+        try:
+            await client.delete(runtime_id)
+        except Exception as exc:
+            # A 404 means the sandbox was already removed (idle timeout, max
+            # lifetime, or an earlier best-effort cleanup).  That is confirmed
+            # success — treat it as such so retries don't keep failing.
+            if "404" in str(exc):
+                logger.info("prime: sandbox %s already gone (404): %s", runtime_id, exc)
+            else:
+                raise
         self._confirmed_stop_id = runtime_id
         self._client = None
         with contextlib.suppress(Exception):

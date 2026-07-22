@@ -57,6 +57,25 @@ def test_prime_stop_confirmed_preserves_cleanup_state_on_failure(fails):
     assert client.deleted == ["prime-runtime-id"] * expected_calls
 
 
+def test_prime_stop_confirmed_treats_already_gone_sandbox_as_success():
+    """A 404 from delete means the sandbox was already removed; stop_confirmed
+    should treat it as confirmed success, not fail forever on retries."""
+    runtime = PrimeRuntime(PrimeConfig())
+    runtime.info.id = "prime-runtime-id"
+    client = FakePrimeClient(RuntimeError("HTTP 404: sandbox not found"))
+    runtime._client = client
+
+    asyncio.run(runtime.stop_confirmed())
+    assert runtime._client is None
+    assert client.closed is True
+    assert runtime._confirmed_stop_id == "prime-runtime-id"
+    assert client.deleted == ["prime-runtime-id"]
+
+    # Idempotent: a second call is a no-op (no new delete attempt).
+    asyncio.run(runtime.stop_confirmed())
+    assert client.deleted == ["prime-runtime-id"]
+
+
 @pytest.mark.parametrize("fails", [False, True])
 def test_modal_stop_confirmed_preserves_cleanup_state_on_failure(fails):
     runtime = ModalRuntime(ModalConfig())
