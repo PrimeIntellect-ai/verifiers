@@ -76,9 +76,6 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         argv = [
             CLAUDE_BIN.format(version=self.config.version),
             "--print",
-            # Bare mode suppresses skill discovery, so skill runs drop it; the fresh
-            # CLAUDE_CONFIG_DIR keeps user hooks/settings/memory out either way.
-            *([] if self.config.skills else ["--bare"]),
             "--dangerously-skip-permissions",
             "--no-session-persistence",
             "--model",
