@@ -94,7 +94,10 @@ def cap_remote_harness_timeout(
     instead of the provider killing the box mid-run."""
     if harness_timeout is None or runtime_is_local(runtime_config):
         return harness_timeout
-    max_lifetime = getattr(runtime_config, "timeout", 24 * 60 * 60)
+    # Providers truncate the hard lifetime to whole seconds (Modal via int(),
+    # Prime via ceil-to-minutes); cap against that integer so the harness limit
+    # never exceeds the sandbox's actual lifetime.
+    max_lifetime = int(getattr(runtime_config, "timeout", 24 * 60 * 60))
     if harness_timeout > max_lifetime:
         logger.warning(
             "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
