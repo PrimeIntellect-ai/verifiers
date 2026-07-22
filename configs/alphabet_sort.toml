@@ -10,7 +10,5 @@ min_turns = 2
 max_turns = 2
 
 [env.agent]
+harness = "null"
 max_turns = 4
-
-[env.agent.harness]
-id = "null"

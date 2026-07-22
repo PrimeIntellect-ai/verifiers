@@ -6,7 +6,7 @@ import shlex
 from pydantic import Field
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
@@ -26,7 +26,7 @@ chmod +x "{dir}/pool"
 """
 
 
-class PoolHarnessConfig(HarnessConfig):
+class PoolHarnessConfig(AgentConfig):
     version: str = Field(default="1.0.11", pattern=r"^[A-Za-z0-9._+-]+$")
     """Pool release to install, pinned for reproducibility."""
 

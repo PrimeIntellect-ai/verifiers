@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import model_validator
 
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import metric
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -26,7 +26,7 @@ RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 
 
-class RLMHarnessConfig(HarnessConfig):
+class RLMHarnessConfig(AgentConfig):
     version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0

@@ -49,7 +49,9 @@ def main(argv: list[str] | None = None) -> None:
         sys.argv = [sys.argv[0], *argv]
         config = cli(config_type)
     if config.dry_run:
-        print(config.model_dump_json(indent=2, exclude_none=True))
+        print(
+            config.model_dump_json(indent=2, exclude_none=True, serialize_as_any=True)
+        )
         return
     level = "DEBUG" if config.verbose else "INFO"
     setup_logging(level)

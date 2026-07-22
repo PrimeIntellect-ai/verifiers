@@ -301,7 +301,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
     traces = await run_v1(
         "echo-v1",
         harness=None,  # a multi-agent env refuses the run-level harness
-        env={"id": "best-of-n", "n": 2, "agent": {"harness": {"id": "null"}}},
+        env={"id": "best-of-n", "n": 2, "agent": {"harness": "null"}},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -323,11 +323,11 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
         harness=None,  # seats pin their own harness; there is no run-level one
         env={
             "id": "agentic-judge",
-            "solver": {"harness": {"id": "null"}},
+            "solver": {"harness": "null"},
             # The judge reads the transcript and reasons before it writes the
             # verdict file; the shared 2048-token run cap truncates it mid-audit.
             "judge": {
-                "harness": {"runtime": {"type": "docker"}},
+                "runtime": {"type": "docker"},
                 "max_output_tokens": 8192,
             },
         },

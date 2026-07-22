@@ -11,7 +11,7 @@ the harness program.
 import json
 from pathlib import Path
 
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -19,7 +19,7 @@ from verifiers.v1.trace import Trace
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
-class CompactingHarnessConfig(HarnessConfig):
+class CompactingHarnessConfig(AgentConfig):
     """A context-rewrite harness: it rebuilds its prompt from carried-over notes each
     compaction instead of appending, so the trajectory branches at every compaction."""
 

@@ -152,9 +152,9 @@ def _eval_config(
     env_cfg = dict(env or {})
     _configure_prime_runtimes(taskset_cfg)
     if harness:
-        harness_cfg = {"id": harness, **(harness_overrides or {})}
+        harness_cfg = {"harness": harness, **(harness_overrides or {})}
         _configure_prime_runtimes(harness_cfg)
-        env_cfg.setdefault("agent", {})["harness"] = harness_cfg
+        env_cfg.setdefault("agent", {}).update(harness_cfg)
     # Per-run caps live on the seats: resolve the env's declared roles and cap
     # each one (a test's own seat dict wins over the shared defaults).
     config_cls = vf.env_config_type(taskset, env_cfg.get("id", ""))

@@ -15,7 +15,7 @@ class SingleAgentEnvConfig(EnvConfig):
 
     agent: AgentConfig = AgentConfig()
     """The one seat — the policy under evaluation/training; pin
-    `--env.agent.harness.*` to choose its program or runtime."""
+    `--env.agent.harness` / `--env.agent.runtime.*` to choose its program or runtime."""
 
 
 class SingleAgentEnv(Env[SingleAgentEnvConfig]):

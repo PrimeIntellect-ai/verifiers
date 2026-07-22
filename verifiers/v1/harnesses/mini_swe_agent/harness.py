@@ -1,14 +1,14 @@
 from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
-class MiniSWEAgentHarnessConfig(HarnessConfig):
+class MiniSWEAgentHarnessConfig(AgentConfig):
     version: str = "2.4.5"
     """mini-swe-agent release to install, pinned for reproducibility."""
 

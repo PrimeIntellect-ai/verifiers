@@ -180,8 +180,9 @@ def _harness_py(prefix: str) -> str:
 import verifiers.v1 as vf
 
 
-class {prefix}HarnessConfig(vf.HarnessConfig):
-    """Run knobs for this harness. Add fields here (e.g. a CLI version to install)."""
+class {prefix}HarnessConfig(vf.AgentConfig):
+    """Run knobs for this harness, flat on the seat. Add fields here (e.g. a CLI
+    version to install), addressable as `--env.agent.<field>`."""
 
 
 class {prefix}Harness(vf.Harness[{prefix}HarnessConfig]):
@@ -220,7 +221,7 @@ def _readme(
         )
     if add_harness:
         layout.append(
-            f"- `{pkg}/harness.py` — a custom harness, selectable with `--env.agent.harness.id {dash}`."
+            f"- `{pkg}/harness.py` — a custom harness, selectable with `--env.agent.harness {dash}`."
         )
     layout_block = "\n".join(layout)
     return f"""\

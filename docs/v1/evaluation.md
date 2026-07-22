@@ -17,8 +17,8 @@ temperature = 1.0
 [env.taskset]
 id = "primeintellect/terminal-bench-2"
 
-[env.agent.harness]
-id = "codex"
+[env.agent]
+harness = "codex"
 version = "0.116.0"
 ```
 
@@ -33,7 +33,7 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
-- `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
+- `env.agent.harness` — pick the agent's harness (`harness = "..."` in the TOML `[env.agent]` block); its knobs sit flat on the agent
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — rollouts per task
@@ -50,7 +50,7 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
 
 ```toml
-[env.agent.harness]
+[env.agent]
 disabled_tools = ["shell_tool"]
 ```
 
@@ -68,7 +68,7 @@ Docker harnesses can keep trusted setup online, then restrict the agent to decla
 HTTP(S) destinations:
 
 ```toml
-[env.agent.harness.runtime]
+[env.agent.runtime]
 type = "docker"
 allow = ["https://*.wikipedia.org"]
 block = ["https://upload.wikimedia.org"]

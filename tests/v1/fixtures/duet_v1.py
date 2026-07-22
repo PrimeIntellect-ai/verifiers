@@ -16,8 +16,8 @@ from echo_v1 import EchoTaskset, lenient_match
 
 class DuetEnvConfig(vf.EnvConfig):
     # Both seats pin the lean `null` chat loop.
-    a: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
-    b: vf.AgentConfig = vf.AgentConfig(harness=vf.HarnessConfig(id="null"))
+    a: vf.AgentConfig = vf.AgentConfig(harness="null")
+    b: vf.AgentConfig = vf.AgentConfig(harness="null")
 
 
 class DuetEnv(vf.Env[DuetEnvConfig]):

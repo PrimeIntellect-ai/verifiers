@@ -265,7 +265,7 @@ def env_config_data(env: EnvConfig) -> dict:
     """A picklable dict of a (possibly dynamically-narrowed, unpicklable) env config —
     ship this across a process boundary, then rebuild via `resolve_env_config`
     (re-narrowing to the env's concrete config class)."""
-    return env.model_dump(mode="json")
+    return env.model_dump(mode="json", serialize_as_any=True)
 
 
 def serve_env(

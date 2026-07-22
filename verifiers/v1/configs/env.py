@@ -26,9 +26,9 @@ def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> 
         )
     if "harness" in data:
         raise ValueError(
-            "a harness belongs to an agent now: --env.agent.harness.* on the "
-            "single-agent env, --env.<agent>.harness.* on a multi-agent one "
-            "(TOML: [env.agent.harness])"
+            "a harness belongs to an agent now: --env.agent.harness <id> on the "
+            "single-agent env, --env.<agent>.harness <id> on a multi-agent one "
+            '(TOML: harness = "..." in [env.agent])'
         )
     raw = data.get("env")
     if raw is None:
@@ -37,7 +37,9 @@ def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> 
         if narrowed is not None:
             if not isinstance(raw, narrowed):
                 data["env"] = narrowed.model_validate(
-                    raw.model_dump() if isinstance(raw, BaseConfig) else raw
+                    raw.model_dump(serialize_as_any=True)
+                    if isinstance(raw, BaseConfig)
+                    else raw
                 )
             return data
         from verifiers.v1.loaders import resolve_env_config

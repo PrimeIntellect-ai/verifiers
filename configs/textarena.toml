@@ -12,7 +12,5 @@ id = "textarena"
 game = "Wordle-v0"
 
 [env.agent]
+harness = "null"
 max_turns = 15
-
-[env.agent.harness]
-id = "null"

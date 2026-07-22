@@ -7,5 +7,5 @@ num_tasks = 1
 [env.taskset]
 id = "wiki-search-v1"
 
-[env.agent.harness]
-id = "compact"
+[env.agent]
+harness = "compact"

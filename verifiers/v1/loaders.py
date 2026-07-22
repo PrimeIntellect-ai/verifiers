@@ -13,7 +13,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.env import EnvConfig, Env
 from verifiers.v1.utils.generic import prefix_validation_error
 from verifiers.v1.envs.single_agent import SingleAgentEnv
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls
 from verifiers.v1.utils.install import ensure_installed
 from verifiers.v1.utils.generic import generic_type
@@ -39,25 +39,19 @@ def narrow_plugin_field(
     data: dict,
     field: str,
     resolve: Callable[[str], type],
-    default_id: str | None = None,
 ) -> None:
     raw = data.get(field)
     if isinstance(raw, BaseConfig):
         raw = raw.model_dump()
     raw = dict(raw or {})
-    ident = raw.get("id") or default_id
+    ident = raw.get("id")
     if not ident:
         return
     if not isinstance(ident, str):
         # A dangling `--<field>.id` (no value) parses as boolean True.
-        hint = (
-            f"; the built-in harnesses are: {', '.join(builtin_harness_ids())}"
-            if field == "harness"
-            else ""
-        )
         raise ValueError(
             f"{field}.id needs an id, and none was given (got {ident!r}); "
-            f"pass the id right after the flag{hint}"
+            "pass the id right after the flag"
         )
     if skip_plugin_install.get():
         # keep the plugin id-only; don't import/install from the Hub
@@ -72,6 +66,39 @@ def narrow_plugin_field(
         raise prefix_validation_error(e, (field,)) from None
 
 
+def narrow_agent_field(data: dict, field: str, default_id: str) -> None:
+    """Narrow a role's raw data to its harness's config type by the flat `harness`
+    id (absent = `default_id`, the taskset's default), so harness-specific fields
+    validate flat on the seat. The narrowed instance keeps `harness=None` for an
+    unpinned role — pin vs. default stays observable after validation."""
+    raw = data.get(field)
+    if not isinstance(raw, dict):
+        return
+    ident = raw.get("harness")
+    if isinstance(ident, dict):
+        # The old nested shape ([env.agent.harness] id = ...): point at the flat one.
+        raise ValueError(
+            f"the harness config is flat on the seat: set `{field}.harness` to the "
+            f"id (--env.{field}.harness bash) and its knobs directly on the seat "
+            f"(--env.{field}.runtime.type docker; TOML [env.{field}.runtime])"
+        )
+    if ident is not None and not isinstance(ident, str):
+        # A dangling `--<field>.harness` (no value) parses as boolean True.
+        raise ValueError(
+            f"{field}.harness needs a harness id, and none was given (got {ident!r}); "
+            f"the built-in harnesses are: {', '.join(builtin_harness_ids())}"
+        )
+    if skip_plugin_install.get():
+        # keep the seat's base fields; don't import/install the harness from the Hub
+        data[field] = {k: v for k, v in raw.items() if k in AgentConfig.model_fields}
+        return
+    try:
+        data[field] = harness_config_type(ident or default_id).model_validate(raw)
+    except ValidationError as e:
+        # As in narrow_plugin_field: keep the user's flag path in the error.
+        raise prefix_validation_error(e, (field,)) from None
+
+
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     module = ensure_installed(plugin_id)
     namespaced = f"{group}.{module}"
@@ -82,7 +109,7 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
         if kind == "harness" and plugin_id == "default":
             raise ModuleNotFoundError(
                 "the `default` harness was renamed to `bash`: "
-                "--env.agent.harness.id bash (or your env's role name)"
+                "--env.agent.harness bash (or your env's role name)"
             ) from e
         hint = (
             f" The built-in harnesses are: {', '.join(builtin_harness_ids())}."
@@ -194,8 +221,13 @@ def load_taskset(config: TasksetConfig) -> Taskset:
     return taskset_class(config.id)(config)
 
 
-def load_harness(config: HarnessConfig) -> Harness:
-    return harness_class(config.id)(config)
+def load_harness(config: AgentConfig) -> Harness:
+    if config.harness is None:
+        raise ValueError(
+            "AgentConfig.harness is unset; resolve it first "
+            "(agent.resolve_agent_config fills in the default)"
+        )
+    return harness_class(config.harness)(config)
 
 
 def load_judge(config: JudgeConfig) -> Judge:
@@ -210,11 +242,12 @@ def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
     )
 
 
-def harness_config_type(harness_id: str) -> type[HarnessConfig]:
-    """Resolve the harness's config specialization through its MRO."""
+def harness_config_type(harness_id: str) -> type[AgentConfig]:
+    """Resolve the harness's config specialization (`Harness[YourConfig]`, an
+    `AgentConfig` subclass) through its MRO — what a seat's config narrows to."""
     return (
-        generic_type(harness_class(harness_id), HarnessConfig, origin=Harness)
-        or HarnessConfig
+        generic_type(harness_class(harness_id), AgentConfig, origin=Harness)
+        or AgentConfig
     )
 
 
@@ -241,7 +274,7 @@ def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
         cls = env_config_type(data.taskset.id, data.id)
         if isinstance(data, cls):
             return data  # already at least as specifically typed — keep
-        data = data.model_dump()
+        data = data.model_dump(serialize_as_any=True)
     raw = dict(data or {})
     taskset = raw.get("taskset")
     taskset_id = (

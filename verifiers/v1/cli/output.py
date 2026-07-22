@@ -54,7 +54,9 @@ def write_config(config: BaseModel, results_dir: Path) -> Path:
     path. mode="json" makes values TOML-friendly (Path -> str, etc.); exclude_none drops the
     nulls TOML can't represent."""
     results_dir.mkdir(parents=True, exist_ok=True)
-    toml = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
+    toml = tomli_w.dumps(
+        config.model_dump(mode="json", exclude_none=True, serialize_as_any=True)
+    )
     config_path = results_dir / CONFIG_FILE
     config_path.write_text(toml)
     return config_path

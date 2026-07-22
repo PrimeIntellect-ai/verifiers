@@ -8,7 +8,5 @@ num_rollouts = 2
 id = "wordle-v1"
 
 [env.agent]
+harness = "null"
 max_turns = 8
-
-[env.agent.harness]
-id = "null"

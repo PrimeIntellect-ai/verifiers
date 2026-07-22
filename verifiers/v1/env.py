@@ -16,8 +16,14 @@ from typing import (
 from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent, AgentConfig, Agents, _EpisodeAgent
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.agent import (
+    Agent,
+    AgentConfig,
+    Agents,
+    _EpisodeAgent,
+    resolve_agent_config,
+)
+from verifiers.v1.harness import Harness
 from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
 from verifiers.v1.types import ID
 from verifiers.v1.interception import (
@@ -85,12 +91,14 @@ class EnvConfig(BaseConfig):
             return f"{self.id}+{self.taskset.id}"
         return self.taskset.id or self.id
 
-    def agent_harnesses(self) -> dict[str, HarnessConfig]:
-        """Each declared role's resolved harness config (pin, else the taskset's
-        default) — known without constructing the env."""
-        default = default_agent_harness(self.taskset.id)
+    def agent_harnesses(self) -> dict[str, AgentConfig]:
+        """Each declared role's config with its harness resolved (pin, else the
+        taskset's default) — known without constructing the env."""
+        from verifiers.v1.loaders import default_harness_id
+
+        default = default_harness_id(self.taskset.id)
         return {
-            name: cfg.harness if cfg.harness is not None else default
+            name: cfg if cfg.harness else cfg.model_copy(update={"harness": default})
             for name, cfg in _declared_agent_configs(self).items()
         }
 
@@ -105,17 +113,17 @@ class EnvConfig(BaseConfig):
             and "harness" not in cls.model_fields
         ):
             raise ValueError(
-                "a harness belongs to a seat: --env.agent.harness.* on the "
-                "single-agent env, --env.<role>.harness.* on a multi-agent role "
-                "(TOML: [env.agent.harness])"
+                "a harness belongs to a seat: --env.agent.harness <id> on the "
+                "single-agent env, --env.<role>.harness <id> on a multi-agent role "
+                '(TOML: harness = "..." in [env.agent])'
             )
         return data
 
     @model_validator(mode="before")
     @classmethod
     def _resolve_taskset(cls, data):
-        """Narrow `taskset` to its concrete config type by `id`; lazy import for
-        the same reason as `AgentConfig._resolve_harness`."""
+        """Narrow `taskset` to its concrete config type by `id`. The lazy import
+        keeps class-body defaults constructible while this module initializes."""
         if isinstance(data, dict) and data.get("taskset") is not None:
             from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
@@ -124,17 +132,33 @@ class EnvConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _merge_role_defaults(cls, data):
-        """Deep-merge partial role data over the field's declared default — plain
-        validation would replace the instance wholesale, resetting its other pins."""
-        if isinstance(data, dict):
-            for name, field in cls.model_fields.items():
-                if isinstance(field.default, AgentConfig) and isinstance(
-                    data.get(name), dict
-                ):
-                    data[name] = deep_merge(
-                        field.default.model_dump(exclude_none=True), data[name]
-                    )
+    def _resolve_roles(cls, data):
+        """Deep-merge partial role data over the field's declared default (plain
+        validation would replace the instance wholesale, resetting its other pins),
+        then narrow it to its harness's config type — harness fields validate flat
+        on the seat, addressed as `--env.<role>.<knob>`."""
+        if not isinstance(data, dict):
+            return data
+        from verifiers.v1.loaders import default_harness_id, narrow_agent_field
+
+        default_id: str | None = None
+        for name, info in cls.model_fields.items():
+            if isinstance(info.default, AgentConfig) and isinstance(
+                data.get(name), dict
+            ):
+                data[name] = deep_merge(
+                    info.default.model_dump(exclude_none=True, serialize_as_any=True),
+                    data[name],
+                )
+                if default_id is None:
+                    taskset = data.get("taskset")
+                    taskset_id = (
+                        taskset.get("id", "")
+                        if isinstance(taskset, dict)
+                        else getattr(taskset, "id", "")
+                    ) or ""
+                    default_id = default_harness_id(taskset_id)
+                narrow_agent_field(data, name, default_id)
         return data
 
     @classmethod
@@ -169,15 +193,6 @@ def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
         for name, field in type(config).model_fields.items()
         if isinstance(field.default, AgentConfig)
     }
-
-
-def default_agent_harness(taskset_id: str) -> HarnessConfig:
-    """What an unpinned role's `harness=None` resolves to: the taskset's bundled
-    harness when it ships one, else the built-in `bash`."""
-    from verifiers.v1.loaders import default_harness_id, harness_config_type
-
-    ident = default_harness_id(taskset_id)
-    return harness_config_type(ident).model_validate({"id": ident})
 
 
 logger = logging.getLogger(__name__)
@@ -225,7 +240,11 @@ class Env(ABC, Generic[ConfigT]):
     task the agent actually receives — an env-minted task carries its own needs."""
 
     def __init__(self, config: ConfigT) -> None:
-        from verifiers.v1.loaders import load_harness, load_taskset
+        from verifiers.v1.loaders import (
+            default_harness_id,
+            load_harness,
+            load_taskset,
+        )
 
         config_cls = generic_type(type(self), EnvConfig, origin=Env) or EnvConfig
         if not isinstance(config, config_cls):
@@ -243,25 +262,28 @@ class Env(ABC, Generic[ConfigT]):
                 "`eval <taskset-id>`)"
             )
         self.taskset = load_taskset(config.taskset)
-        self._default_harness = default_agent_harness(config.taskset.id)
         task_cls = type(self.taskset).task_type()
         self._task_cls: type[Task] = task_cls
-        self._agent_specs: dict[str, AgentConfig] = _declared_agent_configs(self.config)
-        if not self._agent_specs:
+        declared = _declared_agent_configs(self.config)
+        if not declared:
             raise ValueError(
                 f"{type(self).__name__} declares no agents; declare each as an "
                 "AgentConfig field on the env's config "
                 "(`solver: vf.AgentConfig = vf.AgentConfig()`) — the field name is "
                 "the agent's name. The single-agent case is SingleAgentEnv."
             )
-        # Same harness config -> one loaded object (harnesses are stateless values).
+        default_id = default_harness_id(config.taskset.id)
+        self._agent_specs: dict[str, AgentConfig] = {
+            name: resolve_agent_config(spec, default_id)
+            for name, spec in declared.items()
+        }
+        # Same agent config -> one loaded object (harnesses are stateless values).
         loaded: dict[str, Harness] = {}
         self._harnesses: dict[str, Harness] = {}
         for name, spec in self._agent_specs.items():
-            cfg = self._agent_harness(spec)
-            key = cfg.model_dump_json()
+            key = spec.model_dump_json()
             if key not in loaded:
-                loaded[key] = load_harness(cfg)
+                loaded[key] = load_harness(spec)
             self._harnesses[name] = loaded[key]
         warned: set[str] = set()
         for name, harness in self._harnesses.items():
@@ -269,15 +291,15 @@ class Env(ABC, Generic[ConfigT]):
             if (
                 harness.EXECUTES_CODE
                 and isinstance(harness.config.runtime, SubprocessConfig)
-                and harness.config.id not in warned
+                and harness.config.harness not in warned
             ):
-                warned.add(harness.config.id)
+                warned.add(harness.config.harness)
                 logger.warning(
                     "Harness %r is running in the subprocess runtime on the local system. "
                     "Local files and settings may affect the evaluation; use subprocess only "
-                    "for debugging. Use --env.<role>.harness.runtime.type docker or prime "
+                    "for debugging. Use --env.<role>.runtime.type docker or prime "
                     "for an isolated run.",
-                    harness.config.id,
+                    harness.config.harness,
                 )
         # Serving resources, live only inside `serving()`; the env's agents borrow them.
         self._shared_tools: dict[str, SharedToolServer] = {}
@@ -325,10 +347,6 @@ class Env(ABC, Generic[ConfigT]):
 
     # --- machinery (the base owns everything below) -----------------------------
 
-    def _agent_harness(self, agent: AgentConfig) -> HarnessConfig:
-        """The role's harness config: its own pin, else the taskset's default."""
-        return agent.harness if agent.harness is not None else self._default_harness
-
     def _episode_agents(
         self,
         ctx: ModelContext,
@@ -341,12 +359,11 @@ class Env(ABC, Generic[ConfigT]):
         resources (nothing shared across concurrent episodes); `setup()` sees them first."""
 
         def make(name: str, spec: AgentConfig) -> Agent:
-            # Unpinned fields fall back to the run's ctx / the taskset's harness.
+            # Unpinned fields fall back to the run's ctx; the harness was resolved
+            # (id stamped, config narrowed) once at construction.
+            spec = self._agent_specs[name]
             resolved = spec.model_copy(
                 update={
-                    "harness": spec.harness
-                    if spec.harness is not None
-                    else self._default_harness,
                     "model": spec.model if spec.model is not None else ctx.model,
                     "sampling": spec.sampling
                     if spec.sampling is not None

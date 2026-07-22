@@ -14,7 +14,7 @@ class InitConfig(BaseConfig):
     add_user: bool = Field(False, validation_alias=AliasChoices("add_user", "U"))
     """Also scaffold a `vf.User` declared on the task (`-U`)."""
     add_harness: bool = Field(False, validation_alias=AliasChoices("add_harness", "H"))
-    """Also scaffold a custom `vf.Harness` (`harness.py`), selectable via `--env.agent.harness.id <name>` (`-H`)."""
+    """Also scaffold a custom `vf.Harness` (`harness.py`), selectable via `--env.agent.harness <name>` (`-H`)."""
     v0: bool = False
     """Scaffold a legacy v0 environment (a `load_environment` package) instead of a v1 taskset."""
     force: bool = False

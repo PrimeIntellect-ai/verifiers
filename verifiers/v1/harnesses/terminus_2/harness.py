@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -10,7 +10,7 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 logger = logging.getLogger(__name__)
 
 
-class Terminus2HarnessConfig(HarnessConfig):
+class Terminus2HarnessConfig(AgentConfig):
     version: str = "0.14.0"
     """Harbor release to install, pinned for reproducibility."""
 
@@ -28,7 +28,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             raise RuntimeError(
                 "Terminus 2 drives tmux and is unsafe on the subprocess (host) runtime — its tmux "
                 "cleanup can kill the host's tmux server. Run it in a container runtime "
-                "(--env.agent.harness.runtime.type docker|prime|modal)."
+                "(--env.agent.runtime.type docker|prime|modal)."
             )
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         await runtime.prepare_uv_script(source, self.config.resolved_env)

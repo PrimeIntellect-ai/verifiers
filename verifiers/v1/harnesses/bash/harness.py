@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -25,7 +25,7 @@ SEARCH_PROMPT = (
 )
 
 
-class BashHarnessConfig(HarnessConfig):
+class BashHarnessConfig(AgentConfig):
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""

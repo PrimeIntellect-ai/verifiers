@@ -22,7 +22,6 @@ from verifiers.v1.configs.env import (
 from verifiers.v1.env import (
     EnvConfig,
     Env,
-    default_agent_harness,
 )
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
@@ -37,7 +36,7 @@ from verifiers.v1.errors import (
     TunnelError,
     UserError,
 )
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import Harness
 from verifiers.v1.judge import (
     Judge,
     JudgeConfig,
@@ -234,7 +233,6 @@ __all__ = [
     "TasksetConfig",
     "BaseConfig",
     "Harness",
-    "HarnessConfig",
     "ModelContext",
     "Runtime",
     "RuntimeConfig",
@@ -251,7 +249,6 @@ __all__ = [
     "AgentConfig",
     "StaticPoolConfig",
     "ElasticPoolConfig",
-    "default_agent_harness",
     "pool_serve_kwargs",
     "RetryConfig",
     # agent

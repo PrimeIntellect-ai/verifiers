@@ -10,20 +10,16 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from typing import AsyncIterator
 
-from pydantic import SerializeAsAny, model_validator
-from pydantic_config import BaseConfig
-
 from verifiers.v1.clients import (
     Client,
-    ClientConfig,
     EvalClientConfig,
     ModelContext,
     resolve_client,
 )
-from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.harness import AgentConfig, TimeoutConfig
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.retries import RetryConfig, backoff, trace_should_retry
+from verifiers.v1.retries import backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun
 from verifiers.v1.runtimes import (
     DockerConfig,
@@ -36,62 +32,35 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Sampling, SamplingConfig
+from verifiers.v1.types import Sampling
 from verifiers.v1.utils.compile import (
     cap_remote_harness_timeout,
     resolve_runtime_config,
     validate_pairing,
 )
 
+__all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
+
 logger = logging.getLogger(__name__)
 
 
-class TimeoutConfig(BaseConfig):
-    """Per-agent wall-clock timeouts per rollout stage, in seconds (None = no
-    limit); each stage falls back to the task's own `TaskTimeout` when unset."""
+def resolve_agent_config(config: AgentConfig, default_harness: str) -> AgentConfig:
+    """The config narrowed to its harness's own type with the harness id stamped
+    (`harness=None` resolves to `default_harness`) — what an `Agent` is built from.
+    A config already of the right type passes through untouched."""
+    from verifiers.v1.loaders import harness_config_type
 
-    setup: float | None = None  # one shared budget: task setup + provisioning
-    rollout: float | None = None
-    finalize: float | None = None
-    scoring: float | None = None
-
-
-class AgentConfig(BaseConfig):
-    """One env agent: who plays it, and its per-run caps. It pins only what
-    makes it a different actor; everything unpinned falls back — the model context
-    to the run's own, the harness to the taskset's default."""
-
-    harness: SerializeAsAny[HarnessConfig] | None = None
-    """The agent's program + runtime policy (None = the taskset's default harness)."""
-    model: str | None = None
-    """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
-    client: ClientConfig | None = None
-    """Endpoint override (None = the run's client)."""
-    sampling: SamplingConfig | None = None
-    """Sampling override (None = the run's sampling)."""
-    timeout: TimeoutConfig = TimeoutConfig()
-    retries: RetryConfig = RetryConfig()
-    """Whole-run retries: rerun this agent's rollout while its trace ends with a
-    retryable error (never into a borrowed box)."""
-    max_turns: int | None = None
-    """Max model turns per run (None = no limit). Framework-enforced (the
-    interception server refuses turns past it), so it applies to any harness."""
-    max_input_tokens: int | None = None
-    max_output_tokens: int | None = None
-    max_total_tokens: int | None = None
-    """Token caps per run (None = no limit); framework-enforced between turns."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_harness(cls, data):
-        """Narrow a pinned `harness` to its concrete config type by `id` (absent
-        stays None = the taskset's default). The lazy import keeps class-body
-        `AgentConfig()` defaults constructible while this module initializes."""
-        if isinstance(data, dict) and data.get("harness") is not None:
-            from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
-
-            narrow_plugin_field(data, "harness", harness_config_type, "bash")
-        return data
+    ident = config.harness or default_harness
+    expected = harness_config_type(ident)
+    if isinstance(config, expected):
+        return (
+            config
+            if config.harness == ident
+            else config.model_copy(update={"harness": ident})
+        )
+    return expected.model_validate(
+        {**config.model_dump(serialize_as_any=True), "harness": ident}
+    )
 
 
 def _check_borrowed_placement(
@@ -150,8 +119,8 @@ class Agent:
 
     Built from an `AgentConfig` alone; `client=`/`interception=` inject live
     resources to borrow — agents on one endpoint should share one `Client`, and a
-    live `Interception`'s owner keeps its lifecycle. The harness config's
-    `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
+    live `Interception`'s owner keeps its lifecycle. The config's `runtime` is a
+    *policy*: each `run` provisions a fresh box from it, resolved
     per task; `run(runtime=...)` places the run into an existing box instead
     (borrowed boxes are never started or torn down by the run)."""
 
@@ -162,18 +131,18 @@ class Agent:
         client: Client | None = None,
         interception: Interception | None = None,
     ) -> None:
-        from verifiers.v1.loaders import harness_config_type, load_harness
+        from verifiers.v1.loaders import load_harness
 
         if config.model is None:
             raise ValueError(
                 "AgentConfig.model is unset; an Agent needs a pinned model "
                 "(inside an env the run's own model fills it in)"
             )
-        harness_config = config.harness
-        if harness_config is None:
-            harness_config = harness_config_type("bash")(id="bash")
+        # `harness=None` means `bash` here: the taskset's default is an env
+        # concern, and the env resolves it before building its agents.
+        config = resolve_agent_config(config, "bash")
         self.config = config
-        self.harness = load_harness(harness_config)
+        self.harness = load_harness(config)
         self._owns_client = client is None
         if self._owns_client:
             client = resolve_client(config.client or EvalClientConfig())
@@ -183,7 +152,7 @@ class Agent:
             sampling=config.sampling if config.sampling is not None else Sampling(),
         )
         self._closed = False
-        self.runtime_config: RuntimeConfig = self.harness.config.runtime
+        self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
             max_turns=config.max_turns,

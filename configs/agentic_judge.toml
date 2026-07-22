@@ -17,11 +17,11 @@ id = "agentic-judge"
 [env.taskset]
 id = "gsm8k-v1"
 
-[env.solver.harness]
-id = "null"
+[env.solver]
+harness = "null"
 
 [env.judge]
 model = "z-ai/glm-5.2"
 
-[env.judge.harness.runtime]
+[env.judge.runtime]
 type = "docker"

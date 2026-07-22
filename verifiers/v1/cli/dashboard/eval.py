@@ -163,7 +163,7 @@ def _warning(config: EvalConfig) -> Text | None:
     from verifiers.v1.loaders import harness_class
 
     if any(
-        h.runtime.type == "subprocess" and harness_class(h.id).EXECUTES_CODE
+        h.runtime.type == "subprocess" and harness_class(h.harness).EXECUTES_CODE
         for h in config.env.agent_harnesses().values()
     ):
         return Text(
@@ -252,14 +252,14 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_row("model", f"{model}  via {config.client.base_url}")
     # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
     # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
-    # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
-    # here), but only for the harness — `taskset.task.tools.runtime.type` has no other display.
+    # parsed as styling and dropped. `id` is in the `env` row; the seat's `harness` and
+    # `runtime.type` too (hidden here) — `taskset.task.tools.runtime.type` has no other display.
     if taskset_over := overrides(taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
     for role, h in seats.items():
-        if harness_over := overrides(h, skip=frozenset({"id", "runtime.type"})):
-            label = f"{role}.harness" if len(seats) > 1 else "harness"
-            grid.add_row(label, escape("  ·  ".join(harness_over)))
+        if agent_over := overrides(h, skip=frozenset({"harness", "runtime.type"})):
+            label = role if len(seats) > 1 else "agent"
+            grid.add_row(label, escape("  ·  ".join(agent_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)

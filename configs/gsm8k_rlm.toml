@@ -3,15 +3,15 @@
 #   uv run eval @ configs/gsm8k_rlm.toml
 #
 # The discriminator ids (which taskset, which harness) come from this file's
-# [env.taskset] / [env.agent.harness] `id` — they select the schema, and the rest of the
+# [env.taskset] `id` / [env.agent] `harness` — they select the schema, and the rest of the
 # file fills the typed config, each side validated against its specific type (GSM8KConfig /
-# RLMHarnessConfig). prime-rl consumes the same [env] shape, reading the ids straight from
-# its config (TOML-driven there too).
+# RLMHarnessConfig, whose knobs sit flat on the agent). prime-rl consumes the same [env]
+# shape, reading the ids straight from its config (TOML-driven there too).
 num_tasks = 1
 
 [env.taskset]
 id = "gsm8k-v1"
 
-[env.agent.harness]
-id = "rlm"
+[env.agent]
+harness = "rlm"
 version = "main"

@@ -9,7 +9,7 @@ import re
 import shlex
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import TextContentPart
@@ -35,7 +35,7 @@ chmod +x {bin}
 """
 
 
-class CodexHarnessConfig(HarnessConfig):
+class CodexHarnessConfig(AgentConfig):
     version: str = "0.144.5"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
     multi_agent: bool = False

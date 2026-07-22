@@ -11,7 +11,7 @@ import re
 import shlex
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
@@ -86,7 +86,7 @@ export default async function isolatedMcp(pi) {{
 """.strip()
 
 
-class PiHarnessConfig(HarnessConfig):
+class PiHarnessConfig(AgentConfig):
     version: str = "0.80.10"
     """Pi release to install, pinned for reproducibility."""
 

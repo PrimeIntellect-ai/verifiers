@@ -6,12 +6,13 @@ verifiers supports a range of harnesses out of the box, including Claude Code, C
 
 ```python
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
-class MyHarnessConfig(HarnessConfig):
-    # These are the values that the users are allowed to set and change.
+class MyHarnessConfig(AgentConfig):
+    # These are the values that the users are allowed to set and change; they sit
+    # flat on the agent (`--env.agent.version 0.0.2`).
     version: str = "0.0.1"
 
 class MyHarness(Harness[MyHarnessConfig]):

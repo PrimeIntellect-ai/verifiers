@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.harness import AgentConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -265,7 +265,7 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
-TRACE_VERSION = 2
+TRACE_VERSION = 3
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
@@ -314,9 +314,10 @@ class AgentInfo(StrictBaseModel):
     """The model identifier requested from the client."""
     sampling: SamplingConfig | None = None
     """The resolved sampling settings the rollout ran with."""
-    harness: HarnessConfig | None = None
-    """The driving harness's config. Typed as the base config, so a custom harness's
-    extra fields don't serialize — records round-trip without importing the harness."""
+    harness: AgentConfig | None = None
+    """The agent's resolved config — the driving harness's id and its flat knobs.
+    Typed as the base config, so a custom harness's extra fields don't serialize —
+    records round-trip without importing the harness."""
     name: str = "agent"
     """The env agent that produced this trace — the config field name (`solver`,
     `judge`); the default outside an env and for `SingleAgentEnv`'s sole agent.

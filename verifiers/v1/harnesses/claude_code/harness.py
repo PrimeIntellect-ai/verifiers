@@ -6,7 +6,7 @@ import shlex
 from pydantic import Field
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import AgentConfig, Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -20,7 +20,7 @@ curl -fsSL https://claude.ai/install.sh | HOME={home} bash -s {version}
 """
 
 
-class ClaudeCodeHarnessConfig(HarnessConfig):
+class ClaudeCodeHarnessConfig(AgentConfig):
     version: str = Field(default="2.1.214", pattern=r"^[A-Za-z0-9._+-]+$")
     """Claude Code release to install; pinned for reproducibility."""
 
