@@ -236,24 +236,103 @@ class EgressProxy:
                     return
                 upstream_writer.write(client_hello)
                 await upstream_writer.drain()
+                await _relay(reader, writer, upstream_reader, upstream_writer)
             else:
                 path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
                 authority = f"[{host}]" if ":" in host else host
                 if port != (443 if scheme == "https" else 80):
                     authority = f"{authority}:{port}"
+                fields: dict[bytes, list[bytes]] = {}
+                for line in headers.split(b"\r\n"):
+                    name, separator, value = line.partition(b":")
+                    if not line:
+                        continue
+                    if not separator:
+                        raise ValueError("malformed HTTP header")
+                    fields.setdefault(name.strip().lower(), []).append(value.strip())
+                connection_fields = {
+                    field.strip().lower()
+                    for value in fields.get(b"connection", [])
+                    for field in value.split(b",")
+                }
+                excluded = {
+                    b"connection",
+                    b"expect",
+                    b"host",
+                    b"proxy-authorization",
+                    b"proxy-connection",
+                    *connection_fields,
+                }
                 header_lines = [
                     line
                     for line in headers.split(b"\r\n")
-                    if line.partition(b":")[0].strip().lower() != b"host"
+                    if line and line.partition(b":")[0].strip().lower() not in excluded
                 ]
-                headers = f"Host: {authority}\r\n".encode("latin-1") + b"\r\n".join(
-                    header_lines
+                headers = (
+                    b"\r\n".join(
+                        [
+                            f"Host: {authority}".encode("latin-1"),
+                            b"Connection: close",
+                            *header_lines,
+                        ]
+                    )
+                    + b"\r\n\r\n"
                 )
                 upstream_writer.write(
                     f"{method} {path} {version}\r\n".encode("latin-1") + headers
                 )
                 await upstream_writer.drain()
-            await _relay(reader, writer, upstream_reader, upstream_writer)
+                if any(
+                    value.lower() == b"100-continue"
+                    for value in fields.get(b"expect", [])
+                ):
+                    writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    await writer.drain()
+                transfer_encoding = b",".join(fields.get(b"transfer-encoding", []))
+                content_lengths = {
+                    int(value) for value in fields.get(b"content-length", [])
+                }
+                if len(content_lengths) > 1 or (transfer_encoding and content_lengths):
+                    raise ValueError("ambiguous HTTP request body")
+                if transfer_encoding:
+                    if transfer_encoding.lower() != b"chunked":
+                        raise ValueError("unsupported HTTP transfer encoding")
+                    while True:
+                        chunk_head = await reader.readuntil(b"\r\n")
+                        chunk_size = int(chunk_head.partition(b";")[0], 16)
+                        upstream_writer.write(chunk_head)
+                        if not chunk_size:
+                            while True:
+                                trailer = await reader.readuntil(b"\r\n")
+                                upstream_writer.write(trailer)
+                                if trailer == b"\r\n":
+                                    break
+                            break
+                        remaining = chunk_size
+                        while remaining:
+                            chunk = await reader.readexactly(min(remaining, 1 << 16))
+                            upstream_writer.write(chunk)
+                            remaining -= len(chunk)
+                        ending = await reader.readexactly(2)
+                        if ending != b"\r\n":
+                            raise ValueError("malformed chunked HTTP body")
+                        upstream_writer.write(ending)
+                        await upstream_writer.drain()
+                elif content_lengths:
+                    remaining = content_lengths.pop()
+                    if remaining < 0:
+                        raise ValueError("negative HTTP content length")
+                    while remaining:
+                        chunk = await reader.readexactly(min(remaining, 1 << 16))
+                        upstream_writer.write(chunk)
+                        remaining -= len(chunk)
+                        await upstream_writer.drain()
+                await upstream_writer.drain()
+                # Plain HTTP gets exactly one policy check and one request. Never copy
+                # pipelined bytes into the first request's already-selected upstream.
+                while chunk := await upstream_reader.read(1 << 16):
+                    writer.write(chunk)
+                    await writer.drain()
         except Exception:
             with contextlib.suppress(Exception):
                 writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
