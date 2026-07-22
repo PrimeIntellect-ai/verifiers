@@ -10,16 +10,18 @@ part of the benchmark semantics.
 
 ## Weather example
 
-Run the five bundled tasks with any MCP-capable verifiers harness:
+Run the five example tasks from the Verifiers checkout with any MCP-capable
+verifiers harness:
 
 ```bash
-uv sync --python 3.12 --extra nemo-gym
-uv run eval nemo-gym-weather --env.agent.harness.id bash --no-push -n 5
+uv run --with-editable . --with-editable environments/nemo_gym_weather_v1 \
+  eval nemo-gym-weather-v1 --env.agent.harness.id bash --no-push -n 5
 ```
 
-The `nemo-gym` extra installs the published `nemo-gym==0.4.0` package. The taskset
-starts its `ExampleMCPWeatherResourcesServer` for the duration of the evaluation. It
-does not start Gym's agent, model, Ray, or head-server stack.
+The example package depends on the `nemo-gym` extra, which installs the published
+`nemo-gym==0.4.0` package. Its taskset starts
+`ExampleMCPWeatherResourcesServer` for the duration of the evaluation. It does not
+start Gym's agent, model, Ray, or head-server stack.
 
 A taskset can manage another server shipped in that package by naming its resource
 class:

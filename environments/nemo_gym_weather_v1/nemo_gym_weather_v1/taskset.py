@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+import verifiers.v1 as vf
 from verifiers.v1.tasksets.nemo_gym import (
     NeMoGymConfig,
+    NeMoGymTask,
     NeMoGymTaskset,
 )
 
@@ -12,7 +14,9 @@ class NeMoGymWeatherConfig(NeMoGymConfig):
     dataset_path: Path = Path(__file__).with_name("example.jsonl")
 
 
-class NeMoGymWeatherTaskset(NeMoGymTaskset[NeMoGymWeatherConfig]):
+class NeMoGymWeatherTaskset(
+    NeMoGymTaskset, vf.Taskset[NeMoGymTask, NeMoGymWeatherConfig]
+):
     resource_server = (
         "resources_servers.example_mcp_weather.app:ExampleMCPWeatherResourcesServer"
     )
