@@ -1,9 +1,3 @@
-# /// script
-# requires-python = ">=3.12,<3.14"
-# dependencies = [
-#   "nemo-gym==0.4.0",
-# ]
-# ///
 """Serve one resource-server class from the published NeMo Gym package."""
 
 import os
