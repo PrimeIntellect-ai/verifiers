@@ -9,6 +9,16 @@
 #
 # The judge writes {"score": 0-10, ...} to /tmp/verdict.json in its box; the env
 # validates it strictly and records it on the solver's trace as the `judge` reward.
+#
+# The grading policy and what lands in the judge's box are configurable:
+#   --env.prompt / --env.prompt_file  grading-policy override (may reference
+#                                     {prompt}); the verdict contract and
+#                                     workspace note are always appended
+#   [env.uploads]                     transcript/trace paths (null to omit) and
+#                                     info = { <trace.info key> = "<sandbox path>" }
+#   --env.judge_weight                weight of the verdict in the solver's reward
+#   --env.task_reward_weight          scale on the taskset's own rewards (0 =
+#                                     judge-only reward)
 num_tasks = 2
 
 [env]

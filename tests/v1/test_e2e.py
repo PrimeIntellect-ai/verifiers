@@ -317,7 +317,10 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     its own box with the graded transcript uploaded, investigates with real
     execution, and its parsed verdict lands on the solver's trace under the spec's
     reward key. Wiring, not taste: the judge followed the verdict-file contract's
-    output contract — the grade itself is the model's call."""
+    output contract — the grade itself is the model's call. Exercises the config
+    surface too: a policy-only prompt override (the verdict contract is appended
+    regardless), an extra `trace.info` upload (an absent key skips, not fails),
+    and reward-composition weights."""
     traces = await run_v1(
         "echo-v1",
         harness=None,  # seats pin their own harness; there is no run-level one
@@ -330,6 +333,9 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
                 "harness": {"runtime": {"type": "docker"}},
                 "max_output_tokens": 8192,
             },
+            "prompt": "Check EMPIRICALLY that the agent echoed the word back.",
+            "uploads": {"info": {"no_such_key": "/tmp/absent.txt"}},
+            "task_reward_weight": 0.5,
         },
         output_dir=tmp_path,
         max_turns=10,
@@ -340,7 +346,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     (judge,) = [t for t in traces if t.agent_name == "judge"]
     assert solver.ok and judge.ok
     assert judge.trainable is False
-    assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
+    assert solver.rewards["echoed"] == 0.5  # the task's own reward, rescaled
     assert isinstance(judge.info.get("verdict"), dict)  # scraped off the box
     assert 0.0 <= solver.rewards["judge"] <= 1.0
 
