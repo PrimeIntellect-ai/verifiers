@@ -4,13 +4,23 @@
 flags) and writes back into the same dir. `load` keeps the good saved rollouts and
 re-runs what's owed: missing rollouts (never written) and errored ones (dropped and
 redone).
+
+A saved rollout is matched to a selected task by CONTENT: `task_key` hashes the
+task's wire data, so identity is the data itself. Tasks with identical data are
+interchangeable (a collision resolves to "either one counts"), a task whose data
+changed since the interrupted run re-runs (the saved episode answered a different
+question), and nothing depends on `data.idx` being unique — or set at all. Only
+the legacy (v0) bridge, whose tasks never leave the server, still matches by row
+index (its `key_of`).
 """
 
+import hashlib
 import json
 import tomllib
-from collections import defaultdict
-from collections.abc import Callable
+from collections import Counter, defaultdict
+from collections.abc import Callable, Hashable, Mapping
 from pathlib import Path
+from typing import TypeVar
 
 from pydantic_core import from_json
 
@@ -18,6 +28,42 @@ from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import WireTrace
+
+K = TypeVar("K", bound=Hashable)
+
+
+def task_key(data: Mapping) -> str:
+    """Content identity of one task's wire data: the hash of its canonical,
+    None-stripped JSON. Saved rows drop None-valued fields (`exclude_none`) while a
+    live `model_dump` keeps them, so absent ≡ None; key equality is data equality."""
+
+    def strip(value):
+        if isinstance(value, Mapping):
+            return {k: strip(v) for k, v in value.items() if v is not None}
+        if isinstance(value, list):
+            return [strip(v) for v in value]
+        return value
+
+    canonical = json.dumps(
+        strip(data), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def distribute(
+    selected_keys: list[K], owed: dict[K, int], num_rollouts: int
+) -> list[int]:
+    """Spread each key's owed rollouts over its selection instances, in order —
+    content-identical tasks are interchangeable, so any instance can absorb the
+    debt (capped at `num_rollouts` each). Returns one count per selection."""
+    remaining = dict(owed)
+    counts: list[int] = []
+    for key in selected_keys:
+        take = min(num_rollouts, remaining.get(key, 0))
+        if take:
+            remaining[key] -= take
+        counts.append(take)
+    return counts
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -51,25 +97,33 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
 
 def load(
     resume_dir: Path,
-    selected_idxs: list[int],
+    selected_keys: list[K],
     num_rollouts: int,
     complete: Callable[[Episode], bool] | None = None,
     *,
     whole_task: bool = False,
-) -> tuple[list[Episode], dict[int, int]]:
+    key_of: Callable[[Mapping], K] | None = None,
+) -> tuple[list[Episode], dict[K, int]]:
     """Load the good saved rollouts as finished episodes and diff them against the
-    run's target: returns (kept episodes, rollouts owed per task idx). A rollout is
+    run's target: returns (kept episodes, rollouts owed per task key). A rollout is
     kept or redone as a unit — the episode — so a multi-trace rollout interrupted
-    mid-write is simply owed again. `complete` is the environment's keep-verdict
-    (`Env.complete`); without it (the server path) the default is
-    `episode.ok`, so an errored rollout is dropped and re-run. `whole_task` redoes
-    a partially-kept task as a unit — the legacy group-scored path, where
-    `run_group` always serves the full n. Rewrites `traces.jsonl` to just the kept
-    rows via a temp file + atomic rename, so an interrupted resume can't corrupt
-    the prior results; the resumed rollouts then append. Pre-episode files (one
-    bare trace per line) load each trace as a single-trace episode."""
+    mid-write is simply owed again. `selected_keys` is one key per selected task,
+    in selection order (duplicates allowed: a key selected k times is owed up to
+    `k * num_rollouts`; spread the result back over the tasks with `distribute`).
+    `key_of` maps a saved row's task-data mapping to its key — default `task_key`,
+    the content hash; the legacy bridge passes row indices. `complete` is the
+    environment's keep-verdict (`Env.complete`); without it (the server path) the
+    default is `episode.ok`, so an errored rollout is dropped and re-run.
+    `whole_task` redoes a partially-kept task as a unit — the legacy group-scored
+    path, where `run_group` always serves the full n. Rewrites `traces.jsonl` to
+    just the kept rows via a temp file + atomic rename, so an interrupted resume
+    can't corrupt the prior results; the resumed rollouts then append. Pre-episode
+    files (one bare trace per line) load each trace as a single-trace episode."""
     path = resume_dir / TRACES_FILE
-    selected = set(selected_idxs)
+    targets = {
+        key: count * num_rollouts for key, count in Counter(selected_keys).items()
+    }
+    keyed = key_of if key_of is not None else task_key
 
     def parse(row: dict) -> Episode:
         if sniff_episode(row):
@@ -77,7 +131,7 @@ def load(
         return Episode.of(WireTrace.model_validate(row))
 
     verdict = complete if complete is not None else (lambda episode: episode.ok)
-    good: dict[int, list[tuple[bytes, Episode]]] = defaultdict(list)
+    good: dict[K, list[tuple[bytes, Episode]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -89,16 +143,16 @@ def load(
                     except ValueError:
                         row = json.loads(line)
                     # The task rides each trace; a traceless record (a failure
-                    # before any trace minted) has no idx and is owed again.
+                    # before any trace minted) has no task and is owed again.
                     if sniff_episode(row):
-                        idx = row["traces"][0]["task"]["data"]["idx"]
+                        key = keyed(row["traces"][0]["task"]["data"])
                     else:
-                        idx = row["task"]["data"]["idx"]
+                        key = keyed(row["task"]["data"])
                 except (ValueError, KeyError, IndexError, TypeError):
                     # A torn final line (the run died mid-write) or a foreign shape
                     # is not a keepable rollout — it's owed again, never a crash.
                     continue
-                if idx not in selected or len(good[idx]) >= num_rollouts:
+                if key not in targets or len(good[key]) >= targets[key]:
                     continue
                 try:
                     episode = parse(row)
@@ -106,20 +160,20 @@ def load(
                         continue
                 except Exception:  # malformed row: redo it
                     continue
-                good[idx].append(
+                good[key].append(
                     (line if line.endswith(b"\n") else line + b"\n", episode)
                 )
     keep: list[bytes] = []
     episodes: list[Episode] = []
-    owed: dict[int, int] = {}
-    for idx in selected_idxs:
-        rows = good.get(idx, [])
-        if whole_task and len(rows) < num_rollouts:
+    owed: dict[K, int] = {}
+    for key, target in targets.items():
+        rows = good.get(key, [])
+        if whole_task and len(rows) < target:
             rows = []  # a partial unit redoes whole — its kept rows are dropped
         keep.extend(line for line, _ in rows)
         episodes.extend(episode for _, episode in rows)
-        if missing := num_rollouts - len(rows):
-            owed[idx] = missing
+        if missing := target - len(rows):
+            owed[key] = missing
     tmp = path.with_suffix(".jsonl.tmp")
     tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
