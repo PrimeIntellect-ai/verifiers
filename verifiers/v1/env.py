@@ -18,7 +18,13 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.agent import Agent, AgentConfig, Agents, _EpisodeAgent
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
+from verifiers.v1.clients import (
+    Client,
+    ClientConfig,
+    ModelContext,
+    TrainClient,
+    resolve_client,
+)
 from verifiers.v1.types import ID
 from verifiers.v1.interception import (
     ElasticInterceptionPoolConfig,
@@ -289,6 +295,8 @@ class Env(ABC, Generic[ConfigT]):
         self._agent_clients: dict[str, Client] = {}
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
+        # Agents already demoted from trainable, so the warning fires once.
+        self._demoted_trainable: set[str] = set()
 
     # --- the multi-agent surface (override these) ------------------------------
 
@@ -382,6 +390,41 @@ class Env(ABC, Generic[ConfigT]):
             self._agent_clients[key] = resolve_client(config)
         return self._agent_clients[key]
 
+    def _resolve_trainable_standing(self, agents: Agents, ctx: ModelContext) -> None:
+        """One model context is trainable — `ctx`. Every trainable agent must
+        point to it: the same `model`, no pinned `client`. On a training run
+        (a `TrainClient` — its tokens exist to be trained on) a divergent
+        trainable agent is a config error; on any other run it is demoted,
+        warned once — an eval must not fail over a training-only concern, but
+        standing filters metrics and records, so it must stay honest. Resolved
+        after `setup()` (which declares standing), before any tokens burn."""
+        for name in self._agent_specs:
+            agent = getattr(agents, name)
+            if not agent.trainable:
+                continue
+            if agent.config.model == ctx.model and agent.config.client is None:
+                continue
+            if isinstance(ctx.client, TrainClient):
+                raise ValueError(
+                    f"trainable agent {name!r} doesn't use the trainable model "
+                    f"({ctx.model!r}) — mark it untrainable in "
+                    f"{type(self).__name__}.setup() "
+                    f"(`agents.{name}.trainable = False`)"
+                )
+            agent.trainable = False
+            if name in self._demoted_trainable:
+                continue
+            self._demoted_trainable.add(name)
+            logger.warning(
+                "agent %r is declared trainable but doesn't use the trainable "
+                "model context (%r): its traces are marked untrainable. Declare "
+                "`agents.%s.trainable = False` in %s.setup() to silence this.",
+                name,
+                ctx.model,
+                name,
+                type(self).__name__,
+            )
+
     async def run_episode(
         self,
         task: Task,
@@ -404,6 +447,7 @@ class Env(ABC, Generic[ConfigT]):
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
                     await self.setup(agents)
+                self._resolve_trainable_standing(agents, ctx)
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
                     await self.run(task, agents)
                     if not episode.traces:
