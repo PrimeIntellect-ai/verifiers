@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import fnmatch
 import socket
+import struct
 from dataclasses import dataclass
 from ipaddress import ip_address
 from urllib.parse import urlsplit, urlunsplit
@@ -64,6 +65,77 @@ class NetworkPolicy:
         return self.default_allow or any(
             _rule_matches(rule, scheme, host, port) for rule in self.allow
         )
+
+
+def _server_name(client_hello: bytes) -> str | None:
+    """Read the SNI hostname from a complete TLS ClientHello handshake body."""
+    data = memoryview(client_hello)
+    offset = 34  # legacy_version + random
+    offset += 1 + data[offset]  # session id
+    cipher_length = struct.unpack_from("!H", data, offset)[0]
+    offset += 2 + cipher_length
+    offset += 1 + data[offset]  # compression methods
+    if offset == len(data):
+        return None
+    extensions_length = struct.unpack_from("!H", data, offset)[0]
+    offset += 2
+    end = offset + extensions_length
+    if end != len(data):
+        raise ValueError("malformed TLS extensions")
+    while offset < end:
+        extension_type, extension_length = struct.unpack_from("!HH", data, offset)
+        offset += 4
+        extension = data[offset : offset + extension_length]
+        offset += extension_length
+        if len(extension) != extension_length:
+            raise ValueError("malformed TLS extension")
+        if extension_type != 0:
+            continue
+        names_length = struct.unpack_from("!H", extension, 0)[0]
+        if names_length != len(extension) - 2:
+            raise ValueError("malformed TLS server names")
+        name_offset = 2
+        while name_offset < len(extension):
+            name_type = extension[name_offset]
+            name_length = struct.unpack_from("!H", extension, name_offset + 1)[0]
+            name_offset += 3
+            name = bytes(extension[name_offset : name_offset + name_length])
+            name_offset += name_length
+            if name_offset > len(extension):
+                raise ValueError("malformed TLS server name")
+            if name_type == 0:
+                hostname = name.decode("ascii").lower().rstrip(".")
+                if not hostname or "\0" in hostname:
+                    raise ValueError("invalid TLS server name")
+                return hostname
+        return None
+    return None
+
+
+async def _read_client_hello(
+    reader: asyncio.StreamReader,
+) -> tuple[bytes, str | None]:
+    records = bytearray()
+    handshake = bytearray()
+    expected: int | None = None
+    while expected is None or len(handshake) < expected:
+        header = await asyncio.wait_for(reader.readexactly(5), 10)
+        length = int.from_bytes(header[3:5])
+        if header[0] != 22 or length > (1 << 14) + 2048:
+            raise ValueError("expected a TLS handshake record")
+        payload = await asyncio.wait_for(reader.readexactly(length), 10)
+        records.extend(header)
+        records.extend(payload)
+        handshake.extend(payload)
+        if len(records) > 1 << 20:
+            raise ValueError("TLS ClientHello is too large")
+        if expected is None and len(handshake) >= 4:
+            if handshake[0] != 1:
+                raise ValueError("expected a TLS ClientHello")
+            expected = 4 + int.from_bytes(handshake[1:4])
+            if expected > 1 << 20:
+                raise ValueError("TLS ClientHello is too large")
+    return bytes(records), _server_name(bytes(handshake[4:expected]))
 
 
 class EgressProxy:
@@ -153,6 +225,17 @@ class EgressProxy:
             if method == "CONNECT":
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()
+                client_hello, server_name = await _read_client_hello(reader)
+                if server_name is None:
+                    with contextlib.suppress(ValueError):
+                        ip_address(host)
+                        server_name = host
+                if server_name is None or not self.policy.permits(
+                    "https", server_name, port, connect=True
+                ):
+                    return
+                upstream_writer.write(client_hello)
+                await upstream_writer.drain()
             else:
                 path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
                 authority = f"[{host}]" if ":" in host else host
