@@ -242,7 +242,8 @@ class PiHarness(Harness[PiHarnessConfig]):
         skill_args = [
             arg
             for skill in self.config.skills
-            for arg in ("--skill", f"{SKILLS_DIR}/{skill.name}")
+            # Resolve like `install_skills` so the path matches what it wrote.
+            for arg in ("--skill", f"{SKILLS_DIR}/{skill.resolve().name}")
         ]
         system_args = ["--append-system-prompt", system_prompt] if system_prompt else []
         argv = [
