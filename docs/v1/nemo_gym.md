@@ -19,7 +19,7 @@ uv run verifiers/v1/tasksets/nemo_gym_weather/server.py
 Then run its five example tasks with any MCP-capable verifiers harness:
 
 ```bash
-uv run eval nemo-gym-weather --harness.id default --no-push -n 5
+uv run eval nemo-gym-weather --env.agent.harness.id bash --no-push -n 5
 ```
 
 The launcher installs the published `nemo-gym==0.4.0` package and starts only the
@@ -34,15 +34,15 @@ dataset and URL:
 ```toml
 model = "openai/gpt-5-mini"
 
-[taskset]
+[env.taskset]
 id = "nemo-gym"
 dataset_path = "/path/to/tasks.jsonl"
 
-[taskset.task]
+[env.taskset.task]
 resources_url = "http://127.0.0.1:8000"
 
-[harness]
-id = "default"
+[env.agent.harness]
+id = "bash"
 ```
 
 Validate and run the configuration with:
