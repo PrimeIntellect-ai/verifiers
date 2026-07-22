@@ -41,8 +41,8 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        prompt = data.prompt
-        if not isinstance(prompt, str):
+        _, prompt = self.resolve_text_prompt(data)
+        if prompt is None:
             raise ValueError("Compacting harness requires a string task prompt")
         env = {
             "OPENAI_BASE_URL": endpoint,

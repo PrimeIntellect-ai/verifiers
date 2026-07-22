@@ -11,6 +11,7 @@ from pydantic import model_validator
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import metric
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.task import TaskData
@@ -72,6 +73,7 @@ class RLMHarnessConfig(HarnessConfig):
 class RLMHarness(Harness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    SUPPORTS_RESUME = True
 
     async def setup(self, runtime: Runtime) -> None:
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
@@ -113,7 +115,13 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_text_prompt(data)
+        system_prompt, prompt = self.resolve_prompt(data)
+        if prompt is None:
+            raise ValueError("RLM requires a prompt")
+        if not isinstance(prompt, str):
+            prompt = json.dumps(
+                [message_to_wire(message) for message in prompt], ensure_ascii=False
+            )
         env = {
             **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,
@@ -131,18 +139,14 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             env["RLM_MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
+        # RLM has no interactive mode; resumed segments explicitly replay the transcript.
         return await runtime.run_program([RLM_BIN, "--", prompt], env)
 
     @metric
-    async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:
-        # rlm writes a session meta.json with a rich `metrics` block (compactions,
-        # ipython input size, programmatic tool-call counts). There's one top-level
-        # session dir (sub-harnesses nest as sub-*/), so the glob matches a single
-        # file. Surface its numeric metrics as-is; non-numeric fields (e.g.
-        # stop_reason) don't fit the float-only trace metrics, so they're skipped.
-        result = await runtime.run(
-            ["sh", "-c", f"cat {RLM_HOME}/sessions/*/meta.json"], {}
-        )
+    async def rlm(self, runtime: Runtime) -> dict[str, float]:
+        # Stateless continuation creates one session per segment; report the latest.
+        latest = f'cat "$(ls -t {RLM_HOME}/sessions/*/meta.json | head -1)"'
+        result = await runtime.run(["sh", "-c", latest], {})
         if result.exit_code != 0 or not result.stdout.strip():
             return {}
         try:

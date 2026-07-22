@@ -1,66 +1,83 @@
-"""Pi reaches interception through a custom OpenAI-compatible provider.
+"""Pi harness using the upstream pi-acp adapter."""
 
-Pi intentionally leaves MCP to extensions, so the harness always installs and loads the
-pi-mcp-adapter package.
-"""
-
-import base64
 import json
 import logging
-import re
 import shlex
 
+from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
-from verifiers.v1.trace import Trace
-from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
 from verifiers.v1.task import TaskData
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
 PROVIDER = "intercept"
 KEY_VAR = "PI_INTERCEPT_KEY"
-VERSION_VAR = "VF_PI_VERSION"
-MCP_VERSION_VAR = "VF_PI_MCP_VERSION"
 HOME_VAR = "VF_PI_ORIGINAL_HOME"
 
 PI_DIR = "/tmp/vf-pi"
-PI_BIN = f"{PI_DIR}/pi"
+PACKAGES_DIR = f"{PI_DIR}/mcp"
+PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 MCP_VERSION = "2.11.0"
-MCP_ADAPTER = f"{PI_DIR}/mcp/node_modules/pi-mcp-adapter/index.ts"
+ACP_VERSION = "0.0.31"
+NODE_VERSION = "22.19.0"
+MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
+ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
+ACP_COMMAND = [
+    "sh",
+    "-c",
+    f'export {HOME_VAR}="$HOME"; '
+    'PI_CODING_AGENT_DIR="$PWD/$PI_CODING_AGENT_DIR"; '
+    'export PI_CODING_AGENT_DIR HOME="$PI_CODING_AGENT_DIR"; '
+    f'export PATH="{PI_DIR}/node/bin:$PATH"; exec {ACP_BIN}',
+]
 
 INSTALL = r"""
 set -e
-dir=/tmp/vf-pi
-bin="$dir/pi"
-mcp="$dir/mcp"
+packages=/tmp/vf-pi/mcp
+node=/tmp/vf-pi/node
+node_ok() { node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; }
 
-if ! command -v curl >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    { apt-get update -qq && apt-get install -y -qq curl ca-certificates nodejs npm >/dev/null; } \
-        || apk add --no-cache curl ca-certificates nodejs npm >/dev/null
+if [ -f /etc/alpine-release ]; then
+    apk add --no-cache curl ca-certificates nodejs-current npm >/dev/null
+    if ! node_ok; then
+        sed -E -i 's/v[0-9]+\.[0-9]+/v3.22/g' /etc/apk/repositories
+        apk upgrade --available --no-cache >/dev/null
+        apk add --no-cache nodejs-current npm >/dev/null
+    fi
+    node_bin="$(dirname "$(command -v node)")"
+else
+    command -v curl >/dev/null 2>&1 \
+        || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
+    if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_PI_NODE_VERSION" ]; then
+        case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
+        rm -rf "$node"
+        mkdir -p "$node"
+        curl -fsSL "https://nodejs.org/dist/v$VF_PI_NODE_VERSION/node-v$VF_PI_NODE_VERSION-linux-${node_arch}.tar.gz" \
+            | tar -xz -C "$node" --strip-components=1
+    fi
+    node_bin="$node/bin"
 fi
+export PATH="$node_bin:$PATH"
+node_ok || { echo "pi-acp requires Node.js 22.19 or newer" >&2; exit 1; }
 
-if [ ! -x "$bin" ] || [ "$("$bin" --version 2>/dev/null)" != "$VF_PI_VERSION" ]; then
-    case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=x64 ;; esac
-    curl -fsSL "https://github.com/earendil-works/pi/releases/download/v$VF_PI_VERSION/pi-linux-${arch}.tar.gz" \
-        | tar -xz -C "$dir" --strip-components=1
+versions="$VF_PI_VERSION:$VF_PI_MCP_VERSION:$VF_PI_ACP_VERSION"
+if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
+    npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
+        "@earendil-works/pi-coding-agent@$VF_PI_VERSION" \
+        "pi-mcp-adapter@$VF_PI_MCP_VERSION" \
+        "pi-acp@$VF_PI_ACP_VERSION" >/dev/null
+    printf %s "$versions" > "$packages/.versions"
 fi
-
-[ "$(node -p "require('$mcp/node_modules/pi-mcp-adapter/package.json').version" 2>/dev/null)" = "$VF_PI_MCP_VERSION" ] \
-    || npm install --prefix "$mcp" --ignore-scripts --no-audit --no-fund --omit=dev \
-        "pi-mcp-adapter@$VF_PI_MCP_VERSION" >/dev/null
 """
 
-# pi-mcp-adapter treats --mcp-config as additive, so isolate its automatic discovery
-# roots, then restore Pi's task environment before agent tools run.
+# Isolate pi-mcp-adapter discovery while it registers, then restore the task home.
 MCP_WRAPPER = f"""
 export default async function isolatedMcp(pi) {{
   const agentDir = process.env.PI_CODING_AGENT_DIR;
-  if (!agentDir) throw new Error("PI_CODING_AGENT_DIR is required");
-
   const cwd = process.cwd();
-  const home = process.env.{HOME_VAR};
   process.chdir(agentDir);
   process.env.HOME = agentDir;
   try {{
@@ -79,12 +96,13 @@ export default async function isolatedMcp(pi) {{
     mcpAdapter(isolatedPi);
   }} finally {{
     process.chdir(cwd);
-    if (home === undefined) delete process.env.HOME;
-    else process.env.HOME = home;
+    process.env.HOME = process.env.{HOME_VAR};
     delete process.env.{HOME_VAR};
   }}
 }}
 """.strip()
+
+PI_ACP = ACP()
 
 
 class PiHarnessConfig(HarnessConfig):
@@ -95,13 +113,13 @@ class PiHarnessConfig(HarnessConfig):
 class PiHarness(Harness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = False
+    SUPPORTS_RESUME = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info(
-            "pi: ensuring Pi %s and pi-mcp-adapter %s are installed",
+            "pi: ensuring Pi %s and pi-acp %s are installed",
             self.config.version,
-            MCP_VERSION,
+            ACP_VERSION,
         )
         lock = f"{PI_DIR}/install.lock"
         guarded = (
@@ -116,10 +134,16 @@ class PiHarness(Harness[PiHarnessConfig]):
         )
         install = await runtime.run(
             ["sh", "-c", guarded],
-            {VERSION_VAR: self.config.version, MCP_VERSION_VAR: MCP_VERSION},
+            {
+                "VF_PI_VERSION": self.config.version,
+                "VF_PI_MCP_VERSION": MCP_VERSION,
+                "VF_PI_ACP_VERSION": ACP_VERSION,
+                "VF_PI_NODE_VERSION": NODE_VERSION,
+            },
         )
         if install.exit_code != 0:
             raise RuntimeError(f"pi install failed: {install.stderr.strip()[-500:]}")
+        await PI_ACP.setup(self, runtime)
 
     async def launch(
         self,
@@ -132,53 +156,7 @@ class PiHarness(Harness[PiHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-
-        agent_dir = f"{PI_DIR}/agent-{trace.id}"
-        image_args: list[str] = []
-        if prompt is not None and not isinstance(prompt, str):
-            system_texts = [system_prompt] if system_prompt else []
-            texts: list[str] = []
-            image_index = 0
-            for message in prompt:
-                if not isinstance(message, (SystemMessage, UserMessage)):
-                    raise ValueError(
-                        "Pi print mode only supports system and user initial messages"
-                    )
-                parts = (
-                    [TextContentPart(text=message.content)]
-                    if isinstance(message.content, str)
-                    else message.content
-                )
-                for part in parts:
-                    if isinstance(part, TextContentPart):
-                        (system_texts if message.role == "system" else texts).append(
-                            part.text
-                        )
-                        continue
-                    metadata, separator, encoded = part.image_url.url.partition(",")
-                    media_type, *parameters = metadata.removeprefix("data:").split(";")
-                    if (
-                        not separator
-                        or not metadata.startswith("data:image/")
-                        or not any(p.lower() == "base64" for p in parameters)
-                    ):
-                        raise ValueError(
-                            "Pi image prompts require base64 data:image URLs"
-                        )
-                    extension = re.sub(
-                        r"[^a-zA-Z0-9]+", "_", media_type.removeprefix("image/")
-                    ).strip("_")
-                    path = (
-                        f"{agent_dir}/images/image_{image_index}.{extension or 'image'}"
-                    )
-                    await runtime.write(path, base64.b64decode(encoded))
-                    image_args.append(f"@{path}")
-                    image_index += 1
-            system_prompt = "\n\n".join(system_texts) or None
-            prompt = "\n\n".join(texts)
-        if prompt is None:
-            raise ValueError("Pi requires a task prompt")
-
+        agent_dir = f".vf-pi-agent-{trace.id}"
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -199,12 +177,10 @@ class PiHarness(Harness[PiHarnessConfig]):
                 }
             }
         }
-        prompt_path = f"{agent_dir}/prompt.txt"
-        await runtime.write(prompt_path, prompt.encode())
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
 
-        launch = 'exec "$@" < "$0"'
         mcp_args: list[str] = []
+        restore_home = f'export HOME="${HOME_VAR}"; unset {HOME_VAR}; '
         if mcp_urls:
             extension_path = f"{agent_dir}/mcp.js"
             mcp = {
@@ -221,8 +197,7 @@ class PiHarness(Harness[PiHarnessConfig]):
                 "--mcp-config",
                 f"{agent_dir}/mcp.json",
             ]
-            # Isolate adapter global discovery before Bun caches HOME.
-            launch = f'export {HOME_VAR}="$HOME"; export HOME="$PI_CODING_AGENT_DIR"; {launch}'
+            restore_home = ""
 
         env = {
             **self.config.resolved_env,
@@ -231,36 +206,30 @@ class PiHarness(Harness[PiHarnessConfig]):
             "PI_OFFLINE": "1",
             "PI_TELEMETRY": "0",
         }
-        tool_args = (
-            ["--exclude-tools", ",".join(self.config.disabled_tools)]
-            if self.config.disabled_tools
-            else []
-        )
-        system_args = ["--append-system-prompt", system_prompt] if system_prompt else []
-        argv = [
-            "sh",
-            "-c",
-            # Pi has no `--` terminator, so the prompt must not be parsed as argv.
-            launch,
-            prompt_path,
+        pi_args = [
             PI_BIN,
-            "--print",
-            "--no-session",
             "--no-approve",
-            "--offline",
             "--provider",
             PROVIDER,
             "--model",
             ctx.model,
             *mcp_args,
-            *tool_args,
-            *system_args,
-            *image_args,
         ]
-        try:
-            return await runtime.run_program(argv, env)
-        finally:
-            try:
-                await runtime.run(["rm", "-rf", agent_dir], {})
-            except Exception:
-                logger.warning("failed to clean up Pi agent directory", exc_info=True)
+        if self.config.disabled_tools:
+            pi_args += ["--exclude-tools", ",".join(self.config.disabled_tools)]
+        if system_prompt:
+            pi_args += ["--append-system-prompt", system_prompt]
+        pi_wrapper = f"{agent_dir}/pi"
+        await runtime.write(
+            pi_wrapper,
+            f'#!/bin/sh\n{restore_home}exec {shlex.join(pi_args)} "$@"\n'.encode(),
+        )
+        await runtime.run(["chmod", "+x", pi_wrapper], {})
+        env["PI_ACP_PI_COMMAND"] = pi_wrapper
+        return await PI_ACP.run(
+            runtime,
+            env,
+            ACP_COMMAND,
+            prompt,
+            session_path=f"{agent_dir}/acp-session",
+        )
