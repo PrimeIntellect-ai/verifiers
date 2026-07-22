@@ -4,7 +4,7 @@
 # ///
 """The compacting harness's program: a context-REWRITE loop (so every turn branches).
 
-Unlike the default harness (which appends to a growing message list), this sends a FRESH
+Unlike the bash harness (which appends to a growing message list), this sends a FRESH
 `[system, user]` every turn — the task on the first turn, then the model's own
 carried-over `notes` (the task is never shown again, so the notes are the durable memory).
 Because the prompt is rewritten rather than extended, every turn is its own branch (see

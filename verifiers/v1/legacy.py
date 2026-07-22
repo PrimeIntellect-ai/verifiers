@@ -27,12 +27,22 @@ from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
-from verifiers.v1.trace import Error, TimeSpan, Timing, Trace, TraceTask
+from verifiers.v1.episode import Episode
+from verifiers.v1.trace import (
+    Error,
+    GenerationSpan,
+    ModelCall,
+    TimeSpan,
+    TimeSplit,
+    Timing,
+    Trace,
+    TraceTask,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     Response,
@@ -185,7 +195,8 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
 
 def _timing(raw: Any) -> Timing:
     """Map the v0 timing record's generation/scoring durations onto a v1 ``Timing``
-    (we only have durations, so each span is encoded as start=0, end=duration)."""
+    (we only have durations, so each span is encoded as start=0, end=duration).
+    v0's per-turn ``model``/``env`` span collections carry the generation split."""
 
     def _dur(node: Any) -> float:
         if isinstance(node, dict):
@@ -198,7 +209,12 @@ def _timing(raw: Any) -> Timing:
 
     raw = raw or {}
     return Timing(
-        generation=TimeSpan(start=0.0, end=_dur(raw.get("generation"))),
+        generation=GenerationSpan(
+            start=0.0,
+            end=_dur(raw.get("generation")),
+            model=TimeSplit(duration=_dur(raw.get("model"))),
+            harness=TimeSplit(duration=_dur(raw.get("env"))),
+        ),
         scoring=TimeSpan(start=0.0, end=_dur(raw.get("scoring"))),
     )
 
@@ -229,9 +245,10 @@ def _v1_stop_condition(out: dict) -> str | None:
 def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     """Map a v0 ``RolloutOutput`` into a v1 ``Trace``, preserving the meta a native v1
     trace carries: per-turn prompt messages, the response message (content / reasoning /
-    tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, and the task's
-    system prompt / prompt / answer. A truncated v0 rollout is mapped to a v1 truncation
-    stop condition (see ``_v1_stop_condition``) so ``Trace.is_truncated`` derives ``True``."""
+    tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, the rollout's
+    ``info``, and the task's system prompt / prompt / answer. A truncated v0 rollout is
+    mapped to a v1 truncation stop condition (see ``_v1_stop_condition``) so
+    ``Trace.is_truncated`` derives ``True``."""
     model = str(out.get("model") or "")
 
     error = None
@@ -255,7 +272,11 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         tools=_to_v1_tools(out.get("tool_defs")),
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
+        info=dict(out.get("info") or {}),
         is_completed=bool(out.get("is_completed", True)),
+        # Bridged rollouts are complete by construction; the sentinel mirrors
+        # whether the v0 run captured an error.
+        ok=error is None,
         stop_condition=_v1_stop_condition(out),
         errors=[error] if error else [],
         timing=_timing(out.get("timing")),
@@ -266,8 +287,19 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         if not isinstance(step, dict):
             continue
         tokens = _to_v1_tokens(step.get("tokens"))
-        graph.prepare_turn(trace, _to_v1_messages(step.get("prompt"))).commit(
-            _to_v1_response(step.get("response"), model, tokens)
+        response = _to_v1_response(step.get("response"), model, tokens)
+        node = graph.prepare_turn(trace, _to_v1_messages(step.get("prompt"))).commit(
+            response
+        )
+        # The per-call record (v0 steps carry no wire settings or timing): keeps
+        # `finish_reason` and `usage` — per-call since trace v2 — available to
+        # `is_truncated` and the token accounting.
+        trace.calls.append(
+            ModelCall(
+                node=node,
+                finish_reason=response.finish_reason,
+                usage=response.usage,
+            )
         )
     return trace
 
@@ -286,7 +318,7 @@ def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTaskData:
             system_prompt = _text(m.get("content"))
         elif m.get("role") == "user":
             user_texts.append(_text(m.get("content")))
-    extra = {"answer": answer} if answer else {}
+    extra = {"answer": answer} if answer is not None else {}
     return WireTaskData(
         idx=task_idx,
         prompt="\n\n".join(user_texts),
@@ -302,7 +334,7 @@ class LegacyEnvServer(EnvServer):
     """Serve a classic v0 ``verifiers`` environment over the v1 ZMQ protocol.
 
     Mirrors ``EnvServer`` (same ``_handle`` / ``run`` / ``run_server``), but loads a v0 env
-    via ``verifiers.load_environment`` and runs ``env.run_rollout`` instead of a v1 episode.
+    via ``verifiers.load_environment`` and runs ``env.run_rollout`` instead of a v1 rollout.
     """
 
     def __init__(
@@ -399,10 +431,13 @@ class LegacyEnvServer(EnvServer):
             state_columns=["trajectory"],
         )
 
-    async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
+    async def _run(self, req: RunRequest) -> RunResponse:
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-        return RunRolloutResponse(
-            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
+        # Trust the bridge-minted record; serialize it once (mirrors `EnvServer`).
+        return RunResponse.model_construct(
+            episode=Episode.of(
+                rollout_output_to_trace(out, req.task_idx), env=self.taskset_id
+            )
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
@@ -452,14 +487,14 @@ def _legacy_output_dir(config) -> Path:
     return Path("outputs") / name / config.uuid
 
 
-async def run_legacy_eval(config) -> list[Trace]:
-    """Run a legacy environment in process and return v1 traces."""
+async def run_legacy_eval(config) -> list[Episode]:
+    """Run a legacy environment in process and return v1 episode records."""
     import asyncio
 
     from verifiers import load_environment
 
     from verifiers.v1.cli.output import append_trace, save_config
-    from verifiers.v1.utils.install import ensure_installed
+    from verifiers.v1.utils.install import ensure_installed, env_name
     from verifiers.v1.utils.sampling import sample
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
@@ -472,6 +507,7 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)
+    taskset_id = env_name(config.id)  # the same identity the served bridge stamps
     out_dir = _legacy_output_dir(config)
     save_config(config, out_dir)
     logger.info("results: %s", out_dir)
@@ -496,7 +532,7 @@ async def run_legacy_eval(config) -> list[Trace]:
                 state_columns=["trajectory"],
             )
             trace = rollout_output_to_trace(out, task_idx)
-            await append_trace(out_dir, trace, write_lock)
+            await append_trace(out_dir, trace, write_lock, env=taskset_id)
             return trace
 
         if sem is None:
@@ -506,4 +542,6 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     # `num_rollouts` rollouts per selected task, all bounded by the one semaphore.
     coros = [run_one(i) for i in idxs for _ in range(config.num_rollouts)]
-    return list(await asyncio.gather(*coros))
+    traces = await asyncio.gather(*coros)
+    # append_trace stamped each trace's episode; .of reuses the stamp.
+    return [Episode.of(trace) for trace in traces]

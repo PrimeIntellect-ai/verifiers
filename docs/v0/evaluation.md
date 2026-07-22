@@ -5,6 +5,7 @@
 This section explains how to run evaluations with Verifiers environments. See [Environments](environments.md) for information on building your own environments.
 
 ## Table of Contents
+
 - [Basic Usage](#basic-usage)
 - [Hosted Evaluations](#hosted-evaluations)
 - [Command Reference](#command-reference)
@@ -56,7 +57,7 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 ### Environment Selection
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
@@ -64,13 +65,13 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
 The positional argument accepts two formats:
+
 - **Single environment**: `gsm8k` — evaluates one environment
 - **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
 
-For legacy or direct-constructor environments, the `--env-args` flag passes
-arguments to your `load_environment()` function:
+For legacy or direct-constructor environments, the `--env-args` flag passes arguments to your `load_environment()` function:
 
 ```bash
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
@@ -117,7 +118,7 @@ env.set_concurrency(256)
 ### Model Configuration
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
@@ -183,7 +184,7 @@ When using eval TOML configs, you can set `endpoint_id` in `[[eval]]` sections t
 ### Sampling Parameters
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--max-tokens` | `-t` | model default | Maximum tokens to generate |
 | `--temperature` | `-T` | model default | Sampling temperature |
 | `--sampling-args` | `-S` | — | JSON object for additional sampling parameters |
@@ -207,15 +208,12 @@ enable_thinking = true
 id = "my-env"
 ```
 
-`reasoning_effort` and `enable_thinking` stay in `sampling_args` and are also
-mirrored into `extra_body.chat_template_kwargs` for OpenAI-compatible servers
-that read chat template options there. Keeping the top-level values lets the
-client translate them for the selected provider.
+`reasoning_effort` and `enable_thinking` stay in `sampling_args` and are also mirrored into `extra_body.chat_template_kwargs` for OpenAI-compatible servers that read chat template options there. Keeping the top-level values lets the client translate them for the selected provider.
 
 ### Evaluation Scope
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--num-examples` | `-n` | 5 | Number of dataset examples to evaluate |
 | `--rollouts-per-example` | `-r` | 3 | Rollouts per example (for pass@k, variance) |
 | `--shuffle` | — | false | Shuffle the evaluation dataset before selecting examples |
@@ -228,7 +226,7 @@ When `--shuffle` is enabled, Verifiers shuffles the full evaluation dataset firs
 ### Concurrency
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--max-concurrent` | `-c` | 32 | Maximum concurrent requests |
 | `--max-concurrent-generation` | — | same as `-c` | Concurrent generation requests |
 | `--max-concurrent-scoring` | — | same as `-c` | Concurrent scoring requests |
@@ -252,7 +250,7 @@ When an eval runs against a Prime Inference endpoint and the model id has pricin
 ### Output and Saving
 
 | Flag | Short | Default | Description |
-|------|-------|---------|-------------|
+| ------ | ------- | --------- | ------------- |
 | `--verbose` | `-v` | false | Enable debug logging |
 | `--fullscreen` | `-f` | false | Use alternate screen buffer (fullscreen) for the Rich display |
 | `--disable-tui` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
@@ -307,14 +305,14 @@ When resuming, the current run configuration should match the original run. Mism
 
 ```bash
 # Start a large evaluation with checkpointing
-prime eval run math-python -n 500 -r 3 -s
+prime eval run my-env -n 500 -r 3 -s
 
 # If interrupted, find the run directory
-ls ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/
+ls ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/
 
 # Resume from the checkpoint
-prime eval run math-python -n 500 -r 3 -s \
-  --resume ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/abc12345
+prime eval run my-env -n 500 -r 3 -s \
+  --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
 ```
 
 The `--state-columns` flag allows saving environment-specific state fields that your environment stores during rollouts:
@@ -386,12 +384,10 @@ A minimal config requires only a single `[[eval]]` section:
 id = "gsm8k"
 ```
 
-Each `[[eval]]` section usually contains an `id` field. `env_id` is accepted as
-a legacy alias and normalizes to the same internal field. All other fields are
-optional:
+Each `[[eval]]` section usually contains an `id` field. `env_id` is accepted as a legacy alias and normalizes to the same internal field. All other fields are optional:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `id` | string | Environment module name |
 | `name` | string | Optional eval label for display and saved result paths |
 | `args` | table | Arguments passed to `load_environment()` |
@@ -434,8 +430,7 @@ difficulty = "hard"
 split = "test"
 ```
 
-The legacy inline `sampling_args = { ... }` spelling is still accepted and
-normalizes the same way as `[sampling]` / `[eval.sampling]`.
+The legacy inline `sampling_args = { ... }` spelling is still accepted and normalizes the same way as `[sampling]` / `[eval.sampling]`.
 
 ### Ablation Sweeps
 

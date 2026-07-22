@@ -14,12 +14,13 @@ import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
 from verifiers.v1.cli.resolve import (
     extract_id,
+    plugin_errors,
     references_config_file,
     with_positional_taskset,
 )
 from verifiers.v1.configs.validate import ValidateConfig
 from verifiers.v1.decorators import invoke
-from verifiers.v1.env import resolve_runtime_config
+from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -248,21 +249,28 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    argv = with_positional_taskset(list(sys.argv[1:]) if argv is None else list(argv))
+    argv = with_positional_taskset(
+        list(sys.argv[1:]) if argv is None else list(argv), flag="--taskset.id"
+    )
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(_narrow(argv))  # full option help, narrowed to the given taskset
+        with plugin_errors():
+            cli(_narrow(argv))  # full option help, narrowed to the given taskset
         return
     if not extract_id(argv, "taskset") and not references_config_file(argv):
         raise SystemExit(
             USAGE
         )  # need a taskset (positional / --taskset.id) or a @ file.toml
 
-    config_type = _narrow(argv)
-    sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-    config = cli(config_type)
+    with plugin_errors():
+        config_type = _narrow(argv)
+        sys.argv = [
+            sys.argv[0],
+            *argv,
+        ]  # let prime-pydantic-config render help/errors
+        config = cli(config_type)
     # Nothing is persisted, so logs are the whole output. Under `--rich` the dashboard owns the
     # screen, so keep logs off the console (else stray records print over the UI).
     setup_logging("DEBUG" if config.verbose else "INFO", console=not config.rich)

@@ -1,5 +1,3 @@
-"""Config schemas for the v1 entrypoints — the objects the CLIs parse."""
-
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.configs.debug import DebugConfig
 from verifiers.v1.configs.init import InitConfig

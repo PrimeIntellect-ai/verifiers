@@ -90,16 +90,16 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 
-    def summarize_threshold(self, task_idx: int) -> str:
-        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index, so
-        a task's rollouts share one threshold). Always set — "" when disabled — so the typed field,
-        not a host var the subprocess runtime would inherit, wins."""
+    def summarize_threshold(self, task_idx: int | None) -> str:
+        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index —
+        0 when unset — so a task's rollouts share one threshold). Always set — "" when disabled —
+        so the typed field, not a host var the subprocess runtime would inherit, wins."""
         value = self.config.summarize_at_tokens
         if value is None:
             return ""
         if isinstance(value, tuple):
             lo, hi = value
-            return str(random.Random(task_idx).randint(lo, hi))
+            return str(random.Random(task_idx or 0).randint(lo, hi))
         return str(value)
 
     async def launch(

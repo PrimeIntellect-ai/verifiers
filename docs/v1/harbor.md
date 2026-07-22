@@ -2,7 +2,6 @@
 
 verifiers offers built-in support for Harbor via the `HarborTaskset` class. Creating a Harbor-based taskset is straightforward in most cases:
 
-
 ```python
 import verifiers.v1 as vf
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask, HarborTaskset
@@ -56,11 +55,14 @@ On the `prime` runtime any pullable image reference just works: the first sandbo
 
 ## Additional features
 
-Every Harbor taskset can also be modified with a `timeout_multiplier` and a `resource_multiplier`:
+By default, each task's declared agent and verifier timeouts are ignored (`ignore_timeouts = true`): Harbor task timeouts are authored against Harbor's own runtime, so enforcing them confounds model capability with the speed of your inference stack. Set `ignore_timeouts = false` (or pass `--no-env.taskset.ignore-timeouts`) to apply them, e.g. for a faithful comparison against the Harbor implementation.
+
+With `ignore_timeouts = false`, every Harbor taskset can also be modified with a `timeout_multiplier`, and any Harbor taskset with a `resource_multiplier`:
 
 ```toml
-[taskset]
+[env.taskset]
 id = "MY_TASKSET"
+ignore_timeouts = false
 timeout_multiplier = 2.0
 resource_multiplier = 2.0
 ```
@@ -69,7 +71,8 @@ The `timeout_multiplier` multiplies both the agent and verifier timeout, while t
 
 ## Shortcomings
 
-verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are: 
+verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
+
 - `no-network` support for sandbox runtimes ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
 - Shared & separate verifiers ([Harbor Docs](https://www.harborframework.com/docs/tasks#verifier-environment-shared-vs-separate))
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))

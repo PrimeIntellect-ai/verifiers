@@ -33,10 +33,9 @@ import sys
 
 sys.path.insert(0, sys.argv[1])
 
-from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.env import Environment
+from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 
-config = EvalConfig.model_validate(
+config = SingleAgentEnvConfig.model_validate(
     {
         "taskset": {
             "id": "external-plugin-v1",
@@ -50,20 +49,23 @@ config = EvalConfig.model_validate(
                 ]
             },
         },
-        "harness": {"id": "external-plugin-v1", "custom_harness_flag": True},
+        "agent": {
+            "harness": {"id": "external-plugin-v1", "custom_harness_flag": True},
+        },
     }
 )
 assert type(config.taskset).__name__ == "ExternalTasksetConfig"
 assert config.taskset.custom_taskset_flag is True
-assert type(config.harness).__name__ == "SuperSecretHarnessConfig"
-assert config.harness.custom_harness_flag is True
+assert type(config.agent.harness).__name__ == "SuperSecretHarnessConfig"
+assert config.agent.harness.custom_harness_flag is True
 assert type(config.taskset.task.judges[0]).__name__ == "ExternalJudgeConfig"
 assert config.taskset.task.judges[0].custom_judge_flag is True
 
-environment = Environment(config)
+environment = SingleAgentEnv(config)
 assert type(environment.taskset).__name__ == "ExternalTaskset"
-assert type(environment.harness).__name__ == "SuperSecretHarness"
-assert environment.harness.config is config.harness
+harness = environment._harnesses["agent"]
+assert type(harness).__name__ == "SuperSecretHarness"
+assert harness.config is config.agent.harness
 tasks = environment.taskset.select()
 assert len(tasks) == 1
 judges = tasks[0].plugged_judges()

@@ -1,6 +1,6 @@
 # Harnesses
 
-verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled default harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
+verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled `bash` harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
 
 ## Packaging an external harness
 
@@ -29,7 +29,6 @@ Missing imports inside an installed plugin are reported directly rather than bei
 as a missing plugin.
 
 ## A minimal harness implementation
-
 
 ```python
 from verifiers.v1.clients import ModelContext
