@@ -25,7 +25,10 @@ SKIP_EVAL: set[str] = set()
 # Per-run caps are seat fields; recipe envs name their own seats.
 SEATS: dict[str, tuple[str, ...]] = {
     "code_golf_v1": ("golfer",),
+    "kuhn_poker_v1": ("player0", "player1"),
+    "openenv_wordle_v1": ("player",),
     "proposer_solver_v1": ("proposer", "solver"),
+    "wordle_v1": ("player",),
 }
 
 

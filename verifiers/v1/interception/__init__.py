@@ -34,10 +34,13 @@ def requires_tunnel(
     server_configs: Iterable[BaseConfig] = (),
     shared: "Iterable[SharedToolServer]" = (),
 ) -> bool:
-    """Whether interception needs a public tunnel because some consumer cannot use a
-    host-local URL: the harness itself, a live `shared` server in a remote runtime, or a
-    tool/user server placed there. Colocated servers, configured URLs, and external shared
-    servers add no consumer. False means local URL translation is sufficient."""
+    """Whether the interception must be exposed via a tunnel — some consumer is off the
+    host network: the harness itself, a live `shared` server in a remote runtime, or a
+    tool server config placing one there (each reaches the `/state` channel from
+    its own runtime). Skipped as non-consumers: a `colocated` server (shares the
+    harness's runtime, covered by `harness_is_local`), a config-`url` server (external —
+    it connects out), and an `external` shared server (outside the state machinery
+    entirely). False means every consumer reaches the server at localhost."""
     if not harness_is_local:
         return True
     if any(not s.external and not s.local for s in shared):

@@ -125,9 +125,9 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
 
 
 # --- vf -> chat wire ----------------------------------------------------------
-# `message_to_wire` (chat-only): used by `extend` (user-sim turn injection), the bash harness
-# (a Messages prompt), and the train client (its generate request). The proxy preserves its parsed
-# native JSON independently and does not use this serializer.
+# `message_to_wire` (chat-only): used by the bash harness (a Messages prompt) and the train
+# client (its generate request). The proxy preserves its parsed native JSON independently and
+# does not use this serializer.
 
 
 def _content_to_wire(content):
@@ -350,15 +350,3 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set (later keys win, so the eval's override the program's).
         return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
-
-    def extend(
-        self, body: dict, completion: dict | None, user_messages: Messages
-    ) -> dict:
-        # Append the model's turn (the verbatim assistant message, so its reasoning survives for
-        # the next turn's passback) and the simulator's injected user turn(s) to the wire history.
-        # A None completion seeds the opening turn (no model message yet) — only the user turn(s).
-        messages = [*body.get("messages", [])]
-        if completion is not None:
-            messages.append(completion["choices"][0]["message"])
-        messages.extend(message_to_wire(m) for m in user_messages)
-        return {**body, "messages": messages}
