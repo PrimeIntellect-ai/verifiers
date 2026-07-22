@@ -20,6 +20,7 @@ This guide covers setup, testing, and contributing to the verifiers package.
 ## Setup
 
 ### Prerequisites
+
 - Python 3.13 recommended for CI parity with Ty checks
 - [uv](https://docs.astral.sh/uv/) package manager
 
@@ -200,13 +201,9 @@ def test_with_mock(mock_client):
 
 ### Public Surface
 
-Treat public config, docs, starter examples, skills, and generated agent
-guidance as one surface. If a behavior changes for users, update all matching
-surfaces in the same patch.
+Treat public config, docs, starter examples, skills, and generated agent guidance as one surface. If a behavior changes for users, update all matching surfaces in the same patch.
 
-For TOML config, keep one shape across eval, GEPA, RL, and Hosted Training.
-Normalize old or alternate inputs at the loader boundary, then keep examples on
-the current golden path.
+For TOML config, keep one shape across eval, GEPA, RL, and Hosted Training. Normalize old or alternate inputs at the loader boundary, then keep examples on the current golden path.
 
 ### Validation By Change Type
 
@@ -219,21 +216,19 @@ the current golden path.
 
 ### Downstream Checks
 
-Before changing dependencies, optional extras, lockfiles, exported config fields,
-or upload/eval metadata, trace the consumers in `prime-cli`, `prime-rl`, Hosted
-Training, and public docs when they are in scope. Update the consumer or document
-the compatibility boundary rather than assuming transitive behavior remains
-safe.
+Before changing dependencies, optional extras, lockfiles, exported config fields, or upload/eval metadata, trace the consumers in `prime-cli`, `prime-rl`, Hosted Training, and public docs when they are in scope. Update the consumer or document the compatibility boundary rather than assuming transitive behavior remains safe.
 
 ## Common Issues
 
 ### Import Errors
+
 ```bash
 # Ensure package is installed in development mode
 uv sync
 ```
 
 ### Integration Tests
+
 ```bash
 # Install optional dependencies for specific integrations
 uv sync --extra ta   # for TextArenaEnv
@@ -244,6 +239,7 @@ uv sync --python 3.12 --extra harbor  # for the Harbor Python package and CLI
 ```
 
 ### Test Failures
+
 ```bash
 # Debug specific test
 uv run pytest tests/test_file.py::test_name -vvs --pdb
@@ -322,7 +318,7 @@ prime eval view                              # Browse evals in the tree browser
 ### CLI Tools
 
  | Command | Description |
-|---------|-------------|
+| --------- | ------------- |
 | `prime eval run` | Run evaluations on environments |
 | `prime env init` | Initialize new environment from template |
 | `prime env install` | Install environment module |

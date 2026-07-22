@@ -7,6 +7,7 @@ A Fastify server that exposes Stagehand's Computer Use Agent (CUA) browser primi
 ## Automatic Sandbox Deployment
 
 When using `BrowserEnv(mode="cua")`, the server is automatically:
+
 1. Uploaded to a sandbox container
 2. Started via `setup.sh`
 3. Accessed via curl commands inside the sandbox
@@ -101,6 +102,7 @@ Content-Type: application/json
 ```
 
 Returns:
+
 ```json
 {
   "sessionId": "session_1234567890_abc123",
@@ -142,6 +144,7 @@ Content-Type: application/json
 ```
 
 Returns:
+
 ```json
 {
   "success": true,
@@ -158,7 +161,7 @@ Returns:
 ### Mouse Actions
 
 | Action | Parameters | Description |
-|--------|------------|-------------|
+| -------- | ------------ | ------------- |
 | `click` | `x`, `y`, `button?`, `clickCount?` | Click at coordinates |
 | `double_click` | `x`, `y` | Double-click at coordinates |
 | `tripleClick` | `x`, `y` | Triple-click at coordinates |
@@ -175,7 +178,7 @@ Returns:
 ### Navigation Actions
 
 | Action | Parameters | Description |
-|--------|------------|-------------|
+| -------- | ------------ | ------------- |
 | `goto` | `url` | Navigate to URL |
 | `back` | - | Go back in history |
 | `forward` | - | Go forward in history |
@@ -271,4 +274,3 @@ cua-server/
 ├── tsconfig.json      # TypeScript configuration
 └── README.md          # This file
 ```
-
