@@ -16,7 +16,7 @@ from verifiers.v1.agent import (
     Agent,
     AgentConfig,
     Agents,
-    ChatSession,
+    Interaction,
     Reply,
     make_agent,
 )
@@ -306,7 +306,7 @@ __all__ = [
     "SharedToolsetConfig",
     "ToolsetConfig",
     # the user channel
-    "ChatSession",
+    "Interaction",
     "Reply",
 ]
 

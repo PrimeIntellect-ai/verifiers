@@ -13,24 +13,24 @@ Every run is a standard rollout producing a `vf.Trace`. By default, the agent is
 
 Exiting the context closes an agent-owned client, so create a new agent for later runs; injected clients remain caller-owned.
 
-## Chat Sessions
+## Interactions
 
-`agent.chat(task)` holds a rollout open turn by turn. The caller acts as the
+`agent.interaction(task)` holds a rollout open turn by turn. The caller acts as the
 user, and each `turn()` runs one harness segment before returning a `vf.Reply`.
 
 ```python
-async with agent.chat(task) as session:
-    reply = await session.turn("hello")
+async with agent.interaction(task) as interaction:
+    reply = await interaction.turn("hello")
     if not reply.stopped:
-        reply = await session.turn(f"you said: {reply.text}")
+        reply = await interaction.turn(f"you said: {reply.text}")
 
-trace = session.trace
+trace = interaction.trace
 ```
 
 A prompted task speaks first through a bare `turn()`; a prompt-less task starts
 with `turn(message)`. Leaving the context closes the exchange as `user_closed`
-and finishes scoring. `chat(mask_prompt=True)` keeps a scenario prompt available
-to the task while hiding it from the assistant.
+and finishes scoring. `interaction(mask_prompt=True)` keeps a scenario prompt
+available to the task while hiding it from the assistant.
 
 ## Borrowed Resources
 

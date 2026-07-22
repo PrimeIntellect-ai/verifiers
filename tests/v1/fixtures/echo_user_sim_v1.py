@@ -1,9 +1,9 @@
 """Multi-turn echo driven by a scripted user — the single user-sim mechanism.
 
-The env's `run()` scripts the user through a chat session. The task is
+The env's `run()` scripts the user through an interaction. The task is
 prompt-less, so the first `turn(phrase)` opens the conversation; each later turn
 resumes the harness onto the accreted conversation, and leaving the `async with`
-closes the chat (the trace stops as `user_closed`).
+closes the interaction (the trace stops as `user_closed`).
 """
 
 import verifiers.v1 as vf
@@ -39,11 +39,11 @@ class EchoUserSimEnv(vf.SingleAgentEnv):
     """Scripts the user side: opens with the first phrase, follows with the rest."""
 
     async def run(self, task, agents):
-        # A chat session scripting the user: the task carries no prompt, so the
+        # An interaction scripting the user: the task carries no prompt, so the
         # first turn opens the conversation.
-        async with agents.agent.chat(task) as session:
+        async with agents.agent.interaction(task) as interaction:
             for phrase in task.data.phrases:
-                if (await session.turn(phrase)).stopped:
+                if (await interaction.turn(phrase)).stopped:
                     break
 
 

@@ -1,7 +1,7 @@
 """Run OpenEnv environments with UV by default, or Docker when requested.
 
-The engine plays the user: the env's `run()` opens the model's seat as a chat
-session and steps the OpenEnv client host-side — each assistant action advances the
+The engine plays the user: the env's `run()` opens the model's interaction and
+steps the OpenEnv client host-side — each assistant action advances the
 environment, the next observation comes back as the user turn, and a `done` result
 ends the exchange. OpenEnv's per-step rewards are summed onto the seat's trace
 (`openenv_reward`)."""
@@ -114,8 +114,8 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                     ensure_ascii=False,
                 )
 
-            async with agents.player.chat(task) as session:
-                reply = await session.turn(payload())
+            async with agents.player.interaction(task) as interaction:
+                reply = await interaction.turn(payload())
                 while not reply.stopped and not result.done:
                     if reply.text.strip():
                         result = await client.step(
@@ -125,8 +125,8 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
                         total += result.reward or 0.0
                         if result.done:
                             break
-                    reply = await session.turn(payload())
-        trace = session.trace
+                    reply = await interaction.turn(payload())
+        trace = interaction.trace
         trace.record_reward("openenv_reward", total)
 
 

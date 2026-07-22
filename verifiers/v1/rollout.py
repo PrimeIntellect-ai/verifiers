@@ -101,7 +101,7 @@ class RolloutRun:
     `step` report continuability as a bool, and `close` always returns the trace.
 
     `wire_data` is the run's recorded view of the task — what `trace.task.data`
-    says the harness saw (`Agent.chat(mask_prompt=True)` masks the prompt here
+    says the harness saw (`Agent.interaction(mask_prompt=True)` masks the prompt here
     while the `task` object keeps the full row for its hooks and judges).
     `runtime` is a live box to run in instead of provisioning one; a borrowed
     runtime is neither started nor stopped here. `on_trace` observes the run's
@@ -234,7 +234,7 @@ class RolloutRun:
             if self.task.data.prompt is None and not self._has_user:
                 raise TaskError(
                     "task has no prompt and no user to open the conversation; set "
-                    "task.prompt, or drive the run through agent.chat() and open "
+                    "task.prompt, or drive the run through agent.interaction() and open "
                     "it with the first turn(message)"
                 )
             if self._owns_runtime:

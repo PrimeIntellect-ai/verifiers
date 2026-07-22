@@ -427,7 +427,7 @@ Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For
 | `idx` | `int` | — | Stable integer index within the taskset. Used for selection, grouping, display, and reproducibility. |
 | `name` | `str \| None` | `None` | Optional human-readable label used in logs and dashboards. |
 | `description` | `str \| None` | `None` | Optional human-readable description. |
-| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_RESUME`; `None` means the caller opens the conversation (`agent.chat()` — the env's control flow supplies each turn). |
+| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a structured initial conversation when the harness accepts that prompt shape; `None` means the caller opens the conversation (`agent.interaction()` — the env's control flow supplies each turn). |
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
@@ -470,7 +470,7 @@ There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tool
 ---
 
 User simulation has no server or placement config: the run's user is a callable the env's
-control flow supplies (`agent.chat()`); see the `user-sim` bundled env.
+control flow supplies (`agent.interaction()`); see the `user-sim` bundled env.
 
 ---
 

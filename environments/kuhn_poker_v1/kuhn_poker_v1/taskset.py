@@ -1,7 +1,7 @@
 """kuhn-poker-v1 — seeded Kuhn poker self-play: the turn-coupled proof env.
 
 One env-rollout is one hand: the env deals from the task's seed, opens BOTH seats as
-live chat sessions (`agents.player0.chat()` — each seat's trace is one real rollout),
+live interactions (`agents.player0.interaction()` — each seat's trace is one real rollout),
 and referees the betting host-side — asking the acting seat for its move, validating
 it, and paying out the zero-sum result as a `payoff` reward on each seat's trace
 (+ANTE/±2 chips; an unparseable move forfeits after `--env.invalid_retries`).
@@ -92,7 +92,7 @@ class KuhnPokerEnv(vf.Env[KuhnPokerEnvConfig]):
             vf.Task(
                 vf.TaskData(
                     idx=task.data.idx,
-                    prompt=None,  # each seat converses through its chat session
+                    prompt=None,  # each seat converses through its interaction
                     system_prompt=RULES.replace("{seat}", f"Player {i}").replace(
                         "{card}", cards[i]
                     ),
@@ -103,7 +103,7 @@ class KuhnPokerEnv(vf.Env[KuhnPokerEnvConfig]):
         history: list[str] = []
         forfeited: int | None = None  # the seat that failed to produce a legal move
 
-        async def ask(session, seat: int) -> str | None:
+        async def ask(interaction, seat: int) -> str | None:
             told = "nothing yet" if not history else ", ".join(
                 f"Player {TO_ACT['-'.join(history[:j])]} chose [{a}]"
                 for j, a in enumerate(history)
@@ -114,7 +114,7 @@ class KuhnPokerEnv(vf.Env[KuhnPokerEnvConfig]):
                 f"Your legal actions: {' or '.join(f'[{a}]' for a in legal)}."
             )
             for _ in range(self.config.invalid_retries + 1):
-                reply = await session.turn(prompt)
+                reply = await interaction.turn(prompt)
                 if reply.stopped:
                     return None
                 action = parse_action(reply.text, legal)
@@ -127,18 +127,18 @@ class KuhnPokerEnv(vf.Env[KuhnPokerEnvConfig]):
             return None
 
         async with (
-            agents.player0.chat(seat_tasks[0]) as s0,
-            agents.player1.chat(seat_tasks[1]) as s1,
+            agents.player0.interaction(seat_tasks[0]) as player0,
+            agents.player1.interaction(seat_tasks[1]) as player1,
         ):
-            sessions = [s0, s1]
+            interactions = [player0, player1]
             while (key := "-".join(history)) in TO_ACT:
                 seat = TO_ACT[key]
-                action = await ask(sessions[seat], seat)
+                action = await ask(interactions[seat], seat)
                 if action is None:
                     forfeited = seat
                     break
                 history.append(action)
-        traces = [s0.trace, s1.trace]
+        traces = [player0.trace, player1.trace]
         net0 = (
             payoff("-".join(history), cards)
             if forfeited is None

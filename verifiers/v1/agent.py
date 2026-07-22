@@ -1,8 +1,8 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable
 arrow — `agent.run(task) -> Trace`; `runtime=` borrows a live box,
-`provision(task)` hands you one. The exchange is `agent.chat(task)`: the rollout
-held open turn-by-turn, the caller as the run's user — one `turn()` per harness
-segment; who computes the turns is control flow, not a framework concept.
+`provision(task)` hands you one. `agent.interaction(task)` holds the rollout open
+turn-by-turn, with the caller as the run's user — one `turn()` per harness segment;
+who computes the turns is control flow, not a framework concept.
 Inject a live `Interception` to share servers across agents (a pool belongs to
 what spans agents, never to one agent); an entered agent (`async with`) owns one
 server; un-entered, each run brings its own."""
@@ -124,30 +124,29 @@ def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
 
 @dataclass(frozen=True)
 class Reply:
-    """One assistant turn, as `ChatSession.turn` returns it. `stopped` marks the
+    """One assistant turn, as `Interaction.turn` returns it. `stopped` marks the
     exchange over — the run ended (a limit, a `@stop`, or the harness finishing)
     instead of producing another turn; a stopped `Reply` carries no text (the last
-    real turn was already delivered), and the session's `trace` holds the full
+    real turn was already delivered), and the interaction's `trace` holds the full
     exchange."""
 
     text: str
     stopped: bool = False
 
 
-class ChatSession:
+class Interaction:
     """An agent's rollout, held open turn-by-turn: the caller IS the run's user.
 
-    `agent.chat(task)` opens the rollout wired to this session; `await
-    session.turn("...")` sends one user turn and runs ONE harness segment — the
+    `agent.interaction(task)` opens the rollout; `await interaction.turn("...")`
+    sends one user turn and runs ONE harness segment — the
     program, resumed onto the conversation, until it yields — returning the
     assistant's `Reply`. A prompt-less (or masked) task is opened by the first
     `turn(message)`; a prompted task speaks first — a bare `turn()` takes its
     opening reply. One consumer at a time — `turn()` is a strict
-    request/response alternation, not a mailbox. `session.trace` is live from the
-    moment the session exists: watch tokens and turns mid-exchange, read rewards
-    after close. Leaving the `chat()` context closes the session (the exchange
-    stops as `user_closed`) and finishes the rollout — hooks and scoring
-    included."""
+    request/response alternation, not a mailbox. `interaction.trace` is live from
+    the moment the interaction exists: watch tokens and turns mid-exchange, read
+    rewards after close. Leaving the `interaction()` context closes the exchange
+    as `user_closed` and finishes the rollout — hooks and scoring included."""
 
     def __init__(self, run: "RolloutRun") -> None:
         self._run = run
@@ -170,10 +169,10 @@ class ChatSession:
 
     async def _turn(self, message: str | Messages | None) -> Reply:
         if self._run.closed:
-            raise RuntimeError("this chat is closed")
+            raise RuntimeError("this interaction is closed")
         if self._over:
             raise RuntimeError(
-                "the exchange is over (the run ended); read session.trace"
+                "the exchange is over (the run ended); read interaction.trace"
             )
         prompted = not self._started and self.trace.task.data.prompt is not None
         if message is None and not prompted:
@@ -185,7 +184,7 @@ class ChatSession:
             raise ValueError(
                 "the task's prompt opens this exchange: take its first reply with "
                 "a bare turn() before answering (or mask the prompt with "
-                "chat(mask_prompt=True) to open the conversation yourself)"
+                "interaction(mask_prompt=True) to open the conversation yourself)"
             )
         messages: Messages | None = None
         if isinstance(message, str):
@@ -204,7 +203,7 @@ class ChatSession:
 
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
-        run, then the finished trace returns (also on `session.trace`)."""
+        run, then the finished trace returns (also on `interaction.trace`)."""
         async with self._lock:
             if not self._run.closed and self._run.ok:
                 self.trace.stop("user_closed")
@@ -341,7 +340,7 @@ class Agent:
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
-        is `chat()`). `runtime` places it into a live borrowed box instead of
+        is `interaction()`). `runtime` places it into a live borrowed box instead of
         provisioning one; `tools` are live servers borrowed from their
         owner, counted in the pairing check; `on_trace` observes the trace the
         moment it's minted, before any I/O. Retries whole while the trace ends
@@ -402,7 +401,7 @@ class Agent:
         return trace
 
     @asynccontextmanager
-    async def chat(
+    async def interaction(
         self,
         task: Task,
         *,
@@ -410,13 +409,13 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         mask_prompt: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
-    ) -> AsyncIterator[ChatSession]:
-        """Converse with this agent turn-by-turn: a full rollout of `task` where
-        the CALLER is the run's user — the one exchange surface. Yields a
-        `ChatSession`; `await session.turn("...")` sends one user turn and runs
-        one harness segment, returning the assistant's `Reply`. Who computes the
-        turns is control flow, not framework machinery: an env's rollout loop,
-        another agent's session, a game engine, a scripted closure, a human.
+    ) -> AsyncIterator[Interaction]:
+        """Interact with this agent turn-by-turn: a full rollout of `task` where
+        the CALLER is the run's user — the one exchange surface. Yields an
+        `Interaction`; `await interaction.turn("...")` sends one user turn and
+        runs one harness segment, returning the assistant's `Reply`. Who computes
+        the turns is control flow, not framework machinery: an env's rollout loop,
+        another agent's interaction, a game engine, a scripted closure, a human.
 
         The task's shape says who speaks first: a prompt-less task is opened by
         the first `turn(message)`; a prompted task speaks first — take its opening
@@ -430,7 +429,7 @@ class Agent:
         they do for `run()`; an env supplies its taskset's shared tools
         automatically for tasks loaded from that taskset.
 
-        Everything is a real rollout — the trace (live on `session.trace`),
+        Everything is a real rollout — the trace (live on `interaction.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
         exchange (`user_closed`) and finishes the rollout, hooks and scoring
         included. A failure while opening the rollout raises before the context
@@ -455,7 +454,7 @@ class Agent:
             on_trace=on_trace,
             **params,
         )
-        session = ChatSession(run)
+        interaction = Interaction(run)
         if not await run.open():
             trace = await run.close()
             if trace.runtime is not None:
@@ -465,7 +464,7 @@ class Agent:
                 raise RuntimeError("rollout setup failed without a captured error")
             raise failure
         try:
-            yield session
+            yield interaction
         except Exception as e:
             run.fail(e)
             raise
@@ -473,7 +472,7 @@ class Agent:
             await run.abort()
             raise
         finally:
-            trace = run.trace if run.closed else await session.close()
+            trace = run.trace if run.closed else await interaction.close()
             if trace.runtime is not None:
                 trace.runtime.borrowed = runtime is not None
 
@@ -481,7 +480,7 @@ class Agent:
         self, task: Task, runtime: Runtime | None, shared_tools: dict
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
-        interception — shared by `run` and `chat`."""
+        interception — shared by `run` and `interaction`."""
         if runtime is not None:
             _check_borrowed_placement(task, runtime)
             runtime_config = runtime.config
@@ -626,7 +625,7 @@ class _EpisodeAgent(Agent):
         return trace
 
     @asynccontextmanager
-    async def chat(
+    async def interaction(
         self,
         task: Task,
         *,
@@ -634,10 +633,10 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         mask_prompt: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
-    ) -> AsyncIterator[ChatSession]:
-        """The agent's `chat`, with every trace stamped with its agent standing
-        at mint and captured in `completed` at close — a chat driven from
-        `Env.run` stays crash-safe. No gate: a session is held open
+    ) -> AsyncIterator[Interaction]:
+        """The agent's `interaction`, with every trace stamped with its standing
+        at mint and captured in `completed` at close — an interaction driven from
+        `Env.run` stays crash-safe. No gate: an interaction is held open
         across the exchange (two of them interleave in one episode), so it must
         not occupy an eval slot the way a one-shot `run` does."""
         trace: Trace | None = None
@@ -649,16 +648,16 @@ class _EpisodeAgent(Agent):
                 on_trace(current)
 
         try:
-            async with super().chat(
+            async with super().interaction(
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 mask_prompt=mask_prompt,
                 on_trace=self._watch(remember),
-            ) as session:
-                yield session
+            ) as interaction:
+                yield interaction
         finally:
-            # `Agent.chat()` may fail before yielding (e.g. task/harness setup).
+            # `Agent.interaction()` may fail before yielding (e.g. task/harness setup).
             # Its trace is minted first, so retain that failed rollout in the episode.
             if trace is not None and trace.is_completed:
                 self._completed.append(trace)

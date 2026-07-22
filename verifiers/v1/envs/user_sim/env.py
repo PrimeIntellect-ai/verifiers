@@ -11,7 +11,7 @@ rewards and judges still score the real row. The user agent rides the tool-less
 ends it with the done marker; the assistant's trace is then judged by the task's
 own rewards, exactly as in any eval.
 
-"The user is just another agent": the user's run is a real chat-session rollout
+"The user is just another agent": the user's run is a real interaction
 with its own agent-stamped trace — both sides of the conversation land on the
 record.
 """
@@ -57,21 +57,21 @@ class UserSimEnv(vf.Env[UserSimEnvConfig]):
         user_task = vf.Task(
             vf.TaskData(
                 idx=task.data.idx,
-                prompt=None,  # the user opens through the chat session
+                prompt=None,  # the user opens through the interaction
                 system_prompt=self.config.persona.replace(
                     "{done}", self.config.done_marker
                 ).replace("{scenario}", scenario),
             )
         )
-        # Two sessions, relayed: the user is just another agent, and the env is
+        # Two interactions, relayed: the user is just another agent, and the env is
         # the control flow between them. The assistant plays the SAME task with a
         # masked prompt: the scenario is the user's knowledge, so the wire seeds
         # nothing and the user opens — while the task's hooks, rewards, and plugged
         # judges still score the real row (they read the task object, not the
         # run's masked view).
         async with (
-            agents.user.chat(user_task) as sim,
-            agents.assistant.chat(task, mask_prompt=True) as assistant,
+            agents.user.interaction(user_task) as sim,
+            agents.assistant.interaction(task, mask_prompt=True) as assistant,
         ):
             # The tau convention: the assistant "answers the phone", the user
             # states the goal. The greeting exists only on the user's side. A

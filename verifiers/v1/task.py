@@ -132,7 +132,7 @@ class TaskData(StrictBaseModel):
     description: str | None = None
     prompt: str | Messages | None = None
     """Initial user prompt; `None` means the user opens the conversation — run the
-    task through `agent.chat()`, whose first `turn(message)` speaks first. (A
+    task through `agent.interaction()`, whose first `turn(message)` speaks first. (A
     default, not just optional: the wire drops `None`s — `traces.jsonl` rows for
     prompt-less tasks must read back.)"""
     system_prompt: str | None = None

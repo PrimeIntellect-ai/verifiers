@@ -3,7 +3,7 @@
 Each turn shows colored squares that map to letters (Red=A, Green=B, ...); the model accumulates
 the codeword across turns and, on the final turn, outputs the whole thing. Turn 0's squares are
 seeded in the task's `prompt` (a `Messages` prompt carrying images); the later turns come
-from a scripted user — the env's `run()` drives a chat session, sending each reveal as
+from a scripted user — the env's `run()` drives an interaction, sending each reveal as
 the next user turn and closing the exchange once every turn is answered. Reward is an exact match of
 the final codeword; a partial-match metric tracks per-position accuracy. Images carry through
 the v1 message graph as `mm_kwargs` for training.
@@ -120,10 +120,10 @@ class ColorCodewordEnv(vf.SingleAgentEnv):
         colors_per_turn = task.data.info["colors_per_turn"]
         max_turns = task.data.info["max_turns"]
         # Turn 0's squares ride the task prompt, so the model answers first (a bare
-        # turn()); each later turn reveals its squares as the session's next user
+        # turn()); each later turn reveals its squares as the interaction's next user
         # message until every turn is answered.
-        async with agents.agent.chat(task) as session:
-            reply = await session.turn()
+        async with agents.agent.interaction(task) as interaction:
+            reply = await interaction.turn()
             for turns in range(1, max_turns):
                 if reply.stopped:
                     break
@@ -143,7 +143,7 @@ class ColorCodewordEnv(vf.SingleAgentEnv):
                         text=turn_text(turns, len(colors), max_turns, total)
                     )
                 ]
-                reply = await session.turn([vf.UserMessage(content=parts)])
+                reply = await interaction.turn([vf.UserMessage(content=parts)])
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):

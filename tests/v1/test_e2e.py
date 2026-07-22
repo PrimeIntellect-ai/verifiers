@@ -109,7 +109,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
 @pytest.mark.e2e
 @pytest.mark.parametrize("harness_runtime", USER_RUNTIMES, indirect=True)
 async def test_user(run_v1, harness_runtime, tmp_path):
-    """Multi-turn, driven by a scripted user — a chat-session loop in the env's
+    """Multi-turn, driven by a scripted user — an interaction loop in the env's
     `run()` — across the harness runtime axis. The task is prompt-less, so one
     run covers the whole exchange shape: the caller opens (the user speaks first),
     each later turn resumes the harness onto the conversation, and leaving the loop
@@ -124,14 +124,14 @@ async def test_user(run_v1, harness_runtime, tmp_path):
     )
     assert trace.ok
     assert trace.num_turns >= 2  # genuinely multi-turn
-    assert trace.stop_condition == "user_closed"  # leaving the session loop ended it
+    assert trace.stop_condition == "user_closed"  # leaving the interaction ended it
     assert trace.reward == 1.0
 
 
 @pytest.mark.e2e
-async def test_chat(live_ctx):
-    """Drive an agent turn-by-turn through `agent.chat()` — the caller IS the run's
-    user. Runs on the tool-less `null` chat harness: nothing but the exchange
+async def test_interaction(live_ctx):
+    """Drive an agent turn-by-turn through `agent.interaction()` — the caller IS
+    the run's user. Runs on the tool-less `null` harness: nothing but the exchange
     itself, yet a real rollout — trace, scoring, and the `user_closed` stop all
     apply."""
     import verifiers.v1 as vf
@@ -148,20 +148,20 @@ async def test_chat(live_ctx):
     task = vf.Task(
         vf.TaskData(
             idx=0,
-            prompt=None,  # chat opens the conversation
+            prompt=None,  # the interaction's caller opens the conversation
             system_prompt="Repeat the user's message back exactly, no extra words.",
         )
     )
-    async with agent.chat(task) as session:
-        first = await session.turn("hello world")
+    async with agent.interaction(task) as interaction:
+        first = await interaction.turn("hello world")
         assert not first.stopped
         assert "hello world" in first.text.lower()
-        second = await session.turn("goodbye world")
+        second = await interaction.turn("goodbye world")
         assert not second.stopped
         assert "goodbye world" in second.text.lower()
-    trace = session.trace
+    trace = interaction.trace
     assert trace is not None and trace.errors == []
-    assert trace.stop_condition == "user_closed"  # closing the chat ended the run
+    assert trace.stop_condition == "user_closed"  # closing the interaction ended it
     assert trace.num_turns == 2
 
 
@@ -448,11 +448,11 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
 
 @pytest.mark.e2e
 async def test_kuhn_poker_self_play(run_v1, tmp_path):
-    """The turn-coupled proof env: one Kuhn poker hand, both seats live chat sessions
+    """The turn-coupled proof env: one Kuhn poker hand, both seats live interactions
     of the run's own model (self-play), refereed host-side, paid out zero-sum."""
     traces = await run_v1(
         "kuhn-poker-v1",
-        harness=None,  # both seats pin the null chat loop themselves
+        harness=None,  # both seats pin the null harness themselves
         output_dir=tmp_path,
         max_turns=8,
         # The Q decision (the one mixed-strategy spot in Kuhn) can cost a reasoning

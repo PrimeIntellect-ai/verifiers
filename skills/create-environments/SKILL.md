@@ -40,7 +40,7 @@ Before starting with the implementation, think about the following things:
 
 - What is the dataset about, which fields does it have?
 - Does it come with custom tools that are strictly necessary and not added by common harnesses? For example, a lot of harnesses come with bash or web search tools, which makes custom tools obsolete. Always prefer harnesses over custom tools
-- Is the conversation driven by a user (scripted turns, a game engine, a modeled user)? That is env control flow (a chat-session loop in `run()`), not a server.
+- Is the conversation driven by a user (scripted turns, a game engine, a modeled user)? That is env control flow (an interaction loop in `run()`), not a server.
 - Does one rollout involve more than one agent run (attempts, a judge, game players)? Then the package also exports an `Env` subclass — or an existing bundled env (`--env.id best-of-n|agentic-judge|user-sim`) already covers it.
 - Which rewards are needed for scoring? What additional metrics might be nice to have, either for debugging, training or potentially in the future?
 - How should the tasks be scored, is a judge needed?
@@ -186,16 +186,16 @@ Choose placement from the tool's lifetime and filesystem needs:
 
 ## User simulation
 
-There is one mechanism: the chat session — `agents.<name>.chat(task)` in the env's `run()`; whoever calls `turn()` is the run's user, one harness segment per turn (the program yields, the caller answers, the next segment resumes the exchange with the answer). A prompt-less task is opened by the first `turn(message)`; a prompted task speaks first (bare `turn()`); `chat(mask_prompt=True)` hides a scenario prompt from the wire while the task still scores the real row. There is no user server to declare or place; who computes the turns is env control flow:
+There is one mechanism: the interaction — `agents.<name>.interaction(task)` in the env's `run()`; whoever calls `turn()` is the run's user, one harness segment per turn (the program yields, the caller answers, the next segment resumes the exchange with the answer). A prompt-less task is opened by the first `turn(message)`; a prompted task speaks first (bare `turn()`); `interaction(mask_prompt=True)` hides a scenario prompt from the wire while the task still scores the real row. There is no user server to declare or place; who computes the turns is env control flow:
 
 - **Scripted user** (replay pre-generated turns, step a game engine): a plain loop inside an `Env.run()` override — see `environments/alphabet_sort_v1` or the bundled `textarena` taskset.
-- **Modeled user** (an LLM playing the user): another agent role, driven live via `agents.user.chat(...)` and relayed into the assistant's run — or just use the bundled `user-sim` env (`--env.id user-sim`), which does exactly this from the task's prompt-as-scenario.
+- **Modeled user** (an LLM playing the user): another agent role, driven live via `agents.user.interaction(...)` and relayed into the assistant's run — or just use the bundled `user-sim` env (`--env.id user-sim`), which does exactly this from the task's prompt-as-scenario.
 
 The harness running the *assistant* must be able to resume an exchange: transcript-backed resume (`SUPPORTS_RESUME`) covers the default relaunch-on-the-conversation (`bash`, `null`), and a harness with its own session state overrides `resume()` natively (`codex`).
 
 ## Multi-agent environments
 
-When one rollout is more than one agent run, export an `Env` subclass next to the taskset: declare each agent as a `vf.AgentConfig` field with a default instance on a `vf.EnvConfig` subclass (bound via `vf.Env[YourConfig]`, read as `self.config`, addressed as `--env.<agent>.*`) — the field name is the agent's name, the only naming site, and per-run caps (turns, tokens, stage timeouts, retries) are agent fields. A declared pin is its author default; an unpinned agent runs the taskset's default harness, and its model context defaults to the run's own. Task x agent fit validates per run, on the task each agent actually receives (an env-minted task carries its own `tools`/`NEEDS_CONTAINER`, so a bare verdict task pairs with any taskset). Then write `run(task, agents)` (imperative control flow, returning nothing — every finished run joins the episode automatically, stamped with its standing; a multi-turn exchange is a chat session, `agents.<name>.chat(task)`, one `turn()` per harness segment), and optionally `setup(agents)` (env-hardcoded standing, e.g. `agents.judge.trainable = False`) and `finalize(task, episode)` (sibling-dependent judgement over `episode.traces`, via `record_reward`/`record_metric`; `trace.agent_name` names each agent). Before writing one, check the bundled envs (`--env.id best-of-n | agentic-judge | user-sim`) and the reference implementations (`environments/code_golf_v1`, `environments/kuhn_poker_v1`). See docs/v1/env.md.
+When one rollout is more than one agent run, export an `Env` subclass next to the taskset: declare each agent as a `vf.AgentConfig` field with a default instance on a `vf.EnvConfig` subclass (bound via `vf.Env[YourConfig]`, read as `self.config`, addressed as `--env.<agent>.*`) — the field name is the agent's name, the only naming site, and per-run caps (turns, tokens, stage timeouts, retries) are agent fields. A declared pin is its author default; an unpinned agent runs the taskset's default harness, and its model context defaults to the run's own. Task x agent fit validates per run, on the task each agent actually receives (an env-minted task carries its own `tools`/`NEEDS_CONTAINER`, so a bare verdict task pairs with any taskset). Then write `run(task, agents)` (imperative control flow, returning nothing — every finished run joins the episode automatically, stamped with its standing; a multi-turn exchange is an interaction, `agents.<name>.interaction(task)`, one `turn()` per harness segment), and optionally `setup(agents)` (env-hardcoded standing, e.g. `agents.judge.trainable = False`) and `finalize(task, episode)` (sibling-dependent judgement over `episode.traces`, via `record_reward`/`record_metric`; `trace.agent_name` names each agent). Before writing one, check the bundled envs (`--env.id best-of-n | agentic-judge | user-sim`) and the reference implementations (`environments/code_golf_v1`, `environments/kuhn_poker_v1`). See docs/v1/env.md.
 
 ## Custom harnesses
 
@@ -233,7 +233,7 @@ Map concepts directly:
 | `Rubric` reward function | Task `@vf.reward` method |
 | Parser object | Ordinary parsing inside task scoring |
 | `ToolEnv` tools | `vf.Toolset` declared on `Task.tools` or `Taskset.tools` |
-| `MultiTurnEnv.env_response` | a chat-session loop in the env's `run()` |
+| `MultiTurnEnv.env_response` | an interaction loop in the env's `run()` |
 | Dict state | Typed `vf.State` |
 | Sandbox subclass | Runtime config + task hooks |
 

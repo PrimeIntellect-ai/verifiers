@@ -1,7 +1,7 @@
 [project]
 name = "kuhn-poker-v1"
 version = "0.1.0"
-description = "kuhn-poker-v1 — seeded Kuhn poker self-play, two seats driven turn-by-turn over chat sessions."
+description = "kuhn-poker-v1 — seeded Kuhn poker self-play, two seats driven turn-by-turn over interactions."
 requires-python = ">=3.11"
 dependencies = ["verifiers"]
 

@@ -7,11 +7,11 @@ on each follow-up turn re-sorts the cumulative list — tagging the newly added 
 ground truth, power-scaled.
 
 The whole conversation is driven by a scripted user: the env's `run()` replays the
-episode's pre-generated `user_turns` through a chat session. The task carries no prompt
+episode's pre-generated `user_turns` through an interaction. The task carries no prompt
 (`prompt=None`), so the first `turn()` opens the conversation with the initial sort
 prompt, and each follow-up turn resumes the assistant onto the conversation (the
-assistant yields, the session answers, the exchange resumes); when the turns run out,
-leaving the session ends the exchange. The taskset is
+assistant yields, the interaction answers, the exchange resumes); when the turns run out,
+leaving the interaction ends the exchange. The taskset is
 `INFINITE`: `load` generates episodes on demand, forever — each pass over the source name
 lists draws fresh turn splits, so the stream never repeats; runs bound it with `-n`.
 """
@@ -101,11 +101,11 @@ class AlphabetSortEnv(vf.SingleAgentEnv):
     """Replays each episode's pre-generated user turns as the run's user."""
 
     async def run(self, task, agents):
-        # A chat session replaying the pre-generated episode: the task carries no
+        # An interaction replaying the pre-generated episode: the task carries no
         # prompt, so the first turn opens the conversation with the initial sort.
-        async with agents.agent.chat(task) as session:
+        async with agents.agent.interaction(task) as interaction:
             for prompt in task.data.info["user_turns"]:
-                if (await session.turn(prompt)).stopped:
+                if (await interaction.turn(prompt)).stopped:
                     break
 
 
