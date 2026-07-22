@@ -1,5 +1,6 @@
 # NOTE: Helper functions for example datasets. Not intended for core functionality.
 
+import hashlib
 import random
 from typing import TYPE_CHECKING, Any, Callable, cast
 
@@ -90,7 +91,22 @@ def get_preprocess_fn(name: str) -> Callable[[dict], dict]:
         def preprocess_gpqa(x: dict[str, Any]) -> dict[str, Any]:
             q = x["Question"]
             letters = ["A", "B", "C", "D"]
-            random.shuffle(letters)
+            # Seed the shuffle deterministically per question so that the same
+            # GPQA question always gets the same A/B/C/D answer mapping. The
+            # previous random.shuffle(letters) used the unseeded process-global
+            # RNG (and ran across num_proc=10 workers, each with independent
+            # RNG state), so the same question got a different mapping on every
+            # run — breaking eval reproducibility. A per-question seed derived
+            # from a stable hash of the question text preserves position-bias
+            # mitigation (each question is still permuted) while making runs
+            # reproducible across interpreter invocations. hashlib is used
+            # (not built-in hash()) because Python string hashing is
+            # randomized per-process via PYTHONHASHSEED.
+            q_hash = int.from_bytes(
+                hashlib.sha256(q.encode("utf-8")).digest()[:8], "little"
+            )
+            rng = random.Random(q_hash)
+            rng.shuffle(letters)
             itos = {k: v for k, v in enumerate(letters)}
             ans = {
                 itos[0]: x["Correct Answer"],
