@@ -47,13 +47,15 @@ class NetworkPolicy:
             )
         ):
             return False
+        hostname = host.lower().rstrip(".")
+        # `localhost` is container-local and bypasses this host-side proxy. Never dial
+        # the host's namesake address, even if a colocated service appears in routes.
+        if hostname == "localhost" or hostname.endswith(".localhost"):
+            return False
         # Framework routes are invariants, not user egress, so they cannot be blocked.
         if any(_rule_matches(route, scheme, host, port) for route in self.routes):
             return True
         # The proxy dials from the host, so only framework routes may use host loopback.
-        hostname = host.lower().rstrip(".")
-        if hostname == "localhost" or hostname.endswith(".localhost"):
-            return False
         with contextlib.suppress(ValueError):
             if ip_address(hostname).is_loopback:
                 return False
