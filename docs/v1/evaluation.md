@@ -85,6 +85,9 @@ Host-loopback destinations are reserved for those framework routes, so neither t
 default-allow posture nor a user `allow` rule exposes unrelated services on the
 Verifiers host.
 
+Filtered Docker runtimes are single-rollout. Reusing one would require reopening trusted
+setup networking to processes left by the previous agent, so each rollout gets a fresh box.
+
 Rules may be bare host patterns (`*.example.com`) or URL origins
 (`https://example.com:8443`). A scheme or port in a rule narrows the match; URL paths
 are ignored. `*.example.com` includes `example.com` itself. HTTPS proxy tunnels use

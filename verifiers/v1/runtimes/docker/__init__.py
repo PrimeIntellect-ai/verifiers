@@ -99,9 +99,8 @@ class DockerRuntime(Runtime):
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._proxy: EgressProxy | None = None
         self._proxy_host_ip: str | None = None
-        self._gateway: str | None = None
-        self._subnet: str | None = None
         self._stopped = False
+        self._setup_claimed = False
         self._cut = False
 
     async def start(self) -> None:
@@ -253,57 +252,14 @@ class DockerRuntime(Runtime):
         return self.config.network_isolated
 
     async def prepare_setup(self) -> None:
-        if self._proxy is None:
+        if not self.network_isolated:
             return
-        self._proxy.policy = NetworkPolicy([], [], ["127.0.0.1"], True)
-        if not self._cut:
-            return
-        assert self._gateway is not None and self._subnet is not None
-        host = self._proxy_host_ip or ""
-        proxy_args: list[str] = []
-        if host:
-            # macOS needs iptables to reopen OUTPUT; fetch it through the allowed proxy.
-            proxy = f"http://{host}:{self._proxy.port}"
-            proxy_args = [
-                "--env",
-                f"http_proxy={proxy}",
-                "--env",
-                f"https_proxy={proxy}",
-            ]
-        script = (
-            "set -eu; GW=$1; SUBNET=$2; HOST=$3; "
-            'if [ -n "$HOST" ]; then apk add --no-cache iptables >/dev/null; '
-            "iptables -F OUTPUT; fi; "
-            'ip route add "$SUBNET" dev eth0; '
-            'ip route add default via "$GW"; '
-            'if [ -n "$HOST" ]; then ip route del "$HOST/32"; '
-            'if [ "$HOST" != "$GW" ]; then ip route del "$GW/32"; fi; fi; '
-            "ip route del blackhole 127.0.0.11/32 table local"
-        )
-        restore = await docker(
-            "run",
-            "--rm",
-            "--network",
-            f"container:{self._container}",
-            "--cap-drop",
-            "ALL",
-            "--cap-add",
-            "NET_ADMIN",
-            *proxy_args,
-            "alpine:3.22",
-            "sh",
-            "-c",
-            script,
-            "restore",
-            self._gateway,
-            self._subnet,
-            host,
-        )
-        if restore.exit_code != 0:
+        if self._setup_claimed:
             raise SandboxError(
-                f"docker setup network restore failed: {restore.stderr.strip()}"
+                "network-filtered Docker runtimes are single-rollout; provision a "
+                "fresh runtime instead of reusing this one"
             )
-        self._cut = False
+        self._setup_claimed = True
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Allow the declared framework routes, then leave the proxy as the only route."""
@@ -339,8 +295,7 @@ class DockerRuntime(Runtime):
             'if [ -n "$HOST" ]; then iptables -F OUTPUT; '
             "iptables -A OUTPUT -o lo -j ACCEPT; "
             'iptables -A OUTPUT -d "$HOST" -p tcp --dport "$PORT" -j ACCEPT; '
-            "iptables -A OUTPUT -j REJECT; fi; "
-            'printf "%s %s\\n" "$GW" "$SUBNET"'
+            "iptables -A OUTPUT -j REJECT; fi"
         )
         cut = await docker(
             "run",
@@ -361,7 +316,6 @@ class DockerRuntime(Runtime):
         )
         if cut.exit_code != 0:
             raise SandboxError(f"docker network cut failed: {cut.stderr.strip()}")
-        self._gateway, self._subnet = cut.stdout.strip().split()
         self._cut = True
 
     def _proxy_env(self) -> dict[str, str]:
