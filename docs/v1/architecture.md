@@ -2,7 +2,7 @@
 
 verifiers is built out of the following parts:
 
-A server-backed evaluation or prime-rl **orchestrator** creates worker processes and distributes rollout requests among them. Each worker loads its taskset and harness, owns an **interception pool**, and creates the runtime used by each rollout it handles.
+A server-backed evaluation or prime-rl **orchestrator** creates worker processes and distributes rollout requests among them. The client owns the taskset — it loads the tasks once and ships each dispatched task's data on the request; a worker loads only the harnesses (rebuilding each task from its request), owns an **interception pool**, and creates the runtime used by each rollout it handles.
 
 The orchestrator and workers are managed by verifiers and prime-rl themselves and thus offer few configurable knobs.
 

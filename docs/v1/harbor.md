@@ -69,10 +69,28 @@ resource_multiplier = 2.0
 
 The `timeout_multiplier` multiplies both the agent and verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
 
+## Network policies
+
+Harbor's effective agent network policy is applied to Docker harness runtimes. An
+`[agent].network_mode` override takes precedence over the `[environment]` baseline;
+legacy `[environment].allow_internet` is normalized by Harbor's schema.
+
+| Harbor mode | Docker execution policy |
+| --- | --- |
+| `public` | Sets the task allowlist to `["*"]`, leaving the evaluator policy intact. |
+| `no-network` | Sets the task allowlist to `[]` (framework routes only). |
+| `allowlist` | Sets the task allowlist to `allowed_hosts`. |
+
+Trusted task and harness setup remains online. The policy starts immediately before the
+agent and stays active through finalization and scoring. Interception and MCP URLs are
+added automatically; evaluator-provided `allow` entries add exceptions and `block`
+entries can narrow them. Restricted Harbor tasks require the Docker runtime because the
+other runtimes do not provide framework-aware URL filtering.
+
 ## Shortcomings
 
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
-- `no-network` support for sandbox runtimes ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
+- Switching to a different verifier-phase network policy ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
 - Shared & separate verifiers ([Harbor Docs](https://www.harborframework.com/docs/tasks#verifier-environment-shared-vs-separate))
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))

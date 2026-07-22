@@ -20,6 +20,7 @@ from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
 from verifiers.v1.runtimes import (
+    DockerConfig,
     Runtime,
     make_runtime,
     runtime_is_local,
@@ -223,18 +224,18 @@ async def reachable_url(
     """Yield the URL a consumer uses to reach the server at (`service`, `port`), over two
     primitives: `Runtime.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach
     into the host from a remote runtime). `colocated` = the server shares the consumer's
-    runtime; `consumer_is_local` = the consumer is on the host network.
+    runtime; `consumer_is_local` = the consumer can use a host-local URL without a tunnel.
 
     - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
     - the server runs in a remote sandbox -> its own published URL (`expose`), reachable anywhere;
-    - else it's on the host network -> localhost to a local consumer, a host tunnel to a remote one."""
+    - else it's host-local -> localhost to a local consumer, a host tunnel to a remote one."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
     elif not service.is_local:  # in a remote sandbox → it publishes its own port
         yield await service.expose(port)
-    elif consumer_is_local:  # host network, local consumer → localhost, no tunnel
+    elif consumer_is_local:  # local consumer → localhost, no public tunnel
         yield f"http://127.0.0.1:{port}"
-    else:  # host network, remote consumer → a host tunnel publishes the port outward
+    else:  # remote consumer → a host tunnel publishes the port outward
         async with PrimeTunnel().expose(port) as url:
             yield url
 
@@ -249,8 +250,22 @@ async def serve(
     state_base: str | None = None,
 ):
     cfg = server.config
+    colocated = getattr(cfg, "colocated", False)
     async with contextlib.AsyncExitStack() as stack:
-        if getattr(cfg, "colocated", False) and harness_runtime is not None:
+        # Colocated servers inherit the harness cut. A separately provisioned filtered
+        # Docker server has neither that lifecycle nor a published port after isolation;
+        # reject it instead of silently leaving its requested policy unenforced.
+        if (
+            isinstance(cfg.runtime, DockerConfig)
+            and cfg.runtime.network_isolated
+            and not (colocated and harness_runtime is not None)
+        ):
+            raise ToolsetError(
+                "Docker network policies are supported on the harness runtime; "
+                f"server {server.server_name!r} must be colocated or use an "
+                "unrestricted Docker runtime"
+            )
+        if colocated and harness_runtime is not None:
             runtime = harness_runtime
         else:
             runtime = make_runtime(cfg.runtime)
@@ -288,7 +303,9 @@ async def serve(
                 runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
             )
         )
-        if not colocated and harness_runtime is not None:
+        if colocated and harness_runtime is not None and runtime.network_isolated:
+            base = base.replace("127.0.0.1", "localhost", 1)
+        elif not colocated and harness_runtime is not None:
             base = harness_runtime.host_url(base)
         yield f"{base.rstrip('/')}/mcp"
 
@@ -387,7 +404,7 @@ async def serve_tools(
                 # Not ours: a pre-existing endpoint with no vf state channel. Pass the URL
                 # through bare — a state tag would be useless, and the per-rollout secret
                 # must not ride the query string to a third-party host.
-                urls[name] = server.url
+                urls[name] = harness_runtime.host_url(server.url)
                 logger.info("tool server '%s' (shared, external): %s", name, server.url)
                 continue
             url = harness_runtime.host_url(server.url) if server.local else server.url
@@ -403,7 +420,7 @@ async def serve_tools(
                 )
             cfg = toolset.config
             if cfg.url:
-                urls[name] = cfg.url
+                urls[name] = harness_runtime.host_url(cfg.url)
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)
             else:
                 urls[name] = await stack.enter_async_context(

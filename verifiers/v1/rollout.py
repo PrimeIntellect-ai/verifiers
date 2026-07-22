@@ -240,6 +240,8 @@ class RolloutRun:
                 )
             if self._owns_runtime:
                 await runtime.start()
+            await runtime.prepare_setup()
+            await runtime.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
@@ -285,6 +287,9 @@ class RolloutRun:
                     state_base=base_url,
                 )
             )
+            # Setup and service provisioning are complete. Apply the runtime's
+            # execution policy while preserving the framework routes the agent uses.
+            await runtime.prepare_execution([self._endpoint, *self._urls.values()])
         except Exception as e:
             self.fail(e)
             return False

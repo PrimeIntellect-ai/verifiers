@@ -30,6 +30,7 @@ from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.retries import RetryConfig, backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun, _as_messages
 from verifiers.v1.runtimes import (
+    DockerConfig,
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
@@ -106,11 +107,37 @@ class AgentConfig(BaseConfig):
         return data
 
 
-def _check_borrowed_placement(task: Task, runtime: Runtime) -> None:
+def _check_borrowed_placement(
+    task: Task, runtime: Runtime, base_config: RuntimeConfig
+) -> None:
     """A borrowed box is never re-provisioned, so a task's placement fields can't
-    be honored. A task `image` on a subprocess box raises (a wiring bug — it goes
-    to the caller, not the trace); a container box whose image differs only warns,
-    since placing a run into an existing world is the point of borrowing."""
+    be honored. Reject requirements that cannot be applied to the running box; an
+    image mismatch on a container only warns, since sharing its world is the point."""
+    task_policy = "*" not in task.data.network_allow or bool(task.data.network_block)
+    base_docker = base_config if isinstance(base_config, DockerConfig) else None
+    if task_policy or (base_docker is not None and base_docker.network_isolated):
+        config = runtime.config
+        if not isinstance(config, DockerConfig):
+            raise ValueError(
+                f"task {task.data.idx!r} requires a Docker URL network policy, but "
+                f"borrowed runtime {runtime.name!r} is not Docker-backed; use "
+                "agent.provision(task)"
+            )
+        policy_base = (
+            base_docker if base_docker is not None else DockerConfig(allow=["*"])
+        )
+        expected = resolve_runtime_config(policy_base, task)
+        assert isinstance(expected, DockerConfig)
+        # Do not inherit extra destinations from a box provisioned for another task.
+        if set(config.allow) != set(expected.allow) or set(config.block) != set(
+            expected.block
+        ):
+            raise ValueError(
+                f"task {task.data.idx!r} requires allow={expected.allow!r} and "
+                f"block={expected.block!r}, but borrowed runtime {runtime.name!r} "
+                f"has allow={config.allow!r} and block={config.block!r}; use "
+                "agent.provision(task)"
+            )
     if task.data.image is None:
         return
     if isinstance(runtime.config, SubprocessConfig):
@@ -524,7 +551,7 @@ class Agent:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
         if runtime is not None:
-            _check_borrowed_placement(task, runtime)
+            _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
             run_is_local = runtime.is_local
         else:

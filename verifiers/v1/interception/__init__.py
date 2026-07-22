@@ -57,10 +57,8 @@ def make_interception(
     config: InterceptionConfig, *, requires_tunnel: bool
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
-    `make_runtime`). With `requires_tunnel` (some consumer is off the host network — see
-    the `requires_tunnel` util) each server is exposed via its configured tunnel; without
-    it they get none and are reached at localhost. The caller computes it (see
-    `Env._requires_tunnel`)."""
+    `make_runtime`). With `requires_tunnel`, each server is exposed through its configured
+    tunnel; otherwise it remains on host loopback. The caller computes this requirement."""
     if isinstance(config, InterceptionServerConfig):
         return InterceptionServer(config, requires_tunnel)
     if isinstance(config, StaticInterceptionPoolConfig):

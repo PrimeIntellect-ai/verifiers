@@ -78,7 +78,9 @@ class UserSimEnv(vf.Env[UserSimEnvConfig]):
             # run-away exchange ends through the user agent's own `max_turns`
             # (its segment comes back `terminated`), not a separate counter.
             ask = await sim.turn("Hello! How can I help you today?")
-            while not ask.terminated and ask.last_reply.strip() != self.config.done_marker:
+            while (
+                not ask.terminated and ask.last_reply.strip() != self.config.done_marker
+            ):
                 answer = await assistant.turn(ask.last_reply)
                 if answer.terminated:
                     break

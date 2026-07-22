@@ -4,7 +4,7 @@ A complete reference of every settable config field for **evaluating tasksets in
 
 The root config the eval CLI parses is [`EvalConfig`](#evalconfig--the-run). It composes the environment (`env` — the whole `[env]` block: taskset, agents, limits) with the run knobs (model, sampling, counts) and the worker pool. The tree:
 
-```
+```text
 EvalConfig                          (the run)
 ├─ model, sampling, client, num_tasks, num_rollouts, shuffle, max_concurrent, …
 ├─ env: EnvConfig                   (subclass resolved by --env.id, else the taskset's env)
@@ -111,7 +111,7 @@ else `SingleAgentEnvConfig`), so everything renders typed in `-h`. Each loaded `
 the row's behavior, tools, and scoring; only its `TaskData` is stored on the trace.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `id` | `ID` | `""` | Which `Env` (control flow between agents) runs: a bundled env (`best-of-n`, `agentic-judge`), a local package, or a Hub `org/name[@version]`. Empty = the taskset's own story (its exported `Env` subclass, else `SingleAgentEnv`). |
 | `taskset` | `TasksetConfig \| None` | `None` | The seed taskset every rollout starts from; resolved to its concrete subclass by `--env.taskset.id` (positional shorthand: `eval <taskset-id>`). See [Taskset config](#taskset-config). `None` only for a taskset-less env; every bundled env requires one. |
 | *(agents)* | `AgentConfig` | env-declared | Each declared agent: `agent` on `SingleAgentEnvConfig`, `solver`/`judge` on the agentic-judge env, the env's own names elsewhere. See [Agent config](#agent-config). |
@@ -181,6 +181,7 @@ The separate `verifiers/v1/env.py` `TimeoutConfig` (the env's `--env.timeout.*`)
 `verifiers/v1/retries.py`. Per-call model/runtime retries are owned by the harness/runtime SDKs; the framework keeps only **whole-run** retries, in two atoms sharing one shape: each agent's own (`--env.<agent>.retries.*` — rerun that agent's rollout; never into a borrowed box) and the env's whole-episode fallback (`--env.retries.*` — for faults no agent owns; a retried episode reruns whole).
 
 ### `RetryConfig`
+
 Rerun when the run ends with a captured error. Matching is by the error's **exception type name**.
 
 | Field | Type | Default | Notes |
@@ -200,7 +201,7 @@ Rerun when the run ends with a captured error. Matching is by the error's **exce
 Fixed pool: pre-spawn `num_workers` up front.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `num_workers` | `int` | `4` (≥1) | Worker processes to pre-spawn (1 = a single in-process server, no pool). |
 
 ### `ElasticPoolConfig` — `type: "elastic"` (default)
@@ -234,7 +235,7 @@ task-scoped `ToolsetConfig` fields, then narrow the taskset config's `task` fiel
 that subclass. These are run-wide knobs, not per-row data; the row itself belongs on `TaskData`.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `judges` | `Judges` | `[]` | Judge plugins run by `Task.score`; set through `--env.taskset.task.judges`. |
 
 ---
@@ -280,7 +281,7 @@ A growing-message-list chat loop with the task- and taskset-scoped MCP tools, an
 Installs the Codex CLI into the runtime and runs `codex exec`.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
 #### `RLMHarnessConfig` — `id: "rlm"`
@@ -299,7 +300,7 @@ Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `Harness
 Runs the native bash-tool agent through LiteLLM.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"2.4.5"` | mini-swe-agent release to install, pinned. |
 
 #### `Terminus2HarnessConfig` — `id: "terminus-2"`
@@ -307,7 +308,7 @@ Runs the native bash-tool agent through LiteLLM.
 Runs Harbor's tmux agent through LiteLLM.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"0.14.0"` | Harbor release to install, pinned. |
 
 #### `KimiCodeHarnessConfig` — `id: "kimi-code"`
@@ -315,7 +316,7 @@ Runs Harbor's tmux agent through LiteLLM.
 Installs the Kimi Code CLI and runs it headlessly.
 
 | Field | Type | Default | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `version` | `str` | `"0.27.0"` | Kimi Code release to install, pinned. |
 
 ---
@@ -330,7 +331,8 @@ Run on the host in a fresh `/tmp/<name>` workspace per rollout. **No extra field
 
 ### `DockerConfig` — `type: "docker"`
 
-Local Docker container sharing the host network (`--network host`).
+Local Docker container. A bare wildcard with no block entries shares the host network;
+every narrower policy uses an isolated bridge during agent execution.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -340,6 +342,8 @@ Local Docker container sharing the host network (`--network host`).
 | `memory` | `float \| None` | `None` | Hard memory limit in GB (`docker --memory`). None = unlimited. |
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"2"` (`docker --gpus` uses the count; needs the nvidia toolkit). |
 | `disk` | `float \| None` | `None` | Advisory disk request in GB. Docker has no portable per-container size limit, so accepted but **not enforced**. |
+| `allow` | `list[str]` | `[]` | URL origins or host patterns allowed during execution, e.g. `"https://*.wikipedia.org"`. Empty permits only automatically added interception/MCP routes; bare `"*"` with no block entries opts out of filtering. Wildcards are supported; `*.example.com` also matches the apex. URL paths are ignored. An explicit HTTPS origin authorizes a nonstandard CONNECT port; CONNECT authority and TLS SNI must both match policy. Under filtered policies, non-global addresses (including host loopback, private, and link-local) are reserved for framework routes. |
+| `block` | `list[str]` | `[]` | URL origins or host patterns denied during execution. Block wins over user `allow`; interception and MCP routes always remain reachable. |
 
 ### `PrimeConfig` — `type: "prime"`
 
@@ -385,6 +389,10 @@ Before each rollout or validation check, `resolve_runtime_config` combines the s
   class's default. Any non-default runtime-config workdir wins.
 - Non-`None` `TaskData.resources` values similarly fill supported runtime fields only while those
   fields remain at their defaults. Any non-default runtime-config resource value wins.
+- Non-wildcard task URL policy fields require framework-aware Docker policy support.
+  `TaskData.network_allow=["*"]` is neutral; a concrete task list replaces an evaluator
+  wildcard, otherwise concrete task/runtime lists combine. `TaskData.network_block`
+  combines with runtime `block`, and every block rule wins over allow rules.
 - A resource field unsupported by the chosen runtime is ignored; evaluation warns once per
   runtime/field combination. Docker and Modal accept `disk` so portable task data validates, but neither enforces a disk limit.
 
@@ -431,6 +439,8 @@ Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
+| `network_allow` | `list[str]` | `["*"]` | Docker destinations needed by the task. The wildcard is neutral and leaves evaluator policy intact; empty requests framework-only access. |
+| `network_block` | `list[str]` | `[]` | Destinations merged into Docker's `block` list. A non-empty list requires Docker filtering. |
 | `timeout` | `TaskTimeout` | `TaskTimeout()` | Per-stage timeout requests described above. |
 | `resources` | `TaskResources` | `TaskResources()` | Portable runtime resource requests described above. |
 
