@@ -1,17 +1,10 @@
 # The Env
 
-An `Env` defines the control flow between agents. In the simplest case, it is just
-a `SingleAgentEnv` where a single agent solves a task from a taskset. In more
-advanced settings, it can define grader-solver (agentic judges) or
-proposer-solver episodes which chains multiple agents.
+An `Env` defines the control flow between agents. In the simplest case, it is just a `SingleAgentEnv` where a single agent solves a task from a taskset. In more advanced settings, it can define grader-solver (agentic judges) or proposer-solver episodes which chains multiple agents.
 
-The core method is `Env.run`, which builds up an `Episode` artifact implicitly:
-it returns nothing, and every finished agent run joins the episode automatically
-— one `Trace` per agent run. The `setup` and `finalize` hooks let you configure
-which agents should be trained in prime-rl or set cross-agent rewards.
+The core method is `Env.run`, which builds up an `Episode` artifact implicitly: it returns nothing, and every finished agent run joins the episode automatically — one `Trace` per agent run. The `setup` and `finalize` hooks let you configure which agents should be trained in prime-rl or set cross-agent rewards.
 
-This example illustrates two agents, `pro` and `con`, arguing for opposing
-positions on a question from a taskset, judged by a `judge` agent.
+This example illustrates two agents, `pro` and `con`, arguing for opposing positions on a question from a taskset, judged by a `judge` agent.
 
 ```python
 class DebateConfig(vf.EnvConfig):
@@ -48,15 +41,11 @@ class DebateEnv(vf.Env[DebateConfig]):
 
 ## Episode
 
-An `Episode` holds all agents' traces from a single invocation of `Env.run`. A
-good mental model is: the `Trace` is an agent's local view of a rollout, while
-the `Episode` is the global view.
+An `Episode` holds all agents' traces from a single invocation of `Env.run`. A good mental model is: the `Trace` is an agent's local view of a rollout, while the `Episode` is the global view.
 
 ## Pluggability
 
-Just like tasksets and harnesses, an `Env` can be user-defined for full
-expressiveness over multi-agent interaction patterns — export an `Env` subclass
-via `__all__`. Otherwise, verifiers ships with a handful of built-ins.
+Just like tasksets and harnesses, an `Env` can be user-defined for full expressiveness over multi-agent interaction patterns — export an `Env` subclass via `__all__`. Otherwise, verifiers ships with a handful of built-ins.
 
 | id | agents | what it does |
 | --- | --- | --- |
