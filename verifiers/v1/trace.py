@@ -8,12 +8,10 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
-from pydantic import Field, PrivateAttr, SerializeAsAny, field_validator
-from pydantic_config import BaseConfig
+from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
-    from verifiers.v1.agent import AgentConfig
     from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
@@ -307,18 +305,9 @@ class VersionInfo(StrictBaseModel):
 
 
 class AgentInfo(StrictBaseModel):
-    """The agent that produced this trace's sampled turns — the resolved
-    `AgentConfig` it ran as, the box it ran in, and its standing in the episode;
-    the `Episode` envelope links siblings."""
-
-    config: SerializeAsAny[BaseConfig]
-    """The agent's resolved `AgentConfig`, lossless — the exact value that rebuilds
-    this agent (`Agent(trace.agent.config)`): harness, runtime policy, model,
-    sampling, caps. Base-annotated and narrowed by the validator below, so the
-    trace record stays below `agent.py` in the import graph. Re-validating a
-    record narrows `config.harness` by its id, so a typed read needs the harness
-    package importable (a custom harness's extra knobs serialize and read back
-    typed)."""
+    config: AgentConfig
+    """The agent's resolved config — the exact value that rebuilds it
+    (`Agent(trace.agent.config)`)."""
     runtime: RuntimeInfo | None = None
     """The box the rollout ran in — `config.runtime` resolved for the task, plus
     the provisioned resource ID; None until provisioning."""
@@ -329,17 +318,6 @@ class AgentInfo(StrictBaseModel):
     trainable: bool = True
     """Whether this trace's tokens are training data for the run's policy. An env's
     `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
-
-    @field_validator("config", mode="before")
-    @classmethod
-    def _narrow_config(cls, value) -> "AgentConfig":
-        """Narrow `config` to a real `AgentConfig`. The lazy import runs at
-        validation time, keeping this module importable below `agent.py`."""
-        from verifiers.v1.agent import AgentConfig
-
-        if isinstance(value, AgentConfig):
-            return value
-        return AgentConfig.model_validate(value)
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):
@@ -624,3 +602,15 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
 WireTrace = Trace[WireTaskData]
 """Trace loader that preserves unknown task fields in `task.model_extra`."""
+
+# `AgentConfig` lives above this module (agent.py imports the rollout engine,
+# which imports the record): bind it once every class here exists. Mid-cycle —
+# agent.py itself pulled this module in — the import fails and agent.py
+# finishes the build instead.
+try:
+    from verifiers.v1.agent import AgentConfig  # noqa: E402
+except ImportError:
+    pass
+else:
+    AgentInfo.model_rebuild()
+    Trace.model_rebuild()

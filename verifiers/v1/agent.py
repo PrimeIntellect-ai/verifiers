@@ -9,6 +9,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
+import sys
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
@@ -792,3 +793,13 @@ class Agents:
 
     def __len__(self) -> int:
         return len(self._agents)
+
+
+# The other half of trace.py's bottom-of-module binding: when this module
+# entered the import cycle first, trace.py could not import AgentConfig — bind
+# it and finish the record's build here.
+_trace = sys.modules["verifiers.v1.trace"]
+if not hasattr(_trace, "AgentConfig"):
+    _trace.AgentConfig = AgentConfig
+    _trace.AgentInfo.model_rebuild()
+    _trace.Trace.model_rebuild()
