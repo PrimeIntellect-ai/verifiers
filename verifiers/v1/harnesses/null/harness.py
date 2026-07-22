@@ -20,6 +20,7 @@ class NullHarness(Harness[NullHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     EXECUTES_CODE = False
+    NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)

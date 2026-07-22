@@ -20,6 +20,7 @@ ACP_COMMAND = [
     "-c",
     f'KIMI_CODE_HOME="$PWD/$KIMI_CODE_HOME" exec {BINARY} acp',
 ]
+SKILLS_DIR = f"{KIMI_HOME}/skills"
 
 INSTALL = r"""
 set -e
@@ -49,8 +50,10 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         logger.info(
             "kimi-code: ensuring Kimi Code %s is installed", self.config.version
         )
@@ -79,6 +82,18 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         kimi_home = f"{KIMI_HOME}/{trace.id}"
+        if self.config.skills:
+            skill_home = f"{kimi_home}/skills"
+            for command in (
+                ["rm", "-rf", skill_home],
+                ["mkdir", "-p", kimi_home],
+                ["cp", "-R", SKILLS_DIR, skill_home],
+            ):
+                copied = await runtime.run(command, {})
+                if copied.exit_code != 0:
+                    raise RuntimeError(
+                        f"failed to stage Kimi skills: {copied.stderr.strip()[-500:]}"
+                    )
         env = {
             **self.config.resolved_env,
             "KIMI_CODE_HOME": kimi_home,

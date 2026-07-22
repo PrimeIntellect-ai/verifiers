@@ -20,6 +20,7 @@ HOME_VAR = "VF_PI_ORIGINAL_HOME"
 PI_DIR = "/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
+SKILLS_DIR = ".agents/skills"
 MCP_VERSION = "2.11.0"
 ACP_VERSION = "0.0.31"
 NODE_VERSION = "22.19.0"
@@ -115,8 +116,12 @@ class PiHarness(Harness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
+    # so the installed skills are passed explicitly via `--skill` at launch.
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         logger.info(
             "pi: ensuring Pi %s and pi-acp %s are installed",
             self.config.version,
@@ -207,6 +212,12 @@ class PiHarness(Harness[PiHarnessConfig]):
             "PI_OFFLINE": "1",
             "PI_TELEMETRY": "0",
         }
+        skill_args = [
+            arg
+            for skill in self.config.skills
+            # Resolve like `install_skills` so the path matches what it wrote.
+            for arg in ("--skill", f"{SKILLS_DIR}/{skill.resolve().name}")
+        ]
         pi_args = [
             PI_BIN,
             "--no-approve",
@@ -215,6 +226,7 @@ class PiHarness(Harness[PiHarnessConfig]):
             "--model",
             ctx.model,
             *mcp_args,
+            *skill_args,
         ]
         if self.config.disabled_tools:
             pi_args += ["--exclude-tools", ",".join(self.config.disabled_tools)]
