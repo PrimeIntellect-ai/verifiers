@@ -91,6 +91,7 @@ class EgressProxy:
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        upstream_reader: asyncio.StreamReader | None = None
         upstream_writer: asyncio.StreamWriter | None = None
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
@@ -120,15 +121,15 @@ class EgressProxy:
                 for *_, address in addresses:
                     resolved = ip_address(address[0])
                     mapped = getattr(resolved, "ipv4_mapped", None)
+                    host_only = (
+                        resolved.is_loopback
+                        or resolved.is_link_local
+                        or (mapped and (mapped.is_loopback or mapped.is_link_local))
+                    )
                     if (
                         resolved.is_unspecified
                         or (mapped and mapped.is_unspecified)
-                        or (
-                            not framework
-                            and (
-                                resolved.is_loopback or (mapped and mapped.is_loopback)
-                            )
-                        )
+                        or (not framework and host_only)
                     ):
                         permitted = False
                         break
@@ -136,15 +137,35 @@ class EgressProxy:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
                 return
-            family, _, _, _, address = addresses[0]
-            upstream_reader, upstream_writer = await asyncio.open_connection(
-                address[0], address[1], family=family, flags=socket.AI_NUMERICHOST
-            )
+            for family, _, _, _, address in addresses:
+                try:
+                    upstream_reader, upstream_writer = await asyncio.open_connection(
+                        address[0],
+                        address[1],
+                        family=family,
+                        flags=socket.AI_NUMERICHOST,
+                    )
+                    break
+                except OSError:
+                    continue
+            if upstream_reader is None or upstream_writer is None:
+                raise ConnectionError(f"could not connect to {host}:{port}")
             if method == "CONNECT":
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()
             else:
                 path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+                authority = f"[{host}]" if ":" in host else host
+                if port != (443 if scheme == "https" else 80):
+                    authority = f"{authority}:{port}"
+                header_lines = [
+                    line
+                    for line in headers.split(b"\r\n")
+                    if line.partition(b":")[0].strip().lower() != b"host"
+                ]
+                headers = f"Host: {authority}\r\n".encode("latin-1") + b"\r\n".join(
+                    header_lines
+                )
                 upstream_writer.write(
                     f"{method} {path} {version}\r\n".encode("latin-1") + headers
                 )

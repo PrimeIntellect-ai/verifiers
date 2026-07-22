@@ -338,7 +338,7 @@ class DockerRuntime(Runtime):
         await super().teardown()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        env = {**(self._proxy_env() if self._cut else {}), **env}
+        env = {**env, **(self._proxy_env() if self._cut else {})}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         return await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
@@ -348,7 +348,7 @@ class DockerRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # Detached servers survive the cut, so they need the initially permissive proxy.
-        env = {**self._proxy_env(), **env}
+        env = {**env, **self._proxy_env()}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         inner = f"{' '.join(shlex.quote(a) for a in argv)} > {shlex.quote(log)} 2>&1"
         run = await docker(
