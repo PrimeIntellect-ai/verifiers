@@ -239,18 +239,18 @@ async def reachable_url(
     """Yield the URL a consumer uses to reach the server at (`service`, `port`), over two
     primitives: `Runtime.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach
     into the host from a remote runtime). `colocated` = the server shares the consumer's
-    runtime; `consumer_is_local` = the consumer is on the host network.
+    runtime; `consumer_is_local` = the consumer can use a host-local URL without a tunnel.
 
     - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
     - the server runs in a remote sandbox -> its own published URL (`expose`), reachable anywhere;
-    - else it's on the host network -> localhost to a local consumer, a host tunnel to a remote one."""
+    - else it's host-local -> localhost to a local consumer, a host tunnel to a remote one."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
     elif not service.is_local:  # in a remote sandbox → it publishes its own port
         yield await service.expose(port)
-    elif consumer_is_local:  # host network, local consumer → localhost, no tunnel
+    elif consumer_is_local:  # local consumer → localhost, no public tunnel
         yield f"http://127.0.0.1:{port}"
-    else:  # host network, remote consumer → a host tunnel publishes the port outward
+    else:  # remote consumer → a host tunnel publishes the port outward
         async with PrimeTunnel().expose(port) as url:
             yield url
 

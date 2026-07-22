@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import PurePosixPath
 from typing import Literal
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from pydantic_config import BaseConfig
 
@@ -22,7 +22,7 @@ from verifiers.v1.runtimes.base import (
     Runtime,
     parse_gpu,
 )
-from verifiers.v1.runtimes.docker.egress import EgressProxy, NetworkPolicy
+from verifiers.v1.runtimes.docker.egress import HOST_ALIAS, EgressProxy, NetworkPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,9 @@ class DockerRuntime(Runtime):
         if isolated:
             # Setup is trusted; colocated servers fetch their task from host interception
             # before the final framework routes are known.
-            self._proxy = EgressProxy(NetworkPolicy(["*"], [], ["127.0.0.1"]))
+            self._proxy = EgressProxy(
+                NetworkPolicy(["*"], [], [HOST_ALIAS], allow_non_global=True)
+            )
             if sys.platform == "linux":
                 await self._proxy.start(listener=await self._container_listener())
             else:
@@ -232,9 +234,10 @@ class DockerRuntime(Runtime):
 
     def host_url(self, url: str) -> str:
         host = urlsplit(url).hostname
-        # 127.0.0.1 stays proxied: the Verifiers process dials its own host loopback.
-        if self.network_isolated and host == "localhost":
-            return url.replace(host, "127.0.0.1", 1)
+        # Keep numeric loopback container-local; the proxy maps this reserved name to
+        # the Verifiers process's loopback for interception and host-local MCP routes.
+        if self.network_isolated and host in ("127.0.0.1", "localhost"):
+            return url.replace(host, HOST_ALIAS, 1)
         if (
             not self.network_isolated
             and sys.platform != "linux"
@@ -262,17 +265,15 @@ class DockerRuntime(Runtime):
         if not self.network_isolated:
             return
         assert self._proxy is not None
-        framework: list[str] = []
-        for url in routes:
-            parsed = urlsplit(url)
-            framework.append(urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
+        framework = [
+            urlsplit(url)._replace(path="", query="", fragment="").geturl()
+            for url in routes
+        ]
         self._proxy.policy = NetworkPolicy(
             self.config.allow,
             self.config.block,
             framework,
         )
-        if self._cut:
-            return
         script = (
             "set -eu; HOST=$1; "
             "PORT=$2; "
@@ -323,8 +324,8 @@ class DockerRuntime(Runtime):
             "HTTPS_PROXY": proxy,
             "http_proxy": proxy,
             "https_proxy": proxy,
-            "NO_PROXY": "localhost",
-            "no_proxy": "localhost",
+            "NO_PROXY": "localhost,127.0.0.1",
+            "no_proxy": "localhost,127.0.0.1",
         }
 
     async def teardown(self) -> None:

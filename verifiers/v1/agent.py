@@ -100,10 +100,9 @@ def _check_borrowed_placement(
     """A borrowed box is never re-provisioned, so a task's placement fields can't
     be honored. Reject requirements that cannot be applied to the running box; an
     image mismatch on a container only warns, since sharing its world is the point."""
-    base_docker = base_config if isinstance(base_config, DockerConfig) else None
-    base_filtered = base_docker is not None and base_docker.network_isolated
     task_policy = "*" not in task.data.network_allow or bool(task.data.network_block)
-    if task_policy or base_filtered:
+    base_docker = base_config if isinstance(base_config, DockerConfig) else None
+    if task_policy or (base_docker is not None and base_docker.network_isolated):
         config = runtime.config
         if not isinstance(config, DockerConfig):
             raise ValueError(
@@ -111,21 +110,18 @@ def _check_borrowed_placement(
                 f"borrowed runtime {runtime.name!r} is not Docker-backed; use "
                 "agent.provision(task)"
             )
-        base_allow = base_docker.allow if base_docker is not None else ["*"]
-        base_block = base_docker.block if base_docker is not None else []
+        policy_base = (
+            base_docker if base_docker is not None else DockerConfig(allow=["*"])
+        )
+        expected = resolve_runtime_config(policy_base, task)
+        assert isinstance(expected, DockerConfig)
         # Do not inherit extra destinations from a box provisioned for another task.
-        if "*" in task.data.network_allow:
-            expected_allow = set(base_allow)
-        elif "*" in base_allow:
-            expected_allow = set(task.data.network_allow)
-        else:
-            expected_allow = set([*task.data.network_allow, *base_allow])
-        expected_block = set([*task.data.network_block, *base_block])
-        if set(config.allow) != expected_allow or set(config.block) != expected_block:
+        if set(config.allow) != set(expected.allow) or set(config.block) != set(
+            expected.block
+        ):
             raise ValueError(
-                f"task {task.data.idx!r} requires allow={sorted(expected_allow)!r} "
-                f"and block="
-                f"{sorted(expected_block)!r}, but borrowed runtime {runtime.name!r} "
+                f"task {task.data.idx!r} requires allow={expected.allow!r} and "
+                f"block={expected.block!r}, but borrowed runtime {runtime.name!r} "
                 f"has allow={config.allow!r} and block={config.block!r}; use "
                 "agent.provision(task)"
             )

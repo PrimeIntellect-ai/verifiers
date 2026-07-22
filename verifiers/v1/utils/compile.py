@@ -50,13 +50,11 @@ def resolve_runtime_config(
                 f"task {task.data.idx!r} requires a URL network policy, but the "
                 f"{config.type} runtime does not support framework-aware URL policies"
             )
-        if "*" in task.data.network_allow:
-            updates["allow"] = config.allow
-        elif "*" in config.allow:
-            updates["allow"] = task.data.network_allow
-        else:
-            updates["allow"] = list(
-                dict.fromkeys([*task.data.network_allow, *config.allow])
+        if "*" not in task.data.network_allow:
+            updates["allow"] = (
+                task.data.network_allow
+                if "*" in config.allow
+                else list(dict.fromkeys([*task.data.network_allow, *config.allow]))
             )
         updates["block"] = list(
             dict.fromkeys([*task.data.network_block, *config.block])

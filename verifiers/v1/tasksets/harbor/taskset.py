@@ -276,9 +276,8 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     # Harbor is optional, so importing its schema is deferred until a Harbor task loads.
     from harbor.models.task.config import NetworkMode, TaskConfig as HarborTaskConfig
 
-    source = (task_dir / "task.toml").read_text()
-    config = tomllib.loads(source)
-    parsed = HarborTaskConfig.model_validate_toml(source)
+    config = tomllib.loads((task_dir / "task.toml").read_text())
+    parsed = HarborTaskConfig.model_validate(config)
     network = (
         parsed.agent.explicit_phase_policy() or parsed.environment.resolve_baseline()
     )

@@ -34,13 +34,10 @@ def requires_tunnel(
     server_configs: Iterable[BaseConfig] = (),
     shared: "Iterable[SharedToolServer]" = (),
 ) -> bool:
-    """Whether the interception must be exposed via a tunnel — some consumer is off the
-    host network: the harness itself, a live `shared` server in a remote runtime, or a
-    tool/user server config placing one there (each reaches the `/state` channel from
-    its own runtime). Skipped as non-consumers: a `colocated` server (shares the
-    harness's runtime, covered by `harness_is_local`), a config-`url` server (external —
-    it connects out), and an `external` shared server (outside the state machinery
-    entirely). False means every consumer reaches the server at localhost."""
+    """Whether interception needs a public tunnel because some consumer cannot use a
+    host-local URL: the harness itself, a live `shared` server in a remote runtime, or a
+    tool/user server placed there. Colocated servers, configured URLs, and external shared
+    servers add no consumer. False means local URL translation is sufficient."""
     if not harness_is_local:
         return True
     if any(not s.external and not s.local for s in shared):
@@ -57,10 +54,8 @@ def make_interception(
     config: InterceptionConfig, *, requires_tunnel: bool
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
-    `make_runtime`). With `requires_tunnel` (some consumer is off the host network — see
-    the `requires_tunnel` util) each server is exposed via its configured tunnel; without
-    it they get none and are reached at localhost. The caller computes it (see
-    `Env._requires_tunnel`)."""
+    `make_runtime`). With `requires_tunnel`, each server is exposed through its configured
+    tunnel; otherwise it remains on host loopback. The caller computes this requirement."""
     if isinstance(config, InterceptionServerConfig):
         return InterceptionServer(config, requires_tunnel)
     if isinstance(config, StaticInterceptionPoolConfig):

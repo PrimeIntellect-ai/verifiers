@@ -4,10 +4,14 @@ import asyncio
 import contextlib
 import fnmatch
 import socket
-import struct
+import ssl
 from dataclasses import dataclass
 from ipaddress import ip_address
 from urllib.parse import urlsplit, urlunsplit
+
+import h11
+
+HOST_ALIAS = "vf.host.internal"
 
 
 def _rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
@@ -33,6 +37,7 @@ class NetworkPolicy:
     allow: list[str]
     block: list[str]
     routes: list[str]
+    allow_non_global: bool = False  # trusted setup only
 
     def permits(
         self, scheme: str, host: str, port: int, *, connect: bool = False
@@ -67,58 +72,22 @@ class NetworkPolicy:
         return any(_rule_matches(rule, scheme, host, port) for rule in self.allow)
 
 
-def _server_name(client_hello: bytes) -> str | None:
-    """Read the SNI hostname from a complete TLS ClientHello handshake body."""
-    data = memoryview(client_hello)
-    offset = 34  # legacy_version + random
-    offset += 1 + data[offset]  # session id
-    cipher_length = struct.unpack_from("!H", data, offset)[0]
-    offset += 2 + cipher_length
-    offset += 1 + data[offset]  # compression methods
-    if offset == len(data):
-        return None
-    extensions_length = struct.unpack_from("!H", data, offset)[0]
-    offset += 2
-    end = offset + extensions_length
-    if end != len(data):
-        raise ValueError("malformed TLS extensions")
-    while offset < end:
-        extension_type, extension_length = struct.unpack_from("!HH", data, offset)
-        offset += 4
-        extension = data[offset : offset + extension_length]
-        offset += extension_length
-        if len(extension) != extension_length:
-            raise ValueError("malformed TLS extension")
-        if extension_type != 0:
-            continue
-        names_length = struct.unpack_from("!H", extension, 0)[0]
-        if names_length != len(extension) - 2:
-            raise ValueError("malformed TLS server names")
-        name_offset = 2
-        while name_offset < len(extension):
-            name_type = extension[name_offset]
-            name_length = struct.unpack_from("!H", extension, name_offset + 1)[0]
-            name_offset += 3
-            name = bytes(extension[name_offset : name_offset + name_length])
-            name_offset += name_length
-            if name_offset > len(extension):
-                raise ValueError("malformed TLS server name")
-            if name_type == 0:
-                hostname = name.decode("ascii").lower().rstrip(".")
-                if not hostname or "\0" in hostname:
-                    raise ValueError("invalid TLS server name")
-                return hostname
-        return None
-    return None
-
-
 async def _read_client_hello(
     reader: asyncio.StreamReader,
 ) -> tuple[bytes, str | None]:
+    """Buffer TLS records through OpenSSL until it exposes the ClientHello SNI."""
+    server_name: str | None = None
+
+    def capture_sni(_: ssl.SSLObject, name: str | None, __: ssl.SSLContext) -> None:
+        nonlocal server_name
+        server_name = name
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.set_servername_callback(capture_sni)
+    incoming = ssl.MemoryBIO()
+    tls = context.wrap_bio(incoming, ssl.MemoryBIO(), server_side=True)
     records = bytearray()
-    handshake = bytearray()
-    expected: int | None = None
-    while expected is None or len(handshake) < expected:
+    while server_name is None:
         header = await asyncio.wait_for(reader.readexactly(5), 10)
         length = int.from_bytes(header[3:5])
         if header[0] != 22 or length > (1 << 14) + 2048:
@@ -126,16 +95,19 @@ async def _read_client_hello(
         payload = await asyncio.wait_for(reader.readexactly(length), 10)
         records.extend(header)
         records.extend(payload)
-        handshake.extend(payload)
         if len(records) > 1 << 20:
             raise ValueError("TLS ClientHello is too large")
-        if expected is None and len(handshake) >= 4:
-            if handshake[0] != 1:
-                raise ValueError("expected a TLS ClientHello")
-            expected = 4 + int.from_bytes(handshake[1:4])
-            if expected > 1 << 20:
-                raise ValueError("TLS ClientHello is too large")
-    return bytes(records), _server_name(bytes(handshake[4:expected]))
+        incoming.write(header + payload)
+        try:
+            tls.do_handshake()
+        except ssl.SSLWantReadError:
+            continue
+        except ssl.SSLError:
+            break
+        break
+    if server_name is not None:
+        server_name = server_name.lower().rstrip(".")
+    return bytes(records), server_name
 
 
 class EgressProxy:
@@ -165,11 +137,18 @@ class EgressProxy:
     ) -> None:
         upstream_reader: asyncio.StreamReader | None = None
         upstream_writer: asyncio.StreamWriter | None = None
+        response_started = False
         try:
             head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
-            request, headers = head.split(b"\r\n", 1)
-            method, target, version = request.decode("latin-1").split(" ", 2)
-            if method == "CONNECT":
+            client = h11.Connection(h11.SERVER)
+            client.receive_data(head)
+            request = client.next_event()
+            if not isinstance(request, h11.Request):
+                raise ValueError("expected an HTTP request")
+            method = request.method.decode("ascii")
+            target = request.target.decode("ascii")
+            connect = method == "CONNECT"
+            if connect:
                 parsed = urlsplit(f"//{target}")
                 scheme = "https"
                 host, port = parsed.hostname or "", parsed.port or 443
@@ -179,27 +158,29 @@ class EgressProxy:
                 host = parsed.hostname or ""
                 port = parsed.port or (443 if scheme == "https" else 80)
             permitted = scheme in ("http", "https") and self.policy.permits(
-                scheme, host, port, connect=method == "CONNECT"
+                scheme, host, port, connect=connect
             )
             addresses = []
             if permitted:
+                dial_host = "127.0.0.1" if host.lower() == HOST_ALIAS else host
                 addresses = await asyncio.get_running_loop().getaddrinfo(
-                    host, port, type=socket.SOCK_STREAM
+                    dial_host, port, type=socket.SOCK_STREAM
                 )
                 framework = any(
                     _rule_matches(route, scheme, host, port)
                     for route in self.policy.routes
                 )
-                for *_, address in addresses:
-                    resolved = ip_address(address[0])
-                    mapped = getattr(resolved, "ipv4_mapped", None)
-                    framework_only = not resolved.is_global or (
-                        mapped is not None and not mapped.is_global
-                    )
-                    if not framework and framework_only:
-                        permitted = False
-                        break
+                if not framework and not self.policy.allow_non_global:
+                    for *_, address in addresses:
+                        resolved = ip_address(address[0])
+                        mapped = getattr(resolved, "ipv4_mapped", None)
+                        if not resolved.is_global or (
+                            mapped is not None and not mapped.is_global
+                        ):
+                            permitted = False
+                            break
             if not permitted:
+                response_started = True
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
                 return
@@ -216,7 +197,8 @@ class EgressProxy:
                     continue
             if upstream_reader is None or upstream_writer is None:
                 raise ConnectionError(f"could not connect to {host}:{port}")
-            if method == "CONNECT":
+            if connect:
+                response_started = True
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()
                 client_hello, server_name = await _read_client_hello(reader)
@@ -236,112 +218,82 @@ class EgressProxy:
                 authority = f"[{host}]" if ":" in host else host
                 if port != (443 if scheme == "https" else 80):
                     authority = f"{authority}:{port}"
-                fields: dict[bytes, list[bytes]] = {}
-                for line in headers.split(b"\r\n"):
-                    name, separator, value = line.partition(b":")
-                    if not line:
-                        continue
-                    if not separator:
-                        raise ValueError("malformed HTTP header")
-                    fields.setdefault(name.strip().lower(), []).append(value.strip())
                 connection_fields = {
                     field.strip().lower()
-                    for value in fields.get(b"connection", [])
+                    for name, value in request.headers
+                    if name.lower() == b"connection"
                     for field in value.split(b",")
                 }
-                transfer_encoding = b",".join(fields.get(b"transfer-encoding", []))
-                content_lengths = {
-                    int(value) for value in fields.get(b"content-length", [])
-                }
-                if len(content_lengths) > 1 or (transfer_encoding and content_lengths):
-                    raise ValueError("ambiguous HTTP request body")
-                if transfer_encoding and transfer_encoding.lower() != b"chunked":
-                    raise ValueError("unsupported HTTP transfer encoding")
-                content_length = next(iter(content_lengths), None)
-                if content_length is not None and content_length < 0:
-                    raise ValueError("negative HTTP content length")
-                if connection_fields & {b"content-length", b"transfer-encoding"}:
-                    raise ValueError("connection-specific HTTP body framing")
                 excluded = {
                     b"connection",
-                    b"content-length",
                     b"expect",
                     b"host",
+                    b"keep-alive",
+                    b"proxy-authenticate",
                     b"proxy-authorization",
                     b"proxy-connection",
-                    b"transfer-encoding",
+                    b"te",
+                    b"trailer",
+                    b"upgrade",
                     *connection_fields,
                 }
-                header_lines = [
-                    line
-                    for line in headers.split(b"\r\n")
-                    if line and line.partition(b":")[0].strip().lower() not in excluded
+                headers = [
+                    (name, value)
+                    for name, value in request.headers
+                    if name.lower() not in excluded
                 ]
-                if transfer_encoding:
-                    header_lines.append(b"Transfer-Encoding: chunked")
-                elif content_length is not None:
-                    header_lines.append(f"Content-Length: {content_length}".encode())
-                headers = (
-                    b"\r\n".join(
-                        [
-                            f"Host: {authority}".encode("latin-1"),
-                            b"Connection: close",
-                            *header_lines,
-                        ]
-                    )
-                    + b"\r\n\r\n"
-                )
+                upstream = h11.Connection(h11.CLIENT)
                 upstream_writer.write(
-                    f"{method} {path} {version}\r\n".encode("latin-1") + headers
+                    upstream.send(
+                        h11.Request(
+                            method=request.method,
+                            target=path,
+                            headers=[
+                                (b"Host", authority.encode("ascii")),
+                                (b"Connection", b"close"),
+                                *headers,
+                            ],
+                            http_version=request.http_version,
+                        )
+                    )
                 )
                 await upstream_writer.drain()
                 if any(
-                    value.lower() == b"100-continue"
-                    for value in fields.get(b"expect", [])
+                    name.lower() == b"expect" and value.lower() == b"100-continue"
+                    for name, value in request.headers
                 ):
-                    writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    writer.write(
+                        client.send(
+                            h11.InformationalResponse(status_code=100, headers=[])
+                        )
+                    )
                     await writer.drain()
-                if transfer_encoding:
-                    while True:
-                        chunk_head = await reader.readuntil(b"\r\n")
-                        chunk_size = int(chunk_head.partition(b";")[0], 16)
-                        if chunk_size < 0:
-                            raise ValueError("negative HTTP chunk size")
-                        upstream_writer.write(chunk_head)
-                        if not chunk_size:
-                            while True:
-                                trailer = await reader.readuntil(b"\r\n")
-                                upstream_writer.write(trailer)
-                                if trailer == b"\r\n":
-                                    break
-                            break
-                        remaining = chunk_size
-                        while remaining:
-                            chunk = await reader.readexactly(min(remaining, 1 << 16))
-                            upstream_writer.write(chunk)
-                            remaining -= len(chunk)
-                        ending = await reader.readexactly(2)
-                        if ending != b"\r\n":
-                            raise ValueError("malformed chunked HTTP body")
-                        upstream_writer.write(ending)
+                while True:
+                    event = client.next_event()
+                    if event is h11.NEED_DATA:
+                        client.receive_data(await reader.read(1 << 16))
+                    elif isinstance(event, h11.Data):
+                        upstream_writer.write(upstream.send(event))
                         await upstream_writer.drain()
-                elif content_length is not None:
-                    remaining = content_length
-                    while remaining:
-                        chunk = await reader.readexactly(min(remaining, 1 << 16))
-                        upstream_writer.write(chunk)
-                        remaining -= len(chunk)
-                        await upstream_writer.drain()
+                    elif isinstance(event, h11.EndOfMessage):
+                        upstream_writer.write(upstream.send(event))
+                        break
+                    else:
+                        raise ValueError("incomplete HTTP request body")
                 await upstream_writer.drain()
                 # Plain HTTP gets exactly one policy check and one request. Never copy
                 # pipelined bytes into the first request's already-selected upstream.
                 while chunk := await upstream_reader.read(1 << 16):
+                    response_started = True
                     writer.write(chunk)
                     await writer.drain()
         except Exception:
-            with contextlib.suppress(Exception):
-                writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-                await writer.drain()
+            if not response_started:
+                with contextlib.suppress(Exception):
+                    writer.write(
+                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    await writer.drain()
         finally:
             if upstream_writer is not None:
                 upstream_writer.close()

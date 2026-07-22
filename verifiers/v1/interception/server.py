@@ -121,11 +121,9 @@ class InterceptionServerConfig(BaseInterceptionConfig):
 
 class InterceptionServer(Interception):
     """A server that proxies model calls for one or more rollouts — and is itself the
-    single-server `Interception` (the pools compose several of these). With
-    `requires_tunnel` (some consumer is off the host network) it mints its configured
-    tunnel; on `start` it then binds where the tunnel says (`bind_host`/`bind_port`) and
-    sets `base_url` — the one URL every consumer reaches it at — to the tunnel's public
-    URL. Without, every consumer is on the host network: it binds loopback, tunnel-free."""
+    single-server `Interception` (the pools compose several of these). When a consumer
+    needs a public URL, it mints the configured tunnel and binds where that tunnel says;
+    otherwise it stays on host loopback."""
 
     def __init__(
         self,
@@ -203,9 +201,8 @@ class InterceptionServer(Interception):
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
-        # No tunnel → every consumer shares the host network: bind loopback on any ephemeral
-        # port. Otherwise the tunnel says where to bind for it to reach the port, and
-        # `expose` publishes it.
+        # Without a tunnel, local URL translation reaches an ephemeral loopback port.
+        # Otherwise the tunnel determines the bind address and publishes it.
         if self.tunnel is None:
             self.host, bind_port = "127.0.0.1", 0
         else:
