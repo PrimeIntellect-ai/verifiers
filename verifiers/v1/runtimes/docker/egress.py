@@ -116,13 +116,21 @@ class EgressProxy:
                     _rule_matches(route, scheme, host, port)
                     for route in self.policy.routes
                 )
-                if not framework:
-                    for *_, address in addresses:
-                        resolved = ip_address(address[0])
-                        mapped = getattr(resolved, "ipv4_mapped", None)
-                        if resolved.is_loopback or (mapped and mapped.is_loopback):
-                            permitted = False
-                            break
+                for *_, address in addresses:
+                    resolved = ip_address(address[0])
+                    mapped = getattr(resolved, "ipv4_mapped", None)
+                    if (
+                        resolved.is_unspecified
+                        or (mapped and mapped.is_unspecified)
+                        or (
+                            not framework
+                            and (
+                                resolved.is_loopback or (mapped and mapped.is_loopback)
+                            )
+                        )
+                    ):
+                        permitted = False
+                        break
             if not permitted:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
