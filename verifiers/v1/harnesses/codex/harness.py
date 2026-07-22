@@ -46,7 +46,7 @@ class CodexHarnessConfig(HarnessConfig):
 class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = False  # TODO
-    SUPPORTS_MESSAGE_PROMPT = True
+    SUPPORTS_RESUME = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("codex: ensuring codex %s is installed", self.config.version)

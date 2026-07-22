@@ -95,7 +95,7 @@ class PiHarnessConfig(HarnessConfig):
 class PiHarness(Harness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_MESSAGE_PROMPT = True
+    SUPPORTS_RESUME = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info(

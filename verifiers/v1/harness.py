@@ -59,7 +59,9 @@ class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
-    SUPPORTS_MESSAGE_PROMPT: ClassVar[bool] = False
+    SUPPORTS_RESUME: ClassVar[bool] = False
+    """Whether the default `resume()` can relaunch this harness from the
+    accumulated Messages transcript."""
     EXECUTES_CODE: ClassVar[bool] = True
     """Whether the program hands the model local execution in the runtime — true for
     every real harness; the tool-less chat loops (`null`) override to False. Read
@@ -76,7 +78,7 @@ class Harness(ABC, Generic[ConfigT]):
         if (
             prompt is not None
             and not isinstance(prompt, str)
-            and not self.SUPPORTS_MESSAGE_PROMPT
+            and not self.SUPPORTS_RESUME
         ):
             raise ValueError(
                 f"Harness {self.config.id!r} does not support a Messages prompt; "
@@ -167,7 +169,7 @@ class Harness(ABC, Generic[ConfigT]):
         user opens (an empty branch). A harness with its own session state overrides
         this with a native continuation (codex: `codex exec resume`) instead of
         replaying a conversation it already owns."""
-        if not self.SUPPORTS_MESSAGE_PROMPT:
+        if not self.SUPPORTS_RESUME:
             raise HarnessError(
                 f"harness {self.config.id!r} cannot continue an exchange: it neither "
                 "overrides resume() nor supports a Messages prompt for the default "

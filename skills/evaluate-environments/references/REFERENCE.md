@@ -256,7 +256,7 @@ that subclass. These are run-wide knobs, not per-row data; the row itself belong
 `.name` → the package name; `.resolved_env` → `env` merged with forwarded `forward_env` vars.
 
 A harness class also declares capability flags (ClassVars, not user-settable):
-`APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_MESSAGE_PROMPT`.
+`APPENDS_SYSTEM_PROMPT`, `SUPPORTS_MCP`, `SUPPORTS_RESUME`.
 
 ### Built-in harness configs
 
@@ -427,7 +427,7 @@ Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For
 | `idx` | `int` | — | Stable integer index within the taskset. Used for selection, grouping, display, and reproducibility. |
 | `name` | `str \| None` | `None` | Optional human-readable label used in logs and dashboards. |
 | `description` | `str \| None` | `None` | Optional human-readable description. |
-| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_MESSAGE_PROMPT`; `None` means the caller opens the conversation (`agent.chat()` — the env's control flow supplies each turn). |
+| `prompt` | `str \| Messages \| None` | — | Initial user input. A string is one user prompt; `Messages` seeds a full initial conversation and requires a harness with `SUPPORTS_RESUME`; `None` means the caller opens the conversation (`agent.chat()` — the env's control flow supplies each turn). |
 | `system_prompt` | `str \| None` | `None` | Optional system prompt. Harnesses with `APPENDS_SYSTEM_PROMPT` emit a real system message; otherwise a string prompt is prefixed with a warning. A separate system prompt cannot be folded into `Messages` or `None`. |
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |

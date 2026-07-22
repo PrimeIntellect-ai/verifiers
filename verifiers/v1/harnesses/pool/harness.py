@@ -34,7 +34,7 @@ class PoolHarnessConfig(HarnessConfig):
 class PoolHarness(Harness[PoolHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_MESSAGE_PROMPT = True
+    SUPPORTS_RESUME = True
 
     async def setup(self, runtime: Runtime) -> None:
         directory = POOL_DIR.format(version=self.config.version)

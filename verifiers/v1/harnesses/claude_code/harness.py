@@ -29,7 +29,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     # images would require streaming inputs
-    SUPPORTS_MESSAGE_PROMPT = False
+    SUPPORTS_RESUME = False
 
     async def setup(self, runtime: Runtime) -> None:
         home = CLAUDE_HOME.format(version=self.config.version)

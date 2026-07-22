@@ -18,7 +18,7 @@ class NullHarnessConfig(HarnessConfig):
 class NullHarness(Harness[NullHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_MESSAGE_PROMPT = True
+    SUPPORTS_RESUME = True
     EXECUTES_CODE = False
 
     async def setup(self, runtime: Runtime) -> None:

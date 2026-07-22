@@ -318,18 +318,15 @@ class Agent:
             return self._server
         return None
 
-    def _check_user_support(self) -> None:
+    def _check_resume_support(self) -> None:
         # Multi-turn capability is a derived fact, not a flag: an exchange advances
         # by resuming the harness onto the conversation, so the harness needs either
         # the default relaunch (a Messages prompt) or its own native continuation.
         harness = self.harness
-        if (
-            type(harness).resume is Harness.resume
-            and not harness.SUPPORTS_MESSAGE_PROMPT
-        ):
+        if type(harness).resume is Harness.resume and not harness.SUPPORTS_RESUME:
             raise ValueError(
                 f"Harness {harness.config.id!r} cannot host a user: resuming an "
-                "exchange takes a Messages prompt (SUPPORTS_MESSAGE_PROMPT) for the "
+                "exchange takes transcript-backed resume (SUPPORTS_RESUME) for the "
                 "default relaunch-on-the-conversation, or a native resume() "
                 "override. Use a harness that has one (e.g. bash or null)."
             )
@@ -440,7 +437,7 @@ class Agent:
         apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
-        self._check_user_support()
+        self._check_resume_support()
         if mask_prompt and task.data.prompt is None:
             raise ValueError(
                 "mask_prompt hides a prompt the task doesn't have; a prompt-less "

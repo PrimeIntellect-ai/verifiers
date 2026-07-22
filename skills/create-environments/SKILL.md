@@ -191,7 +191,7 @@ There is one mechanism: the chat session — `agents.<name>.chat(task)` in the e
 - **Scripted user** (replay pre-generated turns, step a game engine): a plain loop inside an `Env.run()` override — see `environments/alphabet_sort_v1` or the bundled `textarena` taskset.
 - **Modeled user** (an LLM playing the user): another agent role, driven live via `agents.user.chat(...)` and relayed into the assistant's run — or just use the bundled `user-sim` env (`--env.id user-sim`), which does exactly this from the task's prompt-as-scenario.
 
-The harness running the *assistant* must be able to resume an exchange: a Messages prompt (`SUPPORTS_MESSAGE_PROMPT`) covers the default relaunch-on-the-conversation (`bash`, `null`), and a harness with its own session state overrides `resume()` natively (`codex`).
+The harness running the *assistant* must be able to resume an exchange: transcript-backed resume (`SUPPORTS_RESUME`) covers the default relaunch-on-the-conversation (`bash`, `null`), and a harness with its own session state overrides `resume()` natively (`codex`).
 
 ## Multi-agent environments
 
@@ -206,7 +206,7 @@ Its `launch()` **must** point every model request at the provided `endpoint` wit
 Advertise capabilities accurately:
 
 - `SUPPORTS_MCP`
-- `SUPPORTS_MESSAGE_PROMPT`
+- `SUPPORTS_RESUME`
 - `APPENDS_SYSTEM_PROMPT`
 
 Return the `vf.ProgramResult` from `runtime.run_program()` or `runtime.run_uv_script()`. Do not manually build trace nodes in the harness.

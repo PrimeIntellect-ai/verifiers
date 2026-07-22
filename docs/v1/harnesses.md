@@ -20,8 +20,8 @@ class MyHarness(Harness[MyHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     # When the taskset exports a toolset, they are added as MCP. To show that your harness is able to install MCPs, you have to set this flag to true.
     SUPPORTS_MCP = True
-    # Allow stateless chat continuation by relaunching on a Messages prompt.
-    SUPPORTS_MESSAGE_PROMPT = True
+    # Allow transcript-backed resume by relaunching on a Messages prompt.
+    SUPPORTS_RESUME = True
 
     async def setup(self, runtime: Runtime) -> None:
         # Install the harness in its rollout runtime
