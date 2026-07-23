@@ -8,7 +8,8 @@ import asyncio
 from typing import Callable
 
 from verifiers.v1.gepa.config import GEPAConfig
-from verifiers.v1.judge import Judge, JudgeConfig
+from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.judge import Judge
 
 
 def build_reflection_lm(config: GEPAConfig) -> Callable[[str], str]:

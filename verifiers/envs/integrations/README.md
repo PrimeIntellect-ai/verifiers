@@ -3,7 +3,7 @@
 Integrations with third-party environment libraries, which may require additional dependencies.
 
 | Environment | Extra | Install Command |
-|-------------|-------|-----------------|
+| ------------- | ------- | ----------------- |
 | `TextArenaEnv` | `ta` | `uv add 'verifiers[ta]'` |
 | `ReasoningGymEnv` | `rg` | `uv add 'verifiers[rg]'` |
 | `BrowserEnv` | `browser` | `uv add 'verifiers[browser]'` |
@@ -57,7 +57,7 @@ env = BrowserEnv(
 ### DOM Mode Options
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| ----------- | --------- | ------------- |
 | `stagehand_model` | `"openai/gpt-4o-mini"` | Model Stagehand uses for page understanding |
 | `model_api_key` | `MODEL_API_KEY` env | API key for Stagehand's model |
 | `proxy_model_to_stagehand` | `False` | Route LLM calls through verifiers client |
@@ -80,7 +80,7 @@ CUA mode automatically deploys the CUA server to Browserbase sandboxes using a p
 #### Execution Modes
 
 | Mode | Parameter | Startup | Use Case |
-|------|-----------|---------|----------|
+| ------ | ----------- | --------- | ---------- |
 | **Pre-built Image** (default) | `use_prebuilt_image=True` | ~5-10s | Production, fastest startup |
 | **Binary Upload** | `use_prebuilt_image=False` | ~30-60s | Custom server modifications |
 | **Manual Server** | `use_sandbox=False` | Manual | Local development/debugging |
@@ -137,11 +137,9 @@ Locally, export these in your shell. On the [Environments Hub](https://app.prime
 
 Drop-in adapter for [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environments. Always runs in Prime Sandboxes and uses OpenEnv's schema to choose between simulation (step/reset) and MCP tool-calling.
 
-The Verifiers adapter uses OpenEnv's public async clients. The bundled OpenEnv
-project under `proj/` declares its own server dependencies for the sandbox
-image.
+The Verifiers adapter uses OpenEnv's public async clients. The bundled OpenEnv project under `proj/` declares its own server dependencies for the sandbox image.
 
-### Quick Start
+### OpenEnv Quick Start
 
 Initialize an OpenEnv environment with the template:
 
@@ -197,5 +195,4 @@ Define a prompt renderer that converts each OpenEnv observation into a non-empty
 - `environments/openenv_echo/proj`: verbatim copy of OpenEnv `envs/echo_env` (MCP contract).
 - `environments/openenv_textarena/proj`: verbatim copy of OpenEnv `envs/textarena_env` (gym contract, default `Wordle-v0`).
 
-Include both `proj/` and `.build.json` in your environment package so installs
-from the Environments Hub work without extra setup.
+Include both `proj/` and `.build.json` in your environment package so installs from the Environments Hub work without extra setup.

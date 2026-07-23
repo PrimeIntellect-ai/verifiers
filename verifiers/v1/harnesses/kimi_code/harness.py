@@ -1,18 +1,27 @@
-"""Kimi receives interception through `KIMI_MODEL_*`; task MCP config uses an isolated home."""
+"""Kimi receives interception through `KIMI_MODEL_*` and runs through native ACP."""
 
 import json
 import logging
 import shlex
 
+from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
 BINARY = "/tmp/vf-kimi-code/bin/kimi"
 KIMI_HOME = ".vf-kimi-code"
+ACP_COMMAND = [
+    "sh",
+    "-c",
+    f'KIMI_CODE_HOME="$PWD/$KIMI_CODE_HOME" exec {BINARY} acp',
+]
+SKILLS_DIR = f"{KIMI_HOME}/skills"
 
 INSTALL = r"""
 set -e
@@ -30,30 +39,37 @@ env \
     bash "$installer"
 """
 
+KIMI_ACP = ACP()
+
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: str = "0.27.0"
+    version: str = "0.29.0"
     """Kimi Code release to install, pinned for reproducibility."""
 
 
 class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
-    APPENDS_SYSTEM_PROMPT = False
+    APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    SUPPORTS_RESUME = True
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await self.install_skills(runtime, SKILLS_DIR)
         logger.info(
             "kimi-code: ensuring Kimi Code %s is installed", self.config.version
         )
         script = INSTALL.replace("{version}", self.config.version)
         guarded = (
             "mkdir -p /tmp/vf-kimi-code && "
-            f"flock /tmp/vf-kimi-code/install.lock sh -c {shlex.quote(script)}"
+            '"$(command -v flock || command -v lockf)" '
+            f"/tmp/vf-kimi-code/install.lock sh -c {shlex.quote(script)}"
         )
         install = await runtime.run(["sh", "-c", guarded], {})
         if install.exit_code != 0:
             raise RuntimeError(
                 f"Kimi Code install failed: {install.stderr.strip()[-500:]}"
             )
+        await KIMI_ACP.setup(self, runtime)
 
     async def launch(
         self,
@@ -63,11 +79,25 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
-        _, prompt = self.resolve_prompt(trace.task.data)
+        system_prompt, prompt = self.resolve_prompt(data)
+        kimi_home = f"{KIMI_HOME}/{trace.id}"
+        if self.config.skills:
+            skill_home = f"{kimi_home}/skills"
+            for command in (
+                ["rm", "-rf", skill_home],
+                ["mkdir", "-p", kimi_home],
+                ["cp", "-R", SKILLS_DIR, skill_home],
+            ):
+                copied = await runtime.run(command, {})
+                if copied.exit_code != 0:
+                    raise RuntimeError(
+                        f"failed to stage Kimi skills: {copied.stderr.strip()[-500:]}"
+                    )
         env = {
             **self.config.resolved_env,
-            "KIMI_CODE_HOME": KIMI_HOME,
+            "KIMI_CODE_HOME": kimi_home,
             "KIMI_MODEL_NAME": ctx.model,
             "KIMI_MODEL_API_KEY": secret,
             "KIMI_MODEL_PROVIDER_TYPE": "openai",
@@ -76,8 +106,6 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             "KIMI_DISABLE_TELEMETRY": "1",
             "KIMI_CODE_NO_AUTO_UPDATE": "1",
         }
-
-        mcp = {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
         # Values are Kimi permission patterns such as `Bash` or `Bash(rm -rf*)`.
         # https://moonshotai.github.io/kimi-code/en/configuration/config-files#permission
         permission_rules = "\n".join(
@@ -93,7 +121,13 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             for tool in self.config.disabled_tools or []
         )
         if permission_rules:
-            await runtime.write(f"{KIMI_HOME}/config.toml", permission_rules.encode())
-        await runtime.write(f"{KIMI_HOME}/mcp.json", json.dumps(mcp).encode())
-        # `--prompt` is Kimi Code's non-interactive print mode.
-        return await runtime.run_program([BINARY, "--prompt", prompt], env)
+            await runtime.write(f"{kimi_home}/config.toml", permission_rules.encode())
+        return await KIMI_ACP.run(
+            runtime,
+            env,
+            ACP_COMMAND,
+            prompt,
+            mcp_urls=mcp_urls,
+            system_prompt=system_prompt,
+            session_path=f"{kimi_home}/acp-session",
+        )

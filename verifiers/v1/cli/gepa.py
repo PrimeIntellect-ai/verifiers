@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> None:
     # Refuse multi-agent before the dry-run return, so --dry-run can't write a
     # config the real invocation would reject.
     env_cls = vf.environment_class(
-        config.env.taskset.id if config.env.taskset is not None else "",
+        config.env.taskset.id,
         config.env.id,
     )
     if not issubclass(env_cls, vf.SingleAgentEnv):

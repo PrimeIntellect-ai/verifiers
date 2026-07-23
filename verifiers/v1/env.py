@@ -10,184 +10,38 @@ from dataclasses import dataclass, field
 from typing import (
     Generic,
     TypeVar,
-    get_args,
 )
 
-from pydantic import SerializeAsAny, model_validator
-from pydantic_config import BaseConfig
 
 from verifiers.v1.agent import (
     Agent,
-    AgentConfig,
     Agents,
     ReplayStore,
     _EpisodeAgent,
     _ReplayEpisodeAgent,
 )
+from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.env import (
+    EnvConfig,
+    _declared_agent_configs,
+    default_agent_harness,
+)
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
-from verifiers.v1.types import ID
 from verifiers.v1.interception import (
-    ElasticInterceptionPoolConfig,
     Interception,
-    InterceptionConfig,
     make_interception,
     requires_tunnel,
 )
-from verifiers.v1.retries import RetryConfig, run_episode_with_retry
+from verifiers.v1.retries import run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, resolve_server_config
-from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Error, Trace
-from verifiers.v1.utils.generic import deep_merge, generic_type
+from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-
-
-class TimeoutConfig(BaseConfig):
-    """Wall-clock timeouts for the env's own `run()`/`finalize()` hooks, in seconds
-    (None = no limit); per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`)."""
-
-    episode: float | None = None
-    finalize: float | None = None
-
-
-def _mentions_agent_config(annotation) -> bool:
-    """Whether `annotation` names an `AgentConfig` — directly or inside
-    Optional/union/Annotated/container forms."""
-    if isinstance(annotation, type):
-        return issubclass(annotation, AgentConfig)
-    return any(_mentions_agent_config(arg) for arg in get_args(annotation))
-
-
-class EnvConfig(BaseConfig):
-    """An environment's config — the run's single `[env]` block, one subclass per
-    `Env` class (bound via `Env[YourConfig]`): each role is an
-    `AgentConfig` field with a default instance, plus env-level knobs. The run's `env`
-    field narrows to it by env `id` (else taskset id) — `--env.<role>.model` addressing."""
-
-    id: ID = ""
-    """Which `Env` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
-    to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
-    # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
-    taskset: SerializeAsAny[TasksetConfig] | None = None
-    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`).
-    None only for an env that mints its tasks without a dataset."""
-    timeout: TimeoutConfig = TimeoutConfig()
-    retries: RetryConfig = RetryConfig()
-    """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
-    retried episode reruns whole (a half-played sibling context isn't reproducible)."""
-    max_concurrent: int | None = None
-    """Bounds concurrent agent runs on a SERVED env, per worker (None = no limit);
-    the in-process eval CLI gates with its run-level `--max-concurrent` instead."""
-    interception: InterceptionConfig = ElasticInterceptionPoolConfig()
-    """The interception shape: `elastic` (default), `server`, or `static`."""
-
-    @property
-    def env_id(self) -> str:
-        """The taskset id, prefixed by the paired env id (`best-of-n+gsm8k-v1`)."""
-        taskset_id = self.taskset.id if self.taskset is not None else ""
-        if taskset_id and self.id:
-            return f"{self.id}+{taskset_id}"
-        return taskset_id or self.id
-
-    def agent_harnesses(self) -> dict[str, HarnessConfig]:
-        """Each declared role's resolved harness config (pin, else the taskset's
-        default) — known without constructing the env."""
-        default = default_agent_harness(
-            self.taskset.id if self.taskset is not None else ""
-        )
-        return {
-            name: cfg.harness if cfg.harness is not None else default
-            for name, cfg in _declared_agent_configs(self).items()
-        }
-
-    @model_validator(mode="before")
-    @classmethod
-    def _refuse_env_level_harness(cls, data):
-        """Point an env-level `harness` key (v0 muscle memory) at the seat that owns
-        it; a subclass declaring a role named `harness` keeps the key."""
-        if (
-            isinstance(data, dict)
-            and "harness" in data
-            and "harness" not in cls.model_fields
-        ):
-            raise ValueError(
-                "a harness belongs to a seat: --env.agent.harness.* on the "
-                "single-agent env, --env.<role>.harness.* on a multi-agent role "
-                "(TOML: [env.agent.harness])"
-            )
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_taskset(cls, data):
-        """Narrow `taskset` to its concrete config type by `id`; lazy import for
-        the same reason as `AgentConfig._resolve_harness`."""
-        if isinstance(data, dict) and data.get("taskset") is not None:
-            from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
-
-            narrow_plugin_field(data, "taskset", taskset_config_type)
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
-    def _merge_role_defaults(cls, data):
-        """Deep-merge partial role data over the field's declared default — plain
-        validation would replace the instance wholesale, resetting its other pins."""
-        if isinstance(data, dict):
-            for name, field in cls.model_fields.items():
-                if isinstance(field.default, AgentConfig) and isinstance(
-                    data.get(name), dict
-                ):
-                    data[name] = deep_merge(
-                        field.default.model_dump(exclude_none=True), data[name]
-                    )
-        return data
-
-    @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs):
-        """Refuse, at class definition, a role field without a default *instance*
-        or one shadowing a base field — the default instance is what makes a field a role."""
-        super().__pydantic_init_subclass__(**kwargs)
-        for name, info in cls.model_fields.items():
-            is_role = isinstance(info.default, AgentConfig)
-            if not is_role and not _mentions_agent_config(info.annotation):
-                continue
-            if is_role and name in EnvConfig.model_fields:
-                raise TypeError(
-                    f"{cls.__name__}.{name}: a role can't shadow the base EnvConfig "
-                    f"field {name!r}; pick another role name"
-                )
-            if not is_role:
-                raise TypeError(
-                    f"{cls.__name__}.{name}: declare the role with a default "
-                    f"instance (`{name}: vf.AgentConfig = vf.AgentConfig(...)`), "
-                    "not default_factory or a bare annotation — the declared "
-                    "instance is the role's author default (CLI overrides "
-                    "deep-merge onto it, and the seat plays under the field's name)"
-                )
-
-
-def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
-    """The `AgentConfig` fields declared on an env's config, in declaration order —
-    the env's roles, each seat keyed by its field name (the only naming site)."""
-    return {
-        name: getattr(config, name)
-        for name, field in type(config).model_fields.items()
-        if isinstance(field.default, AgentConfig)
-    }
-
-
-def default_agent_harness(taskset_id: str) -> HarnessConfig:
-    """What an unpinned role's `harness=None` resolves to: the taskset's bundled
-    harness when it ships one, else the built-in `bash`."""
-    from verifiers.v1.loaders import default_harness_id, harness_config_type
-
-    ident = default_harness_id(taskset_id)
-    return harness_config_type(ident).model_validate({"id": ident})
 
 
 logger = logging.getLogger(__name__)
@@ -246,7 +100,7 @@ class Env(ABC, Generic[ConfigT]):
                 f"{config_cls.__name__}(...) explicitly"
             )
         self.config: ConfigT = config
-        if config.taskset is None:
+        if not config.taskset.id:
             raise ValueError(
                 f"{type(self).__name__} needs a seed taskset — every rollout starts "
                 "from one of its tasks: set --env.taskset.id (or the positional "
@@ -254,7 +108,7 @@ class Env(ABC, Generic[ConfigT]):
             )
         self.taskset = load_taskset(config.taskset)
         self._default_harness = default_agent_harness(config.taskset.id)
-        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
+        task_cls = type(self.taskset).task_type()
         self._task_cls: type[Task] = task_cls
         self._agent_specs: dict[str, AgentConfig] = _declared_agent_configs(self.config)
         if not self._agent_specs:
@@ -278,14 +132,14 @@ class Env(ABC, Generic[ConfigT]):
             # Warn once per distinct harness; tool-less chat loops are exempt.
             if (
                 harness.EXECUTES_CODE
-                and isinstance(harness.config.runtime, SubprocessConfig)
+                and isinstance(self._agent_specs[name].runtime, SubprocessConfig)
                 and harness.config.id not in warned
             ):
                 warned.add(harness.config.id)
                 logger.warning(
                     "Harness %r is running in the subprocess runtime on the local system. "
                     "Local files and settings may affect the evaluation; use subprocess only "
-                    "for debugging. Use --env.<role>.harness.runtime.type docker or prime "
+                    "for debugging. Use --env.<role>.runtime.type docker or prime "
                     "for an isolated run.",
                     harness.config.id,
                 )
@@ -534,19 +388,18 @@ class Env(ABC, Generic[ConfigT]):
     def _runs_local(self) -> bool:
         """Whether every role's runtime policy is local (any remote role means tunnels)."""
         return all(
-            runtime_is_local(harness.config.runtime)
-            for harness in self._harnesses.values()
+            runtime_is_local(spec.runtime) for spec in self._agent_specs.values()
         )
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: role
-        runtimes, live `shared` servers, and the task class's tool/user servers;
+        runtimes, live `shared` servers, and the task class's tool servers;
         a class overriding `server_config` conservatively counts as remote."""
-        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
-        server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
+        task_cls = type(self.taskset).task_type()
+        server_classes = [*task_cls.tools]
         if server_classes and task_cls.server_config is not Task.server_config:
             return True
-        sole = len({*task_cls.tools} | ({task_cls.user} - {None})) == 1
+        sole = len({*task_cls.tools}) == 1
         configs = [
             resolve_server_config(
                 task_cls.__name__, self.taskset.config.task, server_cls, sole=sole

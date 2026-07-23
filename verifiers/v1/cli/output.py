@@ -17,7 +17,7 @@ from pathlib import Path
 import tomli_w
 from pydantic import BaseModel, TypeAdapter
 
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded
@@ -36,8 +36,8 @@ def output_path(config: EvalConfig) -> Path:
     if config.output_dir is not None:
         return config.output_dir
     taskset = config.env.taskset
-    env = taskset.name if taskset is not None else "no-taskset"
-    if taskset is not None and taskset.id and config.env.id:
+    env = taskset.name if taskset.id else "no-taskset"
+    if taskset.id and config.env.id:
         # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k-v1` run must
         # not share a parent dir with a plain `gsm8k-v1` one.
         env = f"{env_name(config.env.id)}+{env}"

@@ -16,7 +16,7 @@ from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
@@ -73,7 +73,7 @@ _MARK = {
 def _seat_value(config: EvalConfig, read):
     """A cap as the overview shows it: the declared seats' shared value, the
     string 'per-seat' when they disagree (caps live on the seats)."""
-    from verifiers.v1.env import _declared_agent_configs
+    from verifiers.v1.configs.env import _declared_agent_configs
 
     values = {read(spec) for spec in _declared_agent_configs(config.env).values()}
     return values.pop() if len(values) == 1 else "per-seat"
@@ -163,8 +163,9 @@ def _warning(config: EvalConfig) -> Text | None:
     from verifiers.v1.loaders import harness_class
 
     if any(
-        h.runtime.type == "subprocess" and harness_class(h.id).EXECUTES_CODE
-        for h in config.env.agent_harnesses().values()
+        getattr(config.env, role).runtime.type == "subprocess"
+        and harness_class(h.id).EXECUTES_CODE
+        for role, h in config.env.agent_harnesses().items()
     ):
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
@@ -185,7 +186,7 @@ def overrides(
     `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
     `model_fields_set` would flag them all. `default` is the reference instance, threaded through
     recursion so a pinned nested default (`taskset.task.tools`) reads as
-    unchanged. `skip` holds dotted paths (`harness.runtime.type`)."""
+    unchanged. `skip` holds dotted paths (`runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
     for field in sorted(fields):
@@ -232,14 +233,16 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_column()
     seats = config.env.agent_harnesses()
     taskset = config.env.taskset
-    env_label = taskset.name if taskset is not None else "no taskset"
+    env_label = taskset.name if taskset.id else "no taskset"
     if config.env.id:
         env_label = f"{env_name(config.env.id)}+{env_label}"
     # One seat story when every seat resolves the same way (the common case); one
     # row per seat when they diverge (a judge on its own harness/runtime).
+    runtimes = {role: getattr(config.env, role).runtime.type for role in seats}
     stories = list(
         dict.fromkeys(
-            f"{h.name} harness  ·  {h.runtime.type} runtime" for h in seats.values()
+            f"{h.name} harness  ·  {runtimes[role]} runtime"
+            for role, h in seats.items()
         )
     )
     if len(stories) == 1:
@@ -247,21 +250,23 @@ def Overview(config: EvalConfig) -> Table:
     else:
         grid.add_row("env", env_label)
         for role, h in seats.items():
-            grid.add_row(f"  {role}", f"{h.name} harness  ·  {h.runtime.type} runtime")
+            grid.add_row(f"  {role}", f"{h.name} harness  ·  {runtimes[role]} runtime")
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
     # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
     # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
-    # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
-    # here), but only for the harness — `taskset.task.tools.runtime.type` has no other display.
-    if taskset is not None and (
-        taskset_over := overrides(taskset, skip=frozenset({"id"}))
-    ):
+    # parsed as styling and dropped. `id` is in the `env` row; the seat's `runtime.type` too
+    # (hidden here), but only for the seat — `taskset.task.tools.runtime.type` has no other display.
+    if taskset_over := overrides(taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
     for role, h in seats.items():
-        if harness_over := overrides(h, skip=frozenset({"id", "runtime.type"})):
+        if harness_over := overrides(h, skip=frozenset({"id"})):
             label = f"{role}.harness" if len(seats) > 1 else "harness"
             grid.add_row(label, escape("  ·  ".join(harness_over)))
+        runtime = getattr(config.env, role).runtime
+        if runtime_over := overrides(runtime, skip=frozenset({"type"})):
+            label = f"{role}.runtime" if len(seats) > 1 else "runtime"
+            grid.add_row(label, escape("  ·  ".join(runtime_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
@@ -755,7 +760,8 @@ def _render(
             now,
             "/".join(
                 dict.fromkeys(
-                    h.runtime.type for h in config.env.agent_harnesses().values()
+                    getattr(config.env, role).runtime.type
+                    for role in config.env.agent_harnesses()
                 )
             )
             or "subprocess",
