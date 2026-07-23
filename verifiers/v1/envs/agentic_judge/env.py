@@ -133,9 +133,7 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=task.data.prompt_text)
-        prompt = "\n\n".join(
-            [body, _verdict_section(config.criteria()), SANDBOX_NOTE]
-        )
+        prompt = "\n\n".join([body, _verdict_section(config.criteria()), SANDBOX_NOTE])
         return cls(
             vf.TaskData(
                 idx=task.data.idx,
