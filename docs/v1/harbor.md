@@ -71,11 +71,11 @@ The `timeout_multiplier` multiplies both the agent and verifier timeout, while t
 
 ## Network policies
 
-Harbor's effective agent network policy is applied to Docker harness runtimes. An
-`[agent].network_mode` override takes precedence over the `[environment]` baseline;
-legacy `[environment].allow_internet` is normalized by Harbor's schema.
+Harbor's effective agent network policy is applied to Docker or Prime VM harness
+runtimes. An `[agent].network_mode` override takes precedence over the `[environment]`
+baseline; legacy `[environment].allow_internet` is normalized by Harbor's schema.
 
-| Harbor mode | Docker execution policy |
+| Harbor mode | Task network policy |
 | --- | --- |
 | `public` | Sets the task allowlist to `["*"]`, leaving the evaluator policy intact. |
 | `no-network` | Sets the task allowlist to `[]` (framework routes only). |
@@ -84,8 +84,8 @@ legacy `[environment].allow_internet` is normalized by Harbor's schema.
 Trusted task and harness setup remains online. The policy starts immediately before the
 agent and stays active through finalization and scoring. Interception and MCP URLs are
 added automatically; evaluator-provided `allow` entries add exceptions and `block`
-entries can narrow them. Restricted Harbor tasks require the Docker runtime because the
-other runtimes do not provide framework-aware URL filtering.
+entries can narrow them. Restricted Harbor tasks require Docker or a Prime VM; Prime
+accepts host-level entries and rejects combinations that need both policy modes.
 
 ## Shortcomings
 
