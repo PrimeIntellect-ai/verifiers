@@ -1,39 +1,14 @@
-"""agentic-judge: a solver plays the task, a code-executing judge verifies it in a sandbox.
+"""agentic-judge: a solver plays the task, a judge verifies it in the same box.
 
-Agent-as-judge as a reusable env (`--env.id agentic-judge` over any taskset). By
-default the two agents share one box (`--env.shared-runtime`, on): the box is
-provisioned once from the solver's runtime policy, the solver plays the task in
-it, and the judge then lands in the SAME box — the work exactly as the agent
-left it (including any scoring side effects) — with the graded trace uploaded.
-Note a borrowed box is never retried into, so per-agent rollout retries are off
-in this mode (episode retries still apply).
-
-With `--env.shared-runtime false`, the judge instead gets a FRESH box mirroring
-the solver task's world (same image/workdir/resources), replayed to the solver's
-STARTING state (the source task's setup runs; the solver's box is gone by judge
-time), so the judge reconstructs the work from the uploaded trace — reproduce-first
-verification in a pristine world, with no solver-controlled box state.
-
-The grading policy is configurable (`--env.task.prompt`: inline text or a policy
-file), but only the policy: the env always appends the verdict contract and the
-workspace note, so a custom prompt cannot break verdict scraping. What lands in
-the judge's box is the raw trace record (`--env.task.trace`, null to omit) —
-it carries everything about the attempt (messages, tool calls, `trace.info`
-artifacts such as a captured patch), and a policy that needs one of its fields
-as a file instructs the judge to extract it. How the verdict composes with the
-taskset's own rewards is `[env.score]` (judge-only by default).
-
-The verdict is graded against rubric criteria — the same `criteria` file format
-the plugged rubric judge reads (`{name, text, weight, choices}`, choices ordered
-worst → best), one built-in `solved` criterion by default (`--env.task.rubric`
-overrides). The channel is a file, not the chat: the judge writes
-`{"verdicts": [{"name", "reason", "verdict"}, ...]}` to `/tmp/verdict.json` in
-its box (a file survives a chatty final reply), `JudgeTask.finalize` scrapes it
-off the live runtime onto the judge's trace, and the env's `finalize()`
-validates it strictly onto the solver's trace — a missing verdict, an unknown
-criterion, or an off-menu answer fails loudly instead of scoring the solver
-wrong. Each criterion lands as a `judge/<name>` metric; the `judge` reward is
-their weighted mean.
+A reusable env (`--env.id agentic-judge` over any taskset): the box is
+provisioned from the solver's runtime policy, the solver plays the task in it,
+and a code-executing judge then inspects the work as the agent left it, with
+the solver's full trace record uploaded. The judge grades rubric criteria
+(`[env.task]`: policy prompt, criteria file, trace path) and writes its
+verdicts to `/tmp/verdict.json`; `finalize()` validates them strictly onto the
+solver's trace — `judge/<name>` metrics plus a weighted-mean `judge` reward,
+composed with the taskset's own rewards via `[env.score]` (judge-only by
+default).
 """
 
 import json
@@ -45,7 +20,6 @@ from pathlib import Path
 from pydantic import field_validator
 
 import verifiers.v1 as vf
-from verifiers.v1.decorators import invoke
 from verifiers.v1.types import StrictBaseModel
 
 VERDICT_FILE = "/tmp/verdict.json"
@@ -122,25 +96,20 @@ def _render(template: str, **fields: str) -> str:
     return pattern.sub(lambda m: fields[m.group(1)], template)
 
 
-def _sandbox_note(solver: vf.TaskData, trace_path: str | None, shared: bool) -> str:
+def _sandbox_note(trace_path: str | None) -> str:
     """What an agentic judge must know about its box before it starts verifying."""
-    if shared:
-        world = (
-            "the SAME box the graded agent worked in, in the state the agent "
-            "left it — its edits (and any scoring side effects) are applied"
-        )
-    else:
-        world = (
-            f"a fresh instance of the same environment the graded agent worked in "
-            f"(image {solver.image}), in the same STARTING state the agent saw — the "
-            "agent's edits are NOT applied; reconstruct them from the uploaded trace "
-            "to verify"
-            if solver.image is not None
-            else "your own — the graded agent worked elsewhere"
-        )
+    world = (
+        "the SAME box the graded agent worked in, in the state the agent "
+        "left it — its edits (and any scoring side effects) are applied"
+    )
     uploaded = (
         f" The agent's raw trace record (JSON: messages, tool calls, and its "
-        f"`info` artifacts) is uploaded at `{trace_path}`."
+        f"`info` artifacts) is uploaded at `{trace_path}`. The record is complete "
+        "— it may also carry the task's own scores/metrics and reference material "
+        "(a gold answer, a reference solution, held-out tests). Those are context, "
+        "not your standard: recorded scores can be wrong and references can be "
+        "narrower than the task; do not over-index on how a reference solves it. "
+        "Your verdict is what YOU verified by execution."
         if trace_path is not None
         else " Nothing about the graded attempt is uploaded; work from the prompt."
     )
@@ -155,17 +124,9 @@ class JudgeTask(vf.Task):
 
     NEEDS_CONTAINER = True
 
-    def __init__(
-        self,
-        data: vf.TaskData,
-        files: dict[str, bytes],
-        source: vf.Task,
-        shared: bool,
-    ) -> None:
+    def __init__(self, data: vf.TaskData, files: dict[str, bytes]) -> None:
         super().__init__(data)
         self._files = files
-        self._source = source
-        self._shared = shared
 
     @classmethod
     def from_trace(
@@ -174,27 +135,18 @@ class JudgeTask(vf.Task):
         """Mint the judge's task from the solver's finished trace."""
         files: dict[str, bytes] = {}
         if config.task.trace is not None:
-            record = solution.to_record()
-            # The judge's verdict must be independent: never leak the graded
-            # run's own scores (the judge anchors on them instead of verifying)
-            # or the task row (it can carry ground truth — a gold answer, a
-            # reference patch; the judge's prompt already states the task).
-            record.pop("rewards", None)
-            record.pop("metrics", None)
-            record.pop("task", None)
-            files[config.task.trace] = json.dumps(record).encode()
+            files[config.task.trace] = json.dumps(solution.to_record()).encode()
 
         template = config.task.grade_prompt()
         body = _render(template, prompt=task.data.prompt_text)
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=task.data.prompt_text)
-        shared = config.shared_runtime
         prompt = "\n\n".join(
             [
                 body,
                 _verdict_section(config.task.criteria()),
-                _sandbox_note(task.data, config.task.trace, shared),
+                _sandbox_note(config.task.trace),
             ]
         )
         return cls(
@@ -206,18 +158,9 @@ class JudgeTask(vf.Task):
                 resources=task.data.resources,
             ),
             files=files,
-            source=task,
-            shared=shared,
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        # On a fresh box the judge verifies against the state the solver STARTED
-        # from, which is the image only after the source task's own setup (e.g. a
-        # repo reset to the task's base commit) — replay it before seeding the
-        # judge's files. On a shared box the solver's work IS the state; replaying
-        # setup would destroy it.
-        if not self._shared:
-            await invoke(self._source.setup, {"trace": trace, "runtime": runtime})
         # A pre-seeded verdict (baked into the image, or left by the solver) must
         # never read as the judge's own; remove it before the judge starts.
         await runtime.run(["rm", "-f", VERDICT_FILE], env={})
@@ -305,18 +248,13 @@ class ScoreConfig(vf.BaseConfig):
 
 class AgenticJudgeEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
+    """The solver agent. It owns the shared box, so its runtime must be a
+    container: `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. With `shared_runtime` it plays in the solver's box (its
-    own runtime policy is unused); otherwise its runtime must be a container:
-    `--env.judge.runtime.type docker|prime`."""
+    """The judge agent. It plays in the solver's box; its own runtime policy is
+    unused."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
-    shared_runtime: bool = True
-    """Judge in the solver's live box (provisioned once from the solver's runtime
-    policy, which must be a container): the judge inspects the work exactly as
-    the agent left it. Set false to give the judge a fresh box mirroring the
-    solver task's world, replayed to the solver's starting state — reconstruct-
-    and-verify in a pristine world."""
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
@@ -329,9 +267,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
 
     def _check_agents(self) -> None:
         """The judge executes real code, never on the host — refuse an impossible
-        pairing at construction, not after burning a full solver run. The container
-        requirement lands on whoever provisions the judge's box: the solver when
-        the box is shared, the judge itself otherwise."""
+        pairing at construction, not after burning a full solver run."""
         judge = self._harnesses["judge"]
         if not judge.EXECUTES_CODE:
             raise ValueError(
@@ -340,24 +276,16 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
-        if self.config.shared_runtime and self.config.solver.replay is not None:
+        if self.config.solver.replay is not None:
             raise ValueError(
-                "a replayed solver leaves no box for the judge to share; use "
-                "--env.shared-runtime false (the judge provisions its own box "
-                "and verifies from the uploaded trace)"
+                "agentic-judge judges in the solver's live box, and a replayed "
+                "solver has no box; replay another seat, or another env"
             )
-        box_owner = "solver" if self.config.shared_runtime else "judge"
-        owner_config: vf.AgentConfig = getattr(self.config, box_owner)
-        if isinstance(owner_config.runtime, vf.SubprocessConfig):
+        if isinstance(self.config.solver.runtime, vf.SubprocessConfig):
             raise ValueError(
-                f"agentic-judge plays its judge in a container, but the {box_owner} "
-                "(which provisions the judge's box) resolves to the subprocess "
-                f"runtime; use --env.{box_owner}.runtime.type docker or prime"
-                + (
-                    ", or --env.shared-runtime false for a fresh judge box"
-                    if self.config.shared_runtime
-                    else ""
-                )
+                "agentic-judge plays its judge in the solver's box, but the solver "
+                "(which provisions it) resolves to the subprocess runtime; use "
+                "--env.solver.runtime.type docker or prime"
             )
 
     async def setup(self, agents: vf.Agents) -> None:
@@ -365,14 +293,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        if self.config.shared_runtime:
-            async with agents.solver.provision(task) as box:
-                solution = await agents.solver.run(task, runtime=box)
-                judge_task = JudgeTask.from_trace(task, solution, self.config)
-                await agents.judge.run(judge_task, runtime=box)
-        else:
-            solution = await agents.solver.run(task)
-            await agents.judge.run(JudgeTask.from_trace(task, solution, self.config))
+        async with agents.solver.provision(task) as box:
+            solution = await agents.solver.run(task, runtime=box)
+            judge_task = JudgeTask.from_trace(task, solution, self.config)
+            await agents.judge.run(judge_task, runtime=box)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """Grade the scraped verdict against the rubric and record it on the
