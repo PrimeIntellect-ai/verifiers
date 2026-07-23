@@ -40,13 +40,13 @@ class ModalConfig(BaseConfig):
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
-    cpu: float = 1.0
-    """CPU cores."""
-    memory: float = 2.0
-    """Memory in GB."""
+    cpu: float | None = None
+    """CPU cores. None = SDK default."""
+    memory: float | None = None
+    """Memory in GB. None = SDK default."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2"."""
-    disk: float = 5.0
+    disk: float | None = None
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
     creates_per_sec: float | None = 40.0
@@ -95,8 +95,13 @@ class ModalRuntime(Runtime):
                     # (e.g. SWE task images) never starts the keep-alive and the sandbox dies.
                     image=modal.Image.from_registry(self.config.image).entrypoint([]),
                     workdir=self.config.workdir,
+                    # None defers to Modal's defaults (memory is MB on Modal's side).
                     cpu=self.config.cpu,
-                    memory=int(self.config.memory * 1024),  # Modal memory is MB
+                    memory=(
+                        int(self.config.memory * 1024)
+                        if self.config.memory is not None
+                        else None
+                    ),
                     gpu=self.config.gpu,
                     region=self.config.region,
                     block_network=not self.config.network_access,

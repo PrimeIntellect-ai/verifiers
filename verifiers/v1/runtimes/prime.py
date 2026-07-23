@@ -156,6 +156,11 @@ class PrimeRuntime(Runtime):
                     )
                 )
             self.info.id = sandbox.id
+            # The create response carries the effective resources (the SDK/server
+            # defaults when unset), so the trace records what was actually provisioned.
+            self.info.cpu = sandbox.cpu_cores
+            self.info.memory = sandbox.memory_gb
+            self.info.disk = sandbox.disk_size_gb
             # The create response says whether the platform already has the image:
             # `pending_image_build_id` set means a first-use auto-build is running and the
             # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase

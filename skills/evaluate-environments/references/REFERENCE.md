@@ -376,10 +376,10 @@ Remote Modal sandbox; reached via Modal's own port forwarding (`encrypted_ports`
 | `workdir` | `str` | `"/app"` | Working directory. |
 | `network_access` | `bool` | `True` | Allow outbound network (`block_network` is the negation). |
 | `region` | `str \| None` | `None` | Region to provision in (None = provider-chosen). |
-| `cpu` | `float` | `1.0` | CPU cores. |
-| `memory` | `float` | `2.0` | Memory in GB (sent to Modal as MB). |
+| `cpu` | `float \| None` | `None` | CPU cores (None = SDK default). |
+| `memory` | `float \| None` | `None` | Memory in GB, sent to Modal as MB (None = SDK default). |
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"A100:2"`. |
-| `disk` | `float` | `5.0` | Disk in GB. Modal sandboxes have no disk knob, so **accepted but not enforced**. |
+| `disk` | `float \| None` | `None` | Disk in GB. Modal sandboxes have no disk knob, so **accepted but not enforced**. |
 | `creates_per_sec` | `float \| None` | `40.0` | Pace sandbox creation to this many per second, host-wide across every env-server worker (None/≤0 disables). |
 
 Before each rollout or validation check, `resolve_runtime_config` combines the selected runtime config with the row's `TaskData`:
