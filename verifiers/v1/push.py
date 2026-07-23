@@ -203,6 +203,41 @@ def push_traces(
     # The run is done and its results saved; a network blip here must not crash it
     # — log and skip the upload instead.
     try:
+        batches: list[list[dict[str, Any]]] = []
+        batch: list[dict[str, Any]] = []
+        payload_bytes = len(b'{"samples":[]}')
+        skipped_samples = 0
+        for i, sample in enumerate(samples):
+            sample_bytes = len(
+                json.dumps(
+                    sample,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            )
+            sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
+            if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+                logger.warning(
+                    "--push: sample %d is too large to upload (%d > %d bytes); "
+                    "skipping sample",
+                    i,
+                    sample_payload_bytes,
+                    _MAX_SAMPLES_PAYLOAD_BYTES,
+                )
+                skipped_samples += 1
+                continue
+            next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
+            if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+                batches.append(batch)
+                batch = []
+                payload_bytes = len(b'{"samples":[]}')
+                next_payload_bytes = payload_bytes + sample_bytes
+            batch.append(sample)
+            payload_bytes = next_payload_bytes
+        if batch or not samples:
+            batches.append(batch)
+
         with httpx.Client(headers=headers, timeout=300.0) as client:
 
             def post(path: str, body: dict) -> dict:
@@ -227,37 +262,25 @@ def push_traces(
                     **team,
                 },
             )["evaluation_id"]
-            batch = []
-            payload_bytes = len(b'{"samples":[]}')
-            for i, sample in enumerate(samples):
-                sample_bytes = len(
-                    json.dumps(
-                        sample,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        allow_nan=False,
-                    ).encode("utf-8")
+            for batch in batches:
+                body = json.dumps(
+                    {"samples": batch},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+                resp = client.post(
+                    f"{api}/evaluations/{eval_id}/samples",
+                    content=body,
                 )
-                next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
-                if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
-                    post(f"/evaluations/{eval_id}/samples", {"samples": batch})
-                    batch = []
-                    payload_bytes = len(b'{"samples":[]}')
-                    next_payload_bytes = payload_bytes + sample_bytes
-                if next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
-                    raise ValueError(
-                        f"sample {i} is too large to upload "
-                        f"({next_payload_bytes} > {_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
-                    )
-                batch.append(sample)
-                payload_bytes = next_payload_bytes
-            if batch or not samples:
-                post(f"/evaluations/{eval_id}/samples", {"samples": batch})
+                resp.raise_for_status()
             post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
     except Exception as e:
         logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
         return finish(error=f"{type(e).__name__}: {e}")
 
     url = f"{frontend}/dashboard/evaluations/{eval_id}"
-    logger.info("--push: uploaded %d samples -> %s", len(samples), url)
+    logger.info(
+        "--push: uploaded %d samples -> %s", len(samples) - skipped_samples, url
+    )
     return finish(url=url)
