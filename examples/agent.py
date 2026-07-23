@@ -26,7 +26,7 @@ async def main() -> None:
     last = trace.assistant_messages[-1].content if trace.assistant_messages else None
     print("answer:", last)
     assert trace.agent is not None
-    print("agent:", trace.agent.name, trace.agent.model)
+    print("agent:", trace.agent.name, trace.agent.config.model)
     print("runtime:", trace.runtime.type if trace.runtime else None)
 
 

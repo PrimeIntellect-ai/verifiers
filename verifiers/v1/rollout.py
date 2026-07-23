@@ -25,6 +25,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers import __version__
+from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -111,6 +112,7 @@ class RolloutRun:
         self,
         *,
         task: Task,
+        agent_config: AgentConfig,
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
@@ -146,12 +148,9 @@ class RolloutRun:
             ),
             state=state_cls(type(task))(),
             verifiers=VersionInfo(version=__version__, commit=verifiers_commit()),
-            # The seat's resolved identity, role overrides included.
-            agent=AgentInfo(
-                model=ctx.model,
-                sampling=ctx.sampling,
-                harness=harness.config,
-            ),
+            # The seat's resolved config, role overrides included — the agent
+            # this trace can be reproduced with.
+            agent=AgentInfo(config=agent_config),
         )
         if on_trace is not None:
             on_trace(self.trace)

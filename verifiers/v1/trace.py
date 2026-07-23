@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
-from pydantic import Field, PrivateAttr, SerializeAsAny, field_validator
+from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
+from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -27,7 +27,6 @@ from verifiers.v1.types import (
     KeptTokens,
     Messages,
     Sampling,
-    SamplingConfig,
     StrictBaseModel,
     Tool,
     ToolMessage,
@@ -96,7 +95,7 @@ class ModelCall(StrictBaseModel):
     a call that committed no turn (see `error`)."""
     model: str | None = None
     """The model requested from the provider. The rollout's model override makes this
-    `agent.model` on every call; recorded per call because it is cheap and provable."""
+    `agent.config.model` on every call; recorded per call because it is cheap and provable."""
     sampling: Sampling | None = None
     """The call's effective settings, scraped off the wire request by the dialect's
     `sampling_fields` whitelist — the eval-imposed knobs plus whatever the harness set
@@ -307,12 +306,9 @@ class VersionInfo(StrictBaseModel):
 
 
 class AgentInfo(StrictBaseModel):
-    model: str
-    """The model identifier requested from the client."""
-    sampling: SamplingConfig | None = None
-    """The resolved sampling settings the rollout ran with."""
-    harness: SerializeAsAny[HarnessConfig] | None = None
-    """The driving harness's config, its subclass's knobs included (SerializeAsAny)."""
+    config: AgentConfig
+    """The agent's resolved config — the exact value that rebuilds it
+    (`Agent(trace.agent.config)`)."""
     runtime: RuntimeInfo | None = None
     """The box the rollout ran in — the agent's runtime policy resolved for the
     task, plus the provisioned resource ID; None until provisioning."""
@@ -323,15 +319,6 @@ class AgentInfo(StrictBaseModel):
     trainable: bool = True
     """Whether this trace's tokens are training data for the run's policy. An env's
     `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
-
-    @field_validator("harness", mode="before")
-    @classmethod
-    def _wire_harness(cls, value):
-        """Read records without importing the harness: a raw dict validates as the
-        wire form, so harness-specific knobs land in `model_extra` (see `WireTaskData`)."""
-        if isinstance(value, dict):
-            return WireHarnessConfig.model_validate(value)
-        return value
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):
@@ -359,7 +346,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     run: RunInfo | None = None
     """The run this trace belongs to (eval or train), consumer-stamped."""
     agent: AgentInfo | None = None
-    """The agent (model, sampling, harness, runtime) that produced the sampled turns."""
+    """The agent (config: harness x model x runtime, plus the provisioned box) that
+    produced the sampled turns."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
     tools: list[Tool] | None = None

@@ -202,10 +202,14 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     trace = Trace(
         task=TraceTask(type=type(task).__name__, data=task.data),
         state=state_cls(type(task))(),
-        # No agent plays here (no model, no harness): the seat exists so the
-        # provisioned box lands on the record below (id, resolved type, cache
-        # status); the runtime policy itself rides the saved config.toml.
-        agent=AgentInfo(model="", name="debug", trainable=False),
+        # No agent plays here (no model, no harness): the seat records the
+        # runtime policy, and the provisioned box lands on it below (id, resolved
+        # type, cache status).
+        agent=AgentInfo(
+            config=vf.AgentConfig(runtime=config.runtime),
+            name="debug",
+            trainable=False,
+        ),
     )
     debug = {
         "task": task_info(task),
