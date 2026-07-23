@@ -289,7 +289,11 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         for entry in data["verdicts"]:
             if not isinstance(entry, dict):
                 raise ValueError(f"verdict entry {entry!r} is not an object")
-            answers[str(entry.get("name"))] = str(entry.get("verdict"))
+            name = str(entry.get("name"))
+            if name in answers:
+                # Contradictory duplicates must not collapse to whichever came last.
+                raise ValueError(f"judge answered criterion {name!r} more than once")
+            answers[name] = str(entry.get("verdict"))
         if sorted(answers) != sorted(by_criterion):
             raise ValueError(
                 f"judge verdicts name {sorted(answers)}, expected the rubric's "
