@@ -393,9 +393,9 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 @pytest.mark.e2e
 async def test_env_id_agentic_judge(run_v1, tmp_path):
     """The agentic judge over the echo taskset (needs docker): the box is
-    provisioned once from the solver's runtime policy (shared-runtime default),
-    the solver plays in it, the judge lands in the SAME box with the graded
-    trace uploaded, investigates with real execution, and its parsed verdict
+    provisioned once from the solver's runtime policy, the solver plays in it,
+    the judge lands in the SAME box with the graded trace uploaded,
+    investigates with real execution, and its parsed verdict
     lands on the solver's trace under the spec's reward key. Wiring, not taste:
     the judge followed the verdict-file contract — the grade itself is the
     model's call. Exercises the config surface too: a policy-only prompt
