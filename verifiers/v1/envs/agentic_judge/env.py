@@ -120,7 +120,7 @@ class JudgeTask(vf.Task):
 
     def __init__(self, data: vf.TaskData, files: dict[str, bytes]) -> None:
         super().__init__(data)
-        self._files = files
+        self.files = files
 
     @classmethod
     def from_trace(
@@ -151,7 +151,7 @@ class JudgeTask(vf.Task):
         # A pre-seeded verdict (baked into the image, or left by the solver) must
         # never read as the judge's own; remove it before the judge starts.
         await runtime.run(["rm", "-f", VERDICT_FILE], env={})
-        for path, content in self._files.items():
+        for path, content in self.files.items():
             await runtime.write(path, content)
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
