@@ -145,9 +145,11 @@ class JudgeTask(vf.Task):
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        # A pre-seeded verdict (baked into the image, or left by the solver) must
-        # never read as the judge's own; remove it before the judge starts.
-        await runtime.run(["rm", "-f", VERDICT_FILE], env={})
+        # The solver had this box first: a pre-seeded verdict must never read as
+        # the judge's own, and a file (or planted symlink) at an upload path must
+        # never survive it — a symlinked TRACE_FILE would redirect the write onto
+        # any file the solver chose.
+        await runtime.run(["rm", "-f", VERDICT_FILE, *self.files], env={})
         for path, content in self.files.items():
             await runtime.write(path, content)
 
