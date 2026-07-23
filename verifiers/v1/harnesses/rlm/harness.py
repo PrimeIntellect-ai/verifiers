@@ -148,7 +148,10 @@ class RLMHarness(Harness[RLMHarnessConfig]):
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:
         # Closing finalizes RLM's meta.json; keep the state until cleanup.
-        await RLM_ACP.close(runtime, self._sidecar(trace), remove=False)
+        try:
+            await RLM_ACP.close(runtime, self._sidecar(trace), remove=False)
+        except Exception:
+            logger.warning("rlm: sidecar shutdown failed before metrics", exc_info=True)
         home = shlex.quote(self._home(trace))
         latest = f'cat "$(ls -t {home}/sessions/*/meta.json | head -1)"'
         result = await runtime.run(["sh", "-c", latest], {})
