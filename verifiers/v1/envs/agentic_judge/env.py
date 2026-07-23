@@ -233,13 +233,19 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     container: `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge agent. It plays in the solver's box; its own runtime policy is
-    unused."""
+    ignored (overwritten with the solver's)."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
+        # The judge plays in the solver's box, so its effective runtime IS the
+        # solver's policy — aligning the config keeps the base env's subprocess
+        # warning and the runtime stamped on the judge's trace truthful.
+        config.judge = config.judge.model_copy(
+            update={"runtime": config.solver.runtime}
+        )
         super().__init__(config)
         self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
