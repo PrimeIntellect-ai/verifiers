@@ -241,7 +241,6 @@ class RolloutRun:
             if self._owns_runtime:
                 await runtime.start()
             await runtime.prepare_setup()
-            await runtime.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
