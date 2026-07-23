@@ -1,31 +1,46 @@
-"""Remote Prime sandbox runtime: run the program in a sandbox, reached via native port exposure.
+"""Remote Prime sandbox runtime.
 
 `expose` (sandbox port -> public URL) uses the SDK's native exposure (`client.expose`), so a
-host-side harness/framework can reach a tool/user server hosted in the sandbox. The reverse
+host-side harness/framework can reach a tool server hosted in the sandbox. The reverse
 direction (a program in the sandbox reaching a host service) is the shared host-side
-`host_endpoint` tunnel, not the runtime's concern.
+`Tunnel` (interception.tunnel), not the runtime's concern.
 """
 
 import asyncio
 import contextlib
 import logging
+import math
 import shlex
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 
+from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
+    BaseRuntimeInfo,
+    ProgramResult,
+    Runtime,
+    parse_gpu,
+)
 from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
+
+MAX_LIFETIME = 24 * 60 * 60
+"""Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
 
 class PrimeConfig(BaseConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
+    """Docker image to run. Any pullable ref works: on the first use of an image, the
+    platform auto-builds what the sandbox needs from it (a VM image for `vm` sandboxes,
+    ~10 minutes) and caches the result, so later sandboxes on the same ref start in
+    seconds."""
     workdir: str = "/app"
     network_access: bool = True
     vm: bool = False
@@ -35,10 +50,8 @@ class PrimeConfig(BaseConfig):
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = []
-    """Labels attached to the sandbox and its tunnels — e.g. to group every resource a run
-    creates. When unset, the eval defaults them to the run's uuid (see `run_eval`)."""
-    # TaskResources, in Modal's units (also settable per-task via Task.resources, with
-    # precedence cli/toml > task > this default). Mapped to prime's API in `start`.
+    """Labels attached to the sandbox."""
+    # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = 1.0
     """CPU cores."""
     memory: float = 2.0
@@ -47,26 +60,37 @@ class PrimeConfig(BaseConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
+    idle_timeout: float | None = 3600
+    """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    and globally — see limiters.TUNNEL_LIMITER.)"""
+    and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
+
+    @model_validator(mode="after")
+    def _validate_idle_timeout(self) -> "PrimeConfig":
+        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
+            raise ValueError(
+                f"idle_timeout ({self.idle_timeout}s) must not exceed the "
+                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
+            )
+        return self
+
+
+class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
+    image_cached: bool | None = None
+    """Whether the platform already had the image at create (None until then). False means
+    a first-use auto-build ran while this sandbox waited to start."""
 
 
 class PrimeRuntime(Runtime):
-    """Runs the program in a Prime sandbox; the server is reached via a tunnel."""
-
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         super().__init__(name)
         self.config = config
+        self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
-        self._sandbox_id: str | None = None
-
-    @property
-    def descriptor(self) -> str | None:
-        return self._sandbox_id
 
     @property
     def published_port(self) -> int | None:
@@ -79,12 +103,21 @@ class PrimeRuntime(Runtime):
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
+        # prime's idle timeout is in whole minutes; convert from the seconds config surface
+        # (floored to the SDK's 1-minute minimum). VM sandboxes don't support an idle timeout
+        # (the API 422s on it), so it's dropped there rather than failing every VM rollout.
+        idle_minutes = (
+            max(1, math.ceil(self.config.idle_timeout / 60))
+            if self.config.idle_timeout is not None and not self.config.vm
+            else None
+        )
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": 24 * 60,  # Maximum lifetime of any sandbox.
+            "timeout_minutes": MAX_LIFETIME // 60,
+            "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
@@ -106,13 +139,26 @@ class PrimeRuntime(Runtime):
                         **{k: v for k, v in options.items() if v is not None},
                     )
                 )
-            self._sandbox_id = sandbox.id
-            await self._client.wait_for_creation(self._sandbox_id)
+            self.info.id = sandbox.id
+            # The create response says whether the platform already has the image:
+            # `pending_image_build_id` set means a first-use auto-build is running and the
+            # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
+            # its own budget, separate from the normal boot attempts).
+            self.info.image_cached = sandbox.pending_image_build_id is None
+            if not self.info.image_cached:
+                logger.warning(
+                    "prime: image %s isn't cached on the platform - auto-building it "
+                    "(sandbox %s waits for the build; first use of an image can take "
+                    "~10 minutes, later runs start in seconds)",
+                    self.config.image,
+                    self.info.id,
+                )
+            await self._client.wait_for_creation(self.info.id)
             logger.info(
-                "prime: sandbox %s up (image=%s)", self._sandbox_id, self.config.image
+                "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
-            await self._client.run_background_job(
-                self._sandbox_id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+            await self._client.execute_command(
+                self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
         except (
             Exception
@@ -124,14 +170,14 @@ class PrimeRuntime(Runtime):
             # Poll directly so the rollout stage owns the execution timeout; the SDK helper
             # otherwise imposes its own 15-minute limit.
             job = await self._client.start_background_job(
-                self._sandbox_id,
+                self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=env,
             )
             delay = 0.1
             while True:
-                result = await self._client.get_background_job(self._sandbox_id, job)
+                result = await self._client.get_background_job(self.info.id, job)
                 if result.completed:
                     break
                 await asyncio.sleep(delay)
@@ -153,7 +199,7 @@ class PrimeRuntime(Runtime):
         # backend default, which lands in us-central) 400 it; `us` supports it. TODO: re-enable the
         # prime cases in the e2e `skip_if_unexposable` guard once prime exposes ports in any region.
         try:
-            exposed = await self._client.expose(self._sandbox_id, port)
+            exposed = await self._client.expose(self.info.id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
             raise SandboxError(
                 "prime port exposure failed — port exposure isn't supported in this sandbox's "
@@ -186,9 +232,7 @@ class PrimeRuntime(Runtime):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(
-                    self._sandbox_id, target, str(download)
-                )
+                await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
@@ -204,13 +248,13 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
-        await self.run(
-            ["sh", "-c", f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}"],
-            {},
-        )
         try:
+            await self._client.execute_command(
+                self.info.id,
+                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
+            )
             await self._client.upload_bytes(
-                self._sandbox_id, target, data, filename=PurePosixPath(target).name
+                self.info.id, target, data, filename=PurePosixPath(target).name
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
@@ -219,27 +263,25 @@ class PrimeRuntime(Runtime):
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
         # the sandbox via the sync client, so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` deletes it on the normal path, a second delete 404s.
-        if self._sandbox_id is not None:
+        if self.info.id is not None:
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
             with contextlib.suppress(Exception):
-                SandboxClient(APIClient()).delete(self._sandbox_id)
+                SandboxClient(APIClient()).delete(self.info.id)
 
-    async def stop(self) -> None:
-        # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs from the
-        # rollout's `finally`, so it fires on success, error, and cancellation.
+    async def teardown(self) -> None:
+        # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
+        # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return
-        if (
-            self._sandbox_id is not None
-        ):  # kept (not nulled) so descriptor survives teardown
+        if self.info.id is not None:  # keep info.id available after teardown
             try:
-                await client.delete(self._sandbox_id)
+                await client.delete(self.info.id)
             except Exception as e:
                 logger.warning(
-                    "prime: failed to delete sandbox %s: %s", self._sandbox_id, e
+                    "prime: failed to delete sandbox %s: %s", self.info.id, e
                 )
         with contextlib.suppress(Exception):
             await client.aclose()

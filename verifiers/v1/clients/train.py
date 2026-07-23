@@ -27,6 +27,7 @@ from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
+    KeptTokens,
     Response,
     SamplingConfig,
     Tool,
@@ -38,7 +39,6 @@ from verifiers.utils.multimodal import prepare_images_inplace
 
 
 def tool_to_wire(tool: Tool) -> dict:
-    """A vf tool -> the OpenAI chat wire dict (the renderer's generate request)."""
     function: dict = {
         "name": tool.name,
         "description": tool.description,
@@ -153,6 +153,9 @@ def response_from_generate(
             is_content=attribution.is_content if attribution is not None else None,
             multi_modal_data=result.get("multi_modal_data"),
             routed_experts=result.get("routed_experts"),
+            kept_tokens=KeptTokens(**kept)
+            if (kept := result.get("kept_tokens"))
+            else None,
         ),
     )
 

@@ -1,41 +1,48 @@
-"""verifiers v1 — a clean-slate, heavily-typed reimplementation.
-
-Public surface is re-exported here so environments can `import verifiers.v1 as vf`
-and reach everything they need. Built up milestone by milestone.
-"""
-
 import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.acp import ACP
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
-    RolloutContext,
+    EvalClientConfig,
+    ModelContext,
+    TrainClientConfig,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
-from verifiers.v1.env import (
+from verifiers.v1.decorators import metric, reward, stop, tool
+from verifiers.v1.agent import (
+    Agent,
+    AgentConfig,
+    Agents,
+    Interaction,
+    Segment,
+    make_agent,
+)
+from verifiers.v1.configs.env import (
     ElasticPoolConfig,
-    EnvConfig,
     EnvServerConfig,
-    Environment,
     StaticPoolConfig,
-    TimeoutConfig,
     pool_serve_kwargs,
 )
-from verifiers.v1.episode import Episode
+from verifiers.v1.env import (
+    EnvConfig,
+    Env,
+    default_agent_harness,
+)
+from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
+    EnvError,
     HarnessError,
     InterceptionError,
     ProviderError,
     RolloutError,
     SandboxError,
-    TasksetError,
+    TaskError,
     ToolsetError,
     TunnelError,
-    UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import (
@@ -55,11 +62,16 @@ from verifiers.v1.judges import (
 )
 from verifiers.v1.loaders import (
     default_harness_id,
+    env_config_type,
+    resolve_env_config,
+    environment_class,
     harness_config_type,
+    import_environment,
     import_harness,
     import_judge,
     import_taskset,
     judge_config_type,
+    load_environment,
     load_harness,
     load_judge,
     load_taskset,
@@ -74,32 +86,54 @@ from verifiers.v1.scoring import (
     read_answer_file_or_last_reply as read_answer_file_or_last_reply,
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
-from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
-from verifiers.v1.rollout import Rollout
+from verifiers.v1.retries import RetryConfig
+from verifiers.v1.utils.git import (
+    PATCH_CAP_BYTES as PATCH_CAP_BYTES,
+    capture_patch as capture_patch,
+    resolve_head as resolve_head,
+)
 from verifiers.v1.runtimes import (
     DockerConfig,
     PrimeConfig,
     ProgramResult,
     Runtime,
     RuntimeConfig,
+    RuntimeInfo,
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
+from verifiers.v1.task import (
+    Task,
+    TaskConfig,
+    TaskData,
+    TaskResources,
+    TaskTimeout,
+    WireTaskData,
+)
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
+    SharedToolsetConfig,
     ToolsetConfig,
-    User,
-    UserConfig,
 )
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import (
+    TRACE_VERSION,
+    AgentInfo,
     Branch,
     Error,
+    EvalRunInfo,
+    GenerationSpan,
+    ModelCall,
+    RunInfo,
     TimeSpan,
+    TimeSplit,
     Timing,
     Trace,
+    TraceTask,
+    TrainRunInfo,
+    VersionInfo,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -108,6 +142,7 @@ from verifiers.v1.types import (
     ID,
     ImageUrlContentPart,
     ImageUrlSource,
+    KeptTokens,
     Message,
     MessageContent,
     Messages,
@@ -148,75 +183,102 @@ __all__ = [
     "UserMessage",
     # task / trace / state
     "Task",
-    "WireTask",
+    "TaskData",
+    "WireTaskData",
     "TaskResources",
     "TaskTimeout",
     "Trace",
+    "TraceTask",
     "WireTrace",
+    "Episode",
+    "WireEpisode",
+    "TRACE_VERSION",
+    "AgentInfo",
+    "RunInfo",
+    "EvalRunInfo",
+    "ModelCall",
+    "TrainRunInfo",
+    "VersionInfo",
     "State",
     "StateT",
     "MessageNode",
     "Branch",
     "TurnTokens",
+    "KeptTokens",
     "Timing",
     "TimeSpan",
+    "TimeSplit",
+    "GenerationSpan",
     "Error",
     # decorators
     "stop",
     "tool",
     "metric",
     "reward",
-    "group_reward",
     # errors
     "RolloutError",
+    "EnvError",
     "ProviderError",
     "HarnessError",
     "ToolsetError",
-    "UserError",
     "SandboxError",
-    "TasksetError",
+    "TaskError",
     "InterceptionError",
     "TunnelError",
     # clients
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",
+    "TaskConfig",
     "TasksetConfig",
     "BaseConfig",
     "Harness",
     "HarnessConfig",
-    "RolloutContext",
+    "ACP",
+    "ModelContext",
     "Runtime",
     "RuntimeConfig",
+    "RuntimeInfo",
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
     "PrimeConfig",
-    "Environment",
+    "Env",
+    "SingleAgentEnv",
     "EnvConfig",
     "EnvServerConfig",
+    "SingleAgentEnvConfig",
+    "AgentConfig",
     "StaticPoolConfig",
     "ElasticPoolConfig",
+    "default_agent_harness",
     "pool_serve_kwargs",
     "RetryConfig",
-    "RolloutRetryConfig",
-    "TimeoutConfig",
-    "Episode",
-    "Rollout",
+    # agent
+    "Agent",
+    "Agents",
+    "make_agent",
     # loaders
     "import_taskset",
     "import_harness",
     "import_judge",
+    "import_environment",
+    "load_environment",
     "load_taskset",
     "load_harness",
     "load_judge",
+    "environment_class",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
     "judge_config_type",
+    "env_config_type",
+    "resolve_env_config",
     "default_harness_id",
     # judge
     "Judge",
@@ -230,6 +292,10 @@ __all__ = [
     "RubricJudge",
     "RubricJudgeConfig",
     "Criterion",
+    # git patch capture
+    "PATCH_CAP_BYTES",
+    "capture_patch",
+    "resolve_head",
     # scoring
     "compare_stdout_results",
     "extract_boxed_answer",
@@ -239,10 +305,11 @@ __all__ = [
     "verify_boxed_math_answer",
     # mcp
     "Toolset",
+    "SharedToolsetConfig",
     "ToolsetConfig",
-    # user simulator
-    "User",
-    "UserConfig",
+    # the user channel
+    "Interaction",
+    "Segment",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

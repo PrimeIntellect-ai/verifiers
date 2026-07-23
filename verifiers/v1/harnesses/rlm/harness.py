@@ -1,13 +1,4 @@
-"""The rlm harness: installs the rlm CLI into the runtime and runs the binary.
-
-`RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
-runtime knobs (`max_depth`, `skills`, `summarize_at_tokens`), which rlm reads from `RLM_*`
-env vars. The base `HarnessConfig.env` still passes any other `RLM_*` var through verbatim.
-
-A task's MCP tool servers are passed to rlm via `RLM_MCP_CONFIG` (a standard `mcpServers`
-URL map); rlm exposes each tool as a pre-imported IPython skill the agent calls
-programmatically (`await tools_<name>(...)`), rather than via a native MCP client.
-"""
+"""RLM exposes `RLM_MCP_CONFIG` tools as pre-imported IPython skills."""
 
 import json
 import logging
@@ -18,10 +9,12 @@ from typing import Literal
 from pydantic import model_validator
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import metric
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
+from verifiers.v1.task import TaskData
 
 logger = logging.getLogger(__name__)
 
@@ -33,18 +26,17 @@ RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
 RLM_HOME = ".rlm"
 RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
+SKILLS_DIR = "/task/rlm-skills"
 
 
 class RLMHarnessConfig(HarnessConfig):
-    """The rlm CLI harness — how to install rlm and how it should run."""
-
     version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
-    skills: list[BuiltinSkill] = []
+    builtin_skills: list[BuiltinSkill] = []
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
-    The tool set is fixed (ipython); only built-in skills are selectable."""
+    The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
     summarize_at_tokens: int | tuple[int, int] | None = None
     """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
     past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
@@ -74,7 +66,7 @@ class RLMHarnessConfig(HarnessConfig):
         if self.disabled_tools:
             raise ValueError(
                 "the rlm harness has a fixed tool set (ipython) and does not support "
-                "`disabled_tools`; use `skills` to enable built-in skills instead."
+                "`disabled_tools`; use `builtin_skills` to enable built-in skills instead."
             )
         return self
 
@@ -82,8 +74,12 @@ class RLMHarnessConfig(HarnessConfig):
 class RLMHarness(Harness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    SUPPORTS_RESUME = True
+    SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        # Before the installer: install.sh packages the skills it finds.
+        await self.install_skills(runtime, SKILLS_DIR)
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
             "command -v git >/dev/null 2>&1 || "
@@ -101,28 +97,35 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 
-    def summarize_threshold(self, task_idx: int) -> str:
-        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index, so
-        a task's rollouts share one threshold). Always set — "" when disabled — so the typed field,
-        not a host var the subprocess runtime would inherit, wins."""
+    def summarize_threshold(self, task_idx: int | None) -> str:
+        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index —
+        0 when unset — so a task's rollouts share one threshold). Always set — "" when disabled —
+        so the typed field, not a host var the subprocess runtime would inherit, wins."""
         value = self.config.summarize_at_tokens
         if value is None:
             return ""
         if isinstance(value, tuple):
             lo, hi = value
-            return str(random.Random(task_idx).randint(lo, hi))
+            return str(random.Random(task_idx or 0).randint(lo, hi))
         return str(value)
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(data)
+        if prompt is None:
+            raise ValueError("RLM requires a prompt")
+        if not isinstance(prompt, str):
+            prompt = json.dumps(
+                [message_to_wire(message) for message in prompt], ensure_ascii=False
+            )
         env = {
             **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,
@@ -130,28 +133,24 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
-            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.idx),
+            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(data.idx),
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
-        if self.config.skills:
-            env["RLM_SKILLS"] = ",".join(self.config.skills)
+        if self.config.builtin_skills:
+            env["RLM_SKILLS"] = ",".join(self.config.builtin_skills)
         if mcp_urls:
             env["RLM_MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        return await runtime.run_program([RLM_BIN, prompt], env)
+        # RLM has no interactive mode; resumed segments explicitly replay the transcript.
+        return await runtime.run_program([RLM_BIN, "--", prompt], env)
 
     @metric
-    async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:
-        # rlm writes a session meta.json with a rich `metrics` block (compactions,
-        # ipython input size, programmatic tool-call counts). There's one top-level
-        # session dir (sub-harnesses nest as sub-*/), so the glob matches a single
-        # file. Surface its numeric metrics as-is; non-numeric fields (e.g.
-        # stop_reason) don't fit the float-only trace metrics, so they're skipped.
-        result = await runtime.run(
-            ["sh", "-c", f"cat {RLM_HOME}/sessions/*/meta.json"], {}
-        )
+    async def rlm(self, runtime: Runtime) -> dict[str, float]:
+        # Stateless continuation creates one session per segment; report the latest.
+        latest = f'cat "$(ls -t {RLM_HOME}/sessions/*/meta.json | head -1)"'
+        result = await runtime.run(["sh", "-c", latest], {})
         if result.exit_code != 0 or not result.stdout.strip():
             return {}
         try:

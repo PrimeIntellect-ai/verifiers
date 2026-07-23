@@ -5,9 +5,7 @@
 - Prime images: ✅ means task images are available in our registry; ❌ means
   they are not known to be available there yet.
 - Validation: ✅ means the taskset has a linked `prime-data` PR and was
-  validated with
-  [`SandboxDebugEnv`](../../../../../../docs/environments.md#integrations-and-experimental-environments),
-  — not yet complete.
+  validated with [`SandboxDebugEnv`](../../../../../../docs/v0/environments.md#integrations-and-experimental-environments), — not yet complete.
 
 ## Progress
 
@@ -300,12 +298,8 @@
 1. Add or port the taskset under this directory and register its backend in
    [`make_swe_taskset(...)`](swe_tasksets.py).
 2. Mirror task images that will run at scale into the Prime image registry so
-   sandbox startup uses quick pulls and large sweeps avoid upstream registry
-   rate limits.
+   sandbox startup uses quick pulls and large sweeps avoid upstream registry rate limits.
 3. Prefer the upstream dataset shape and evaluation lifecycle, then publish a
-   filtered Prime dataset through `prime-data` when validation identifies rows
-   to exclude.
+   filtered Prime dataset through `prime-data` when validation identifies rows to exclude.
 4. Validate with
-   [`SandboxDebugEnv`](../../sandbox_debug_env.py): no-op runs should fail real tasks,
-   gold-patch runs should pass, and repeated passes should separate task
-   quality issues from sandbox or infrastructure failures.
+   [`SandboxDebugEnv`](../../sandbox_debug_env.py): no-op runs should fail real tasks, gold-patch runs should pass, and repeated passes should separate task quality issues from sandbox or infrastructure failures.

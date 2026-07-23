@@ -1,10 +1,3 @@
-"""Serve a v1 environment over ZMQ.
-
-`EnvServer` loads an environment once and runs rollouts on request by task index;
-`EnvClient` is the matching ZMQ client. The orchestrator talks to the server and
-never loads the environment itself — the env runtime is independent of it.
-"""
-
 from verifiers.v1.serve.client import EnvClient
 from verifiers.v1.serve.pool import EnvServerPool, env_config_data, serve_env
 from verifiers.v1.serve.server import EnvServer
@@ -15,8 +8,8 @@ from verifiers.v1.serve.types import (
     InfoResponse,
     RunGroupRequest,
     RunGroupResponse,
-    RunRolloutRequest,
-    RunRolloutResponse,
+    RunRequest,
+    RunResponse,
 )
 
 __all__ = [
@@ -29,8 +22,8 @@ __all__ = [
     "HealthResponse",
     "InfoRequest",
     "InfoResponse",
-    "RunRolloutRequest",
-    "RunRolloutResponse",
+    "RunRequest",
+    "RunResponse",
     "RunGroupRequest",
     "RunGroupResponse",
 ]

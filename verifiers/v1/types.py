@@ -1,12 +1,5 @@
-"""Provider-agnostic wire types: messages, tools, model responses.
-
-These are the only types that cross the boundary between verifiers and a model
-provider. They are pydantic models — never dicts with normalizers. The single
-place raw provider dicts enter is the client implementation, which validates
-them into these models explicitly.
-"""
-
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
@@ -15,30 +8,19 @@ from typing_extensions import TypedDict
 
 
 class StrictBaseModel(BaseModel):
-    """A pydantic base that rejects unknown fields. Use for all closed data types."""
-
     model_config = ConfigDict(extra="forbid")
 
 
-# --- messages -----------------------------------------------------------------
-
-
 class TextContentPart(StrictBaseModel):
-    """A text span in a multimodal message body."""
-
     type: Literal["text"] = "text"
     text: str
 
 
 class ImageUrlSource(StrictBaseModel):
-    """An image reference — a URL or a `data:` URI."""
-
     url: str
 
 
 class ImageUrlContentPart(StrictBaseModel):
-    """An image in a multimodal message body (OpenAI `image_url` shape)."""
-
     type: Literal["image_url"] = "image_url"
     image_url: ImageUrlSource
 
@@ -47,13 +29,11 @@ ContentPart = Annotated[
     TextContentPart | ImageUrlContentPart, Field(discriminator="type")
 ]
 MessageContent = str | list[ContentPart]
-"""A message body: plain text, or a list of content parts (text + images)."""
+"""Plain text or typed multimodal content parts."""
 
 
 def content_to_parts(content) -> MessageContent:
-    """Parse raw OpenAI message content into typed content — a `str` stays a `str`; a list of
-    parts becomes typed `ContentPart`s (text + image_url), dropping unknown part types. The
-    shared multimodal-ingress parser used by the interception server and the v0 legacy bridge."""
+    """Type OpenAI content parts, dropping unsupported part types."""
     if not isinstance(content, list):
         return content or ""
     parts: list[ContentPart] = []
@@ -69,9 +49,7 @@ def content_to_parts(content) -> MessageContent:
 
 
 def content_text(content: "MessageContent | None") -> str:
-    """The plain text of a message body — a `str` as-is, a parts list joined to its text
-    parts (images dropped), `""` for `None`. The shared text view used by `Task.prompt_text`
-    and `Trace.transcript`."""
+    """Extract text from message content, dropping images."""
     if isinstance(content, str):
         return content
     return "\n".join(
@@ -80,22 +58,16 @@ def content_text(content: "MessageContent | None") -> str:
 
 
 class SystemMessage(StrictBaseModel):
-    """A system instruction message."""
-
     role: Literal["system"] = "system"
     content: MessageContent
 
 
 class UserMessage(StrictBaseModel):
-    """A user message (text, or text + images)."""
-
     role: Literal["user"] = "user"
     content: MessageContent
 
 
 class ToolCall(StrictBaseModel):
-    """A tool/function call requested by the model."""
-
     id: str
     name: str
     arguments: str
@@ -103,8 +75,6 @@ class ToolCall(StrictBaseModel):
 
 
 class AssistantMessage(StrictBaseModel):
-    """An assistant message, optionally carrying reasoning and tool calls."""
-
     role: Literal["assistant"] = "assistant"
     content: str | None = None
     reasoning_content: str | None = None
@@ -114,20 +84,11 @@ class AssistantMessage(StrictBaseModel):
 
 
 class ToolMessage(StrictBaseModel):
-    """The result of a tool call, keyed to the originating call id."""
-
     role: Literal["tool"] = "tool"
     tool_call_id: str
     content: MessageContent
     name: str | None = None
-    """The originating tool/function name, recovered from the prompt's matching tool call.
-
-    Most renderers key a tool result off `tool_call_id` alone, but some render the function name into
-    the template (GPT-OSS Harmony emits `functions.<name>`, falling back to `functions.unknown`
-    without it — which breaks token parity). The bridge makes this load-bearing: it renders only the
-    new tail (e.g. `[tool, user]`), so the issuing assistant's tool call sits in the already-reused
-    prefix and isn't re-sent — the name can't be recovered from the tail. So the dialect recovers it
-    once while parsing the full prompt and attaches it here, where it rides along into later bridge tails."""
+    """Needed by templates such as Harmony when bridge tails omit the issuing call."""
 
 
 Message = Annotated[
@@ -137,32 +98,21 @@ Message = Annotated[
 Messages = list[Message]
 
 
-# --- tools --------------------------------------------------------------------
-
-
 class Tool(StrictBaseModel):
-    """A function tool advertised to the model."""
-
     name: str
     description: str
     parameters: dict[str, Any]
     strict: bool | None = None
 
 
-# --- responses ----------------------------------------------------------------
-
-
 FinishReason = Literal["stop", "length", "tool_calls"] | None
 
 
 class Usage(StrictBaseModel):
-    """Token usage for one model response.
+    """Provider token accounting.
 
-    ``prompt_tokens`` excludes cache-read tokens; ``cached_input_tokens`` carries that
-    disjoint portion when the provider reports it. ``input_tokens`` and ``total_tokens``
-    reconstruct the full logical sequence sizes. ``reasoning_tokens`` is an optional subset
-    of ``completion_tokens`` and is not added again to totals. ``cost`` is the optional
-    provider-reported cost for the response.
+    `prompt_tokens` excludes cache reads; `input_tokens` adds them back. Reasoning tokens
+    are a subset of completion tokens and are not added to totals again.
     """
 
     prompt_tokens: int
@@ -173,9 +123,7 @@ class Usage(StrictBaseModel):
 
     @classmethod
     def from_openai(cls, usage: Any | None) -> "Usage | None":
-        """Build from an OpenAI chat-completion `usage` object (the `.usage` on a
-        `ChatCompletion`), or `None` when the provider reported none. Splits cache-read tokens
-        out of `prompt_tokens` and carries the reasoning subset + provider-reported `cost`."""
+        """Build usage while splitting cached tokens out of `prompt_tokens`."""
         if usage is None:
             return None
         prompt_details = getattr(usage, "prompt_tokens_details", None)
@@ -224,20 +172,27 @@ class Usage(StrictBaseModel):
 
 
 class RoutedExperts(TypedDict):
-    """The raw MoE expert-routing data a `generate` response carries for router replay:
-    base64 `data` (uint8 `[tokens, layers, top_k]`), its `shape`, and `start` — the prompt
-    offset where the routing begins (0 = full prompt+completion). Kept opaque (`Any` data)
-    so pydantic never validates the encoded blob."""
+    """Base64 uint8 `[tokens, layers, top_k]` routing and its prompt offset."""
 
     data: Any
     shape: list[int]
     start: int
 
 
+@dataclass
+class KeptTokens:
+    """Kept-set sampling masks for sampling replay: `ids` (every kept set concatenated
+    in position order) and `counts` (kept-set size per completion token; 0 = no usable
+    mask). Base64 blobs straight off the `generate` response on the `TurnTokens`
+    carrier; decoded to flat int32 arrays on `MessageNode` (`len(ids) == sum(counts)`,
+    row boundaries recovered from `counts`)."""
+
+    ids: Any
+    counts: Any
+
+
 class TurnTokens(StrictBaseModel):
-    """Token ids + sampling logprobs for one response, for training. Populated by the
-    renderer client (client-side tokenization) or the chat client (parsed from vLLM's
-    token ids); None when the provider returns neither."""
+    """Training tokens from renderer tokenization or provider-returned token IDs."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -258,11 +213,14 @@ class TurnTokens(StrictBaseModel):
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the kept-set sampling masks from `generate` (token ids
+    # surviving top-p/top-k truncation, per completion token), attributed to the assistant
+    # node by the turn's `commit`, then dropped. None unless the engine ran with
+    # `enable_return_kept_tokens`.
+    kept_tokens: KeptTokens | None = Field(default=None, exclude=True)
 
 
 class Response(StrictBaseModel):
-    """One model completion, provider-agnostic."""
-
     id: str
     created: int
     model: str
@@ -270,14 +228,8 @@ class Response(StrictBaseModel):
     finish_reason: FinishReason
     usage: Usage | None = None
     tokens: TurnTokens | None = None
-    """Token ids + logprobs for training (set by the renderer client)."""
     raw: dict | None = Field(default=None, exclude=True, repr=False)
-    """The wire response the interception server hands back to the program 1:1: the provider's
-    verbatim bytes (proxy, so no field is lost) or the client's serialized completion (renderer,
-    which generates and has none to relay). Transient: excluded from the trace dump."""
-
-
-# --- sampling -----------------------------------------------------------------
+    """Full native response object returned to the program; excluded from traces."""
 
 
 class SamplingConfig(BaseModel):
@@ -293,15 +245,9 @@ class SamplingConfig(BaseModel):
 
 
 Sampling = SamplingConfig
-"""Alias for `SamplingConfig` — the terse name for a `sampling` field/arg."""
-
-
-# --- ids ----------------------------------------------------------------------
 
 
 def _validate_id(plugin_id: str) -> str:
-    """Validate the id's shape — a hub id must be a well-formed ``org/name[@version]``; a
-    local id is any module name. Returns it unchanged (the value stays a plain ``str``)."""
     from verifiers.utils.install_utils import is_hub_env, parse_env_id
 
     if is_hub_env(plugin_id):
@@ -310,6 +256,4 @@ def _validate_id(plugin_id: str) -> str:
 
 
 ID = Annotated[str, AfterValidator(_validate_id)]
-"""A plugin id — a taskset / harness / judge / environment: ``name``, ``org/name``, or
-``org/name@version``. A plain validated ``str``; derive its package/module name with
-`env_name` / `env_module` (`verifiers.v1.utils.install`)."""
+"""Plugin id: `name`, `org/name`, or `org/name@version`."""

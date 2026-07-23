@@ -23,7 +23,7 @@ Or with pip/uv pip:
 uv pip install -e ".[browser]"
 ```
 
-When you publish an environment that uses `BrowserEnv`, list `verifiers[browser]` in that package’s `pyproject.toml` `dependencies` so installs from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments) pull the extra. Validate required variables early in `load_environment()` with `vf.ensure_keys([...])` (see [Required API Keys](../../../../docs/environments.md#required-api-keys) in the Verifiers environments guide).
+When you publish an environment that uses `BrowserEnv`, list `verifiers[browser]` in that package’s `pyproject.toml` `dependencies` so installs from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments) pull the extra. Validate required variables early in `load_environment()` with `vf.ensure_keys([...])` (see [Required API Keys](../../../../docs/v0/environments.md#required-api-keys) in the Verifiers environments guide).
 
 ## Required credentials
 
@@ -139,16 +139,3 @@ CUA execution options:
 1. **Prebuilt image** (default): fastest startup
 2. **Binary upload** (`use_prebuilt_image=False`): custom server workflows
 3. **Manual local server** (`use_sandbox=False`): local development/debugging
-
-## Example Environments
-
-For complete reference implementations, see:
-
-- **DOM example:** `environments/browser_dom_example/`
-  - `environments/browser_dom_example/browser_dom_example.py`
-  - `environments/browser_dom_example/README.md`
-- **CUA example:** `environments/browser_cua_example/`
-  - `environments/browser_cua_example/browser_cua_example.py`
-  - `environments/browser_cua_example/README.md`
-
-These examples show end-to-end `load_environment()` setup, evaluation commands, and recommended runtime flags.

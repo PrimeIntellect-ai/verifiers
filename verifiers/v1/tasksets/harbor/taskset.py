@@ -1,21 +1,13 @@
-"""harbor: run a Harbor (Terminal-Bench) dataset.
+"""Harbor tasksets backed by Harbor Hub packages.
 
-`dataset` is a Harbor Hub package id (e.g. "org/name" or "org/name@ref"),
-downloaded through the installed Harbor CLI and cached on first use. Each task
-dir ships task.toml + instruction.md (+ tests/, solution/, environment/).
-Defaults to the registry `harbor/hello-world` dataset.
+The Harbor CLI downloads and caches each task directory. Its verifier runs in the
+same runtime the harness edited, then writes the score to
+``/logs/verifier/reward.txt``.
 
-The harness runs in a container and edits /app; then the task's verifier
-(tests/test.sh) runs in the SAME container and the reward it writes to
-/logs/verifier/reward.txt becomes the score. The verification lives on the
-taskset (the `solved` reward), so a harbor task runs under ANY harness.
-
-A task's declared [environment].docker_image becomes a first-class `Task.image`
-the Environment injects into the runtime (docker/prime both pull it). A task whose
-environment is only a `Dockerfile` has no pullable image — we don't build Dockerfiles
-(a locally-built image isn't pullable by a remote sandbox) — so it's rejected unless
-`ignore_dockerfile`, which runs it on the harness runtime's image instead. A task with
-no environment at all also runs on that image, unless `require_image`.
+A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
+not build Dockerfile-only environments, so those are rejected unless ``ignore_dockerfile``
+deliberately uses the harness runtime image. Tasks without an environment also use that
+image unless ``require_image`` is set.
 """
 
 import hashlib
@@ -26,6 +18,7 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 
@@ -34,9 +27,8 @@ from pydantic import Field
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import Task, TaskResources, TaskTimeout
+from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
@@ -56,8 +48,14 @@ class HarborConfig(TasksetConfig):
     """Optional Harbor `--registry-url` selector for a raw registry.json URL."""
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
+    ignore_timeouts: bool = True
+    """Drop each task's declared agent and verifier timeouts so rollouts run
+    unbounded (unless run-level `--timeout.*` limits are set). Task timeouts are
+    authored against Harbor's runtime and confound model capability with inference
+    speed; set False to apply them anyway."""
     timeout_multiplier: float = Field(1.0, gt=0)
-    """Scale each task's agent and verifier timeouts."""
+    """Scale each task's agent and verifier timeouts. Only applies with
+    `ignore_timeouts=False`."""
     resource_multiplier: float = Field(1.0, gt=0)
     """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
     require_image: bool = False
@@ -77,27 +75,53 @@ class Author(StrictBaseModel):
     email: str | None = None
 
 
-class HarborTask(Task):
-    """A Harbor task. The base fields carry instruction.md (`prompt`), the
-    resolved container `image`, the `harness_timeout`/`scoring_timeout`/`resources`
-    (from task.toml's [harness]/[verifier]/[environment]), and [task].name/description;
-    the rest mirror [metadata]."""
+class HarborData(TaskData):
+    """Parsed ``task.toml`` metadata plus the host-side verifier directory.
+
+    Base ``TaskData`` fields hold the prompt, resolved image, timeout, resources,
+    name, and description. The remaining fields mirror Harbor metadata.
+    """
 
     keywords: list[str] = []
     authors: list[Author] = []
     difficulty: str | None = None
     category: str | None = None
     tags: list[str] = []
-    task_dir: str = Field(exclude=True)
-    """Host path to the task dir; used to stage tests/ to verify, not serialized."""
+    task_dir: str = ""
+    """Host path to the task dir; used to stage tests/ to verify."""
     verifier_env: dict[str, str] = {}
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
     verifier that needs judge API keys or configuration actually receives them."""
 
 
+class HarborTask(Task[HarborData]):
+    """Stage and run Harbor's verifier inside the task's live runtime."""
+
+    @reward(weight=1.0)
+    async def solved(self, runtime: Runtime) -> float:
+        await runtime.write(
+            "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
+        )
+        await runtime.run(
+            [
+                "sh",
+                "-c",
+                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
+            ],
+            {},
+        )
+        await runtime.run(
+            ["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self.data)
+        )
+        try:
+            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
+            return float(reward or 0)
+        except (SandboxError, OSError, ValueError):
+            return 0.0
+
+
 def harbor_cli() -> str:
-    """Return the Harbor CLI installed in the active Python environment."""
     scripts_dir = Path(sys.executable).parent
     harbor_bin = shutil.which("harbor", path=str(scripts_dir))
     if harbor_bin is None:
@@ -153,12 +177,7 @@ def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
 
 
 def dataset_dir(config: HarborConfig) -> Path:
-    """Download a Harbor task or dataset package, cached on first use.
-
-    Harbor Hub refs are tags, integer revisions, or ``sha256:`` digests. Legacy registry
-    refs are selected through Harbor's CLI selectors (`repo`, `registry_path`,
-    `registry_url`).
-    """
+    """Download/cache a Hub or legacy-registry package selected by the config."""
     out = cache_dir(config)
     if out.is_dir():
         return out
@@ -198,13 +217,12 @@ def resolve_image(
     require_image: bool,
     ignore_dockerfile: bool = False,
 ) -> str | None:
-    """The task's declared registry image (usable by docker or prime). A pullable
-    `[environment].docker_image` is used directly. A task whose environment is a
-    `Dockerfile` is rejected — we don't build Dockerfiles, and running it on the default
-    image would silently score against the wrong environment (e.g. SWE-bench's `/testbed`
-    repo would be missing) — unless `ignore_dockerfile`, which returns None to run it on the
-    harness runtime's image. A task with no environment at all runs on that image too, unless
-    `require_image`. None means "use the runtime's own image"."""
+    """Choose a pullable image without silently ignoring a declared Dockerfile.
+
+    ``None`` tells the runtime to keep the harness image. That is the intended
+    fallback for tasks with no environment, but would score a Dockerfile task in
+    the wrong environment unless the user explicitly opts in.
+    """
     declared = config.get("environment", {}).get("docker_image")
     if declared:
         return declared
@@ -215,7 +233,7 @@ def resolve_image(
             f"{task_dir.name}: environment is a Dockerfile, not a pullable "
             "[environment].docker_image — building Dockerfiles isn't supported, so this "
             "task can't run (it would otherwise score against the wrong default image). "
-            "Pass --taskset.ignore-dockerfile to run it on the harness runtime's image instead."
+            "Pass --env.taskset.ignore-dockerfile to run it on the harness runtime's image instead."
         )
     if require_image:
         raise ValueError(
@@ -224,27 +242,56 @@ def resolve_image(
     return None
 
 
+def size_to_mb(size: str | int | float) -> float:
+    """A Harbor size in MB, from either schema: current integer-MB fields or the
+    legacy schema-1.0 size strings ("8G", "512M", "64K")."""
+    if not isinstance(size, str):
+        return float(size)
+    scale = {"G": 1024.0, "M": 1.0, "K": 1 / 1024}.get(size.strip().upper()[-1:])
+    if scale is None:
+        raise ValueError(
+            f"invalid Harbor size {size!r}: expected a number of MB or a "
+            "'<number>[G|M|K]' string"
+        )
+    return float(size.strip()[:-1]) * scale
+
+
 def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
-    """Map a task.toml [environment] block to TaskResources (0 gpus -> unset)."""
+    # Harbor's current schema reports memory/storage as integer-MB fields; the
+    # legacy schema 1.0 used size strings under `memory`/`storage`, which Harbor
+    # still migrates (datasets like senior-swe-bench are authored against it).
+    # TaskResources stores GB. A zero GPU count means no GPU request rather than
+    # the string "0".
+    memory = env.get("memory_mb") or env.get("memory")
+    disk = env.get("storage_mb") or env.get("storage")
     return TaskResources(
         cpu=env["cpus"] * multiplier if env.get("cpus") else None,
-        memory=env["memory_mb"] / 1024 * multiplier if env.get("memory_mb") else None,
+        memory=size_to_mb(memory) / 1024 * multiplier if memory else None,
         gpu=str(env["gpus"]) if env.get("gpus") else None,
-        disk=env["storage_mb"] / 1024 * multiplier if env.get("storage_mb") else None,
+        disk=size_to_mb(disk) / 1024 * multiplier if disk else None,
     )
 
 
-def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborTask:
-    """Read a harbor task dir (task.toml + instruction.md) into a typed task,
-    handling both the [task].authors and legacy [metadata].author_name layouts."""
+def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
+    # Harbor is optional, so importing its schema is deferred until a Harbor task loads.
+    from harbor.models.task.config import NetworkMode, TaskConfig as HarborTaskConfig
+
     config = tomllib.loads((task_dir / "task.toml").read_text())
+    parsed = HarborTaskConfig.model_validate(config)
+    network = (
+        parsed.agent.explicit_phase_policy() or parsed.environment.resolve_baseline()
+    )
     task, meta = config.get("task", {}), config.get("metadata", {})
     authors = [Author(**a) for a in task.get("authors", [])]
+    # Older registry entries stored one author in [metadata].
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
-    harness_timeout = config.get("agent", {}).get("timeout_sec")
-    scoring_timeout = config.get("verifier", {}).get("timeout_sec")
-    return HarborTask(
+    if harbor_config.ignore_timeouts:
+        harness_timeout = scoring_timeout = None
+    else:
+        harness_timeout = config.get("agent", {}).get("timeout_sec")
+        scoring_timeout = config.get("verifier", {}).get("timeout_sec")
+    return HarborData(
         idx=idx,
         name=task.get("name") or task_dir.name,
         description=task.get("description"),
@@ -254,6 +301,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
             config,
             harbor_config.require_image,
             harbor_config.ignore_dockerfile,
+        ),
+        network_allow=(
+            ["*"]
+            if network.network_mode == NetworkMode.PUBLIC
+            else list(network.allowed_hosts)
         ),
         timeout=TaskTimeout(
             harness=harness_timeout * harbor_config.timeout_multiplier
@@ -276,24 +328,22 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
     )
 
 
-def verifier_env(task: HarborTask) -> dict[str, str]:
-    """The env a task's verifier runs with: its [verifier.env] templates resolved against
-    the host environment (`${VAR}` / `${VAR:-default}`, harbor's own semantics). Resolution
-    is deferred to scoring time so resolved secrets never land on the serialized task."""
+def verifier_env(task: HarborData) -> dict[str, str]:
+    """Resolve templates at scoring time so host secrets are never serialized."""
     if not task.verifier_env:
         return {}
-    # Lazy: `harbor` is the optional extra, but scoring implies the dataset was
-    # downloaded, which already required it.
+
+    # Harbor is an optional dependency, so importing this module must still work
+    # for users who do not install the Harbor extra.
     from harbor.utils.env import resolve_env_vars
 
     return resolve_env_vars(task.verifier_env)
 
 
-# Harbor test directories are immutable after download, so repeated rollouts can reuse
-# the latest archive. One entry bounds retained memory to one task.
+# Downloaded test directories are immutable. Cache only the latest archive to
+# bound memory while reusing it across rollouts of the current task.
 @lru_cache(maxsize=1)
 def make_tar(directory: Path) -> bytes:
-    """Tar a directory's contents (flat) into a gzipped tarball."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         for item in sorted(directory.iterdir()):
@@ -302,7 +352,7 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
-    def load_tasks(self) -> list[HarborTask]:
+    def load(self) -> Iterator[HarborTask]:
         root = dataset_dir(self.config)
         task_dirs = [
             toml_path.parent
@@ -314,28 +364,5 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         ]
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
-        return [
-            parse_task(task_dir, idx, self.config)
-            for idx, task_dir in enumerate(task_dirs)
-        ]
-
-    @reward(weight=1.0)
-    async def solved(self, task: HarborTask, trace: Trace, runtime: Runtime) -> float:
-        # Stage the task's tests into the live runtime, run its harbor verifier, and
-        # read back the reward it writes — runtime-opaque (write/run/read hide whether
-        # that's the host fs or across a container boundary), so it scores under any harness.
-        await runtime.write("/tmp/tests.tgz", make_tar(Path(task.task_dir) / "tests"))
-        await runtime.run(
-            [
-                "sh",
-                "-c",
-                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
-            ],
-            {},
-        )
-        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], verifier_env(task))
-        try:
-            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
-            return float(reward or 0)
-        except (SandboxError, OSError, ValueError):
-            return 0.0
+        for idx, task_dir in enumerate(task_dirs):
+            yield HarborTask(parse_task(task_dir, idx, self.config), self.config.task)

@@ -1,23 +1,29 @@
-"""code_golf: write a short, fast Python program — showcases GROUP rewards.
+"""code_golf: write a short, fast Python program — the sibling-comparison recipe env.
 
-Each task asks for a tiny program with a known output. We sample a *group* of rollouts
-per task (run with `-r 2` for the intended pairwise effect) and score them. Anything
-that needs the runtime is measured per rollout, as a `@metric`, into the trace; the
-group rewards then just compare that trace metadata across the task's rollouts:
+Each task asks for a tiny program with a known output. The env fans one episode
+into `--env.attempts` independent attempts by the same "golfer" role and scores them
+against each other. Anything that needs the runtime is measured per attempt, box-live,
+into that attempt's trace; the env's `finalize()` then just compares the recorded
+metadata across the finished siblings:
 
-  - `evaluate`      per-rollout `@metric`: runs the program once in that rollout's
+  - `evaluate`      per-attempt `@metric`: runs the program once in that attempt's
                     runtime and records `passed` + `latency`. (task, trace, runtime)
-  - `correct`       per-rollout `@reward`: reads `passed` off the trace.      (trace)
-  - `most_concise`  `@group_reward`: of the group, the shortest source wins.  (traces)
-  - `fastest`       `@group_reward`: of the group, the lowest `latency`
-                    wins — a comparison of recorded trace metadata.           (traces)
+  - `correct`       per-attempt `@reward`: reads `passed` off the trace.      (trace)
+  - `most_concise`  env `finalize()`: of the PASSING attempts, the shortest source wins.
+  - `fastest`       env `finalize()`: of the PASSING attempts, the lowest recorded
+                    `latency` wins — a comparison of trace metadata.
 
-So a group of 2 produces, per rollout: did it work, was it the shorter one, was it the
-quicker one — the relative signals you can only get by comparing siblings.
+So one episode produces, per attempt: did it work, was it the shorter one, was it
+the quicker one — the relative signals you can only get by comparing siblings. Only
+correct attempts compete: a failed one earns nothing on either comparison, and an
+all-failed group pays nobody.
 """
 
+import asyncio
 import re
 import time
+
+from pydantic import Field
 
 import verifiers.v1 as vf
 
@@ -34,9 +40,61 @@ def extract_program(trace: vf.Trace) -> str:
     return (match.group(1) if match else text or "").strip()
 
 
-class CodeGolfTask(vf.Task):
+class CodeGolfData(vf.TaskData):
     expected: str
     """The exact stdout the program must produce."""
+
+
+class CodeGolfTask(vf.Task[CodeGolfData]):
+    @vf.metric
+    async def evaluate(self, trace: vf.Trace, runtime: vf.Runtime) -> dict[str, float]:
+        """Run the program once in the attempt's runtime; record correctness + latency."""
+        program = extract_program(trace)
+        if not program:
+            return {"passed": 0.0, "latency": 1e6}
+        await runtime.write("solution.py", program.encode())
+        start = time.perf_counter()
+        result = await runtime.run(["python3", "solution.py"], {})
+        latency = time.perf_counter() - start
+        passed = float(
+            result.exit_code == 0 and result.stdout.strip() == self.data.expected
+        )
+        return {"passed": passed, "latency": latency}
+
+    @vf.reward
+    async def correct(self, trace: vf.Trace) -> float:
+        return trace.metrics.get("passed", 0.0)
+
+
+class CodeGolfEnvConfig(vf.EnvConfig):
+    golfer: vf.AgentConfig = vf.AgentConfig()
+    attempts: int = Field(2, ge=1)
+    """Independent attempts per episode, scored against each other."""
+
+
+class CodeGolfEnv(vf.Env[CodeGolfEnvConfig]):
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        async with asyncio.TaskGroup() as tg:
+            for _ in range(self.config.attempts):
+                tg.create_task(agents.golfer.run(task))
+
+    async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
+        """The sibling comparison: among the PASSING attempts, the shortest source
+        wins `most_concise` and the lowest recorded latency wins `fastest` (ties
+        share); a failed attempt earns nothing on either."""
+        passing = [t for t in episode.traces if t.metrics.get("passed")]
+        min_length = min((len(extract_program(t)) for t in passing), default=None)
+        min_latency = min((t.metrics["latency"] for t in passing), default=None)
+        for trace in episode.traces:
+            if trace not in passing:
+                trace.record_reward("most_concise", 0.0, 0.5)
+                trace.record_reward("fastest", 0.0, 0.5)
+                continue
+            concise = float(len(extract_program(trace)) == min_length)
+            trace.record_reward("most_concise", concise, 0.5)
+            trace.record_reward(
+                "fastest", float(trace.metrics["latency"] == min_latency), 0.5
+            )
 
 
 class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
@@ -51,46 +109,16 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         ("reverse-str", "the string HELLO reversed", "OLLEH"),
     ]
 
-    def load_tasks(self) -> list[CodeGolfTask]:
+    def load(self) -> list[CodeGolfTask]:
         return [
             CodeGolfTask(
-                idx=i,
-                name=name,
-                prompt=f"{SYSTEM}\n\nPrint {description}.",
-                expected=expected,
+                CodeGolfData(
+                    idx=i,
+                    name=name,
+                    prompt=f"{SYSTEM}\n\nPrint {description}.",
+                    expected=expected,
+                ),
+                self.config.task,
             )
             for i, (name, description, expected) in enumerate(self.SPECS)
         ]
-
-    @vf.metric
-    async def evaluate(
-        self, task: CodeGolfTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> dict[str, float]:
-        """Run the program once in the rollout's runtime; record correctness + latency."""
-        program = extract_program(trace)
-        if not program:
-            return {"passed": 0.0, "latency": 1e6}
-        await runtime.write("solution.py", program.encode())
-        start = time.perf_counter()
-        result = await runtime.run(["python3", "solution.py"], {})
-        latency = time.perf_counter() - start
-        passed = float(result.exit_code == 0 and result.stdout.strip() == task.expected)
-        return {"passed": passed, "latency": latency}
-
-    @vf.reward
-    async def correct(self, trace: vf.Trace) -> float:
-        return trace.metrics.get("passed", 0.0)
-
-    @vf.group_reward(weight=0.5)
-    async def most_concise(self, traces: list[vf.Trace]) -> list[float]:
-        """The shortest program in the group wins; ties share."""
-        lengths = [len(extract_program(t)) or 10**9 for t in traces]
-        best = min(lengths)
-        return [1.0 if length == best else 0.0 for length in lengths]
-
-    @vf.group_reward(weight=0.5)
-    async def fastest(self, traces: list[vf.Trace]) -> list[float]:
-        """The lowest recorded `latency` in the group wins; ties share."""
-        times = [t.metrics.get("latency", 1e6) for t in traces]
-        best = min(times)
-        return [1.0 if t == best else 0.0 for t in times]

@@ -20,20 +20,24 @@ from __future__ import annotations
 import binascii
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pydantic import ConfigDict, Field, field_serializer, field_validator
+from pydantic.json_schema import SkipJsonSchema
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
+    KeptTokens,
     Message,
     Response,
     StrictBaseModel,
     TextContentPart,
+    Tool,
     ToolMessage,
     Usage,
 )
@@ -113,6 +117,12 @@ class MessageNode(StrictBaseModel):
     """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context
     the model never generated, which role alone can't tell apart from real turns."""
+    timestamp: float = Field(default_factory=time.time)
+    """Wall-clock epoch seconds when this node was created. Nodes materialize at turn commit,
+    so a turn's new input nodes and its assistant node carry (near-)identical stamps and the
+    delta between consecutive sampled nodes is that turn's harness + inference wall-clock.
+    Reused prefix nodes keep the stamp from the turn that first created them. Serialized, so
+    a dump re-validated from wire/disk keeps the original times."""
     token_ids: list[int] = Field(default_factory=list)
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
@@ -136,7 +146,7 @@ class MessageNode(StrictBaseModel):
     `mask`; empty for input messages."""
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
-    multi_modal_data: MultiModalData | None = None
+    multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for images this message introduces.
 
     With the raw-image path, items are lightweight descriptors (hashes, grid metadata, and
@@ -147,12 +157,18 @@ class MessageNode(StrictBaseModel):
     """Provider-reported token usage for this message's response (assistant nodes). Preserved on
     the wire and on disk so dashboards can show token counts and cost even when the endpoint
     returns no token ids."""
-    routed_experts: np.ndarray | None = None
+    routed_experts: SkipJsonSchema[np.ndarray | None] = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
+    kept_tokens: SkipJsonSchema[KeptTokens | None] = None
+    """Kept-set sampling masks for this node's sampled tokens, decoded: `ids` flat int32
+    in position order, `counts` the per-token kept-set sizes (aligned with `logprobs`;
+    0 = no mask). Assistant nodes only; consumed via `Branch.kept_tokens` for
+    sampling-replay training. Rides the wire as raw-bytes `__nd__` dicts; kept off disk
+    by the dump-site `exclude` in prime-rl."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -203,21 +219,44 @@ class MessageNode(StrictBaseModel):
         )
 
     @field_serializer("routed_experts")
-    def serialize_routed_experts(self, re: np.ndarray | None) -> dict | None:
-        """uint8 routing array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
-        return None if re is None else _encode_ndarray(re)
+    def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
+        """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
+        return None if arr is None else _encode_ndarray(arr)
 
     @field_validator("routed_experts", mode="before")
     @classmethod
-    def deserialize_routed_experts(cls, value: Any) -> np.ndarray | None:
+    def deserialize_ndarray_field(cls, value: Any) -> np.ndarray | None:
         if value is None or isinstance(value, np.ndarray):
             return value
         if isinstance(value, dict) and value.get("__nd__"):
             return _decode_ndarray(value)
-        raise TypeError(f"cannot build routed_experts from {type(value).__name__}")
+        raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
+
+    @field_serializer("kept_tokens")
+    def serialize_kept_tokens(self, kept: KeptTokens | None) -> dict | None:
+        """`KeptTokens` -> dict of raw-bytes `__nd__` entries so the arrays ride the wire."""
+        if kept is None:
+            return None
+        return {
+            "ids": _encode_ndarray(kept.ids),
+            "counts": _encode_ndarray(kept.counts),
+        }
+
+    @field_validator("kept_tokens", mode="before")
+    @classmethod
+    def deserialize_kept_tokens(cls, value: Any) -> KeptTokens | None:
+        if value is None or isinstance(value, KeptTokens):
+            return value
+        if isinstance(value, dict):
+            return KeptTokens(
+                ids=_decode_ndarray(value["ids"]),
+                counts=_decode_ndarray(value["counts"]),
+            )
+        raise TypeError(f"cannot build KeptTokens from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
+    # Ignore JSON key order and whitespace when hashing equivalent tool calls.
     try:
         return json.dumps(json.loads(arguments), sort_keys=True, separators=(",", ":"))
     except (json.JSONDecodeError, ValueError):
@@ -300,10 +339,6 @@ class PendingTurn:
     def tail(self) -> list[Message]:
         return self.prompt[self.tail_start :]
 
-    @property
-    def parent(self) -> int | None:
-        return self.prefix_node_ids[-1] if self.prefix_node_ids else None
-
     def previous_token_ids(self) -> tuple[list[int], list[int]] | None:
         """Return `(previous_prompt_ids, previous_completion_ids)` for a bridge anchor.
 
@@ -365,8 +400,12 @@ class PendingTurn:
                 merged.mm_placeholders.setdefault(modality, []).extend(placeholders)
         return merged if found else None
 
-    def commit(self, response: Response) -> None:
-        _commit_turn(self, response)
+    def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
+        """Add this turn to the graph; returns the committed assistant node's id."""
+        assistant_id = _commit_turn(self, response)
+        if tools:
+            self.trace.tools = tools
+        return assistant_id
 
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
@@ -478,7 +517,9 @@ def _attribute_routed_experts(
     if payload is None:
         return
     raw = binascii.a2b_base64(payload["data"])
-    arr = np.frombuffer(raw, dtype=np.uint8).reshape(payload["shape"])
+    arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
+        payload["shape"]
+    )
     off = path_len - int(payload.get("start", 0) or 0)
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
@@ -496,16 +537,24 @@ def _attribute_routed_experts(
         off = end
 
 
-def _commit_turn(turn: PendingTurn, response: Response) -> None:
-    """Insert one prepared model turn into the graph.
+def _attribute_kept_tokens(
+    trace: Trace, assistant_id: int, payload: KeptTokens | None
+) -> None:
+    """Attach this turn's kept-set sampling masks to the assistant node (the payload
+    covers exactly the turn's completion tokens, so no path arithmetic). A payload
+    that doesn't line up with the node's sampled tokens is dropped, not misaligned."""
+    if payload is None:
+        return
+    counts = np.frombuffer(binascii.a2b_base64(payload.counts), dtype=np.int32)
+    ids = np.frombuffer(binascii.a2b_base64(payload.ids), dtype=np.int32)
+    node = trace.nodes[assistant_id]
+    if len(counts) != sum(node.mask) or int(counts.sum()) != len(ids):
+        return
+    # Own the buffers — the payload views reference the turn's response bytes.
+    node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
 
-    Token attribution anchors new tokens to the cumulative *stored* length of the reused
-    prefix (`path_len`), not message spans — the previous assistant's closing scaffold lives
-    in its later input-form span but not its stored generation form, so anchoring on spans
-    would drop it. The new tokens (`prompt_ids[path_len:]`) are split among the new input
-    messages by span (leading template scaffold folds into the following message), and the
-    trailing generation prompt goes on the assistant node before its sampled completion. By
-    construction `concat(node.token_ids along the path) == prompt_ids + completion_ids`."""
+
+def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
@@ -592,8 +641,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
             else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
-            finish_reason=response.finish_reason,
-            usage=response.usage,
         )
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
@@ -610,6 +657,12 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     _attribute_routed_experts(
         trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
+
+    # Attribute this turn's kept-set sampling masks onto the assistant node (they are
+    # completion-aligned, so only the sampled node carries them).
+    _attribute_kept_tokens(trace, assistant_id, tokens.kept_tokens if tokens else None)
+
+    return assistant_id
 
 
 # --- walking the graph (views) ---------------------------------------------------------

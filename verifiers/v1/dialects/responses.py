@@ -9,21 +9,9 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 
 import json
 from collections import deque
-from typing import Any, cast
 
 from openai.types.responses import (
-    EasyInputMessageParam,
-    ResponseFunctionToolCallParam,
-    ResponseInputImageParam,
-    ResponseInputMessageContentListParam,
-    ResponseInputParam,
-    ResponseInputTextParam,
     ResponseUsage,
-)
-from openai.types.responses.response_input_param import FunctionCallOutput
-from openai.types.responses.response_usage import (
-    InputTokensDetails,
-    OutputTokensDetails,
 )
 from pydantic import BaseModel, ConfigDict
 
@@ -36,6 +24,7 @@ from verifiers.v1.types import (
     ImageUrlSource,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     SystemMessage,
     TextContentPart,
@@ -58,11 +47,27 @@ _TERMINAL_MARKERS = tuple(
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
 
 
+class ProviderUsageInputTokensDetails(BaseModel):
+    """Permissive input token details: OpenAI-compatible providers may omit fields
+    the pinned SDK declares required (e.g. ``cache_write_tokens``)."""
+
+    model_config = ConfigDict(extra="allow")
+    cache_write_tokens: int | None = None
+    cached_tokens: int | None = None
+
+
+class ProviderUsageOutputTokensDetails(BaseModel):
+    """Permissive output token details: providers may omit ``reasoning_tokens``."""
+
+    model_config = ConfigDict(extra="allow")
+    reasoning_tokens: int | None = None
+
+
 class ProviderUsage(ResponseUsage):
     """Responses usage with optional detail objects for OpenAI-compatible providers."""
 
-    input_tokens_details: InputTokensDetails | None = None
-    output_tokens_details: OutputTokensDetails | None = None
+    input_tokens_details: ProviderUsageInputTokensDetails | None = None
+    output_tokens_details: ProviderUsageOutputTokensDetails | None = None
 
 
 class OpenAIResponse(BaseModel):
@@ -89,57 +94,6 @@ def parse_content(content) -> str | list[ContentPart]:
                 )
             )
     return parts
-
-
-def messages_to_wire(messages: Messages) -> ResponseInputParam:
-    items: ResponseInputParam = []
-    for message in messages:
-        if isinstance(message, AssistantMessage):
-            if message.provider_state:
-                items.extend(cast(ResponseInputParam, message.provider_state))
-                continue
-            if message.content:
-                items.append(
-                    EasyInputMessageParam(
-                        role="assistant",
-                        content=message.content,
-                    )
-                )
-            items.extend(
-                ResponseFunctionToolCallParam(
-                    type="function_call",
-                    call_id=call.id,
-                    name=call.name,
-                    arguments=call.arguments,
-                )
-                for call in message.tool_calls or []
-            )
-            continue
-        content: str | ResponseInputMessageContentListParam = (
-            message.content
-            if isinstance(message.content, str)
-            else [
-                ResponseInputTextParam(type="input_text", text=part.text)
-                if isinstance(part, TextContentPart)
-                else ResponseInputImageParam(
-                    type="input_image",
-                    image_url=part.image_url.url,
-                    detail="auto",
-                )
-                for part in message.content
-            ]
-        )
-        if isinstance(message, ToolMessage):
-            items.append(
-                FunctionCallOutput(
-                    type="function_call_output",
-                    call_id=message.tool_call_id,
-                    output=cast(Any, content),
-                )
-            )
-        else:
-            items.append(EasyInputMessageParam(role=message.role, content=content))
-    return items
 
 
 def fold_assistant(items: list[dict]) -> AssistantMessage:
@@ -217,6 +171,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         input_details = provider_usage.input_tokens_details
         output_details = provider_usage.output_tokens_details
         cached = input_details.cached_tokens if input_details else None
+        # Responses input_tokens includes cache hits; vf keeps the buckets disjoint.
         usage = Usage(
             prompt_tokens=provider_usage.input_tokens - (cached or 0),
             completion_tokens=provider_usage.output_tokens,
@@ -264,8 +219,20 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
-    """The OpenAI Responses wire format."""
-
+    sampling_fields = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "max_tool_calls",
+            "reasoning",
+            "text",
+            "tool_choice",
+            "parallel_tool_calls",
+            "top_logprobs",
+            "truncation",
+        }
+    )
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse
@@ -274,6 +241,22 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
         return any(marker in chunk for marker in _TERMINAL_MARKERS)
+
+    def parse_sampling(self, body: dict) -> Sampling:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
+        # (e.g. `summary`) as the wire sent them.
+        if isinstance(reasoning := settings.get("reasoning"), dict):
+            reasoning = dict(reasoning)
+            if reasoning.get("effort"):
+                settings["reasoning_effort"] = reasoning.pop("effort")
+            if reasoning:
+                settings["reasoning"] = reasoning
+            else:
+                settings.pop("reasoning")
+        if "max_output_tokens" in settings:
+            settings["max_tokens"] = settings.pop("max_output_tokens")
+        return Sampling.model_validate(settings)
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         prompt: Messages = []
@@ -334,7 +317,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         return ResponsesStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Forward verbatim except the eval's model + sampling, mapped to the Responses shape
+        # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
         # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
         s = sampling.model_dump(exclude_none=True)
         name = model.rsplit("/", 1)[-1]
@@ -345,6 +328,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         )
         overrides: dict = {"model": model}
         if reasoning_model:
+            # Preserve opaque reasoning state so it can be replayed on the next turn.
             include = list(body.get("include") or [])
             if "reasoning.encrypted_content" not in include:
                 include.append("reasoning.encrypted_content")
@@ -357,6 +341,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             overrides["max_output_tokens"] = s["max_tokens"]
         reasoning = dict(body.get("reasoning") or {})
         if reasoning_model:
+            # Summaries provide the trace's readable reasoning text.
             reasoning = {"summary": "auto", **reasoning}
         if "reasoning_effort" in s:
             reasoning["effort"] = s["reasoning_effort"]
@@ -368,17 +353,3 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             if k not in _SAMPLING_KEYS and k not in overrides
         }
         return {**steered, **overrides}
-
-    def extend(
-        self, body: dict, completion: dict | None, user_messages: Messages
-    ) -> dict:
-        """Append raw model output and the user simulator's reply for the next turn."""
-        raw = body.get("input")
-        items: ResponseInputParam = (
-            [EasyInputMessageParam(role="user", content=raw)]
-            if isinstance(raw, str)
-            else cast(ResponseInputParam, list(raw or []))
-        )
-        items.extend(cast(ResponseInputParam, (completion or {}).get("output") or []))
-        items.extend(messages_to_wire(user_messages))
-        return {**body, "input": items}

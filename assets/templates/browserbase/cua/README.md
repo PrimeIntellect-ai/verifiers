@@ -7,6 +7,7 @@ A Fastify server that exposes Stagehand's Computer Use Agent (CUA) browser primi
 ## Automatic Sandbox Deployment
 
 When using `BrowserEnv(mode="cua")`, the server is automatically:
+
 1. Uploaded to a sandbox container
 2. Started via `setup.sh`
 3. Accessed via curl commands inside the sandbox
@@ -50,7 +51,7 @@ env = BrowserEnv(
 
 ## Architecture
 
-```
+```text
 External Agent -> Fastify API -> BrowserSessionManager -> Stagehand Page -> Browser
 ```
 
@@ -63,7 +64,7 @@ npm install @browserbasehq/stagehand fastify
 ## Environment Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| ---------- | --------- | ------------- |
 | `CUA_SERVER_PORT` | `3000` | Server port |
 | `CUA_SERVER_HOST` | `0.0.0.0` | Server host |
 
@@ -101,6 +102,7 @@ Content-Type: application/json
 ```
 
 Returns:
+
 ```json
 {
   "sessionId": "session_1234567890_abc123",
@@ -142,6 +144,7 @@ Content-Type: application/json
 ```
 
 Returns:
+
 ```json
 {
   "success": true,
@@ -158,7 +161,7 @@ Returns:
 ### Mouse Actions
 
 | Action | Parameters | Description |
-|--------|------------|-------------|
+| -------- | ------------ | ------------- |
 | `click` | `x`, `y`, `button?`, `clickCount?` | Click at coordinates |
 | `double_click` | `x`, `y` | Double-click at coordinates |
 | `tripleClick` | `x`, `y` | Triple-click at coordinates |
@@ -168,14 +171,14 @@ Returns:
 ### Keyboard Actions
 
 | Action | Parameters | Description |
-|--------|------------|-------------|
+| -------- | ------------ | ------------- |
 | `type` | `text` | Type text into focused element |
 | `keypress` | `keys` (string or array) | Press keyboard keys |
 
 ### Navigation Actions
 
 | Action | Parameters | Description |
-|--------|------------|-------------|
+| -------- | ------------ | ------------- |
 | `goto` | `url` | Navigate to URL |
 | `back` | - | Go back in history |
 | `forward` | - | Go forward in history |
@@ -184,7 +187,7 @@ Returns:
 ### Utility Actions
 
 | Action | Parameters | Description |
-|--------|------------|-------------|
+| -------- | ------------ | ------------- |
 | `wait` | `timeMs?` (default: 1000) | Wait for duration |
 | `screenshot` | - | No-op (always returned in response) |
 
@@ -258,7 +261,7 @@ Errors return appropriate HTTP status codes:
 
 ## File Structure
 
-```
+```text
 cua-server/
 ├── index.ts           # Entry point
 ├── server.ts          # Fastify routes
@@ -271,4 +274,3 @@ cua-server/
 ├── tsconfig.json      # TypeScript configuration
 └── README.md          # This file
 ```
-

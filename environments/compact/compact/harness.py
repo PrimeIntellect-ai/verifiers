@@ -11,9 +11,10 @@ the harness program.
 import json
 from pathlib import Path
 
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import RolloutContext
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
@@ -32,13 +33,17 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
+        _, prompt = self.resolve_text_prompt(data)
+        if prompt is None:
+            raise ValueError("Compacting harness requires a string task prompt")
         env = {
             "OPENAI_BASE_URL": endpoint,
             "OPENAI_API_KEY": secret,
@@ -51,4 +56,4 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
         program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
-        return await runtime.run_program([*program, trace.task.prompt], env)
+        return await runtime.run_program([*program, prompt], env)

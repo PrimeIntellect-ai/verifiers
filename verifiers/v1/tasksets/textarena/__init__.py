@@ -1,15 +1,17 @@
 from verifiers.v1.tasksets.textarena.taskset import (
     TextArenaConfig,
-    TextArenaState,
+    TextArenaData,
+    TextArenaEnv,
+    TextArenaEnvConfig,
     TextArenaTask,
     TextArenaTaskset,
-    TextArenaUser,
 )
 
 __all__ = [
     "TextArenaConfig",
-    "TextArenaState",
+    "TextArenaData",
+    "TextArenaEnv",
+    "TextArenaEnvConfig",
     "TextArenaTask",
     "TextArenaTaskset",
-    "TextArenaUser",
 ]

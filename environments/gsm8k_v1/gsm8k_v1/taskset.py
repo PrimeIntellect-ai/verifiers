@@ -20,9 +20,40 @@ SYSTEM = (
 VERIFY = (Path(__file__).parent / "verify.py").read_bytes()
 
 
-class GSM8KTask(vf.Task):
+class GSM8KData(vf.TaskData):
     answer: str
     """The ground-truth final answer (the value after GSM8K's `####`)."""
+
+
+class GSM8KTask(vf.Task[GSM8KData]):
+    async def setup(self, runtime: vf.Runtime) -> None:
+        # Pre-provision the verifier's uv env while the runtime still has internet —
+        # with a restricted Docker allowlist it is cut before the agent runs, and
+        # scoring happens after that.
+        await runtime.prepare_uv_script(VERIFY)
+
+    @vf.reward(weight=1.0)
+    async def correct(self, trace: vf.Trace, runtime: vf.Runtime) -> float:
+        prediction = trace.last_reply
+        result = await runtime.run_uv_script(
+            VERIFY, args=[self.data.answer, prediction or ""]
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+        lines = result.stdout.strip().splitlines()
+        return float(lines[-1]) if lines else 0.0
+
+    async def validate(self, runtime: vf.Runtime) -> bool:
+        """Valid iff the verifier accepts the ground-truth answer: run `verify.py` on the gold
+        answer as a well-formed `#### N` prediction and require a 1.0 score — catching rows the
+        verifier can't parse or grade (the model-free counterpart of the `correct` reward)."""
+        result = await runtime.run_uv_script(
+            VERIFY, args=[self.data.answer, f"#### {self.data.answer}"]
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+        lines = result.stdout.strip().splitlines()
+        return bool(lines) and float(lines[-1]) == 1.0
 
 
 class GSM8KConfig(vf.TasksetConfig):
@@ -30,40 +61,18 @@ class GSM8KConfig(vf.TasksetConfig):
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
-    def load_tasks(self) -> list[GSM8KTask]:
+    def load(self) -> list[GSM8KTask]:
         from datasets import load_dataset
 
         rows = load_dataset("openai/gsm8k", "main", split=self.config.split)
         return [
             GSM8KTask(
-                idx=i,
-                prompt=f"{SYSTEM}\n\n{row['question']}",
-                answer=row["answer"].split("####")[-1].strip(),
+                GSM8KData(
+                    idx=i,
+                    prompt=f"{SYSTEM}\n\n{row['question']}",
+                    answer=row["answer"].split("####")[-1].strip(),
+                ),
+                self.config.task,
             )
             for i, row in enumerate(rows)
         ]
-
-    @vf.reward(weight=1.0)
-    async def correct(
-        self, task: GSM8KTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        prediction = trace.last_reply
-        result = await runtime.run_uv_script(
-            VERIFY, args=[task.answer, prediction or ""]
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
-        lines = result.stdout.strip().splitlines()
-        return float(lines[-1]) if lines else 0.0
-
-    async def validate(self, task: GSM8KTask, runtime: vf.Runtime) -> bool:
-        """Valid iff the verifier accepts the ground-truth answer: run `verify.py` on the gold
-        answer as a well-formed `#### N` prediction and require a 1.0 score — catching rows the
-        verifier can't parse or grade (the model-free counterpart of the `correct` reward)."""
-        result = await runtime.run_uv_script(
-            VERIFY, args=[task.answer, f"#### {task.answer}"]
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
-        lines = result.stdout.strip().splitlines()
-        return bool(lines) and float(lines[-1]) == 1.0

@@ -1,243 +1,208 @@
 ---
 name: evaluate-environments
-description: Run and analyze evaluations for verifiers environments using prime eval. Use when asked to smoke-test environments, run benchmark sweeps, resume interrupted evaluations, compare models, inspect sample-level outputs, or produce evaluation summaries suitable for deciding next steps.
+description: Run and evaluate verifiers tasksets. Set up the necessary config files and observe the runs and their results.
 ---
 
-# Evaluate Environments
+# Evaluate Tasksets
 
 ## Goal
-Run reliable environment evaluations and produce actionable summaries, not raw logs.
 
-## Canonical Eval Path
-1. Use `prime eval run` as the default way to run evaluations.
-2. Do not add `--skip-upload` or other opt-out flags unless the user explicitly requests that deviation.
-3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval view`.
-4. For Prime Inference models with available pricing, eval output and saved metadata include estimated total-run USD cost automatically; no extra flags or API-key handling are needed.
+Set up an evaluation for a taskset in the correct way to reproduce results from others or evaluate a model and harness combination on a given taskset.
 
-## Core Loop
-1. Run a smoke evaluation first (do not require pre-install):
+## Canonical path
+
+Use the prime CLI
+
 ```bash
-prime eval run my-env -m openai/gpt-4.1-mini -n 5
-```
-2. Use owner/env slug directly when evaluating Hub environments:
-```bash
-prime eval run owner/my-env -m openai/gpt-4.1-mini -n 5
-```
-3. Scale only after smoke pass:
-```bash
-prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 --shuffle -s
-```
-4. Use `--shuffle` for representative dataset sampling once smoke tests pass. Set `--shuffle-seed` explicitly for reproducible reports; if omitted, the default seed is `0`.
-5. Treat ownerless env ids as local-first. If not found locally, rely on Prime resolution for your remote env where applicable.
-6. When the user asks for a "real" or "base" eval, do not substitute a tiny smoke run. Use the requested model/env and make the run size explicit before interpreting results.
-7. If the user says the defaults are fine or asks for no flags, use the shortest canonical command and rely on global config:
-```bash
-prime eval run my-env
-prime eval run my-env -m openai/gpt-4.1-mini
+prime eval run <MY_ENV>
 ```
 
-## Endpoint Shortcuts And Model Family Choice
-1. Encourage users to define endpoint aliases in `configs/endpoints.toml` so model, base URL, and key wiring stay reusable.
-2. Use aliases via `-m <endpoint_id>` instead of repeating `-b` and `-k`.
-3. Ask users explicitly whether they want an instruct or reasoning model before non-trivial evaluations.
-4. Instruct go-tos for quick behavior checks: `gpt-4.1` series and `qwen3` instruct series.
-5. Reasoning go-tos for deeper test coverage: `gpt-5` series, `qwen3` thinking series, and `glm` series.
-6. Example endpoint registry:
+## Core workflow
+
+1. Resolve and validate config without model calls:
+
+```bash
+prime eval run <MY_ENV> --dry-run
+```
+
+2. Run model-free gold validation when the taskset implements `validate`:
+
+```bash
+prime eval validate <MY_ENV> --runtime.type subprocess
+```
+
+3. Do a small run to see whether it works correctly:
+
+```bash
+prime eval run <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
+```
+
+4. Inspect successful, zero-reward, and errored traces.
+5. Scale only after task loading, harness capability, runtime lifecycle, and scoring are correct.
+
+When the user requests a full run, do not restrict the number of tasks. Ask for the appropriate harness to use (if not specified)
+
+## IDs and plugin resolution
+
+- `my-taskset` resolves an importable local package.
+- `owner/name` installs a Hub package on demand.
+- `owner/name@version` pins a Hub version.
+
+The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
+
+```bash
+prime eval run owner/name --env.agent.harness.id codex --env.agent.harness.runtime.type prime
+```
+
+The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`
+keeps the taskset's own story (its exported `Env` subclass, else the single-agent
+env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
+
+```bash
+prime eval run my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
+prime eval run my-task-v1 --env.id agentic-judge \
+  --env.judge.harness.runtime.type docker                   # a judge agent verifies each attempt in a sandbox
+```
+
+When specifying Hub tasksets, always include the owner to resolve them correctly.
+
+## Disabling tools
+
+Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
+
 ```toml
-[[endpoint]]
-endpoint_id = "gpt-4.1-mini"
-model = "gpt-4.1-mini"
-url = "https://api.openai.com/v1"
-key = "OPENAI_API_KEY"
-
-[[endpoint]]
-endpoint_id = "qwen3-32b-i"
-model = "qwen/qwen3-32b-instruct"
-url = "https://api.pinference.ai/api/v1"
-key = "PRIME_API_KEY"
+[env.agent.harness]
+disabled_tools = ["shell_tool"]
 ```
-7. Endpoint entries support optional `headers` (or `extra_headers`) for custom HTTP headers sent with inference requests:
+
+The names of these tools are set by the respective harness. Research the relevant first party documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
+
+## Typed taskset overrides
+
+Taskset settings:
+
+```bash
+prime eval run my-task-v1 --env.taskset.split test --env.taskset.difficulty hard
+```
+
+Harness and runtime settings:
+
+```bash
+prime eval run my-task-v1 \
+  --env.agent.harness.id rlm \
+  --env.agent.harness.runtime.type docker \
+  --env.agent.harness.runtime.cpu 4 \
+  --env.agent.harness.runtime.memory 8
+```
+
+Sampling:
+
+```bash
+prime eval run my-task-v1 \
+  --sampling.temperature 0.7 \
+  --sampling.top-p 0.95 \
+  --sampling.max-tokens 2048 \
+  --sampling.reasoning-effort medium
+```
+
+Always research the correct sampling parameters first. This is one of the most important settings, so make sure to find the correct values. For open models, you can find them on Hugging Face in the README and/or in the generation config.
+
+Your parameter selection or settings should leave room for full runs, and you should not restrict things like tokens or number of turns unless specified by the user.
+
+For all parameters, look up the [reference](references/REFERENCE.md). Leaving things out when the user does not want them is a sane default. However, you should always ask for the harness to use, the runtime to use, as well as the sampling parameters.
+
+## Reproducible TOML
+
+You can also use a TOML:
+
 ```toml
-[[endpoint]]
-endpoint_id = "my-proxy"
-model = "gpt-4.1-mini"
-url = "https://api.example/v1"
-key = "OPENAI_API_KEY"
-headers = { "X-Custom-Header" = "value" }
-```
-8. Endpoint entries support `api_client_type` when the provider is not OpenAI Chat Completions compatible. Use `openai_responses` for Responses-compatible endpoints and `anthropic_messages` for Anthropic Messages endpoints:
-```toml
-[[endpoint]]
-endpoint_id = "gpt-responses"
-model = "gpt-5.4-mini"
-url = "https://api.openai.com/v1"
-key = "OPENAI_API_KEY"
-api_client_type = "openai_responses"
-```
+model = "openai/gpt-5-mini"
 
-## Publish Gate Before Large Runs
-1. After smoke tests pass and results look stable, proactively suggest pushing the environment to Hub before large eval sweeps or RL work.
-2. Ask the user explicitly: should visibility be `PUBLIC` or `PRIVATE`?
-3. Push with chosen visibility:
-```bash
-prime env push my-env --visibility PUBLIC
-```
-or
-```bash
-prime env push my-env --visibility PRIVATE
-```
-4. For hosted environment workflows, prefer running large jobs against the Hub slug:
-```bash
-prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
-```
+[env.taskset]
+id = "my-task-v1"
+split = "test"
 
-## Prefer Config-Driven Evals Beyond Smoke Tests
-1. For anything beyond quick checks, nudge the user to create an eval TOML config.
-2. Use config files to run multiple evals in one command and keep runs reproducible:
-```bash
-prime eval run configs/eval/my-benchmark.toml
-```
-3. Make config files the default for benchmark sweeps, multi-model comparisons, and recurring reports.
-4. Use `name` on individual `[[eval]]` entries when the same environment appears multiple times. `id` selects the environment to load; `name` labels the run in displays, summaries, metadata, and saved result paths.
-5. Put `shuffle = true` and, for reproducibility, `shuffle_seed = <int>` in each `[[eval]]` entry that should sample from a shuffled dataset before selecting `num_examples`.
+[env.agent.harness]
+id = "bash"
+runtime = { type = "subprocess" }
 
-## Common Evaluation Patterns
-1. For single-environment v1 smoke runs, override typed taskset and harness config with dotted flags:
-```bash
-prime eval run my-env --taskset.difficulty hard --harness.max-turns 20
-```
-2. For reproducible or multi-eval v1 config, put the same settings in TOML child sections:
-```toml
-[[eval]]
-id = "my-env"
-
-[eval.taskset]
-difficulty = "hard"
-
-[eval.harness]
-max_turns = 20
-```
-3. Override legacy/v0 constructor kwargs only when the environment still exposes them; for v1, use taskset/harness config instead:
-```bash
-prime eval run my-env -x '{"max_turns":20}'
-```
-4. Bound per-rollout wall-clock time (use the dedicated `--timeout` flag; wins over `-x` and TOML `[eval.extra_env_kwargs]`):
-```bash
-prime eval run my-env --timeout 600
-```
-5. Save extra state columns:
-```bash
-prime eval run my-env -s -C "judge_response,parsed_answer"
-```
-6. Resume interrupted runs:
-```bash
-prime eval run my-env -n 1000 -s --resume
-```
-Resume matching includes `--shuffle` and `--shuffle-seed`. Use the same shuffle settings as the interrupted run; only increase `-n/--num-examples` when extending a saved run.
-7. Shuffle examples before selecting the evaluation subset:
-```bash
-prime eval run my-env -n 200 -r 3 --shuffle --shuffle-seed 123 -s
-```
-8. Configure shuffle in TOML:
-```toml
-[[eval]]
-id = "my-env"
-num_examples = 200
-rollouts_per_example = 3
-shuffle = true
-shuffle_seed = 123
-```
-9. Save results to a custom output directory:
-```bash
-prime eval run my-env -s -o /path/to/output
-```
-10. Run multi-environment TOML suites:
-```bash
-prime eval run configs/eval/my-benchmark.toml
-```
-11. Run the same environment more than once with different args by giving each entry a `name`:
-```toml
-[[eval]]
-id = "reverse-text"
-name = "reverse-text-short"
-
-[eval.args]
-max_length = 32
-
-[[eval]]
-id = "reverse-text"
-name = "reverse-text-long"
-
-[eval.args]
-max_length = 256
-```
-12. Put generation parameters in TOML sampling sections:
-```toml
 [sampling]
-max_tokens = 1024
 temperature = 0.7
-reasoning_effort = "medium"
-enable_thinking = true
-
-[[eval]]
-env_id = "my-env"
 ```
-Use `[eval.sampling]` for per-eval overrides. `[sampling]` is shorthand for `sampling_args`; `reasoning_effort` and `enable_thinking` stay top-level and are mirrored into `extra_body.chat_template_kwargs`.
-13. Pass extra HTTP headers via CLI (repeatable):
+
 ```bash
-prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
+prime eval run @ configs/my-eval.toml
 ```
-14. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
-```toml
-[[eval]]
-env_id = "my-env"
-headers = { "X-Custom-Header" = "value" }
-header = ["X-Another: val"]
-```
-15. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
-```toml
-[[ablation]]
-env_id = "my-env"
 
-[ablation.sweep]
-temperature = [0.0, 0.5, 1.0]
+For all parameters, look up the [reference](references/REFERENCE.md). Leaving things out when the user does not want them is a sane default. However, you should always ask for the harness to use, the runtime to use, as well as the sampling parameters.
 
-[ablation.sweep.taskset]
-difficulty = ["easy", "hard"]
-```
-This generates the cartesian product (6 configs in this example). Sweep v1 environment-owned settings under `taskset` or `harness`, not as root args. Use `--abbreviated-summary` (`-A`) for compact ablation results.
+## Retries
 
-## Inspect Saved Results
-1. Browse locally saved runs:
+Whole-rollout retry is opt-in. That means if something fails in the rollout, the whole rollout is retried. This is very useful for large-scale runs. You can also restrict certain errors from the retries:
+
 ```bash
-prime eval view
+prime eval run my-task-v1 \
+  --env.agent.retries.max-retries 2 \
+  --env.agent.retries.include SandboxError ProviderError \
+  --env.agent.retries.exclude TaskError
 ```
-2. Check `metadata.json` for aggregate token usage and, when available, total-run `cost.input_usd`, `cost.output_usd`, and `cost.total_usd`.
-3. Inspect platform-visible runs when needed:
+
+## Output and resume
+
+Default output:
+
+```text
+outputs/<env>--<model>--<harness>/<uuid>/
+├── config.toml
+├── traces.jsonl
+└── eval.log
+```
+
+Set an exact path with `-o`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
+
+Resume in place:
+
 ```bash
-prime eval list
-prime eval get <eval-id>
-prime eval samples <eval-id>
+prime eval run --resume /path/to/run
 ```
 
-## Metrics Interpretation
-1. Treat binary and continuous rewards differently.
-2. Use pass@k-style interpretation only when rewards are effectively binary.
-3. For continuous rewards, focus on distribution shifts and per-task means.
-4. Always inspect samples before concluding regressions.
+## Trace inspection
 
-## Reliability Rules
-1. Keep environment/model/config fixed while comparing variants.
-2. Record exact command lines and key flags in the report.
-3. Call out missing credentials, endpoint mismatches, and dependency errors directly.
-4. Do not overinterpret tiny sample runs.
-5. Distinguish a completed rollout with poor reward from an environment/runtime failure.
-6. For timeout debugging, check the environment's own timeout behavior and the outer sandbox/eval timeout before changing reward logic.
-7. For repo example changes, use `tests/test_envs.py -k <env>` when package installability is part of the risk, not just `prime eval run` from the current checkout.
+For each representative sample inspect:
 
-## Output Format
-Return:
-1. Run configuration table.
-2. Aggregate metrics and key deltas.
-3. Sample-level failure themes.
-4. Clear recommendation: proceed, iterate environment, or retune model/sampling.
+- `task` and prompt fields;
+- `branches`, assistant messages, tool messages, and stop condition;
+- named `rewards`, aggregate `reward`, and `metrics`;
+- persisted `info` artifacts;
+- `error`/`errors` and boundary type;
+- per-call `calls` records (model, sampling, finish reason, usage, timing, error) linked to the graph;
+- usage and stage timing;
+- token/mask/logprob fields when using the training client.
+
+Classify outcomes:
+
+1. Valid completion and correct reward.
+2. Valid completion with low reward (model/task outcome).
+3. Truncated completion (budget outcome).
+4. Captured rollout error (provider, harness, tool, user, runtime, task, or interception).
+
+Do not average these categories together without reporting failure rate.
+
+## Metrics interpretation
+
+- Binary rewards support solve rate and pass@k-style analysis.
+- Continuous rewards need distributions, quantiles, and per-task/group comparisons.
+- Group rewards must be interpreted with their comparison rule and group size.
+- Always inspect samples before attributing a delta to model quality.
+- Keep taskset, harness, runtime, sampling, and selected task indices fixed across variants.
+- Do not overinterpret a tiny smoke run.
+
+## Legacy bridge
+
+For a real v0 package only:
+
+```bash
+prime eval run --id legacy-env --args.split test -n 5
+```
+
+Label the result as bridged v0. Do not present `args` as the v1 config contract.

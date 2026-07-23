@@ -20,6 +20,7 @@ from verifiers.v1.types import (
     Message,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     SystemMessage,
     Tool,
@@ -29,6 +30,16 @@ from verifiers.v1.types import (
     UserMessage,
     content_to_parts,
 )
+
+
+class ModdedChatCompletion(ChatCompletion):
+    """The OpenAI SDK closes `service_tier` to a fixed `Literal`, but providers return tiers
+    outside it (e.g. Prime's `provisioned`), which makes `model_validate` reject an otherwise
+    valid completion. Widen the field to a plain string — we don't consume it — so parsing stays
+    lenient about the label instead of dropping it."""
+
+    service_tier: str | None = None
+
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
@@ -58,7 +69,6 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
 
 
 def _content_text(content) -> str:
-    """Flatten content to text for roles that never carry images."""
     if isinstance(content, list):
         return "".join(p.get("text", "") for p in content if isinstance(p, dict))
     return content or ""
@@ -97,6 +107,9 @@ def parse_message(raw: dict) -> Message:
 
 
 def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
+    # `or None` so a tools array with no function entries (e.g. only `custom`/built-in
+    # tools) parses to None, not [] — the same contract as the anthropic/responses
+    # dialects, and what keeps an empty parse from clearing `Trace.tools`.
     if not raw:
         return None
     return [
@@ -108,13 +121,13 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
         )
         for t in raw
         if t.get("type", "function") == "function"
-    ]
+    ] or None
 
 
 # --- vf -> chat wire ----------------------------------------------------------
-# `message_to_wire` (chat-only): used by `extend` (user-sim turn injection), the default harness
-# (a Messages prompt), and the train client (its generate request). The proxy never
-# serializes — it relays the provider's raw bytes.
+# `message_to_wire` (chat-only): used by the bash harness (a Messages prompt) and the train
+# client (its generate request). The proxy preserves its parsed native JSON independently and
+# does not use this serializer.
 
 
 def _content_to_wire(content):
@@ -126,7 +139,6 @@ def _content_to_wire(content):
 
 
 def message_to_wire(message: Message) -> dict:
-    """A vf message -> the OpenAI chat wire dict."""
     if message.role == "assistant":
         wire: dict = {"role": "assistant", "content": message.content}
         if message.provider_state:
@@ -260,32 +272,50 @@ class ChatStreamParser(StreamParser):
         if self.reasoning_details:
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
-        return response_from_wire(
-            ChatCompletion.model_validate(
+        completion = {
+            "id": head.get("id", "vf-intercept"),
+            "object": "chat.completion",
+            "created": head.get("created", int(time.time())),
+            "model": head.get("model", ""),
+            "choices": [
                 {
-                    "id": head.get("id", "vf-intercept"),
-                    "object": "chat.completion",
-                    "created": head.get("created", int(time.time())),
-                    "model": head.get("model", ""),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": self.message,
-                            "finish_reason": self.finish_reason or "stop",
-                        }
-                    ],
-                    "usage": self.usage,
+                    "index": 0,
+                    "message": self.message,
+                    "finish_reason": self.finish_reason or "stop",
                 }
-            )
-        )
+            ],
+            "usage": self.usage,
+        }
+        return response_from_wire(ModdedChatCompletion.model_validate(completion))
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
-    """The OpenAI chat-completions wire format."""
-
+    sampling_fields = frozenset(
+        {
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "reasoning_effort",
+            "seed",
+            "stop",
+            "n",
+            "logprobs",
+            "top_logprobs",
+            "logit_bias",
+            "frequency_penalty",
+            "presence_penalty",
+            "repetition_penalty",
+            "response_format",
+            "tool_choice",
+            "parallel_tool_calls",
+        }
+    )
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
-    response_type = ChatCompletion
+    response_type = ModdedChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         messages: Messages = []
@@ -302,6 +332,14 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                     tool_names[call.id] = call.name
         return messages, parse_tools(body.get("tools"))
 
+    def parse_sampling(self, body: dict) -> Sampling:
+        settings = {k: v for k, v in body.items() if k in self.sampling_fields}
+        # Canonicalize the max-tokens alias; when both ride the wire (an eval override
+        # on top of a harness's `max_completion_tokens`), the override wins.
+        if (mct := settings.pop("max_completion_tokens", None)) is not None:
+            settings.setdefault("max_tokens", mct)
+        return Sampling.model_validate(settings)
+
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
 
@@ -309,18 +347,6 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         return ChatStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Forward the program's body verbatim, overlaying only what the eval owns: the model and
+        # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set (later keys win, so the eval's override the program's).
         return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
-
-    def extend(
-        self, body: dict, completion: dict | None, user_messages: Messages
-    ) -> dict:
-        # Append the model's turn (the verbatim assistant message, so its reasoning survives for
-        # the next turn's passback) and the simulator's injected user turn(s) to the wire history.
-        # A None completion seeds the opening turn (no model message yet) — only the user turn(s).
-        messages = [*body.get("messages", [])]
-        if completion is not None:
-            messages.append(completion["choices"][0]["message"])
-        messages.extend(message_to_wire(m) for m in user_messages)
-        return {**body, "messages": messages}

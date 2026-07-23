@@ -1,14 +1,8 @@
-"""The validate `--rich` dashboard: a taskset overview, a progress bar, and one row per task.
-
-The model-free counterpart of the eval dashboard — no rollout phases, tokens, turns, or
-reward, just each task's validation outcome, shown as a bracketed marker that reads at a
-glance — `[pending]` / `[running]` / `[valid]` / `[invalid]` / `[error]` / `[timeout]`,
-padded so the brackets line up in a column. The runner advances a `TaskProgress` per task;
-this reads them each tick.
-"""
+"""Live task-validation dashboard."""
 
 import contextlib
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 from rich.console import Group
@@ -36,13 +30,12 @@ _MARK_WIDTH = max(len(state) for state in _STYLE)
 # literal: Rich parses `[name]` in a cell as markup and would otherwise drop it.
 _MARK = {state: escape(f"[{state:<{_MARK_WIDTH}}]") for state in _STYLE}
 _DONE = ("valid", "invalid", "error", "timeout")
+# State -> (visible label, color); insertion order is the summary order.
+_OUTCOMES = {state: (state, _STYLE[state]) for state in _DONE}
 
 
 @dataclass
 class TaskProgress:
-    """Live state of one task's validation, read by the dashboard each tick and advanced by the
-    runner (pending → running → its outcome)."""
-
     idx: int
     name: str | None
     state: str = "pending"
@@ -58,18 +51,22 @@ def Overview(config: ValidateConfig) -> Table:
     return grid
 
 
-def Progress(states: list[TaskProgress], start: float) -> Table:
-    done = [s for s in states if s.state in _DONE]
-    valid = sum(1 for s in done if s.state == "valid")
-    stats = (
-        f" {len(done)}/{len(states)} · {format_time(time.time() - start)} · "
-        f"valid {valid} · invalid {len(done) - valid}"
-    )
+def Progress(
+    states: list[TaskProgress],
+    start: float,
+    outcomes: dict[str, tuple[str, str]] = _OUTCOMES,
+) -> Table:
+    done = [s for s in states if s.state in outcomes]
+    counts = Counter(s.state for s in done)
+    stats = Text(f" {len(done)}/{len(states)} · {format_time(time.time() - start)}")
+    for state, (label, style) in outcomes.items():
+        stats.append(" · ")
+        stats.append(f"{label} {counts[state]}", style=style)
     row = Table.grid()
     row.add_column()
     row.add_column()
     row.add_row(
-        ProgressBar(total=len(states) or 1, completed=len(done), width=32), Text(stats)
+        ProgressBar(total=len(states) or 1, completed=len(done), width=32), stats
     )
     return row
 

@@ -1,22 +1,54 @@
-"""Resume an interrupted eval: re-run only the rollouts a previous run didn't finish.
+"""Resume an interrupted eval: reload its finished rollouts and run only the rest.
 
-A run writes `config.toml` + `results.jsonl` into its output dir. `--resume <dir>` reloads
-that config verbatim (so it takes no other flags) and writes back into the same dir, running
-only the rollouts still owed: the *missing* ones (never written — the run was interrupted) and
-the *errored* ones (written with an error). Good rollouts are kept; errored ones are dropped
-and redone. A group-scored taskset is resumed a whole task at a time (its rollouts are scored
-together), so any task that isn't fully complete is redone from scratch.
+`--resume <dir>` reloads the run's saved config verbatim (so it takes no other
+flags) and writes back into the same dir. `load` keeps the good saved rollouts and
+re-runs what's owed: missing rollouts (never written) and errored ones (dropped and
+redone).
+
+A saved rollout is matched to a selected task by content: `task_key` hashes the
+task's wire data. Tasks with identical data are interchangeable, a task whose data
+changed since the interrupted run re-runs, and nothing depends on `data.idx`. The
+legacy (v0) bridge still matches by row index (`key_of`).
 """
 
+import hashlib
 import json
 import tomllib
-from collections import defaultdict
-from collections.abc import Iterator
+from collections import Counter, defaultdict
+from collections.abc import Callable, Hashable, Mapping
 from pathlib import Path
+from typing import TypeVar
 
 from pydantic_core import from_json
 
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.episode import Episode, WireEpisode
+from verifiers.v1.trace import WireTrace
+
+K = TypeVar("K", bound=Hashable)
+
+
+def task_key(data: Mapping) -> str:
+    """Content identity of one task's wire data — an `exclude_none` dump, the shape
+    saved rows already have on disk. `sort_keys` so field order can't split identity."""
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+def distribute(
+    selected_keys: list[K], owed: dict[K, int], num_rollouts: int
+) -> list[int]:
+    """Spread each key's owed rollouts over its selection instances, in order —
+    content-identical tasks are interchangeable, so any instance can absorb the
+    debt (capped at `num_rollouts` each). Returns one count per selection."""
+    remaining = dict(owed)
+    counts: list[int] = []
+    for key in selected_keys:
+        take = min(num_rollouts, remaining.get(key, 0))
+        if take:
+            remaining[key] -= take
+        counts.append(take)
+    return counts
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -36,8 +68,8 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
 
 def load_resume_config(resume_dir: Path) -> EvalConfig:
     """Rebuild the run's `EvalConfig` from its saved `config.toml`, pointed back at its own
-    output dir so the resumed rollouts append to the same `results.jsonl`."""
-    config_path = resume_dir / "config.toml"
+    output dir so the resumed rollouts append to the same `traces.jsonl`."""
+    config_path = resume_dir / CONFIG_FILE
     if not config_path.exists():
         raise SystemExit(
             f"--resume: no config.toml in {resume_dir} - not an eval output dir"
@@ -48,77 +80,87 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     return config
 
 
-def _read_results(results_path: Path) -> Iterator[tuple[int, int, bool]]:
-    """Stream `(file reference, task idx, errored)` without retaining decoded traces."""
-    if not results_path.exists():
-        return
-    with results_path.open("rb") as results:
-        while True:
-            offset = results.tell()
-            line = results.readline()
-            if not line:
-                break
-            if line.strip():
+def load(
+    resume_dir: Path,
+    selected_keys: list[K],
+    num_rollouts: int,
+    complete: Callable[[Episode], bool] | None = None,
+    *,
+    whole_task: bool = False,
+    key_of: Callable[[Mapping], K] | None = None,
+) -> tuple[list[Episode], dict[K, int]]:
+    """Load the good saved rollouts and diff them against the run's target: returns
+    (kept episodes, rollouts owed per task key). `selected_keys` is one key per
+    selected task (duplicates allowed — a key selected k times is owed up to
+    `k * num_rollouts`; spread back over the tasks with `distribute`). `key_of` maps
+    a saved row's task data to its key (default `task_key`; the legacy bridge uses
+    row indices). `complete` is the keep-verdict (default `episode.ok`); `whole_task`
+    redoes a partially-kept task whole (legacy group scoring). Rewrites
+    `traces.jsonl` to the kept rows via a temp file + atomic rename; a torn or
+    malformed row is owed again, never a crash."""
+    path = resume_dir / TRACES_FILE
+    targets = {
+        key: count * num_rollouts for key, count in Counter(selected_keys).items()
+    }
+    keyed = key_of if key_of is not None else task_key
+
+    def parse(row: dict) -> Episode:
+        if sniff_episode(row):
+            return WireEpisode.model_validate(row)
+        return Episode.of(WireTrace.model_validate(row))
+
+    verdict = complete if complete is not None else (lambda episode: episode.ok)
+    good: dict[K, list[tuple[bytes, Episode]]] = defaultdict(list)
+    if path.exists():
+        with path.open("rb") as results:
+            for line in results:
+                if not line.strip():
+                    continue
                 try:
-                    row = from_json(line)
-                except ValueError:
-                    row = json.loads(line)
-                yield offset, row["task"]["idx"], bool(row.get("errors"))
-
-
-def plan(
-    resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group: bool
-) -> tuple[list[int], dict[int, int]]:
-    """Diff the saved results against the run's target (`num_rollouts` per selected task).
-    Returns (byte offsets of rows to keep, rollouts owed per task idx). An errored trace is
-    dropped and re-run; a group-scored task is kept only if fully complete, else its whole group
-    is redone."""
-    # Retain only the offsets resume can reuse; trace payloads stay on disk.
-    selected = set(selected_idxs)
-    by_idx: dict[int, list[int]] = defaultdict(list)
-    for offset, idx, errored in _read_results(resume_dir / "results.jsonl"):
-        if idx in selected and not errored and len(by_idx[idx]) < num_rollouts:
-            by_idx[idx].append(offset)
-    keep: list[int] = []
-    owed: dict[int, int] = {}
-    for idx in selected_idxs:
-        good = by_idx.get(idx, [])
-        if group:
-            if len(good) >= num_rollouts:
-                keep.extend(good)
-            else:
-                owed[idx] = num_rollouts  # re-run the whole group; keep none of it
-        else:
-            keep.extend(good)
-            missing = num_rollouts - len(good)
-            if missing:
-                owed[idx] = missing
-    return keep, owed
-
-
-def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
-    """Replace `results.jsonl` with just the kept (good) traces; resumed rollouts append. Via a
-    temp file + atomic rename, so an interrupted resume can't corrupt the prior good results."""
-    path = resume_dir / "results.jsonl"
+                    try:
+                        row = from_json(line)
+                    except ValueError:
+                        row = json.loads(line)
+                    # The task rides each trace; a traceless record (a failure
+                    # before any trace minted) has no task and is owed again.
+                    if sniff_episode(row):
+                        key = keyed(row["traces"][0]["task"]["data"])
+                    else:
+                        key = keyed(row["task"]["data"])
+                except (ValueError, KeyError, IndexError, TypeError):
+                    # A torn final line (the run died mid-write) or a foreign shape
+                    # is not a keepable rollout — it's owed again, never a crash.
+                    continue
+                if key not in targets or len(good[key]) >= targets[key]:
+                    continue
+                try:
+                    episode = parse(row)
+                    if not verdict(episode):
+                        continue
+                except Exception:  # malformed row: redo it
+                    continue
+                good[key].append(
+                    (line if line.endswith(b"\n") else line + b"\n", episode)
+                )
+    keep: list[bytes] = []
+    episodes: list[Episode] = []
+    owed: dict[K, int] = {}
+    for key, target in targets.items():
+        rows = good.get(key, [])
+        if whole_task and len(rows) < target:
+            rows = []  # a partial unit redoes whole — its kept rows are dropped
+        keep.extend(line for line, _ in rows)
+        episodes.extend(episode for _, episode in rows)
+        if missing := target - len(rows):
+            owed[key] = missing
     tmp = path.with_suffix(".jsonl.tmp")
-    if not keep:
-        tmp.write_bytes(b"")
-        tmp.replace(path)
-        return
-    # Re-read retained rows by offset while building the atomic replacement.
-    with path.open("rb") as results, tmp.open("wb") as output:
-        for offset in keep:
-            results.seek(offset)
-            raw = results.readline()
-            output.write(raw)
-            if not raw.endswith(b"\n"):
-                output.write(b"\n")
+    tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
+    return episodes, owed
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
-    """The message shown (and then exit 0 - the run is already complete) when every selected
-    rollout already completed without error."""
+    """Shown (before exit 0) when every selected rollout already completed."""
     return (
         f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} rollouts "
         f"already completed without error"

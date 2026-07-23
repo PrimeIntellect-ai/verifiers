@@ -2,28 +2,35 @@
 
 Each turn shows colored squares that map to letters (Red=A, Green=B, ...); the model accumulates
 the codeword across turns and, on the final turn, outputs the whole thing. Turn 0's squares are
-seeded in the task's `prompt` (a `Messages` prompt carrying images); the later turns are
-injected by a colocated `vf.User` (`ColorCodewordUser` below) the interception server drives
-after each assistant turn. Reward is an exact match of the final codeword; a partial-match
-metric tracks per-position accuracy. Images carry through the v1 message graph as `mm_kwargs`
-for training.
+seeded in the task's `prompt` (a `Messages` prompt carrying images); the later turns come
+from a scripted user — the env's `run()` drives an interaction, sending each reveal as
+the next user turn and closing the exchange once every turn is answered. Reward is an exact match of
+the final codeword; a partial-match metric tracks per-position accuracy. Images carry through
+the v1 message graph as `mm_kwargs` for training.
 """
 
-import base64
+import itertools
 import random
 import re
-from io import BytesIO
+from collections.abc import Iterator
 
 from PIL import Image
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.image import image_data_url
 
-from color_codeword_v1.servers.user import (
-    COLOR_RGB,
-    ColorCodewordState,
-    ColorCodewordUser,
-)
+COLOR_RGB = {
+    "red": (255, 0, 0),
+    "green": (0, 255, 0),
+    "blue": (0, 0, 255),
+    "yellow": (255, 255, 0),
+    "purple": (128, 0, 128),
+    "cyan": (0, 255, 255),
+    "orange": (255, 165, 0),
+    "white": (255, 255, 255),
+    "black": (0, 0, 0),
+}
 
 COLOR_MAP = {
     "red": "A",
@@ -51,14 +58,6 @@ MAX_TURNS = 3
 SEED = 42
 
 
-def color_data_url(color: str, size: int = 100) -> str:
-    """A solid-color PNG square as a base64 `data:` URL."""
-    img = Image.new("RGB", (size, size), COLOR_RGB[color])
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
-
-
 def turn_text(turn: int, count: int, max_turns: int, total: int) -> str:
     """The user text shown alongside a turn's squares (mirrors the v0 wording)."""
     if turn == 0:
@@ -83,35 +82,83 @@ def extract_codeword(text: str) -> str:
 
 
 class ColorCodewordConfig(vf.TasksetConfig):
-    num_examples: int = 1000
-    """Number of synthetic episodes to generate."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
-    user: vf.UserConfig = vf.UserConfig()
 
 
-class ColorCodewordTask(vf.Task):
+class ColorCodewordTaskData(vf.TaskData):
     answer: str
     """The full expected codeword (one letter per square shown, in order)."""
     info: dict
-    """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
+    """The episode the env's scripted user replays: `colors_per_turn` and `max_turns`."""
 
 
-class ColorCodewordTaskset(
-    vf.Taskset[ColorCodewordTask, ColorCodewordConfig, ColorCodewordState]
-):
-    @vf.stop
-    async def user_finished(self, trace: vf.Trace) -> bool:
-        return trace.state.user_finished
+class ColorCodewordTask(vf.Task[ColorCodewordTaskData, vf.State, vf.TaskConfig]):
+    @vf.reward(weight=1.0)
+    async def exact_match(self, trace: vf.Trace) -> float:
+        responses = trace.assistant_messages
+        last = (responses[-1].content if responses else "") or ""
+        return 1.0 if extract_codeword(last) == self.data.answer else 0.0
 
-    def load_tasks(self) -> list[ColorCodewordTask]:
+    @vf.metric
+    async def partial_match(self, trace: vf.Trace) -> float:
+        if not self.data.answer:
+            return 0.0
+        responses = trace.assistant_messages
+        last = (responses[-1].content if responses else "") or ""
+        extracted = extract_codeword(last)
+        return sum(1 for a, b in zip(self.data.answer, extracted) if a == b) / len(
+            self.data.answer
+        )
+
+
+class ColorCodewordEnv(vf.SingleAgentEnv):
+    """Reveals each turn's colored squares after the prior answer: one user turn per
+    assistant turn, until every `max_turns` turn is answered (then the exchange ends)."""
+
+    async def run(self, task, agents):
+        colors_per_turn = task.data.info["colors_per_turn"]
+        max_turns = task.data.info["max_turns"]
+        # Turn 0's squares ride the task prompt, so the model answers first (a bare
+        # turn()); each later turn reveals its squares as the interaction's next user
+        # message until every turn is answered.
+        async with agents.agent.interaction(task) as interaction:
+            segment = await interaction.turn()
+            for turns in range(1, max_turns):
+                if segment.terminated:
+                    break
+                colors = colors_per_turn[turns]
+                total = sum(len(colors_per_turn[t]) for t in range(turns + 1))
+                parts = [
+                    vf.ImageUrlContentPart(
+                        image_url=vf.ImageUrlSource(
+                            url=image_data_url(
+                                Image.new("RGB", (100, 100), COLOR_RGB[color])
+                            )
+                        )
+                    )
+                    for color in colors
+                ] + [
+                    vf.TextContentPart(
+                        text=turn_text(turns, len(colors), max_turns, total)
+                    )
+                ]
+                segment = await interaction.turn([vf.UserMessage(content=parts)])
+
+
+class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
+    INFINITE = True
+
+    def load(self) -> Iterator[ColorCodewordTask]:
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
-        color_urls = {color: color_data_url(color) for color in colors}
+        color_urls = {
+            color: image_data_url(Image.new("RGB", (100, 100), COLOR_RGB[color]))
+            for color in colors
+        }
         length = c.images_per_turn * MAX_TURNS
-        tasks: list[ColorCodewordTask] = []
-        for idx in range(c.num_examples):
+        for idx in itertools.count():
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
             colors_per_turn = [
@@ -124,33 +171,16 @@ class ColorCodewordTaskset(
                 vf.ImageUrlContentPart(image_url=vf.ImageUrlSource(url=color_urls[col]))
                 for col in turn0
             ] + [vf.TextContentPart(text=text)]
-            tasks.append(
-                ColorCodewordTask(
+            yield ColorCodewordTask(
+                ColorCodewordTaskData(
                     idx=idx,
                     prompt=[vf.UserMessage(content=parts)],
                     system_prompt=SYSTEM_PROMPT,
                     answer=answer,
-                    info={"colors_per_turn": colors_per_turn, "max_turns": MAX_TURNS},
-                )
+                    info={
+                        "colors_per_turn": colors_per_turn,
+                        "max_turns": MAX_TURNS,
+                    },
+                ),
+                c.task,
             )
-        return tasks
-
-    def user(self, task: ColorCodewordTask) -> vf.User:
-        return ColorCodewordUser(self.config.user)
-
-    @vf.reward(weight=1.0)
-    async def exact_match(self, task: ColorCodewordTask, trace: vf.Trace) -> float:
-        responses = trace.assistant_messages
-        last = (responses[-1].content if responses else "") or ""
-        return 1.0 if extract_codeword(last) == task.answer else 0.0
-
-    @vf.metric
-    async def partial_match(self, task: ColorCodewordTask, trace: vf.Trace) -> float:
-        if not task.answer:
-            return 0.0
-        responses = trace.assistant_messages
-        last = (responses[-1].content if responses else "") or ""
-        extracted = extract_codeword(last)
-        return sum(1 for a, b in zip(task.answer, extracted) if a == b) / len(
-            task.answer
-        )

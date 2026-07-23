@@ -1,13 +1,9 @@
-"""The client abstraction: turn a prompt into a `Response`.
-
-Collapsed from v1's 4-typevar generic ABC with five conversion hooks to a single
-abstract method. Each concrete client owns its own wire translation internally.
-"""
+"""Client interfaces for model inference and relay."""
 
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
@@ -80,20 +76,25 @@ class Client(ABC):
         generates and cannot stream."""
         raise NotImplementedError(f"{type(self).__name__} does not support streaming")
 
-    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
+    async def relay_aux(
+        self,
+        dialect: Dialect,
+        route: str,
+        body: dict,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict:
         """Relay a non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`)
-        verbatim to the provider and return its JSON. Only the relay (eval) client supports it."""
+        as native JSON and return the provider JSON. Only the relay (eval) client supports it."""
         raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
 
     async def close(self) -> None:
-        """Release any underlying resources. Default no-op."""
+        pass
 
 
 @dataclass(frozen=True)
-class RolloutContext:
-    """The collaborators a single rollout needs (client + model + sampling), bundled
-    so harnesses hold no rollout state. Built by the Environment."""
+class ModelContext:
+    """Client, model, and sampling settings for one rollout."""
 
     model: str
     client: Client
-    sampling: Sampling
+    sampling: Sampling = field(default_factory=Sampling)

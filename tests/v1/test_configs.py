@@ -23,4 +23,5 @@ CONFIGS = sorted(
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
-    assert config.taskset.id or config.id  # resolved to a v1 taskset or a v0 env id
+    # resolved to a v1 taskset or a v0 env id
+    assert config.env.taskset.id or config.id

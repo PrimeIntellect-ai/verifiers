@@ -47,7 +47,7 @@ _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=T
 def _arm_teardown(death_pipe=None) -> None:
     """Arm a spawned process (serve_env broker/single server, or pool worker) for clean
     teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
-    asyncio.run()'s serving() cleanup and orphaning host_endpoint tunnels (and sandboxes).
+    asyncio.run()'s serving() cleanup and orphaning host tunnels (and sandboxes).
 
     - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
     - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
@@ -67,27 +67,6 @@ def _arm_teardown(death_pipe=None) -> None:
         os.kill(os.getpid(), signal.SIGTERM)
 
     threading.Thread(target=_watch, daemon=True).start()
-
-
-def _worker_entry(
-    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
-) -> None:
-    """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
-    A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
-    config type is dynamic and unpicklable, so we rebuild it here via EnvConfig's
-    id-resolving validator. `log_setup` (if given) configures this fresh process's
-    logging so per-rollout logs surface — a spawned worker inherits no handlers."""
-    from verifiers.v1.legacy import LegacyEnvServer
-
-    _arm_teardown(death_pipe)
-    if log_setup is not None:
-        log_setup()
-    if "config_data" in server_kwargs:
-        server_kwargs = {
-            "config": EnvConfig.model_validate(server_kwargs["config_data"])
-        }
-    cls = LegacyEnvServer if legacy else EnvServer
-    cls.run_server(address=address, **server_kwargs)
 
 
 class EnvServerPool:
@@ -138,13 +117,14 @@ class EnvServerPool:
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
-            target=_worker_entry,
+            target=serve_env,
             kwargs=dict(
-                server_kwargs=self.server_kwargs,
+                max_workers=1,
                 address=address,
                 death_pipe=child_conn,
                 legacy=self.legacy,
                 log_setup=self.log_setup,
+                **self.server_kwargs,
             ),
             daemon=False,
         )
@@ -281,12 +261,11 @@ class EnvServerPool:
         logger.info("EnvServerPool down")
 
 
-def env_config_data(config) -> dict:
-    """The picklable `EnvConfig` fields of a (possibly dynamically-narrowed, unpicklable)
-    config object — ship this across a process boundary, then rebuild via
-    `EnvConfig.model_validate` (its validator re-resolves the concrete taskset/harness)."""
-    data = config.model_dump(mode="json")
-    return {k: v for k, v in data.items() if k in EnvConfig.model_fields}
+def env_config_data(env: EnvConfig) -> dict:
+    """A picklable dict of a (possibly dynamically-narrowed, unpicklable) env config —
+    ship this across a process boundary, then rebuild via `resolve_env_config`
+    (re-narrowing to the env's concrete config class)."""
+    return env.model_dump(mode="json")
 
 
 def serve_env(
@@ -354,8 +333,10 @@ def serve_env(
             if (
                 "config_data" in server_kwargs
             ):  # rebuild the env config for an in-process server
+                from verifiers.v1.loaders import resolve_env_config
+
                 server_kwargs = {
-                    "config": EnvConfig.model_validate(server_kwargs["config_data"])
+                    "config": resolve_env_config(server_kwargs["config_data"])
                 }
             cls = LegacyEnvServer if legacy else EnvServer
             cls.run_server(
@@ -363,3 +344,6 @@ def serve_env(
             )
     except KeyboardInterrupt:
         pass
+    except Exception:
+        logger.exception("Env server failed")
+        raise

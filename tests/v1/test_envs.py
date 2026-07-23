@@ -1,10 +1,8 @@
-"""Smoke-eval every v1 example taskset in `environments/` through the `eval` CLI.
+"""Smoke-eval every V1 example taskset in `environments/` through the `eval` CLI.
 
-The v0 counterpart (`tests/test_envs.py`) covers v0 envs (`vf.load_environment` + `vf-eval`);
-here we run each `_v1` taskset with its required harness for one short, capped rollout and
-require it to succeed — so a broken example taskset fails CI. `compact` is excluded (it's a
-harness, not a taskset); SWE/container tasksets need a docker/prime runtime and are covered by
-the dedicated v1 e2e tests instead.
+Each `_v1` taskset runs with its required harness for one short, capped rollout, so a broken
+example taskset fails CI. `compact` is excluded (it's a harness, not a taskset);
+SWE/container tasksets need a docker/prime runtime and are covered by dedicated V1 e2e tests.
 """
 
 import os
@@ -15,7 +13,7 @@ import pytest
 
 pytestmark = pytest.mark.e2e
 
-EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 2)
+EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
@@ -23,6 +21,15 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 # clone a corpus CI can't read. Empty: the SWE/container and corpus tasksets live in
 # research-environments now.
 SKIP_EVAL: set[str] = set()
+
+# Per-run caps are seat fields; recipe envs name their own seats.
+SEATS: dict[str, tuple[str, ...]] = {
+    "code_golf_v1": ("golfer",),
+    "kuhn_poker_v1": ("player0", "player1"),
+    "openenv_wordle_v1": ("player",),
+    "proposer_solver_v1": ("proposer", "solver"),
+    "wordle_v1": ("player",),
+}
 
 
 def v1_tasksets() -> list[str]:
@@ -53,12 +60,15 @@ def test_eval(taskset: str):
     else:
         pytest.skip("no model API key configured")
 
+    caps = [
+        flag
+        for seat in SEATS.get(taskset, ("agent",))
+        for flag in (f"--env.{seat}.max-turns", "4")
+    ]
     cmd = [
-        "uv", "run", "--no-sync", "eval",
-        "--taskset.id", taskset,
+        "uv", "run", "--no-sync", "eval", taskset,
         *model,
-        # -r 2: a taskset with @group_reward(s) needs >=2 rollouts to compare.
-        "-n", "1", "-r", "2", "--max-turns", "4",
+        "-n", "1", "-r", "1", *caps,
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:
