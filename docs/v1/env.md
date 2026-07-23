@@ -62,4 +62,4 @@ via `__all__`. Otherwise, verifiers ships with a handful of built-ins.
 | --- | --- | --- |
 | `single-agent` | `agent` | (default) one `agent` plays the taskset |
 | `best-of-n` | `agent` | `n` independent attempts per episode; its metrics mark the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
-| `agentic-judge` | `solver`, `judge` | the solver plays the task; a code-executing judge agent verifies the finished attempt with real execution. The grading policy (`--env.prompt` / `--env.prompt_file`) and what lands in the judge's box (`[env.uploads]`: transcript, raw trace record, and `trace.info` values such as a captured patch) are configurable, as is how the verdict composes with the taskset's own rewards (`--env.judge_weight`, `--env.task_reward_weight`). |
+| `agentic-judge` | `solver`, `judge` | the solver plays the task; a code-executing judge agent verifies the finished attempt with real execution. |

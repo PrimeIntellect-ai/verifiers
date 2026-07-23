@@ -3,15 +3,17 @@
 Agent-as-judge as a reusable env (`--env.id agentic-judge` over any taskset). The
 judge's task mirrors the solver task's world — same image/workdir/resources, in a
 FRESH box replayed to the solver's STARTING state (the source task's setup runs,
-then the solver's runtime is gone by judge time) — with the graded transcript
+then the solver's runtime is gone by judge time) — with the graded trace
 uploaded, so the judge reconstructs and tests the work empirically, always in its
 own sandbox, never on the host.
 
-The grading policy is configurable (`--env.prompt` / `--env.prompt_file`), but only
-the policy: the env always appends the verdict contract and the workspace note, so
-a custom prompt cannot break verdict scraping. What lands in the judge's box is
-configurable too (`[env.uploads]`) — the rendered transcript, the raw trace record,
-and any `trace.info` values (e.g. a captured patch) as real files.
+The grading policy is configurable (`--env.task.prompt`: inline text or a policy
+file), but only the policy: the env always appends the verdict contract and the
+workspace note, so a custom prompt cannot break verdict scraping. What lands in
+the judge's box is configurable too (`[env.task.uploads]`) — the raw trace
+record, the rendered transcript, and any `trace.info` values (e.g. a captured
+patch) as real files. How the verdict composes with the taskset's own rewards is
+`[env.score]` (judge-only by default).
 
 The verdict channel is a file, not the chat: the judge writes
 `{"score": 0-10, "reasoning": ...}` to `/tmp/verdict.json` in its box (a file
@@ -27,8 +29,6 @@ import math
 import re
 from pathlib import Path
 
-from pydantic import model_validator
-
 import verifiers.v1 as vf
 from verifiers.v1.decorators import invoke
 from verifiers.v1.harness import Harness
@@ -39,9 +39,8 @@ VERDICT_FILE = "/tmp/verdict.json"
 
 GRADE_PROMPT = """\
 You are grading another agent's attempt at a task. Verify the work EMPIRICALLY:
-reconstruct what the agent did from its transcript and test it with real
-execution in your sandbox — never take the transcript's word for an outcome you
-can check."""
+reconstruct what the agent did from its trace and test it with real execution
+in your sandbox — never take the trace's word for an outcome you can check."""
 
 TASK_SECTION = """\
 ## The task the agent was given
@@ -106,12 +105,9 @@ class JudgeTask(vf.Task):
         cls, task: vf.Task, solution: vf.Trace, config: "AgenticJudgeEnvConfig"
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace."""
-        uploads = config.uploads
+        uploads = config.task.uploads
         files: dict[str, bytes] = {}
         described: dict[str, str] = {}
-        if uploads.transcript is not None:
-            files[uploads.transcript] = solution.transcript.encode()
-            described[uploads.transcript] = "the agent's transcript (rendered)"
         if uploads.trace is not None:
             record = solution.to_record()
             # The judge's verdict must be independent: never leak the graded
@@ -123,6 +119,9 @@ class JudgeTask(vf.Task):
             record.pop("task", None)
             files[uploads.trace] = json.dumps(record).encode()
             described[uploads.trace] = "the raw trace record (JSON)"
+        if uploads.transcript is not None:
+            files[uploads.transcript] = solution.transcript.encode()
+            described[uploads.transcript] = "the agent's transcript (rendered)"
         for key, path in uploads.info.items():
             value = solution.info.get(key)
             if value is None:
@@ -134,7 +133,7 @@ class JudgeTask(vf.Task):
             files[path] = content.encode()
             described[path] = f"`{key}` from the graded agent's trace"
 
-        template = config.grade_prompt()
+        template = config.task.grade_prompt()
         body = _render(template, prompt=task.data.prompt_text)
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
@@ -182,14 +181,44 @@ class JudgeTask(vf.Task):
 class UploadsConfig(vf.BaseConfig):
     """What from the solver's finished attempt lands in the judge's box, as files."""
 
+    trace: str | None = "/tmp/trace.json"
+    """Where to upload the raw trace record; null to omit it."""
     transcript: str | None = "/tmp/transcript.md"
     """Where to upload the rendered transcript; null to omit it."""
-    trace: str | None = "/tmp/transcript.json"
-    """Where to upload the raw trace record; null to omit it."""
     info: dict[str, str] = {}
     """`trace.info` keys to upload, mapped to sandbox paths — e.g.
     `patch = "/tmp/solution.patch"` hands the judge a captured git diff as a
     real file. An absent key is skipped with a warning, not an error."""
+
+
+class JudgeTaskConfig(vf.BaseConfig):
+    """The judge's minted task: the grading policy and what lands in its box."""
+
+    prompt: Path | str | None = None
+    """Grading-policy override: inline text, or a policy file (a value ending in
+    `.md`/`.txt` is read from disk). Replaces only the policy body — the verdict
+    contract and workspace note are always appended, so a custom policy cannot
+    break verdict scraping. May reference `{prompt}` (the solver task's prompt);
+    if it doesn't, the task statement is appended after the policy."""
+    uploads: UploadsConfig = UploadsConfig()
+
+    def grade_prompt(self) -> str:
+        if self.prompt is None:
+            return GRADE_PROMPT + "\n\n" + TASK_SECTION
+        path = Path(self.prompt)
+        if isinstance(self.prompt, Path) or path.suffix in (".md", ".txt"):
+            return path.read_text(encoding="utf-8")
+        return str(self.prompt)
+
+
+class ScoreConfig(vf.BaseConfig):
+    """How the judge's verdict composes with the taskset's own rewards on the
+    solver's trace. Judge-only by default."""
+
+    task_weight: float = 0.0
+    """Scale applied to the taskset's own rewards; 1 keeps them next to the verdict."""
+    judge_weight: float = 1.0
+    """Weight of the judge's verdict in the solver's reward."""
 
 
 class AgenticJudgeEnvConfig(vf.EnvConfig):
@@ -197,39 +226,15 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge agent. Its runtime must be a container:
     `--env.judge.harness.runtime.type docker|prime`."""
-    prompt: str | None = None
-    """Grading-policy override. Replaces only the policy body — the verdict
-    contract and workspace note are always appended, so a custom policy cannot
-    break verdict scraping. May reference `{prompt}` (the solver task's prompt);
-    if it doesn't, the task statement is appended after the policy."""
-    prompt_file: Path | None = None
-    """Grading-policy file override, mutually exclusive with `prompt`."""
-    uploads: UploadsConfig = UploadsConfig()
-    judge_weight: float = 1.0
-    """Weight of the judge's verdict in the solver's reward."""
-    task_reward_weight: float = 1.0
-    """Scale applied to the taskset's own rewards on the solver's trace; 0 makes
-    the judge's verdict the only reward."""
-
-    @model_validator(mode="after")
-    def check_prompt_source(self) -> "AgenticJudgeEnvConfig":
-        if self.prompt is not None and self.prompt_file is not None:
-            raise ValueError("set `prompt` or `prompt_file`, not both")
-        return self
-
-    def grade_prompt(self) -> str:
-        if self.prompt is not None:
-            return self.prompt
-        if self.prompt_file is not None:
-            return self.prompt_file.read_text(encoding="utf-8")
-        return GRADE_PROMPT + "\n\n" + TASK_SECTION
+    task: JudgeTaskConfig = JudgeTaskConfig()
+    score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
         super().__init__(config)
         self._check_judge_harness(self._harnesses["judge"])
-        config.grade_prompt()  # a missing prompt_file fails here, not mid-episode
+        config.task.grade_prompt()  # a missing policy file fails here, not mid-episode
 
     def _check_judge_harness(self, harness: Harness) -> None:
         """The judge executes real code, never on the host — refuse an impossible
@@ -279,9 +284,9 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 f"verdict score {score!r} is not on the 0-10 scale; refusing to "
                 "clamp or coerce it"
             )
-        if self.config.task_reward_weight != 1.0:
+        if self.config.score.task_weight != 1.0:
             for name in solution.rewards:
-                solution.rewards[name] *= self.config.task_reward_weight
+                solution.rewards[name] *= self.config.score.task_weight
         solution.record_reward(
-            "judge", float(score) / 10.0, weight=self.config.judge_weight
+            "judge", float(score) / 10.0, weight=self.config.score.judge_weight
         )

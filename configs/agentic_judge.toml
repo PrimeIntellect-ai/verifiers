@@ -11,14 +11,14 @@
 # validates it strictly and records it on the solver's trace as the `judge` reward.
 #
 # The grading policy and what lands in the judge's box are configurable:
-#   --env.prompt / --env.prompt_file  grading-policy override (may reference
-#                                     {prompt}); the verdict contract and
-#                                     workspace note are always appended
-#   [env.uploads]                     transcript/trace paths (null to omit) and
-#                                     info = { <trace.info key> = "<sandbox path>" }
-#   --env.judge_weight                weight of the verdict in the solver's reward
-#   --env.task_reward_weight          scale on the taskset's own rewards (0 =
-#                                     judge-only reward)
+#   --env.task.prompt        grading-policy override: inline text or a policy
+#                            file (a value ending in .md/.txt is read from
+#                            disk); may reference {prompt}. The verdict
+#                            contract and workspace note are always appended.
+#   [env.task.uploads]       trace/transcript paths (null to omit) and
+#                            info = { <trace.info key> = "<sandbox path>" }
+#   [env.score]              task_weight (default 0) scales the taskset's own
+#                            rewards; judge_weight (default 1) the verdict's
 num_tasks = 2
 
 [env]
