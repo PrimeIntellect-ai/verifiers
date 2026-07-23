@@ -266,7 +266,7 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
-TRACE_VERSION = 3
+TRACE_VERSION = 4
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
@@ -343,6 +343,21 @@ class TraceTask(StrictBaseModel, Generic[DataT]):
     """The (immutable) row being solved."""
 
 
+class Reward(StrictBaseModel):
+    """One named reward as recorded on the trace: the raw score next to its weight,
+    so records keep both readable and the weighted sum stays a derived view."""
+
+    score: float
+    """The raw value the reward function returned, unweighted."""
+    weight: float = 1.0
+    """The multiplier `score` carries in the trace-level `reward` sum."""
+
+    @property
+    def value(self) -> float:
+        """This reward's weighted contribution to the trace-level `reward`."""
+        return self.score * self.weight
+
+
 class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique id for this rollout, auto-generated per trace."""
@@ -369,8 +384,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every provider exchange behind the sampled turns, in order: raw wire request/response
     plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
 
-    rewards: dict[str, float] = Field(default_factory=dict)
-    """Weighted contributions from task rewards, judges, and the env's `score()`."""
+    rewards: dict[str, Reward] = Field(default_factory=dict)
+    """Named rewards from tasks, judges, and the env's `score()` — each keeps its
+    raw `score` and `weight`; the trace-level `reward` is their weighted sum."""
     metrics: dict[str, float] = Field(default_factory=dict)
     """Unweighted metrics from tasks, harnesses, and judges."""
     info: dict[str, Any] = Field(default_factory=dict)
@@ -400,7 +416,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def reward(self) -> float:
-        return sum(self.rewards.values())
+        return sum(r.value for r in self.rewards.values())
 
     @property
     def error(self) -> Error | None:
@@ -559,12 +575,12 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.extra_usage.append(response.usage)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
-        contribution = float(value) * float(weight)
+        reward = Reward(score=float(value), weight=float(weight))
         if name in self.rewards:
             logger.warning(
-                "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
+                "reward %r overridden: %s -> %s", name, self.rewards[name], reward
             )
-        self.rewards[name] = contribution
+        self.rewards[name] = reward
 
     def stamp(self, run: RunInfo | None = None, **info: Any) -> None:
         """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the

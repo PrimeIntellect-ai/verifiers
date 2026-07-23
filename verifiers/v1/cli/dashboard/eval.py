@@ -341,11 +341,17 @@ def _score_segments(traces: list[Trace], source: str) -> str | None:
         return None
     segments = []
     for name in names:
-        mean = format_mean(
-            traces, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
-        )
+        mean = format_mean(traces, lambda t, n=name, s=source: _score(t, s, n))
         segments.append(f"{name} {mean}")
     return "  ·  ".join(segments)
+
+
+def _score(trace: Trace, source: str, name: str) -> float:
+    """Rewards carry raw score + weight; the breakdown shows the raw score."""
+    if source == "rewards":
+        reward = trace.rewards.get(name)
+        return reward.score if reward is not None else 0.0
+    return trace.metrics.get(name, 0.0)
 
 
 def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
