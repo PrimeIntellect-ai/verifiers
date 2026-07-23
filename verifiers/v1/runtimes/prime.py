@@ -14,6 +14,7 @@ import shlex
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
 from pydantic import model_validator
 from pydantic_config import BaseConfig
@@ -42,7 +43,16 @@ class PrimeConfig(BaseConfig):
     ~10 minutes) and caches the result, so later sandboxes on the same ref start in
     seconds."""
     workdir: str = "/app"
-    network_access: bool = True
+    allow: list[str] | None = None
+    """Host-level egress allowlist (exact hostnames, `*.` wildcards, IPv4 addresses/CIDRs
+    — no schemes or ports), enforced after trusted setup, right before the agent starts.
+    Framework routes (interception, MCP) are added automatically, so an empty list allows
+    only those; None leaves egress unrestricted. VM-only, mutually exclusive with
+    `block`."""
+    block: list[str] | None = None
+    """Host-level egress denylist (same entry syntax as `allow`), enforced after trusted
+    setup. None (or an empty list) denies nothing. VM-only, mutually exclusive with
+    `allow`."""
     vm: bool = False
     """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
     guaranteed: bool = False
@@ -52,20 +62,35 @@ class PrimeConfig(BaseConfig):
     labels: list[str] = []
     """Labels attached to the sandbox."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
-    cpu: float = 1.0
-    """CPU cores."""
-    memory: float = 2.0
-    """Memory in GB."""
+    cpu: float | None = None
+    """CPU cores. None = SDK default."""
+    memory: float | None = None
+    """Memory in GB. None = SDK default."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
-    disk: float = 5.0
-    """Disk in GB."""
+    disk: float | None = None
+    """Disk in GB. None = SDK default."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
+
+    @model_validator(mode="after")
+    def _validate_egress(self) -> "PrimeConfig":
+        # Mirror the SDK's egress contract here so a bad policy fails at config parse
+        # instead of on every rollout.
+        if self.allow is None and self.block is None:
+            return self
+        if not self.vm:
+            raise ValueError(
+                "allow/block egress lists are only supported for VM sandboxes (vm=true)"
+            )
+        from prime_sandboxes.models import validate_egress_lists
+
+        validate_egress_lists(self.allow, self.block)
+        return self
 
     @model_validator(mode="after")
     def _validate_idle_timeout(self) -> "PrimeConfig":
@@ -111,6 +136,9 @@ class PrimeRuntime(Runtime):
             if self.config.idle_timeout is not None and not self.config.vm
             else None
         )
+        # None values are dropped below, deferring to the SDK's defaults. The egress
+        # policy (`allow`/`block`) is NOT set at create — setup runs with open
+        # networking and `prepare_execution` applies the policy before the agent starts.
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
@@ -133,7 +161,6 @@ class PrimeRuntime(Runtime):
                         name=self.name,
                         labels=self.config.labels,
                         docker_image=self.config.image,
-                        network_access=self.config.network_access,
                         vm=self.config.vm,
                         guaranteed=self.config.guaranteed,
                         **{k: v for k, v in options.items() if v is not None},
@@ -164,6 +191,50 @@ class PrimeRuntime(Runtime):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+
+    async def prepare_execution(self, routes: list[str]) -> None:
+        # Apply the configured egress policy now that trusted setup is done, keeping the
+        # framework `routes` (interception, MCP) reachable: their hosts are prepended to
+        # an allowlist. `set_network` is a full replacement; new connections follow it
+        # only once `applied` (egress stays open until then, and established flows are
+        # never revoked), so the agent must not start before the data plane acks.
+        if self.config.allow is None and self.config.block is None:
+            return
+        try:
+            if self.config.allow is not None:
+                hosts = [h for h in (urlsplit(r).hostname for r in routes) if h]
+                entries = list(dict.fromkeys([*hosts, *self.config.allow]))
+                status = await self._client.set_network(
+                    self.info.id, **({"allow": entries} if entries else {"deny": ["*"]})
+                )
+            elif not self.config.block:  # an empty denylist denies nothing
+                return
+            else:
+                status = await self._client.set_network(
+                    self.info.id, deny=list(self.config.block)
+                )
+            try:
+                async with asyncio.timeout(60):
+                    delay = 0.1
+                    while not status.applied:
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 3)
+                        status = await self._client.get_network(self.info.id)
+            except TimeoutError as e:
+                raise SandboxError(
+                    f"egress policy accepted but not applied within 60s on sandbox "
+                    f"{self.info.id} (the agent must not start unrestricted)"
+                ) from e
+        except SandboxError:
+            raise
+        except Exception as e:
+            raise SandboxError(f"prime egress policy failed: {e}") from e
+        logger.info(
+            "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
+            self.info.id,
+            self.config.allow,
+            self.config.block,
+        )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:

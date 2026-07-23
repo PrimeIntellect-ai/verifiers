@@ -72,9 +72,31 @@ Setting `skills` on a harness without native skill support fails up front.
 
 ## Runtime network policies
 
-Prime and Modal expose provider-native `network_access` switches. Docker instead uses
-URL-level `allow` and `block` lists, with a trusted setup phase before enforcement; the
-same policy vocabulary can extend to other runtimes when their sandbox APIs support it.
+Modal exposes a provider-native `network_access` switch. Prime takes host-level `allow`
+and `block` lists enforced by the platform; Docker uses URL-level `allow` and `block`
+lists enforced by a host-side proxy. Both keep a trusted setup phase online before
+enforcement.
+
+### Prime host policies
+
+Prime VM sandboxes (`vm = true`) take at most one of `allow` (egress allowlist) or
+`block` (egress denylist):
+
+```toml
+[env.agent.harness.runtime]
+type = "prime"
+vm = true
+allow = ["*.wikipedia.org", "1.1.1.1"]
+```
+
+Entries are exact hostnames, leftmost-label `*.` wildcards, IPv4 addresses, or IPv4
+CIDRs — no schemes, ports, or paths. Setup runs with open networking; the policy is
+applied right before the agent starts, with the framework routes the agent needs
+(interception tunnel, MCP URLs) added to an allowlist automatically — so `allow = []`
+permits only those, and leaving both unset keeps egress unrestricted. Enforcement is
+host-level at the platform (no CONNECT/SNI inspection), it only governs new connections
+(established flows are not revoked), and a `block` entry naming a framework route's host
+does cut the agent off from it.
 
 ### Docker URL policies
 
