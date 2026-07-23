@@ -1,9 +1,10 @@
 # Any taskset graded by the bundled agentic judge — the multi-agent TOML shape:
 # `env.id` pairs a reusable env with the taskset, and each agent is its own
 # [env.<agent>] block (a partial override deep-merges into the agent's declared
-# default; there is no run-level harness). The judge pins what makes it a
-# different actor: a container runtime — it verifies the solver's attempt with
-# real execution, never on the host — and, here, its own model off the run's.
+# default; there is no run-level harness). By default the judge plays in the
+# solver's box (--env.shared-runtime, on), so the container runtime is pinned on
+# the SOLVER — the judge verifies with real execution, never on the host — and
+# the judge pins only its own model off the run's.
 #
 #   uv run eval @ configs/agentic_judge.toml --model <model>
 #
@@ -19,6 +20,9 @@
 #                            info = { <trace.info key> = "<sandbox path>" }
 #   [env.score]              task_weight (default 0) scales the taskset's own
 #                            rewards; judge_weight (default 1) the verdict's
+#   --env.shared-runtime     true (default): judge inspects the solver's live
+#                            box; false: fresh judge box replayed to the
+#                            solver's starting state
 num_tasks = 2
 
 [env]
@@ -28,10 +32,10 @@ id = "agentic-judge"
 id = "gsm8k-v1"
 
 [env.solver.harness]
-id = "null"
+id = "bash"
+
+[env.solver.harness.runtime]
+type = "docker"
 
 [env.judge]
 model = "z-ai/glm-5.2"
-
-[env.judge.harness.runtime]
-type = "docker"

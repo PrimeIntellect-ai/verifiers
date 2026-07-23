@@ -1,11 +1,18 @@
 """agentic-judge: a solver plays the task, a code-executing judge verifies it in a sandbox.
 
-Agent-as-judge as a reusable env (`--env.id agentic-judge` over any taskset). The
-judge's task mirrors the solver task's world — same image/workdir/resources, in a
-FRESH box replayed to the solver's STARTING state (the source task's setup runs,
-then the solver's runtime is gone by judge time) — with the graded trace
-uploaded, so the judge reconstructs and tests the work empirically, always in its
-own sandbox, never on the host.
+Agent-as-judge as a reusable env (`--env.id agentic-judge` over any taskset). By
+default the two agents share one box (`--env.shared-runtime`, on): the box is
+provisioned once from the solver's runtime policy, the solver plays the task in
+it, and the judge then lands in the SAME box — the work exactly as the agent
+left it (including any scoring side effects) — with the graded trace uploaded.
+Note a borrowed box is never retried into, so per-agent rollout retries are off
+in this mode (episode retries still apply).
+
+With `--env.shared-runtime false`, the judge instead gets a FRESH box mirroring
+the solver task's world (same image/workdir/resources), replayed to the solver's
+STARTING state (the source task's setup runs; the solver's box is gone by judge
+time), so the judge reconstructs the work from the uploads — reproduce-first
+verification in a pristine world, with no solver-controlled box state.
 
 The grading policy is configurable (`--env.task.prompt`: inline text or a policy
 file), but only the policy: the env always appends the verdict contract and the
@@ -31,7 +38,6 @@ from pathlib import Path
 
 import verifiers.v1 as vf
 from verifiers.v1.decorators import invoke
-from verifiers.v1.harness import Harness
 
 logger = logging.getLogger(__name__)
 
@@ -66,16 +72,22 @@ def _render(template: str, **fields: str) -> str:
     return pattern.sub(lambda m: fields[m.group(1)], template)
 
 
-def _sandbox_note(solver: vf.TaskData, files: dict[str, str]) -> str:
+def _sandbox_note(solver: vf.TaskData, files: dict[str, str], shared: bool) -> str:
     """What an agentic judge must know about its box before it starts verifying."""
-    world = (
-        f"a fresh instance of the same environment the graded agent worked in "
-        f"(image {solver.image}), in the same STARTING state the agent saw — the "
-        "agent's edits are NOT applied; reconstruct them from the uploaded files "
-        "to verify"
-        if solver.image is not None
-        else "your own — the graded agent worked elsewhere"
-    )
+    if shared:
+        world = (
+            "the SAME box the graded agent worked in, in the state the agent "
+            "left it — its edits (and any scoring side effects) are applied"
+        )
+    else:
+        world = (
+            f"a fresh instance of the same environment the graded agent worked in "
+            f"(image {solver.image}), in the same STARTING state the agent saw — the "
+            "agent's edits are NOT applied; reconstruct them from the uploaded files "
+            "to verify"
+            if solver.image is not None
+            else "your own — the graded agent worked elsewhere"
+        )
     listing = "".join(f"\n- `{path}` — {what}" for path, what in files.items())
     uploaded = (
         f" These files about the graded attempt are uploaded:{listing}"
@@ -94,11 +106,16 @@ class JudgeTask(vf.Task):
     NEEDS_CONTAINER = True
 
     def __init__(
-        self, data: vf.TaskData, files: dict[str, bytes], source: vf.Task
+        self,
+        data: vf.TaskData,
+        files: dict[str, bytes],
+        source: vf.Task,
+        shared: bool,
     ) -> None:
         super().__init__(data)
         self._files = files
         self._source = source
+        self._shared = shared
 
     @classmethod
     def from_trace(
@@ -138,8 +155,9 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=task.data.prompt_text)
+        shared = config.shared_runtime
         prompt = "\n\n".join(
-            [body, VERDICT_SECTION, _sandbox_note(task.data, described)]
+            [body, VERDICT_SECTION, _sandbox_note(task.data, described, shared)]
         )
         return cls(
             vf.TaskData(
@@ -151,15 +169,19 @@ class JudgeTask(vf.Task):
             ),
             files=files,
             source=task,
+            shared=shared,
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        # The judge verifies against the state the solver STARTED from, which is
-        # the image only after the source task's own setup (e.g. a repo reset to
-        # the task's base commit) — replay it before seeding the judge's files.
-        await invoke(self._source.setup, {"trace": trace, "runtime": runtime})
-        # A pre-seeded verdict (baked into the image) must never read as the
-        # judge's own; remove it before the judge starts.
+        # On a fresh box the judge verifies against the state the solver STARTED
+        # from, which is the image only after the source task's own setup (e.g. a
+        # repo reset to the task's base commit) — replay it before seeding the
+        # judge's files. On a shared box the solver's work IS the state; replaying
+        # setup would destroy it.
+        if not self._shared:
+            await invoke(self._source.setup, {"trace": trace, "runtime": runtime})
+        # A pre-seeded verdict (baked into the image, or left by the solver) must
+        # never read as the judge's own; remove it before the judge starts.
         await runtime.run(["rm", "-f", VERDICT_FILE], env={})
         for path, content in self._files.items():
             await runtime.write(path, content)
@@ -224,34 +246,50 @@ class ScoreConfig(vf.BaseConfig):
 class AgenticJudgeEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. Its runtime must be a container:
+    """The judge agent. With `shared_runtime` it plays in the solver's box (its
+    own runtime policy is unused); otherwise its runtime must be a container:
     `--env.judge.harness.runtime.type docker|prime`."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
+    shared_runtime: bool = True
+    """Judge in the solver's live box (provisioned once from the solver's runtime
+    policy, which must be a container): the judge inspects the work exactly as
+    the agent left it. Set false to give the judge a fresh box mirroring the
+    solver task's world, replayed to the solver's starting state — reconstruct-
+    and-verify in a pristine world."""
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
         super().__init__(config)
-        self._check_judge_harness(self._harnesses["judge"])
+        self._check_harnesses()
         config.task.grade_prompt()  # a missing policy file fails here, not mid-episode
 
-    def _check_judge_harness(self, harness: Harness) -> None:
+    def _check_harnesses(self) -> None:
         """The judge executes real code, never on the host — refuse an impossible
-        judge at construction, not after burning a full solver run."""
-        if not harness.EXECUTES_CODE:
+        pairing at construction, not after burning a full solver run. The container
+        requirement lands on whoever provisions the judge's box: the solver when
+        the box is shared, the judge itself otherwise."""
+        judge = self._harnesses["judge"]
+        if not judge.EXECUTES_CODE:
             raise ValueError(
                 "agentic-judge plays a code-executing judge in its own sandbox, but "
-                f"harness {harness.config.id!r} is a tool-less chat loop — a verdict "
+                f"harness {judge.config.id!r} is a tool-less chat loop — a verdict "
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
-        if isinstance(harness.config.runtime, vf.SubprocessConfig):
+        box_owner = "solver" if self.config.shared_runtime else "judge"
+        if isinstance(self._harnesses[box_owner].config.runtime, vf.SubprocessConfig):
             raise ValueError(
-                "agentic-judge plays its judge in a container (JudgeTask mirrors "
-                "the solver task's image), but the judge resolves to the "
-                "subprocess runtime; use --env.judge.harness.runtime.type docker "
-                "or prime."
+                f"agentic-judge plays its judge in a container, but the {box_owner} "
+                "(which provisions the judge's box) resolves to the subprocess "
+                f"runtime; use --env.{box_owner}.harness.runtime.type docker or "
+                "prime"
+                + (
+                    ", or --env.shared-runtime false for a fresh judge box"
+                    if self.config.shared_runtime
+                    else ""
+                )
             )
 
     async def setup(self, agents: vf.Agents) -> None:
@@ -259,8 +297,14 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        solution = await agents.solver.run(task)
-        await agents.judge.run(JudgeTask.from_trace(task, solution, self.config))
+        if self.config.shared_runtime:
+            async with agents.solver.provision(task) as box:
+                solution = await agents.solver.run(task, runtime=box)
+                judge_task = JudgeTask.from_trace(task, solution, self.config)
+                await agents.judge.run(judge_task, runtime=box)
+        else:
+            solution = await agents.solver.run(task)
+            await agents.judge.run(JudgeTask.from_trace(task, solution, self.config))
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """Record the scraped verdict on the SOLVER's trace. Strict on scale: an
