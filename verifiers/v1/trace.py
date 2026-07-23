@@ -270,8 +270,8 @@ _NODE_DUMP_EXCLUDE: dict = {
     }
 }
 """Trainer-only sidecars kept on the msgpack wire but excluded from JSON records: raw
-numpy tensors (``routed_experts``) can't round-trip JSON, and ``multi_modal_data`` is a
-renderer descriptor for training rather than a rollout record."""
+numpy tensors (``routed_experts``) can't round-trip JSON, while ``multi_modal_data``
+(renderer descriptors) and ``kept_tokens`` exist for training, not the rollout record."""
 
 
 TRACE_VERSION = 2
