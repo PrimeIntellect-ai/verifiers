@@ -18,7 +18,7 @@ from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
-from verifiers.v1.trace import Reward, Trace
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import (
     format_count,
@@ -341,16 +341,17 @@ def _score_segments(traces: list[Trace], source: str) -> str | None:
         return None
     segments = []
     for name in names:
-        mean = format_mean(
-            traces, lambda t, n=name, s=source: _score(getattr(t, s).get(n, 0.0))
-        )
+        mean = format_mean(traces, lambda t, n=name, s=source: _score(t, s, n))
         segments.append(f"{name} {mean}")
     return "  ·  ".join(segments)
 
 
-def _score(value: float | Reward) -> float:
+def _score(trace: Trace, source: str, name: str) -> float:
     """Rewards carry raw score + weight; the breakdown shows the raw score."""
-    return value.score if isinstance(value, Reward) else value
+    if source == "rewards":
+        reward = trace.rewards.get(name)
+        return reward.score if reward is not None else 0.0
+    return trace.metrics.get(name, 0.0)
 
 
 def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
