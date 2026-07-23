@@ -35,7 +35,7 @@ dependencies = [
     "openai>=2.9.0",
     "openai-agents>=0.8.2",
     "prime-tunnel>=0.1.8",
-    "prime-sandboxes>=0.2.31",
+    "prime-sandboxes>=0.2.33",
     "pydantic>=2.12.3",
     "requests",
     "rich>=11.0.0",

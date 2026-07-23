@@ -4,6 +4,7 @@ from pydantic import Field
 
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
+    NetworkPolicyConfig,
     ProgramResult,
     Runtime,
     register,
@@ -56,6 +57,7 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeInfo",
     "BaseRuntimeInfo",
+    "NetworkPolicyConfig",
     "make_runtime",
     "runtime_is_local",
     "SubprocessConfig",

@@ -11,10 +11,11 @@ import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import ClassVar
+from typing import ClassVar, Self
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,33 @@ def cleanup_at_exit() -> None:
             runtime.cleanup()
 
 
+class NetworkPolicyConfig(BaseConfig):
+    """Shared execution-time policy surface for runtimes that support it."""
+
+    allow: list[str] = ["*"]
+    """Destinations allowed during execution; `*` leaves egress unrestricted."""
+    block: list[str] = []
+    """Destinations denied during execution."""
+
+    @property
+    def network_isolated(self) -> bool:
+        return "*" not in self.allow or bool(self.block)
+
+    def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
+        if "*" not in allow:
+            allow = (
+                allow
+                if "*" in self.allow
+                else list(dict.fromkeys([*allow, *self.allow]))
+            )
+        else:
+            allow = self.allow
+        block = list(dict.fromkeys([*block, *self.block]))
+        return type(self).model_validate(
+            {**self.model_dump(), "allow": allow, "block": block}
+        )
+
+
 class BaseRuntimeInfo(BaseConfig):
     id: str | None = None
     borrowed: bool = False
@@ -113,6 +141,7 @@ class Runtime(ABC):
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
+        self._setup_claimed = False
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -244,6 +273,14 @@ class Runtime(ABC):
 
     async def prepare_setup(self) -> None:
         """Claim the runtime for trusted setup; restricted runtimes may reject reuse."""
+        if not self.network_isolated:
+            return
+        if self._setup_claimed:
+            raise SandboxError(
+                f"network-filtered {self.type} runtimes are single-rollout; "
+                "provision a fresh runtime instead of reusing this one"
+            )
+        self._setup_claimed = True
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
@@ -252,7 +289,10 @@ class Runtime(ABC):
     @property
     def network_isolated(self) -> bool:
         """Whether the agent phase uses filtered networking (see `prepare_execution`)."""
-        return False
+        return (
+            isinstance(self.config, NetworkPolicyConfig)
+            and self.config.network_isolated
+        )
 
     @property
     def published_port(self) -> int | None:

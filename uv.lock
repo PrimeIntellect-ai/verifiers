@@ -18,10 +18,14 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
+verifiers = false
+prime-pydantic-config = false
+tasksets = false
 prime-tunnel = false
 prime-sandboxes = false
-prime-pydantic-config = false
 renderers = false
+harnesses = false
+prime = false
 
 [[package]]
 name = "aiofile"
@@ -3184,7 +3188,7 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.32"
+version = "0.2.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3194,9 +3198,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/62/fd/f57ad87b273ae1696ca620deaac2c56e28a54905d2d2791a5b9a387f443c/prime_sandboxes-0.2.32.tar.gz", hash = "sha256:ea3d6230cdfb5af2e4542814996257bad60fc9913f15f776a65ca1ef05f4f504", size = 77656, upload-time = "2026-07-17T17:41:02.296Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/a9/880685cefd503aa92d2b49da46b60ba807015f8839c344a83d8c5bc02f30/prime_sandboxes-0.2.33.tar.gz", hash = "sha256:4253a3c345ccf6c07b41a81790f8515763333f094d20bc405a257432461e81d8", size = 81228, upload-time = "2026-07-22T23:23:55.715Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/a3/c345509abf8f7707c0c3e9d6badba2e057781d1c05a88a46733ab67521e5/prime_sandboxes-0.2.32-py3-none-any.whl", hash = "sha256:4fe730622e51c489f8f86e7ad959fd8320db6d7a9fe22442ae3c680687da4c22", size = 40897, upload-time = "2026-07-17T17:41:00.935Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/1b/10b1044b8aaef561c32a34140f4a13c7310f73f92f9546337e2e8e6a5239/prime_sandboxes-0.2.33-py3-none-any.whl", hash = "sha256:92c9647557e76191ba926ac8ed01708de9ec4450142131b673cd5cf8d9d7ea56", size = 42773, upload-time = "2026-07-22T23:23:54.381Z" },
 ]
 
 [[package]]
@@ -4995,7 +4999,7 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.8.2" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.2" },
-    { name = "prime-sandboxes", specifier = ">=0.2.31" },
+    { name = "prime-sandboxes", specifier = ">=0.2.33" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },

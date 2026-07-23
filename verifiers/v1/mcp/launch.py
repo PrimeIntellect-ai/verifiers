@@ -20,7 +20,7 @@ from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
 from verifiers.v1.runtimes import (
-    DockerConfig,
+    NetworkPolicyConfig,
     Runtime,
     make_runtime,
     runtime_is_local,
@@ -253,17 +253,17 @@ async def serve(
     colocated = getattr(cfg, "colocated", False)
     async with contextlib.AsyncExitStack() as stack:
         # Colocated servers inherit the harness cut. A separately provisioned filtered
-        # Docker server has neither that lifecycle nor a published port after isolation;
+        # server has neither that lifecycle nor a published port after isolation;
         # reject it instead of silently leaving its requested policy unenforced.
         if (
-            isinstance(cfg.runtime, DockerConfig)
+            isinstance(cfg.runtime, NetworkPolicyConfig)
             and cfg.runtime.network_isolated
             and not (colocated and harness_runtime is not None)
         ):
             raise ToolsetError(
-                "Docker network policies are supported on the harness runtime; "
+                "Runtime network policies are supported on the harness runtime; "
                 f"server {server.server_name!r} must be colocated or use an "
-                "unrestricted Docker runtime"
+                "unrestricted runtime"
             )
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
