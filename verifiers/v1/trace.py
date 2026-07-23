@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, field_validator
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -308,7 +308,8 @@ class VersionInfo(StrictBaseModel):
 class AgentInfo(StrictBaseModel):
     config: AgentConfig
     """The agent's resolved config — the exact value that rebuilds it
-    (`Agent(trace.agent.config)`)."""
+    (`Agent(trace.agent.config)`). A record reads back as `WireAgentConfig`
+    (plugin-free); `AgentConfig.model_validate` re-narrows it when needed."""
     runtime: RuntimeInfo | None = None
     """The box the rollout ran in — the agent's runtime policy resolved for the
     task, plus the provisioned resource ID; None until provisioning."""
@@ -319,6 +320,16 @@ class AgentInfo(StrictBaseModel):
     trainable: bool = True
     """Whether this trace's tokens are training data for the run's policy. An env's
     `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _wire_config(cls, value):
+        """Read records as the wire form — no plugin resolution, harness knobs kept
+        on the extra-allow `WireHarnessConfig` (see `WireTaskData`); live instances
+        pass through exact."""
+        if isinstance(value, dict):
+            return WireAgentConfig.model_validate(value)
+        return value
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):

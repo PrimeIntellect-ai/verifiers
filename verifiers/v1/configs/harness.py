@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.types import ID
@@ -34,3 +34,9 @@ class HarnessConfig(BaseConfig):
     def resolved_env(self) -> dict[str, str]:
         forwarded = {k: os.environ[k] for k in self.forward_env if k in os.environ}
         return {**forwarded, **self.env}
+
+
+class WireHarnessConfig(HarnessConfig):
+    """Wire form that preserves harness-specific knobs without importing the harness."""
+
+    model_config = ConfigDict(extra="allow")

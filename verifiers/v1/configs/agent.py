@@ -4,7 +4,7 @@ from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig
 from verifiers.v1.types import SamplingConfig
@@ -60,4 +60,18 @@ class AgentConfig(BaseConfig):
             from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
 
             narrow_plugin_field(data, "harness", harness_config_type, "bash")
+        return data
+
+
+class WireAgentConfig(AgentConfig):
+    """Wire form for trace records: parses without resolving the harness plugin,
+    so records round-trip anywhere — the knobs stay readable on the extra-allow
+    `WireHarnessConfig` (see `WireTaskData`)."""
+
+    harness: SerializeAsAny[WireHarnessConfig] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_harness(cls, data):
+        """Override: a record read resolves no plugins."""
         return data
