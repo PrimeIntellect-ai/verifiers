@@ -39,6 +39,11 @@ class RLMHarnessConfig(HarnessConfig):
     past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
     threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
     `None` disables auto-compaction; ints must be positive."""
+    max_compactions: int | None = None
+    """Cap on auto-compactions (RLM_MAX_COMPACTIONS): once a branch has compacted this many
+    times it stops compacting and the context grows to the model's natural limit, restoring
+    the context-length stop that `summarize_at_tokens` otherwise removes. `None` = unlimited.
+    Requires an rlm `version` that understands RLM_MAX_COMPACTIONS."""
 
     @model_validator(mode="after")
     def validate_limits(self) -> "RLMHarnessConfig":
@@ -54,6 +59,10 @@ class RLMHarnessConfig(HarnessConfig):
         elif value is not None and value <= 0:
             raise ValueError(
                 "`summarize_at_tokens` must be positive, or None to disable."
+            )
+        if self.max_compactions is not None and self.max_compactions <= 0:
+            raise ValueError(
+                "`max_compactions` must be positive, or None for unlimited."
             )
         return self
 
@@ -123,6 +132,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
+        if self.config.max_compactions is not None:
+            env["RLM_MAX_COMPACTIONS"] = str(self.config.max_compactions)
         if self.config.skills:
             env["RLM_SKILLS"] = ",".join(self.config.skills)
         if mcp_urls:
