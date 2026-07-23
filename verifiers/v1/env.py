@@ -16,7 +16,14 @@ from typing import (
 from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent, AgentConfig, Agents, _EpisodeAgent
+from verifiers.v1.agent import (
+    Agent,
+    AgentConfig,
+    Agents,
+    ReplayStore,
+    _EpisodeAgent,
+    _ReplayEpisodeAgent,
+)
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
 from verifiers.v1.types import ID
@@ -287,6 +294,8 @@ class Env(ABC, Generic[ConfigT]):
         self._interception: Interception | None = None
         # Clients for endpoint-pinning roles, cached by config, closed with serving().
         self._agent_clients: dict[str, Client] = {}
+        # Saved runs backing replayed seats, loaded once per env.
+        self._replay_stores: dict[str, ReplayStore] = {}
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
 
@@ -356,7 +365,12 @@ class Env(ABC, Generic[ConfigT]):
                     else ctx.sampling,
                 }
             )
-            return _EpisodeAgent(
+            agent_cls, extra = (
+                (_ReplayEpisodeAgent, {"store": self._replay_store(spec.replay)})
+                if spec.replay is not None
+                else (_EpisodeAgent, {})
+            )
+            return agent_cls(
                 resolved,
                 client=self._client_for(spec.client)
                 if spec.client is not None
@@ -370,6 +384,7 @@ class Env(ABC, Generic[ConfigT]):
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
+                **extra,
             )
 
         agents = Agents(self.config, make)
@@ -381,6 +396,13 @@ class Env(ABC, Generic[ConfigT]):
         if key not in self._agent_clients:
             self._agent_clients[key] = resolve_client(config)
         return self._agent_clients[key]
+
+    def _replay_store(self, path) -> ReplayStore:
+        """Load (and cache) a replayed seat's saved run once per env."""
+        key = str(path)
+        if key not in self._replay_stores:
+            self._replay_stores[key] = ReplayStore(path)
+        return self._replay_stores[key]
 
     async def run_episode(
         self,

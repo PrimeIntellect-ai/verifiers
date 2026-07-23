@@ -5,9 +5,11 @@ across agents (a pool belongs to what spans agents, never to one agent); an
 entered agent (`async with`) owns one server; un-entered, each run brings its own."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
+from pathlib import Path
 from typing import AsyncIterator
 
 from pydantic import SerializeAsAny, model_validator
@@ -34,7 +36,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Trace, WireTrace
 from verifiers.v1.types import Sampling, SamplingConfig
 from verifiers.v1.utils.compile import (
     cap_remote_harness_timeout,
@@ -68,6 +70,13 @@ class AgentConfig(BaseConfig):
     """Endpoint override (None = the run's client)."""
     sampling: SamplingConfig | None = None
     """Sampling override (None = the run's sampling)."""
+    replay: Path | None = None
+    """Play this seat from a finished run instead of sampling: a run dir (or its
+    traces.jsonl). Each task returns that run's saved trace for this seat (a
+    single-seat run matches regardless of name), re-stamped with this seat's
+    standing — so the other seats iterate against fixed work. A replayed seat
+    runs no model and leaves no runtime state: an env that inspects this seat's
+    box can't replay it."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     """Whole-run retries: rerun this agent's rollout while its trace ends with a
@@ -421,6 +430,88 @@ class _EpisodeAgent(Agent):
             )
         self._completed.append(trace)
         return trace
+
+
+class ReplayStore:
+    """A finished run's traces, keyed for seat playback: seat name -> task name
+    (or `idx:<idx>`) -> trace record. Episode lines are unwrapped; a run with a
+    single seat serves any requested seat, so a plain single-agent run replays
+    into a multi-agent env's differently-named seat."""
+
+    def __init__(self, path: Path) -> None:
+        self._file = path / "traces.jsonl" if path.is_dir() else path
+        by_seat: dict[str, dict[str, dict]] = {}
+        for line in self._file.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            traces = (
+                record["traces"]
+                if "traces" in record and "nodes" not in record
+                else [record]
+            )
+            for t in traces:
+                seat = ((t.get("agent") or {}).get("name")) or "agent"
+                data = (t.get("task") or {}).get("data") or {}
+                key = data.get("name") or f"idx:{data.get('idx')}"
+                by_seat.setdefault(seat, {})[key] = t
+        if not by_seat:
+            raise ValueError(f"no traces to replay in {self._file}")
+        self._by_seat = by_seat
+
+    def lookup(self, seat: str, task: Task) -> dict:
+        records = self._by_seat.get(seat)
+        if records is None:
+            if len(self._by_seat) != 1:
+                raise ValueError(
+                    f"{self._file} has seats {sorted(self._by_seat)}, none named "
+                    f"{seat!r} and more than one to fall back to"
+                )
+            records = next(iter(self._by_seat.values()))
+        key = task.data.name or f"idx:{task.data.idx}"
+        record = records.get(key)
+        if record is None:
+            raise ValueError(
+                f"no saved trace for task {key!r} in {self._file}; select the "
+                "same tasks the replayed run played"
+            )
+        return record
+
+
+class _ReplayEpisodeAgent(_EpisodeAgent):
+    """A seat pinned to a finished run's traces (`AgentConfig.replay`): `run`
+    revalidates the saved trace for the task and re-stamps it with this seat's
+    standing instead of sampling. No model call, no runtime — anything
+    downstream must live off the trace."""
+
+    def __init__(self, *args, store: ReplayStore, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._store = store
+
+    async def run(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> Trace:
+        trace = WireTrace.model_validate(self._store.lookup(self._name, task))
+        if trace.agent is not None:
+            trace.agent.name = self._name
+            trace.agent.trainable = self.trainable
+        if self._on_trace is not None:
+            self._on_trace(trace)
+        if on_trace is not None:
+            on_trace(trace)
+        self._completed.append(trace)
+        return trace
+
+    @asynccontextmanager
+    async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
+        raise RuntimeError(
+            f"agent {self._name!r} replays saved traces and has no runtime to "
+            "provision; an env that needs this seat's box can't replay it"
+        )
+        yield  # pragma: no cover - unreachable, keeps the context-manager shape
 
 
 def make_agent(
