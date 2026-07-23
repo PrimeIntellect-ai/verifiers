@@ -206,7 +206,6 @@ def push_traces(
         batches: list[list[dict[str, Any]]] = []
         batch: list[dict[str, Any]] = []
         payload_bytes = len(b'{"samples":[]}')
-        skipped_samples = 0
         for i, sample in enumerate(samples):
             sample_bytes = len(
                 json.dumps(
@@ -218,15 +217,11 @@ def push_traces(
             )
             sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
             if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
-                logger.warning(
-                    "--push: sample %d is too large to upload (%d > %d bytes); "
-                    "skipping sample",
-                    i,
-                    sample_payload_bytes,
-                    _MAX_SAMPLES_PAYLOAD_BYTES,
+                raise ValueError(
+                    f"sample {i} is too large to upload "
+                    f"({sample_payload_bytes} > "
+                    f"{_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
                 )
-                skipped_samples += 1
-                continue
             next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
             if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
                 batches.append(batch)
@@ -280,7 +275,5 @@ def push_traces(
         return finish(error=f"{type(e).__name__}: {e}")
 
     url = f"{frontend}/dashboard/evaluations/{eval_id}"
-    logger.info(
-        "--push: uploaded %d samples -> %s", len(samples) - skipped_samples, url
-    )
+    logger.info("--push: uploaded %d samples -> %s", len(samples), url)
     return finish(url=url)
