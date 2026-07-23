@@ -124,17 +124,17 @@ class JudgeTask(vf.Task):
 
     @classmethod
     def from_trace(
-        cls, task: vf.Task, solution: vf.Trace, config: "AgenticJudgeEnvConfig"
+        cls, task: vf.Task, solution: vf.Trace, config: "JudgeTaskConfig"
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace."""
         files = {TRACE_FILE: json.dumps(solution.to_record()).encode()}
-        template = config.task.build_prompt()
+        template = config.build_prompt()
         body = _render(template, prompt=task.data.prompt_text)
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=task.data.prompt_text)
         prompt = "\n\n".join(
-            [body, _verdict_section(config.task.criteria()), SANDBOX_NOTE]
+            [body, _verdict_section(config.criteria()), SANDBOX_NOTE]
         )
         return cls(
             vf.TaskData(
@@ -272,7 +272,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
-            judge_task = JudgeTask.from_trace(task, solution, self.config)
+            judge_task = JudgeTask.from_trace(task, solution, self.config.task)
             await agents.judge.run(judge_task, runtime=box)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
