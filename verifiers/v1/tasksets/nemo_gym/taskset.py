@@ -16,7 +16,7 @@ from pydantic import Field
 from typing_extensions import TypeVar
 
 from verifiers.v1.decorators import reward
-from verifiers.v1.dialects.responses import ResponsesDialect, messages_to_wire
+from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
 from verifiers.v1.mcp.launch import mcp_session
@@ -25,7 +25,7 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, ToolMessage
+from verifiers.v1.types import AssistantMessage, TextContentPart, ToolMessage
 from verifiers.utils.serve_utils import get_free_port
 
 NEMO_GYM_INSTALL_HINT = "uv sync --python 3.12 --extra nemo-gym"
@@ -174,10 +174,39 @@ def _trace_to_nemo_response(
                         ],
                     }
                 )
-            message = message.model_copy(update={"provider_state": None})
-        elif not (started and isinstance(message, ToolMessage)):
-            continue
-        output.extend(dict(item) for item in messages_to_wire([message]))
+            if message.content:
+                output.append({"role": "assistant", "content": message.content})
+            output.extend(
+                {
+                    "type": "function_call",
+                    "call_id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                }
+                for call in message.tool_calls or []
+            )
+        elif started and isinstance(message, ToolMessage):
+            content = (
+                message.content
+                if isinstance(message.content, str)
+                else [
+                    {"type": "input_text", "text": part.text}
+                    if isinstance(part, TextContentPart)
+                    else {
+                        "type": "input_image",
+                        "image_url": part.image_url.url,
+                        "detail": "auto",
+                    }
+                    for part in message.content
+                ]
+            )
+            output.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message.tool_call_id,
+                    "output": content,
+                }
+            )
 
     for item in output:
         name = str(item.get("name", ""))
