@@ -252,7 +252,18 @@ class PersistentSession:
                 cwd=os.getcwd(), mcp_servers=mcp_servers(config)
             )
         except BaseException:
-            await self.stack.aclose()
+            try:
+                await self.stack.aclose()
+            except BaseException:
+                pass
+            self.stack = AsyncExitStack()
+            self.connection = None
+            self.capabilities = None
+            self.session_id = None
+            self.command = None
+            self.server_urls = None
+            self.system_prompt = None
+            self.is_new = True
             raise
         self.session_id = session.session_id
         self.command = command
@@ -318,19 +329,24 @@ async def serve_sidecar(socket_path: str) -> None:
     ) -> None:
         try:
             request = await read_packet(reader)
-            async with lock:
-                operation = request.get("operation")
-                if operation == "prompt":
-                    reply = await session.run(request["config"])
-                    response = {"ok": True, "reply": reply}
-                elif operation == "shutdown":
-                    try:
-                        await session.close()
-                        response = {"ok": True}
-                    finally:
-                        shutdown.set()
-                else:
-                    raise ValueError(f"unknown ACP sidecar operation: {operation!r}")
+            operation = request.get("operation")
+            if operation == "ping":
+                response = {"ok": True}
+            else:
+                async with lock:
+                    if operation == "prompt":
+                        reply = await session.run(request["config"])
+                        response = {"ok": True, "reply": reply}
+                    elif operation == "shutdown":
+                        try:
+                            await session.close()
+                            response = {"ok": True}
+                        finally:
+                            shutdown.set()
+                    else:
+                        raise ValueError(
+                            f"unknown ACP sidecar operation: {operation!r}"
+                        )
         except Exception as error:
             traceback.print_exc()
             response = {
@@ -406,6 +422,15 @@ async def main() -> None:
         sys.stdout.write(response["reply"])
     elif operation == "shutdown":
         await request_sidecar(sys.argv[2], {"operation": "shutdown"}, wait_seconds=2)
+    elif operation == "probe":
+        await asyncio.wait_for(
+            request_sidecar(
+                sys.argv[2],
+                {"operation": "ping"},
+                wait_seconds=0,
+            ),
+            timeout=2,
+        )
     else:
         raise ValueError(f"unknown ACP runner operation: {operation!r}")
 

@@ -56,8 +56,13 @@ class ACP:
         if sidecar_path is not None:
             sidecar_dir = self._sidecar_dir(sidecar_path)
             sidecar_log = f"{sidecar_dir}/acp.log"
-            exists = await runtime.run(["test", "-S", sidecar_path], {})
-            if exists.exit_code != 0:
+            probe = await runtime.run([*program, "probe", sidecar_path], {})
+            if probe.exit_code != 0:
+                removed = await runtime.run(["rm", "-f", sidecar_path], {})
+                if removed.exit_code != 0:
+                    raise RuntimeError(
+                        f"stale ACP sidecar cleanup failed: {removed.stderr.strip()}"
+                    )
                 created = await runtime.run(
                     ["mkdir", "-p", "-m", "700", sidecar_dir], {}
                 )
