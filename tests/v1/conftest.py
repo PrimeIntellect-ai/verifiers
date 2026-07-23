@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.loaders import load_environment
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace

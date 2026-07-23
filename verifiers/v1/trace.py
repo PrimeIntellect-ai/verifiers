@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.harness import HarnessConfig, WireHarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData

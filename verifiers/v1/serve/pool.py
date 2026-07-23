@@ -35,7 +35,7 @@ import msgpack
 import zmq
 import zmq.asyncio
 
-from verifiers.v1.env import EnvConfig
+from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
 

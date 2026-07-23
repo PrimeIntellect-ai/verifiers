@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 
 CONFIGS = sorted(
     p

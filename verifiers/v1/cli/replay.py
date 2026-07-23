@@ -27,7 +27,7 @@ from verifiers.v1.cli.output import (
     save_config,
     write_config,
 )
-from verifiers.v1.configs.replay import ReplayConfig
+from verifiers.v1.configs.cli.replay import ReplayConfig
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, WireTaskData, task_data_cls
 from verifiers.v1.trace import Trace

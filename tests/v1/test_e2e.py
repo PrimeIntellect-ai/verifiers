@@ -551,7 +551,7 @@ async def test_replay_round_trip(run_v1, tmp_path):
 
     from verifiers.v1.cli.output import CONFIG_FILE
     from verifiers.v1.cli.replay import run_replay
-    from verifiers.v1.configs.replay import ReplayConfig
+    from verifiers.v1.configs.cli.replay import ReplayConfig
 
     run_dir = tmp_path / "run"
     (source,) = await run_v1(

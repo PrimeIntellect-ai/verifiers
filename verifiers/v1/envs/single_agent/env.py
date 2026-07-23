@@ -5,8 +5,10 @@ it whenever neither `--env.id` nor the taskset names an `Env`, so a plain
 eval is exactly this env (one `agent` seat, one nameless trace per episode).
 """
 
-from verifiers.v1.agent import AgentConfig, Agents
-from verifiers.v1.env import EnvConfig, Env
+from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.agent import Agents
+from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.env import Env
 from verifiers.v1.task import Task
 
 

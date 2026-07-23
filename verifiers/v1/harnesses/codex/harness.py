@@ -9,7 +9,8 @@ import re
 import shlex
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import TextContentPart

@@ -22,7 +22,7 @@ from typing import TypeVar
 from pydantic_core import from_json
 
 from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import WireTrace
 

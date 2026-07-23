@@ -28,7 +28,8 @@ from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.taskset import Taskset
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"

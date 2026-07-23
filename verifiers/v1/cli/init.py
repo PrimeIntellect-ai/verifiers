@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic_config import cli
 
-from verifiers.v1.configs.init import InitConfig
+from verifiers.v1.configs.cli.init import InitConfig
 
 USAGE = (
     "usage: uv run init <name> [--path ./environments] [-T/--add-tool] "

@@ -6,7 +6,7 @@ from uuid import uuid4
 from pydantic import AliasChoices, ConfigDict, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.taskset import TasksetConfig
+from verifiers.v1.configs.taskset import TasksetConfig
 
 
 class ReplayConfig(BaseConfig):

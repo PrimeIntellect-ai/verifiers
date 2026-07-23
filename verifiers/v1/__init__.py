@@ -13,25 +13,16 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.decorators import metric, reward, stop, tool
-from verifiers.v1.agent import (
-    Agent,
-    AgentConfig,
-    Agents,
-    Interaction,
-    Segment,
-    make_agent,
-)
-from verifiers.v1.configs.env import (
+from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+from verifiers.v1.configs.cli.env import (
     ElasticPoolConfig,
     EnvServerConfig,
     StaticPoolConfig,
     pool_serve_kwargs,
 )
-from verifiers.v1.env import (
-    EnvConfig,
-    Env,
-    default_agent_harness,
-)
+from verifiers.v1.configs.env import EnvConfig, default_agent_harness
+from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
     EnvError,
@@ -44,15 +35,10 @@ from verifiers.v1.errors import (
     ToolsetError,
     TunnelError,
 )
-from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.judge import (
-    Judge,
-    JudgeConfig,
-    JudgeResponse,
-    Judges,
-    JudgeSamplingConfig,
-    JudgeView,
-)
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harness import Harness
+from verifiers.v1.configs.judge import JudgeConfig, JudgeSamplingConfig, Judges
+from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     ReferenceJudge,
     ReferenceJudgeConfig,
@@ -86,7 +72,7 @@ from verifiers.v1.scoring import (
     read_answer_file_or_last_reply as read_answer_file_or_last_reply,
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
-from verifiers.v1.retries import RetryConfig
+from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
     capture_patch as capture_patch,
@@ -102,15 +88,10 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import (
-    Task,
-    TaskConfig,
-    TaskData,
-    TaskResources,
-    TaskTimeout,
-    WireTaskData,
-)
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.configs.task import TaskConfig
+from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
+from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.taskset import Taskset
 from verifiers.v1.mcp import (
     Toolset,
     SharedToolsetConfig,

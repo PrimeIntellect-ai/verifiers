@@ -16,7 +16,7 @@ from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
@@ -73,7 +73,7 @@ _MARK = {
 def _seat_value(config: EvalConfig, read):
     """A cap as the overview shows it: the declared seats' shared value, the
     string 'per-seat' when they disagree (caps live on the seats)."""
-    from verifiers.v1.env import _declared_agent_configs
+    from verifiers.v1.configs.env import _declared_agent_configs
 
     values = {read(spec) for spec in _declared_agent_configs(config.env).values()}
     return values.pop() if len(values) == 1 else "per-seat"

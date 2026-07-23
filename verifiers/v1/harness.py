@@ -4,19 +4,16 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from pydantic import ConfigDict, Field
-from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import HarnessError, boundary
-from verifiers.v1.utils.install import env_name
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import ID, Messages
+from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
     # Annotation-only: `Trace` appears in signatures only, so this module stays
@@ -24,36 +21,6 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
-
-
-class HarnessConfig(BaseConfig):
-    id: ID = "bash"
-    """Local package or Hub `org/name[@version]`, set through the seat's
-    `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env)."""
-    env: dict[str, str] = Field(default_factory=dict)
-    """Extra program variables; harness-owned variables take precedence."""
-    forward_env: list[str] = Field(default_factory=list)
-    """Host variables to forward without writing secrets into config; explicit `env` wins."""
-    disabled_tools: list[str] | None = None
-    skills: list[Path] = Field(default_factory=list)
-    """Skill folders to upload into the program's skill discovery directory — each
-    lands at `<skills dir>/<folder name>`. Only harnesses whose program discovers
-    skills natively (`SUPPORTS_SKILLS`) accept them."""
-
-    @property
-    def name(self) -> str:
-        return env_name(self.id)
-
-    @property
-    def resolved_env(self) -> dict[str, str]:
-        forwarded = {k: os.environ[k] for k in self.forward_env if k in os.environ}
-        return {**forwarded, **self.env}
-
-
-class WireHarnessConfig(HarnessConfig):
-    """Wire form that preserves harness-specific knobs without importing the harness."""
-
-    model_config = ConfigDict(extra="allow")
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
