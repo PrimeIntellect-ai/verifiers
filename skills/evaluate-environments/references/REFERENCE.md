@@ -359,10 +359,10 @@ Remote Prime sandbox; reached via native port exposure.
 | `guaranteed` | `bool` | `False` | Request guaranteed (vs best-effort) capacity. |
 | `region` | `str \| None` | `None` | Region to provision in (None = provider-chosen). Note: port exposure is region-gated; `us` supports it. |
 | `labels` | `list[str]` | `[]` | Labels attached to the sandbox. |
-| `cpu` | `float` | `1.0` | CPU cores. |
-| `memory` | `float` | `2.0` | Memory in GB. |
+| `cpu` | `float \| None` | `None` | CPU cores (None = SDK default). |
+| `memory` | `float \| None` | `None` | Memory in GB (None = SDK default). |
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"A100:2"` (bare count = provider-chosen type). |
-| `disk` | `float` | `5.0` | Disk in GB. |
+| `disk` | `float \| None` | `None` | Disk in GB (None = SDK default). |
 | `idle_timeout` | `float \| None` | `3600` | Seconds of inactivity before the sandbox is deleted; `None` disables it. |
 | `creates_per_min` | `int \| None` | `None` | Pace sandbox creation to this many per minute, host-wide across every env-server worker (None/≤0 disables). Tunnel creation is limited separately and globally. |
 

@@ -52,14 +52,14 @@ class PrimeConfig(NetworkPolicyConfig):
     labels: list[str] = []
     """Labels attached to the sandbox."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
-    cpu: float = 1.0
-    """CPU cores."""
-    memory: float = 2.0
-    """Memory in GB."""
+    cpu: float | None = None
+    """CPU cores. None = SDK default."""
+    memory: float | None = None
+    """Memory in GB. None = SDK default."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
-    disk: float = 5.0
-    """Disk in GB."""
+    disk: float | None = None
+    """Disk in GB. None = SDK default."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
@@ -127,6 +127,7 @@ class PrimeRuntime(Runtime):
             if self.config.idle_timeout is not None and not self.config.vm
             else None
         )
+        # None values are dropped below, deferring to the SDK's defaults.
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
