@@ -155,7 +155,7 @@ Renders base64 images as text in native v1; disabled by default.
 | `gamma` | `float` | `1.0` | Luminance gamma. |
 | `invert` | `bool \| None` | `None` | Inversion; `None` selects automatically. |
 | `ramp` | `str` | `" .:-=+*#%@"` | ASCII character ramp. |
-| `threshold` | `float \| "otsu"` | `0.5` | Braille/ASCII threshold. |
+| `threshold` | `float` | `0.5` | Braille dot luminance cutoff. |
 | `max_chars` | `int \| None` | `40000` | Per-image character limit. |
 
 ```toml

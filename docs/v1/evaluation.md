@@ -72,6 +72,5 @@ char_aspect = 0.5               # aspect correction
 gamma = 1.0                     # luminance gamma
 invert = true                   # invert luminance
 ramp = " .:-=+*#%@"             # ASCII glyphs
-threshold = "otsu"              # adaptive threshold
 max_chars = 40000               # output limit
 ```

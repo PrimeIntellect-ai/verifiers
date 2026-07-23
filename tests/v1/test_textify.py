@@ -44,14 +44,6 @@ def test_renderer_modes() -> None:
         == "⠁"
     )
 
-    otsu = vf.TextifyConfig(width=4, height=2, invert=False, threshold="otsu")
-    art = vf.image_to_text(
-        np.array([[0, 10, 20, 30], [0, 10, 220, 255]], dtype=np.uint8),
-        otsu,
-    )
-    assert set(art) <= {otsu.ramp[0], otsu.ramp[-1], "\n"}
-    assert otsu.ramp[0] in art and otsu.ramp[-1] in art
-
 
 def test_output_and_input_safety_limits(monkeypatch) -> None:
     cfg = vf.TextifyConfig(width=10, height=10, max_chars=20)

@@ -119,12 +119,31 @@ Otsu:
 
 Here both representations preserve the main outline; Otsu removes intermediate-gray texture.
 
-## Interpretation
+## Reward-level follow-up
 
-Otsu should remain available. It is useful when the signal is closer to dark foreground on a
-light background—tables, diagrams, scans, and line art. Fixed-threshold grayscale ASCII keeps
-more tonal information and may be preferable for photographs. These are different
-representations rather than one universally dominating setting.
+A subsequent full MMMU validation experiment tested whether the large rendering difference
+improved model behavior. It used Qwen3.5-9B on all 847 usable multiple-choice prompts with 10
+rollouts per prompt and representation (`8,470` clean rollouts per arm). ASCII used width 160;
+Braille used width 80, which samples the same 160 horizontal source pixels because each Braille
+cell spans two pixels.
 
-A reward-level A/B between fixed ASCII and Otsu ASCII is still needed. This report establishes
-only that the option has a large, interpretable rendering effect.
+| Arm | Accuracy | Mixed prompts | Mean within-prompt sample variance | Cost |
+|---|---:|---:|---:|---:|
+| Vision | 72.05% | 256/847 | 0.0545 | $8.58 |
+| ASCII, fixed | 52.59% | 452/847 | 0.1029 | $11.87 |
+| ASCII, Otsu | 52.55% | 454/847 | 0.1025 | $12.18 |
+| Braille, fixed | 52.05% | 462/847 | 0.1060 | $13.14 |
+| Braille, Otsu | 51.94% | 474/847 | 0.1062 | $13.31 |
+
+Otsu minus fixed accuracy was `-0.04` percentage points for ASCII (task-bootstrap 95% CI
+`[-1.11, +1.06]`) and `-0.12` points for Braille (`[-1.16, +0.92]`). Otsu changed which
+individual prompts succeeded, but neither interval supports an aggregate reward improvement.
+Its variance changes were also negligible.
+
+## Decision
+
+The rendering-level effect is real, but it did not translate into better accuracy or materially
+better RL signal over 16,940 paired rollouts per mode. PR #2034 therefore removes adaptive Otsu
+thresholding: the extra public configuration state, histogram implementation, validation, tests,
+and binary ASCII branch are not justified by the measured behavior. ASCII remains grayscale;
+Braille retains its numeric fixed dot cutoff, defaulting to `0.5`.
