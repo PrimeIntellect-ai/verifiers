@@ -257,7 +257,7 @@ async def serve(
         # reject it instead of silently leaving its requested policy unenforced.
         if (
             isinstance(cfg.runtime, NetworkPolicyConfig)
-            and cfg.runtime.network_isolated
+            and cfg.runtime.network_restricted
             and not (colocated and harness_runtime is not None)
         ):
             raise ToolsetError(
@@ -303,7 +303,7 @@ async def serve(
                 runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
             )
         )
-        if colocated and harness_runtime is not None and runtime.network_isolated:
+        if colocated and harness_runtime is not None and runtime.network_restricted:
             base = base.replace("127.0.0.1", "localhost", 1)
         elif not colocated and harness_runtime is not None:
             base = harness_runtime.host_url(base)

@@ -115,7 +115,7 @@ def _check_borrowed_placement(
     image mismatch on a container only warns, since sharing its world is the point."""
     task_policy = "*" not in task.data.network_allow or bool(task.data.network_block)
     base_policy = base_config if isinstance(base_config, NetworkPolicyConfig) else None
-    if task_policy or (base_policy is not None and base_policy.network_isolated):
+    if task_policy or (base_policy is not None and base_policy.network_restricted):
         config = runtime.config
         if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(

@@ -69,7 +69,7 @@ class PrimeConfig(NetworkPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "PrimeConfig":
-        if not self.network_isolated:
+        if not self.network_restricted:
             return self
         if not self.vm:
             raise ValueError(
@@ -182,7 +182,7 @@ class PrimeRuntime(Runtime):
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
-        if not self.network_isolated:
+        if not self.network_restricted:
             return
         try:
             if self.config.allow == ["*"]:

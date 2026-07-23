@@ -114,8 +114,8 @@ class DockerRuntime(Runtime):
         _, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]
-        isolated = self.network_isolated
-        if isolated:
+        restricted = self.network_restricted
+        if restricted:
             network = [
                 "--network",
                 "bridge",
@@ -151,7 +151,7 @@ class DockerRuntime(Runtime):
         self.info.id = run.stdout.strip()[
             :12
         ]  # `docker run -d` prints the container id
-        if isolated:
+        if restricted:
             # Setup is trusted; colocated servers fetch their task from host interception
             # before the final framework routes are known.
             self._proxy = EgressProxy(
@@ -223,10 +223,10 @@ class DockerRuntime(Runtime):
         host = urlsplit(url).hostname
         # Keep numeric loopback container-local; the proxy maps this reserved name to
         # the Verifiers process's loopback for interception and host-local MCP routes.
-        if self.network_isolated and host in ("127.0.0.1", "localhost"):
+        if self.network_restricted and host in ("127.0.0.1", "localhost"):
             return url.replace(host, HOST_ALIAS, 1)
         if (
-            not self.network_isolated
+            not self.network_restricted
             and sys.platform != "linux"
             and host in ("127.0.0.1", "localhost")
         ):
@@ -235,7 +235,7 @@ class DockerRuntime(Runtime):
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Allow the declared framework routes, then leave the proxy as the only route."""
-        if not self.network_isolated:
+        if not self.network_restricted:
             return
         assert self._proxy is not None
         framework = [

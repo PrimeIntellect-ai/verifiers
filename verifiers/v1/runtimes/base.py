@@ -104,7 +104,7 @@ class NetworkPolicyConfig(BaseConfig):
     """Destinations denied during execution."""
 
     @property
-    def network_isolated(self) -> bool:
+    def network_restricted(self) -> bool:
         return "*" not in self.allow or bool(self.block)
 
     def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
@@ -273,7 +273,7 @@ class Runtime(ABC):
 
     async def prepare_setup(self) -> None:
         """Claim the runtime for trusted setup; restricted runtimes may reject reuse."""
-        if not self.network_isolated:
+        if not self.network_restricted:
             return
         if self._setup_claimed:
             raise SandboxError(
@@ -287,11 +287,11 @@ class Runtime(ABC):
         their policy here while keeping the interception and MCP `routes` reachable."""
 
     @property
-    def network_isolated(self) -> bool:
+    def network_restricted(self) -> bool:
         """Whether the agent phase uses filtered networking (see `prepare_execution`)."""
         return (
             isinstance(self.config, NetworkPolicyConfig)
-            and self.config.network_isolated
+            and self.config.network_restricted
         )
 
     @property
