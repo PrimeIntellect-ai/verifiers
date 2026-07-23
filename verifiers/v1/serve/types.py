@@ -3,9 +3,9 @@ from typing import ClassVar
 from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from verifiers.v1.clients.config import ClientConfig
-from verifiers.v1.task import WireTaskData
+from verifiers.v1.task import WireTaskData  # noqa: F401  (docstring reference)
 from verifiers.v1.episode import WireEpisode
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import WireTrace
 from verifiers.v1.types import SamplingConfig
 
 
@@ -87,10 +87,8 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    traces: list[Trace[WireTaskData]] | None = None
+    traces: list[WireTrace] | None = None
 
     @field_serializer("traces")
-    def _ser_traces(
-        self, traces: "list[Trace[WireTaskData]] | None"
-    ) -> list[dict] | None:
+    def _ser_traces(self, traces: "list[WireTrace] | None") -> list[dict] | None:
         return [t.model_dump() for t in traces] if traces is not None else None

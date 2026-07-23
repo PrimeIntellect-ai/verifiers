@@ -7,8 +7,10 @@ import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
+from typing_extensions import TypeVar
+
 import numpy as np
-from pydantic import Field, PrivateAttr, field_validator
+from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
@@ -305,11 +307,18 @@ class VersionInfo(StrictBaseModel):
     checkout); None otherwise (e.g. a PyPI wheel)."""
 
 
-class AgentInfo(StrictBaseModel):
-    config: AgentConfig
+AgentConfigT = TypeVar("AgentConfigT", bound=AgentConfig, default=AgentConfig)
+"""`default=AgentConfig`: an unparameterized record is the strict, fully-typed
+read (the config is exactly `AgentConfig` at write time, so nothing is lost);
+`WireTrace` parameterizes with `WireAgentConfig` for the plugin-free read."""
+
+
+class AgentInfo(StrictBaseModel, Generic[AgentConfigT]):
+    config: AgentConfigT
     """The agent's resolved config — the exact value that rebuilds it
-    (`Agent(trace.agent.config)`). A record reads back as `WireAgentConfig`
-    (plugin-free); `AgentConfig.model_validate` re-narrows it when needed."""
+    (`Agent(trace.agent.config)`). Validating a record narrows the harness by
+    its id (the plugin must be importable); consumers without the packages
+    (e.g. a trainer) read through `WireTrace`, which keeps it loose."""
     runtime: RuntimeInfo | None = None
     """The box the rollout ran in — the agent's runtime policy resolved for the
     task, plus the provisioned resource ID; None until provisioning."""
@@ -320,16 +329,6 @@ class AgentInfo(StrictBaseModel):
     trainable: bool = True
     """Whether this trace's tokens are training data for the run's policy. An env's
     `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
-
-    @field_validator("config", mode="before")
-    @classmethod
-    def _wire_config(cls, value):
-        """Read records as the wire form — no plugin resolution, harness knobs kept
-        on the extra-allow `WireHarnessConfig` (see `WireTaskData`); live instances
-        pass through exact."""
-        if isinstance(value, dict):
-            return WireAgentConfig.model_validate(value)
-        return value
 
 
 class TraceTask(StrictBaseModel, Generic[DataT]):
@@ -344,7 +343,7 @@ class TraceTask(StrictBaseModel, Generic[DataT]):
     """The (immutable) row being solved."""
 
 
-class Trace(StrictBaseModel, Generic[DataT, StateT]):
+class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique id for this rollout, auto-generated per trace."""
     task: TraceTask[DataT]
@@ -356,7 +355,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     replayed/re-read traces keep the build that originally produced them."""
     run: RunInfo | None = None
     """The run this trace belongs to (eval or train), consumer-stamped."""
-    agent: AgentInfo | None = None
+    agent: AgentInfo[AgentConfigT] | None = None
     """The agent (config: harness x model x runtime, plus the provisioned box) that
     produced the sampled turns."""
     nodes: list[MessageNode] = Field(default_factory=list)
@@ -612,5 +611,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
         return self.model_dump(mode="json", exclude=_NODE_DUMP_EXCLUDE)
 
 
-WireTrace = Trace[WireTaskData]
-"""Trace loader that preserves unknown task fields in `task.model_extra`."""
+WireTrace = Trace[WireTaskData, State, WireAgentConfig]
+"""Record loader for consumers without the run's packages (e.g. a trainer):
+task fields survive in `task.model_extra`, and the agent config parses loose
+(`WireAgentConfig` — no harness plugin resolution). A bare `Trace` is the
+strict read: the harness narrows by id, so its package must be importable."""

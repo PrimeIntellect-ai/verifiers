@@ -7,11 +7,12 @@ from pydantic import Field
 
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
-from verifiers.v1.trace import Error, Trace
+from verifiers.v1.configs.agent import WireAgentConfig
+from verifiers.v1.trace import AgentConfigT, Error, Trace
 from verifiers.v1.types import StrictBaseModel
 
 
-class Episode(StrictBaseModel, Generic[DataT, StateT]):
+class Episode(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     """One run of a task, whole: its identity and standing (`id`, `env`, `errors`)
     next to its flat `traces` — the object `finalize()` receives, the engine
     returns, and the durability envelope: one episode is one `traces.jsonl` line
@@ -37,7 +38,7 @@ class Episode(StrictBaseModel, Generic[DataT, StateT]):
     Distinct from `errors` emptiness: a retried-and-recovered episode is `ok`
     and still keeps its earlier attempts' errors."""
     errors: list[Error] = Field(default_factory=list)
-    traces: list[Trace[DataT, StateT]] = Field(default_factory=list)
+    traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
 
     @property
     def error(self) -> Error | None:
@@ -49,5 +50,6 @@ class Episode(StrictBaseModel, Generic[DataT, StateT]):
         return cls(env=env, traces=[trace], ok=trace.ok)
 
 
-WireEpisode = Episode[WireTaskData, State]
-"""Record loader that preserves unknown task fields in `task.model_extra`."""
+WireEpisode = Episode[WireTaskData, State, WireAgentConfig]
+"""Record loader for consumers without the run's packages: unknown task fields
+survive in `task.model_extra`, agent configs parse loose (`WireAgentConfig`)."""
