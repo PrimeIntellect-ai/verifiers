@@ -423,13 +423,14 @@ async def main() -> None:
     elif operation == "shutdown":
         await request_sidecar(sys.argv[2], {"operation": "shutdown"}, wait_seconds=2)
     elif operation == "probe":
+        wait_seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 0
         await asyncio.wait_for(
             request_sidecar(
                 sys.argv[2],
                 {"operation": "ping"},
-                wait_seconds=0,
+                wait_seconds=wait_seconds,
             ),
-            timeout=2,
+            timeout=max(2, wait_seconds + 1),
         )
     else:
         raise ValueError(f"unknown ACP runner operation: {operation!r}")

@@ -1,8 +1,10 @@
 """Public Agent Client Protocol support for harness programs."""
 
+import asyncio
 import json
 import secrets
 from pathlib import Path, PurePosixPath
+from weakref import WeakValueDictionary
 
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
@@ -17,6 +19,19 @@ __all__ = ["ACP"]
 
 class ACP:
     """Run an ACP agent."""
+
+    def __init__(self) -> None:
+        self._sidecar_locks: WeakValueDictionary[tuple[int, str], asyncio.Lock] = (
+            WeakValueDictionary()
+        )
+
+    def _sidecar_lock(self, runtime: Runtime, sidecar_path: str) -> asyncio.Lock:
+        key = (id(runtime), sidecar_path)
+        lock = self._sidecar_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._sidecar_locks[key] = lock
+        return lock
 
     async def setup(self, harness: Harness, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -56,25 +71,42 @@ class ACP:
         if sidecar_path is not None:
             sidecar_dir = self._sidecar_dir(sidecar_path)
             sidecar_log = f"{sidecar_dir}/acp.log"
-            probe = await runtime.run([*program, "probe", sidecar_path], {})
-            if probe.exit_code != 0:
-                removed = await runtime.run(["rm", "-f", sidecar_path], {})
-                if removed.exit_code != 0:
-                    raise RuntimeError(
-                        f"stale ACP sidecar cleanup failed: {removed.stderr.strip()}"
+            async with self._sidecar_lock(runtime, sidecar_path):
+                probe = await runtime.run([*program, "probe", sidecar_path], {})
+                if probe.exit_code != 0:
+                    removed = await runtime.run(["rm", "-f", sidecar_path], {})
+                    if removed.exit_code != 0:
+                        raise RuntimeError(
+                            "stale ACP sidecar cleanup failed: "
+                            f"{removed.stderr.strip()}"
+                        )
+                    created = await runtime.run(
+                        ["mkdir", "-p", "-m", "700", sidecar_dir], {}
                     )
-                created = await runtime.run(
-                    ["mkdir", "-p", "-m", "700", sidecar_dir], {}
-                )
-                if created.exit_code != 0:
-                    raise RuntimeError(
-                        f"ACP sidecar directory failed: {created.stderr.strip()}"
+                    if created.exit_code != 0:
+                        raise RuntimeError(
+                            f"ACP sidecar directory failed: {created.stderr.strip()}"
+                        )
+                    await runtime.run_background(
+                        [*program, "serve", sidecar_path],
+                        env,
+                        sidecar_log,
                     )
-                await runtime.run_background(
-                    [*program, "serve", sidecar_path],
-                    env,
-                    sidecar_log,
-                )
+                    ready = await runtime.run(
+                        [*program, "probe", sidecar_path, "60"], {}
+                    )
+                    if ready.exit_code != 0:
+                        log = await runtime.run(["tail", "-c", "4000", sidecar_log], {})
+                        detail = (
+                            ready.stderr.strip()
+                            or ready.stdout.strip()
+                            or "sidecar did not become ready"
+                        )
+                        if log.exit_code == 0 and log.stdout:
+                            detail = (
+                                f"{detail}\n\nACP sidecar log:\n{log.stdout.rstrip()}"
+                            )
+                        raise RuntimeError(f"ACP sidecar failed to start: {detail}")
         directory = f".vf-acp-{secrets.token_hex(8)}"
         created = await runtime.run(["mkdir", "-m", "700", directory], {})
         if created.exit_code != 0:
