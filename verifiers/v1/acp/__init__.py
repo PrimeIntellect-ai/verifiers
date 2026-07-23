@@ -4,7 +4,7 @@ import asyncio
 import json
 import secrets
 from pathlib import Path, PurePosixPath
-from weakref import WeakValueDictionary
+from weakref import WeakKeyDictionary
 
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
@@ -22,16 +22,19 @@ class ACP:
     """Run an ACP agent."""
 
     def __init__(self) -> None:
-        self._sidecar_locks: WeakValueDictionary[tuple[int, str], asyncio.Lock] = (
-            WeakValueDictionary()
+        self._sidecar_locks: WeakKeyDictionary[Runtime, dict[str, asyncio.Lock]] = (
+            WeakKeyDictionary()
         )
 
     def _sidecar_lock(self, runtime: Runtime, sidecar_path: str) -> asyncio.Lock:
-        key = (id(runtime), sidecar_path)
-        lock = self._sidecar_locks.get(key)
+        locks = self._sidecar_locks.get(runtime)
+        if locks is None:
+            locks = {}
+            self._sidecar_locks[runtime] = locks
+        lock = locks.get(sidecar_path)
         if lock is None:
             lock = asyncio.Lock()
-            self._sidecar_locks[key] = lock
+            locks[sidecar_path] = lock
         return lock
 
     async def setup(self, harness: Harness, runtime: Runtime) -> None:

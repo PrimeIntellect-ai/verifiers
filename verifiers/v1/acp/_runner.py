@@ -491,8 +491,6 @@ async def main() -> None:
             if str(error) == "timed out waiting for ACP sidecar":
                 raise SystemExit(PROBE_UNAVAILABLE_EXIT_CODE) from None
             raise
-        except TimeoutError:
-            raise SystemExit(PROBE_UNAVAILABLE_EXIT_CODE) from None
     else:
         raise ValueError(f"unknown ACP runner operation: {operation!r}")
 
