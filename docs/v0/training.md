@@ -7,25 +7,25 @@ This section covers how to use Verifiers environments for RL training with our H
 ## Table of Contents
 
 - [Hosted Training](#hosted-training)
-    - [Configuration](#configuration)
+  - [Configuration](#configuration)
 - [Training with `prime-rl`](#training-with-prime-rl)
-    - [Setup and Configuration](#setup-and-configuration)
+  - [Setup and Configuration](#setup-and-configuration)
 - [Prompt Optimization with `prime gepa run`](#prompt-optimization-with-prime-gepa-run)
-    - [Usage](#usage)
-    - [Output](#output)
+  - [Usage](#usage)
+  - [Output](#output)
 - [RL Rules of Thumb](#rl-rules-of-thumb)
-    - [Before Training](#before-training)
-    - [Performance Trade-offs](#performance-trade-offs)
-    - [Common Issues](#common-issues)
+  - [Before Training](#before-training)
+  - [Performance Trade-offs](#performance-trade-offs)
+  - [Inference Client Types](#inference-client-types)
+  - [Common Issues](#common-issues)
 - [Other Trainers](#other-trainers)
-    - [Tinker](#tinker)
-    - [SkyRL](#skyrl)
-    - [rLLM](#rllm)
-    - [Integrating with Other Trainers](#integrating-with-other-trainers)
+  - [Tinker](#tinker)
+  - [SkyRL](#skyrl)
+  - [rLLM](#rllm)
 
 ## Hosted Training
 
-Hosted Training, available within our Lab platform, enables you to automatically train models via `prime-rl` without needing to manage your own infrastructure. Hosted Training supports LoRA for RL training, and can be used with any environment built with Verifiers. 
+Hosted Training, available within our Lab platform, enables you to automatically train models via `prime-rl` without needing to manage your own infrastructure. Hosted Training supports LoRA for RL training, and can be used with any environment built with Verifiers.
 
 ### Configuration
 
@@ -37,7 +37,7 @@ prime lab setup
 
 This will download example TOML configs for Hosted Training into `configs/rl/`, example eval configs into `configs/eval/`, along with `configs/endpoints.toml` and GEPA starter configs in `configs/gepa/`:
 
-```
+```text
 configs/
 ├── endpoints.toml
 ├── eval/
@@ -81,6 +81,7 @@ id = "primeintellect/reverse-text"
 ```
 
 We currently support the following models for Hosted Training:
+
 - `Qwen/Qwen3-30B-A3B-Instruct-2507`
 - `Qwen/Qwen3-30B-A3B-Thinking-2507`
 - `Qwen/Qwen3-4B-Instruct-2507`
@@ -105,11 +106,12 @@ Hosted Training is currently in Private Beta. For access, please fill out [this 
 
 ## Training with `prime-rl`
 
-Our [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer is a production-ready async RL training framework that supports large-scale multi-node training, agentic rollouts with Verifiers environments, Mixture-of-Experts (MoE) models, LoRA adapters, and other training algorithms such as SFT and online distillation. We recommend using `prime-rl` for training with Verifiers environments on self-managed GPU infrastructure. The default configuration distills the best practices from our research team's experience and the broader community into a stable, easy-to-use recipe, including advanced features such as online difficulty filtering, continuous batching, in-flight weight updates, importance sampling and logprob clipping for stability, and more. 
+Our [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer is a production-ready async RL training framework that supports large-scale multi-node training, agentic rollouts with Verifiers environments, Mixture-of-Experts (MoE) models, LoRA adapters, and other training algorithms such as SFT and online distillation. We recommend using `prime-rl` for training with Verifiers environments on self-managed GPU infrastructure. The default configuration distills the best practices from our research team's experience and the broader community into a stable, easy-to-use recipe, including advanced features such as online difficulty filtering, continuous batching, in-flight weight updates, importance sampling and logprob clipping for stability, and more.
 
 ### Setup and Configuration
 
 To set up your workspace for training with `prime-rl`, run:
+
 ```bash
 prime lab setup --prime-rl
 ```
@@ -123,6 +125,7 @@ This will clone and install the `prime-rl` trainer and its dependencies. For con
 ### Usage
 
 Basic usage mirrors `prime eval run`:
+
 ```bash
 prime gepa run wiki-search --model google/gemini-3-flash-preview
 ```
@@ -130,6 +133,7 @@ prime gepa run wiki-search --model google/gemini-3-flash-preview
 This will optimize the system prompt for the `wiki-search` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki-search/outputs/gepa/`.
 
 Key options:
+
 - `--model` / `-m`: Model for evaluation rollouts
 - `--reflection-model` / `-M`: Teacher model for prompt reflection (defaults to `--model`)
 - `--max-calls` / `-B`: Evaluation budget (default: 500)
@@ -144,6 +148,7 @@ In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`
 ### Output
 
 After optimization, you'll find:
+
 - `system_prompt.txt` - The optimized system prompt.
 - `results.jsonl` - Candidate prompt rows for evaluation upload; GEPA-specific fields live under `info`.
 - `pareto_frontier.jsonl` - Best candidate references per validation example
@@ -164,10 +169,12 @@ RL training can be sensitive to implementation details and hyperparameters. Some
 ### Performance Trade-offs
 
 **For more aggressive training** (higher risk of collapse):
+
 - Increase learning rate (1e-5 to 1e-4 for LoRA, 1e-6 to 1e-5 for full finetuning)
 - Decrease `rollouts_per_example` and `batch_size` for faster generation
 
 **For more stable training** (slower progress):
+
 - Increase `rollouts_per_example` (16-32)
 - Increase `batch_size` (512-1024)
 - Use larger models (14B+)
@@ -186,19 +193,22 @@ For production RL training, use `openai_chat_completions_token` — it's the tri
 
 ### Common Issues
 
-**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
+**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn training. We provide versions of many of these models with [modified chat templates](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
 
 **OOM during generation:**
+
 - Reduce `rollouts_per_example` or `micro_batch_size`
 - Use LoRA instead of full finetuning
 - Check vLLM server has sufficient memory
 
 **Training instability:**
+
 - Decrease learning rate
 - Increase `rollouts_per_example`
 - Increase `batch_size`
 
 **Slow training:**
+
 - Increase learning rate
 - Leverage continuous rewards
 - Use online difficulty filtering

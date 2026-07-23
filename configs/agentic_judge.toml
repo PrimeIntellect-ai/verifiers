@@ -40,7 +40,7 @@ id = "gsm8k-v1"
 [env.solver.harness]
 id = "bash"
 
-[env.solver.harness.runtime]
+[env.solver.runtime]
 type = "docker"
 
 [env.judge]

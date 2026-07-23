@@ -6,7 +6,7 @@ import logging
 import time
 
 from verifiers.v1.clients import ModelContext, resolve_client
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import (
@@ -32,21 +32,25 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     out = output_path(config)
-    owed: dict[str, int] | None = None
+    # One (task, rollouts-to-run) pair per selected task; resume shrinks the counts.
+    plan = [(task, config.num_rollouts) for task in tasks]
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
     finished: list[Episode] = []
     if config.resume is not None:
-        finished, owed = resume.load(
-            out, [t.data.idx for t in tasks], config.num_rollouts, env.complete
-        )
+        keys = [
+            resume.task_key(t.data.model_dump(mode="json", exclude_none=True))
+            for t in tasks
+        ]
+        finished, owed = resume.load(out, keys, config.num_rollouts, env.complete)
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
-        tasks = [task for task in tasks if owed.get(task.data.idx)]
+        counts = resume.distribute(keys, owed, config.num_rollouts)
+        plan = [(task, n) for task, n in zip(tasks, counts) if n]
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
-            len(tasks),
+            len(plan),
             sum(owed.values()),
         )
     else:
@@ -70,13 +74,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     # Serving resources (shared tool servers, interception) come up once for the
     # run; plan slots inside so the env's agents borrow them.
     async with env.serving():
-        planned = [
-            slot
-            for task in tasks
-            for slot in env.slots(
-                task, n=owed[task.data.idx] if owed else config.num_rollouts
-            )
-        ]
+        planned = [slot for task, n in plan for slot in env.slots(task, n=n)]
         slots = [RunSlot.finished(episode) for episode in finished] + planned
         push_state = None
         if config.push and config.rich:
@@ -110,7 +108,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     from functools import partial
 
     from verifiers.v1.utils.logging import setup_logging
-    from verifiers.v1.configs.env import pool_serve_kwargs
+    from verifiers.v1.configs.cli.env import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
 
     legacy = config.is_legacy
@@ -123,6 +121,15 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         if legacy
         else {"config_data": env_config_data(config.env)}  # picklable across the spawn
     )
+    tasks = []
+    if not legacy:
+        from verifiers.v1.loaders import load_taskset
+
+        # The client owns the taskset: load it here, once — the server (and its pool
+        # workers) never load data, they rebuild each dispatched task from its request.
+        tasks = load_taskset(config.env.taskset).select(
+            config.num_tasks, config.shuffle
+        )
     # Spawned processes inherit no logging — hand them the main process's setup so
     # their rollout logs land in the output dir.
     level = "DEBUG" if config.verbose else "INFO"
@@ -151,48 +158,57 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         address = await asyncio.to_thread(address_queue.get, timeout=600)
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
-        info = await client.info()
-        # Only a legacy (v0) env group-scores; a v1 env scores siblings in its own
-        # rollout.
-        group_scored = info.requires_group_scoring
-        if info.num_tasks is None:  # infinite taskset - the run must be bounded
-            if config.num_tasks is None:
-                raise ValueError(
-                    f"{config.env_id} is infinite - bound the run with -n/--num-tasks"
-                )
-            if config.shuffle:
-                logger.warning(
-                    "shuffle is a no-op on an infinite taskset - "
-                    "taking the first %d generated tasks",
-                    config.num_tasks,
-                )
-            idxs = list(range(config.num_tasks))
-        else:
+        # A v1 run dispatches — and resumes — tasks by content: the client owns them,
+        # and `resume.task_key` is their identity. Only the legacy bridge is addressed
+        # by dataset row (its dataset lives server-side, reported via `info`), and
+        # only a legacy env group-scores; a v1 env scores siblings in its own rollout.
+        if legacy:
+            info = await client.info()
+            group_scored = info.requires_group_scoring
             idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
+            plan = [({"task_idx": idx}, config.num_rollouts) for idx in idxs]
+        else:
+            group_scored = False
+            plan = [
+                ({"task_data": task.data.model_dump(mode="json")}, config.num_rollouts)
+                for task in tasks
+            ]
         out = output_path(config)
         finished: list[Episode] = []
         if config.resume is not None:
-            # (legacy only) a group is served and scored together, so a partially-kept
-            # task redoes as a whole group — whole_task drops its kept rows.
-            finished, owed = resume.load(
-                out, idxs, config.num_rollouts, whole_task=group_scored
-            )
+            if legacy:
+                # A group is served and scored together, so a partially-kept task
+                # redoes as a whole group — whole_task drops its kept rows.
+                finished, owed = resume.load(
+                    out,
+                    idxs,
+                    config.num_rollouts,
+                    whole_task=group_scored,
+                    key_of=lambda data: data.get("idx"),
+                )
+                counts = resume.distribute(idxs, owed, config.num_rollouts)
+            else:
+                keys = [
+                    resume.task_key(t.data.model_dump(mode="json", exclude_none=True))
+                    for t in tasks
+                ]
+                finished, owed = resume.load(out, keys, config.num_rollouts)
+                counts = resume.distribute(keys, owed, config.num_rollouts)
             if not owed:  # already complete - report it and exit successfully
-                print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
+                print(resume.nothing_to_resume_msg(out, len(plan), config.num_rollouts))
                 raise SystemExit(0)
-            idxs = [idx for idx in idxs if owed.get(idx)]
+            plan = [(payload, n) for (payload, _), n in zip(plan, counts) if n]
             logger.info(
                 "resuming %s: %d task(s), %d rollout(s) owed",
                 out,
-                len(idxs),
+                len(plan),
                 sum(owed.values()),
             )
         else:
-            owed = {idx: config.num_rollouts for idx in idxs}
             save_config(config, out)
             logger.info(
                 "running %dx%d rollouts via the env-server %s pool on %s",
-                len(idxs),
+                len(plan),
                 config.num_rollouts,
                 config.pool.type,
                 config.model,
@@ -224,13 +240,13 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 records.append(Episode.of(trace))
             return records
 
-        async def run_unit(idx: int) -> list[Episode]:
+        async def run_unit(payload: dict) -> list[Episode]:
             async with semaphore or contextlib.nullcontext():
                 episode = await client.run(
-                    task_idx=idx,
                     client=config.client,
                     model=config.model,
                     sampling=config.sampling,
+                    **payload,
                 )
             for trace in episode.traces:
                 trace.stamp(EvalRunInfo(id=config.uuid))
@@ -238,12 +254,12 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
             return [episode]
 
         # A group-scored legacy task runs its rollouts together (one `run_group`
-        # request, one worker); otherwise each rollout is its own `run_rollout`
-        # request, dispatched least-busy across workers.
+        # request, one worker); otherwise each rollout is its own `run` request,
+        # dispatched least-busy across workers.
         units = (
-            [run_group_unit(i) for i in idxs]
+            [run_group_unit(payload["task_idx"]) for payload, _ in plan]
             if group_scored
-            else [run_unit(i) for i in idxs for _ in range(owed[i])]
+            else [run_unit(payload) for payload, n in plan for _ in range(n)]
         )
         results = await asyncio.gather(*units)
         await client.close()

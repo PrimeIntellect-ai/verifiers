@@ -308,7 +308,7 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge agent. With `shared_runtime` it plays in the solver's box (its
     own runtime policy is unused); otherwise its runtime must be a container:
-    `--env.judge.harness.runtime.type docker|prime`."""
+    `--env.judge.runtime.type docker|prime`."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
     shared_runtime: bool = True
@@ -322,12 +322,12 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
         super().__init__(config)
-        self._check_harnesses()
+        self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
         config.task.grade_prompt()
         config.task.criteria()
 
-    def _check_harnesses(self) -> None:
+    def _check_agents(self) -> None:
         """The judge executes real code, never on the host — refuse an impossible
         pairing at construction, not after burning a full solver run. The container
         requirement lands on whoever provisions the judge's box: the solver when
@@ -341,12 +341,12 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "(--env.taskset.task.judges), not an agent."
             )
         box_owner = "solver" if self.config.shared_runtime else "judge"
-        if isinstance(self._harnesses[box_owner].config.runtime, vf.SubprocessConfig):
+        owner_config: vf.AgentConfig = getattr(self.config, box_owner)
+        if isinstance(owner_config.runtime, vf.SubprocessConfig):
             raise ValueError(
                 f"agentic-judge plays its judge in a container, but the {box_owner} "
                 "(which provisions the judge's box) resolves to the subprocess "
-                f"runtime; use --env.{box_owner}.harness.runtime.type docker or "
-                "prime"
+                f"runtime; use --env.{box_owner}.runtime.type docker or prime"
                 + (
                     ", or --env.shared-runtime false for a fresh judge box"
                     if self.config.shared_runtime

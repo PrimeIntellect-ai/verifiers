@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 
 CONFIGS = sorted(
     p
@@ -24,4 +24,4 @@ CONFIGS = sorted(
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     # resolved to a v1 taskset or a v0 env id
-    assert (config.env.taskset is not None and config.env.taskset.id) or config.id
+    assert config.env.taskset.id or config.id

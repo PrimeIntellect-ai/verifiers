@@ -50,85 +50,26 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, cast
 
-from pydantic import BaseModel, SerializeAsAny, model_validator
+from pydantic import BaseModel
 from typing_extensions import TypeVar
 
-from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
+from verifiers.v1.clients.config import build_async_openai
+from verifiers.v1.configs.judge import (
+    JudgeConfig,
+    judge_key,
+)
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.scoring import parse_judge_choice
-from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.generic import generic_type
-from verifiers.v1.types import ID, Messages, SamplingConfig, StrictBaseModel, Usage
+from verifiers.v1.types import Messages, StrictBaseModel, Usage
 
 if TYPE_CHECKING:
     from verifiers.v1.task import TaskData
     from verifiers.v1.trace import Trace
 
 ParsedT = TypeVar("ParsedT")
-
-
-class JudgeSamplingConfig(SamplingConfig):
-    pass
-
-
-class JudgeConfig(BaseClientConfig):
-    id: ID = ""
-    """Plugin id; empty for a judge called directly by task code."""
-    name: str = ""
-    """Reward key override for a plugged judge."""
-    weight: float = 1.0
-    model: str = "openai/gpt-5.4-nano"
-    sampling: JudgeSamplingConfig = JudgeSamplingConfig()
-    prompt: str | None = None
-    prompt_file: Path | None = None
-    """Prompt file override, mutually exclusive with `prompt`."""
-
-    @model_validator(mode="after")
-    def check_prompt_source(self) -> "JudgeConfig":
-        if self.prompt is not None and self.prompt_file is not None:
-            raise ValueError("set `prompt` or `prompt_file`, not both")
-        return self
-
-
-Judges = list[SerializeAsAny[JudgeConfig]]
-"""Config-plugged judges, resolved by id and serialized as their concrete types."""
-
-
-def judge_key(config: JudgeConfig) -> str:
-    return config.name or env_name(config.id)
-
-
-def resolve_judges(entries: Sequence[Any]) -> list[JudgeConfig]:
-    from verifiers.v1.loaders import judge_config_type
-
-    resolved = []
-    for entry in entries:
-        raw = entry.model_dump() if isinstance(entry, BaseModel) else dict(entry)
-        if not raw.get("id"):
-            raise ValueError(
-                "each `judges` entry needs an `id` (a judge plugin: `reference`, "
-                "`rubric`, a local package, or a hub `org/name` package)"
-            )
-        resolved.append(judge_config_type(raw["id"]).model_validate(raw))
-    return resolved
-
-
-def check_judges(entries: Sequence[JudgeConfig]) -> None:
-    for entry in entries:
-        if not entry.id:
-            raise ValueError(
-                "each `judges` entry needs an `id` (a judge plugin: `reference`, "
-                "`rubric`, a local package, or a hub `org/name` package)"
-            )
-    keys = [judge_key(entry) for entry in entries]
-    if duplicates := {key for key in keys if keys.count(key) > 1}:
-        raise ValueError(
-            f"`judges` entries share a reward key {sorted(duplicates)}; set a "
-            "distinct `name` on each to keep both verdicts"
-        )
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
