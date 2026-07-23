@@ -29,15 +29,6 @@ class RelayReply:
 
 
 class Client(ABC):
-    async def prepare_request_body(self, dialect: Dialect, body: dict) -> dict:
-        """Normalize a provider request before the interception server parses/traces it.
-
-        Relay clients keep the request verbatim. Training clients may rewrite heavy
-        in-process payloads (for example base64 images) into stable run-asset refs so the
-        trace, renderer, and trainer all see the same cheap message content.
-        """
-        return body
-
     @abstractmethod
     async def get_response(
         self,

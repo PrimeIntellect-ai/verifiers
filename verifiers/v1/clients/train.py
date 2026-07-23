@@ -8,7 +8,6 @@ reuses the chat client's wire translation (message/tool shapes are the same), an
 needs a running vLLM engine.
 """
 
-import asyncio
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -18,7 +17,6 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, RendererConfig
 from renderers.base import is_multimodal
 
-from verifiers.utils.multimodal import prepare_images_inplace
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
@@ -207,11 +205,6 @@ class TrainClient(Client):
                 **pool_kwargs,
             )
         return self._pool
-
-    async def prepare_request_body(self, dialect: Dialect, body: dict) -> dict:
-        if isinstance(dialect, ChatDialect):
-            await asyncio.to_thread(prepare_images_inplace, body)
-        return body
 
     async def get_response(
         self,

@@ -88,8 +88,8 @@ def _validate_raw_mm_item(item: Any) -> dict[str, Any]:
             "v1 multimodal sidecars must be raw image descriptors, "
             "not processed multimodal payloads"
         )
-    if not isinstance(item.get("raw_image_uri"), str) or not item["raw_image_uri"]:
-        raise ValueError("v1 multimodal sidecars require raw_image_uri")
+    if not isinstance(item.get("raw_image_data"), str) or not item["raw_image_data"]:
+        raise ValueError("v1 multimodal sidecars require inline raw_image_data")
     return dict(item)
 
 
@@ -149,8 +149,8 @@ class MessageNode(StrictBaseModel):
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for images this message introduces.
 
-    With the raw-image path, items are lightweight descriptors (hashes, grid metadata, and
-    optional run-image refs), not image processor tensors. `Branch.multi_modal_data` concatenates
+    With the raw-image path, items are descriptors (hashes, grid metadata, and the inline
+    base64 image source), not image processor tensors. `Branch.multi_modal_data` concatenates
     them along the path for the trainer. Old processed-payload sidecars are rejected.
     """
     usage: Usage | None = None
