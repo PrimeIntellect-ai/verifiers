@@ -340,6 +340,12 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
+        if self.config.shared_runtime and self.config.solver.replay is not None:
+            raise ValueError(
+                "a replayed solver leaves no box for the judge to share; use "
+                "--env.shared-runtime false (the judge provisions its own box "
+                "and verifies from the uploaded trace)"
+            )
         box_owner = "solver" if self.config.shared_runtime else "judge"
         if isinstance(self._harnesses[box_owner].config.runtime, vf.SubprocessConfig):
             raise ValueError(
