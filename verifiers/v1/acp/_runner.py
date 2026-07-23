@@ -222,8 +222,11 @@ class PersistentSession:
     """One live ACP process, connection, and session shared by several segments."""
 
     def __init__(self) -> None:
-        self.stack = AsyncExitStack()
         self.client = VerifiersClient()
+        self._reset()
+
+    def _reset(self) -> None:
+        self.stack = AsyncExitStack()
         self.connection: Any = None
         self.capabilities: Any = None
         self.session_id: str | None = None
@@ -257,19 +260,13 @@ class PersistentSession:
                 await self.stack.aclose()
             except BaseException:
                 pass
-            self.stack = AsyncExitStack()
-            self.connection = None
-            self.capabilities = None
-            self.session_id = None
-            self.command = None
-            self.server_urls = None
-            self.system_prompt = None
-            self.is_new = True
+            self._reset()
             raise
         self.session_id = session.session_id
         self.command = command
         self.server_urls = config["mcp_urls"]
         self.system_prompt = config["system_prompt"]
+        self.is_new = True
 
     async def run(self, config: dict) -> str:
         if self.connection is None:
@@ -293,15 +290,17 @@ class PersistentSession:
         return reply
 
     async def close(self) -> None:
-        if self.connection is not None and self.session_id is not None:
-            session_capabilities = (
-                self.capabilities and self.capabilities.session_capabilities
-            )
-            if session_capabilities and session_capabilities.close is not None:
-                with suppress(Exception):
-                    await self.connection.close_session(session_id=self.session_id)
-        await self.stack.aclose()
-        self.connection = None
+        try:
+            if self.connection is not None and self.session_id is not None:
+                session_capabilities = (
+                    self.capabilities and self.capabilities.session_capabilities
+                )
+                if session_capabilities and session_capabilities.close is not None:
+                    with suppress(Exception):
+                        await self.connection.close_session(session_id=self.session_id)
+            await self.stack.aclose()
+        finally:
+            self._reset()
 
 
 async def read_packet(reader: asyncio.StreamReader) -> dict:
@@ -323,31 +322,69 @@ async def serve_sidecar(socket_path: str) -> None:
     path.unlink(missing_ok=True)
     session = PersistentSession()
     lock = asyncio.Lock()
+    stop_lock = asyncio.Lock()
     shutdown = asyncio.Event()
+    active_prompt: asyncio.Task[str] | None = None
+
+    async def run_prompt(config: dict) -> str:
+        nonlocal active_prompt
+        async with lock:
+            if shutdown.is_set():
+                raise RuntimeError("ACP sidecar is shutting down")
+            active_prompt = asyncio.create_task(session.run(config))
+            try:
+                return await active_prompt
+            finally:
+                active_prompt = None
+
+    async def stop_session() -> None:
+        shutdown.set()
+        async with stop_lock:
+            task = active_prompt
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            # `run_prompt` releases this after its cancelled session request unwinds.
+            # Holding it for close prevents a waiting prompt from racing a restart.
+            async with lock:
+                await session.close()
 
     async def handle(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        response: dict | None = None
         try:
             request = await read_packet(reader)
             operation = request.get("operation")
             if operation == "ping":
                 response = {"ok": True}
             elif operation == "shutdown":
-                try:
-                    await session.close()
-                    response = {"ok": True}
-                finally:
-                    shutdown.set()
+                await stop_session()
+                response = {"ok": True}
+            elif operation == "prompt":
+                prompt_task = asyncio.create_task(run_prompt(request["config"]))
+                disconnect_task = asyncio.create_task(reader.read())
+                done, _ = await asyncio.wait(
+                    (prompt_task, disconnect_task),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if prompt_task in done:
+                    disconnect_task.cancel()
+                    await asyncio.gather(disconnect_task, return_exceptions=True)
+                    response = {"ok": True, "reply": await prompt_task}
+                else:
+                    # The short-lived request process was cancelled or timed out.
+                    # Stop both the prompt and its agent process so neither can keep
+                    # consuming tokens without a client.
+                    prompt_task.cancel()
+                    await asyncio.gather(prompt_task, return_exceptions=True)
+                    await stop_session()
+                    return
             else:
-                async with lock:
-                    if operation == "prompt":
-                        reply = await session.run(request["config"])
-                        response = {"ok": True, "reply": reply}
-                    else:
-                        raise ValueError(
-                            f"unknown ACP sidecar operation: {operation!r}"
-                        )
+                raise ValueError(f"unknown ACP sidecar operation: {operation!r}")
+        except asyncio.CancelledError:
+            if not shutdown.is_set():
+                raise
         except Exception as error:
             traceback.print_exc()
             response = {
@@ -355,10 +392,14 @@ async def serve_sidecar(socket_path: str) -> None:
                 "error": f"{type(error).__name__}: {error}",
             }
         try:
-            await write_packet(writer, response)
+            if response is not None:
+                await write_packet(writer, response)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         finally:
             writer.close()
-            await writer.wait_closed()
+            with suppress(BrokenPipeError, ConnectionResetError):
+                await writer.wait_closed()
 
     server = await asyncio.start_unix_server(handle, path=socket_path)
     os.chmod(path, 0o600)
@@ -368,7 +409,7 @@ async def serve_sidecar(socket_path: str) -> None:
     finally:
         server.close()
         await server.wait_closed()
-        await session.close()
+        await stop_session()
         path.unlink(missing_ok=True)
 
 
@@ -450,6 +491,8 @@ async def main() -> None:
             if str(error) == "timed out waiting for ACP sidecar":
                 raise SystemExit(PROBE_UNAVAILABLE_EXIT_CODE) from None
             raise
+        except TimeoutError:
+            raise SystemExit(PROBE_UNAVAILABLE_EXIT_CODE) from None
     else:
         raise ValueError(f"unknown ACP runner operation: {operation!r}")
 
