@@ -8,16 +8,22 @@
 #
 #   uv run eval @ configs/agentic_judge.toml --model <model>
 #
-# The judge writes {"score": 0-10, ...} to /tmp/verdict.json in its box; the env
-# validates it strictly and records it on the solver's trace as the `judge` reward.
+# The judge grades rubric criteria and writes {"verdicts": [...]} to
+# /tmp/verdict.json in its box; the env validates it strictly and records the
+# weighted mean on the solver's trace as the `judge` reward.
 #
 # The grading policy and what lands in the judge's box are configurable:
 #   --env.task.prompt        grading-policy override: inline text or a policy
 #                            file (a value ending in .md/.txt is read from
 #                            disk); may reference {prompt}. The verdict
 #                            contract and workspace note are always appended.
-#   [env.task.uploads]       trace/transcript paths (null to omit) and
-#                            info = { <trace.info key> = "<sandbox path>" }
+#   --env.task.rubric        criteria file (.toml/.json `criteria` list, the
+#                            plugged rubric judge's format); default is the
+#                            single built-in `solved` criterion. Each criterion
+#                            lands as a judge/<name> metric; the judge reward
+#                            is their weighted mean.
+#   --env.task.trace         where the raw trace record lands in the judge's
+#                            box (default /tmp/trace.json; null to omit)
 #   [env.score]              task_weight (default 0) scales the taskset's own
 #                            rewards; judge_weight (default 1) the verdict's
 #   --env.shared-runtime     true (default): judge inspects the solver's live

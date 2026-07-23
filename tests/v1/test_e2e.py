@@ -320,8 +320,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     lands on the solver's trace under the spec's reward key. Wiring, not taste:
     the judge followed the verdict-file contract — the grade itself is the
     model's call. Exercises the config surface too: a policy-only prompt
-    override (the verdict contract is appended regardless), an extra
-    `trace.info` upload (an absent key skips, not fails), and
+    override (the verdict contract is appended regardless) and
     reward-composition weights."""
     traces = await run_v1(
         "echo-v1",
@@ -330,7 +329,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
             "id": "agentic-judge",
             # The solver owns the shared box, so the container is pinned here.
             "solver": {"harness": {"id": "bash", "runtime": {"type": "docker"}}},
-            # The judge reads the transcript and reasons before it writes the
+            # The judge reads the trace and reasons before it writes the
             # verdict file; the shared 2048-token run cap truncates it mid-audit.
             "judge": {
                 "harness": {"id": "bash"},
@@ -338,7 +337,6 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
             },
             "task": {
                 "prompt": "Check EMPIRICALLY that the agent echoed the word back.",
-                "uploads": {"info": {"no_such_key": "/tmp/absent.txt"}},
             },
             "score": {"task_weight": 0.5},
         },
