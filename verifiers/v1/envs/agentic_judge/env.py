@@ -340,8 +340,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         for criterion in criteria:
             solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
         if self.config.score.task_weight != 1.0:
-            for name in solution.rewards:
-                solution.rewards[name] *= self.config.score.task_weight
+            for reward in solution.rewards.values():
+                reward.weight *= self.config.score.task_weight
         total = sum(criterion.weight for criterion in criteria)
         reward = sum(c.weight * scores[c.name] for c in criteria) / total
         solution.record_reward("judge", reward, weight=self.config.score.judge_weight)

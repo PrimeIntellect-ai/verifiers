@@ -197,7 +197,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     )
     assert trace.ok, trace.errors
     assert trace.stop_condition == "user_closed"
-    assert trace.rewards["resumed"] == 1.0
+    assert trace.rewards["resumed"].score == 1.0
     assert trace.tools  # ACP-native tools, or Pi's MCP adapter meta-tool
     segments = trace.info["acp_segments"]
     assert len(segments) == 2
@@ -320,7 +320,7 @@ async def test_rubric_judge(run_v1, tmp_path):
         max_turns=2,
     )
     assert trace.ok
-    assert trace.rewards["rubric"] > 0  # the judge's verdict landed in the reward
+    assert trace.rewards["rubric"].score > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0
     assert trace.info["judge"]  # the call was recorded onto the trace
 
@@ -428,9 +428,11 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     (judge,) = [t for t in traces if t.agent_name == "judge"]
     assert solver.ok and judge.ok
     assert judge.trainable is False
-    assert solver.rewards["echoed"] == 0.5  # the task's own reward, rescaled
+    # The task's own reward keeps its raw score; the rescale lands on the weight.
+    assert solver.rewards["echoed"].score == 1.0
+    assert solver.rewards["echoed"].weight == 0.5
     assert isinstance(judge.info.get("verdict"), dict)  # scraped off the box
-    assert 0.0 <= solver.rewards["judge"] <= 1.0
+    assert 0.0 <= solver.rewards["judge"].score <= 1.0
 
 
 @pytest.mark.e2e
@@ -491,7 +493,7 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
     assert assistant.ok and user.ok
     assert assistant.task.data.prompt is None  # the scenario stayed off the wire
     assert user.num_turns >= 1  # the modeled user actually drove the exchange
-    assert assistant.rewards["echoed"] == 1.0  # the tool ran, mid-conversation
+    assert assistant.rewards["echoed"].score == 1.0  # the tool ran, mid-conversation
     # The tool was advertised to the masked chat exactly as to any run.
     assert assistant.tools is not None
     assert any(tool.name == "echo_back" for tool in assistant.tools)
@@ -513,7 +515,7 @@ async def test_kuhn_poker_self_play(run_v1, tmp_path):
         rollout_timeout=300,
     )
     assert sorted(t.agent_name for t in traces) == ["player0", "player1"]
-    payoffs = {t.agent_name: t.rewards["payoff"] for t in traces}
+    payoffs = {t.agent_name: t.rewards["payoff"].score for t in traces}
     assert payoffs["player0"] + payoffs["player1"] == 0  # zero-sum
     assert abs(payoffs["player0"]) in (1.0, 2.0)
     for trace in traces:

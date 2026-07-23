@@ -152,7 +152,9 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
         solves = [t for t in traces if t.agent_name == "solver"]
         if not solves:
             return 0.0
-        return sum(t.rewards.get("correct", 0.0) for t in solves) / len(solves)
+        return sum(
+            r.score if (r := t.rewards.get("correct")) else 0.0 for t in solves
+        ) / len(solves)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """The proposer is judged by what its problem DOES to the solvers:
