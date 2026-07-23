@@ -17,8 +17,10 @@ from pydantic_config import BaseConfig
 from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.state import State
-from verifiers.v1.task import Task, TaskConfig, TaskData, TaskResources
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.configs.task import TaskConfig
+from verifiers.v1.task import Task, TaskData, TaskResources
+from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.taskset import Taskset
 from verifiers.v1.tasksets.lean.scoring import (
     build_starter_file,
     expected_protected_signature,

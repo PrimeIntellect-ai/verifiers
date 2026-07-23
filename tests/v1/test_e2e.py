@@ -100,7 +100,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-v1",
         harness=harness,
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -109,7 +109,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.stop_condition == "agent_completed"
     assert trace.reward == 1.0
     # The seat's resolved identity rides the trace (policy metadata for trainers).
-    assert trace.agent is not None and trace.agent.sampling.temperature == 0
+    assert trace.agent is not None and trace.agent.config.sampling.temperature == 0
     # Every sampled turn has one per-call record, linked to its assistant node.
     sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
     assert [c.node for c in trace.calls if c.error is None] == sampled
@@ -130,7 +130,7 @@ async def test_user(run_v1, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-user-sim-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=6,
     )
@@ -189,7 +189,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,
@@ -219,7 +219,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-tool-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=6,
         taskset_overrides={"task": {"tools": tool_runtime}},
@@ -246,7 +246,7 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
     (trace,) = await run_v1(
         "counter-tool-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
         taskset_overrides={"task": {"tools": tool_runtime}},
@@ -267,7 +267,7 @@ async def test_shared_tool_isolation(
     traces = await run_v1_server(
         "scratchpad-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         num_tasks=2,
         n=1,
@@ -287,7 +287,7 @@ async def test_tool_response_image(run_v1, tmp_path):
     (trace,) = await run_v1(
         "tool-response-image-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": "subprocess"}},
+        runtime={"type": "subprocess"},
         model="openai/gpt-5.6-luna",
         reasoning_effort="none",
         output_dir=tmp_path,
@@ -314,7 +314,7 @@ async def test_rubric_judge(run_v1, tmp_path):
     (trace,) = await run_v1(
         "echo-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": "subprocess"}},
+        runtime={"type": "subprocess"},
         output_dir=tmp_path,
         taskset_overrides={"task": {"judges": [{"id": "rubric", "path": str(rubric)}]}},
         max_turns=2,
@@ -332,7 +332,7 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=harness,
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=10,
     )
@@ -406,7 +406,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
             # The judge reads the transcript and reasons before it writes the
             # verdict file; the shared 2048-token run cap truncates it mid-audit.
             "judge": {
-                "harness": {"runtime": {"type": "docker"}},
+                "runtime": {"type": "docker"},
                 "max_output_tokens": 8192,
             },
         },
@@ -551,13 +551,13 @@ async def test_replay_round_trip(run_v1, tmp_path):
 
     from verifiers.v1.cli.output import CONFIG_FILE
     from verifiers.v1.cli.replay import run_replay
-    from verifiers.v1.configs.replay import ReplayConfig
+    from verifiers.v1.configs.cli.replay import ReplayConfig
 
     run_dir = tmp_path / "run"
     (source,) = await run_v1(
         "reverse-text-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": "subprocess"}},
+        runtime={"type": "subprocess"},
         output_dir=run_dir,
         max_turns=2,
     )

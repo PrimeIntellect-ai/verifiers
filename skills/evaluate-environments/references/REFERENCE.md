@@ -1,6 +1,6 @@
 # REFERENCE.md
 
-A complete reference of every settable config field for **evaluating tasksets in `verifiers.v1`**. The config tree is parsed from CLI flags (dotted, e.g. `--env.agent.harness.runtime.type docker`) and/or `@ file.toml` by `prime-pydantic-config`; every field below is settable either way unless noted.
+A complete reference of every settable config field for **evaluating tasksets in `verifiers.v1`**. The config tree is parsed from CLI flags (dotted, e.g. `--env.agent.runtime.type docker`) and/or `@ file.toml` by `prime-pydantic-config`; every field below is settable either way unless noted.
 
 The root config the eval CLI parses is [`EvalConfig`](#evalconfig--the-run). It composes the environment (`env` — the whole `[env]` block: taskset, agents, limits) with the run knobs (model, sampling, counts) and the worker pool. The tree:
 
@@ -14,7 +14,7 @@ EvalConfig                          (the run)
 │  ├─ <agent>: AgentConfig          (per-agent harness/model/client/sampling +
 │  │  │                              per-run caps; `agent` on the single-agent env)
 │  │  ├─ harness: HarnessConfig     (subclass resolved by --env.<agent>.harness.id)
-│  │  │  └─ runtime: RuntimeConfig  (subprocess | docker | prime | modal)
+│  │  ├─ runtime: RuntimeConfig     (subprocess | docker | prime | modal)
 │  │  ├─ timeout: TimeoutConfig     (per-stage: setup/rollout/finalize/scoring)
 │  │  ├─ retries: RetryConfig       (per-agent whole-run retries)
 │  │  └─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
@@ -26,13 +26,13 @@ EvalConfig                          (the run)
 
 There is no run-level harness: each agent pins its own (`--env.agent.harness.*` on the single-agent env), an unpinned agent runs the taskset's default harness (its bundled one, else `bash`), and a declared pin is the env author's default. The retired flat axes error with a pointer: `--taskset.*` → `--env.taskset.*`, `--harness.*` → `--env.<agent>.harness.*`.
 
-Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-server-cli) (env server) and [`ValidateConfig`](#validateconfig--the-validate-cli) (per-task validation). All three live in `verifiers/v1/configs/`.
+Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-server-cli) (env server) and [`ValidateConfig`](#validateconfig--the-validate-cli) (per-task validation). All three live in `verifiers/v1/configs/cli/`.
 
 ---
 
 ## EvalConfig — the run
 
-`verifiers/v1/configs/eval.py` — `EvalConfig(EnvServerConfig)`. The single config object the eval CLI parses. Inherits [`EnvServerConfig`](#envserverconfig--the-pool) (the `env` block + `--pool.*` + the legacy v0 fields) and adds the run knobs. Everything environment-shaped lives under `--env.*` / `[env]`.
+`verifiers/v1/configs/cli/eval.py` — `EvalConfig(EnvServerConfig)`. The single config object the eval CLI parses. Inherits [`EnvServerConfig`](#envserverconfig--the-pool) (the `env` block + `--pool.*` + the legacy v0 fields) and adds the run knobs. Everything environment-shaped lives under `--env.*` / `[env]`.
 
 | Field | Type | Default | Aliases | Notes |
 | --- | --- | --- | --- | --- |
@@ -102,7 +102,7 @@ A vLLM `/inference/v1/generate` endpoint with client-side tokenization (response
 
 ## EnvConfig — the environment
 
-`verifiers/v1/env.py` — `EnvConfig(BaseConfig)`, the run's whole `[env]` block. One subclass
+`verifiers/v1/configs/env.py` — `EnvConfig(BaseConfig)`, the run's whole `[env]` block. One subclass
 per `Env` class (bound via `Env[YourConfig]`): the base carries which env
 (`id`), the seed taskset, and the env-agnostic run limits; the subclass declares each agent as
 an `AgentConfig` field plus the env's own knobs (`--env.n`, `--env.weight`, ...). The run's
@@ -123,11 +123,12 @@ Per-run caps (turns, tokens, stage timeouts, retries) are agent fields, not env 
 
 ### Agent config
 
-`verifiers/v1/agent.py` — `AgentConfig(BaseConfig)`. One per declared agent, addressed `--env.<agent>.*`. The **model context** defaults to the run's own (the serve protocol carries model/client/sampling per rollout request — what makes self-play trainable). The **harness** does not: an unpinned agent runs the taskset's default harness; a declared pin is the env author's per-agent default; partial overrides deep-merge onto it (an `id` switch replaces it).
+`verifiers/v1/configs/agent.py` — `AgentConfig(BaseConfig)`. One per declared agent, addressed `--env.<agent>.*`. The **model context** defaults to the run's own (the serve protocol carries model/client/sampling per rollout request — what makes self-play trainable). The **harness** does not: an unpinned agent runs the taskset's default harness; a declared pin is the env author's per-agent default; partial overrides deep-merge onto it (an `id` switch replaces it).
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `harness` | `HarnessConfig \| None` | `None` | The agent's program + runtime policy; resolved to its concrete subclass by `--env.<agent>.harness.id`. `None` = the taskset's default harness (its bundled one, else `bash`). See [Harness config](#harness-config). |
+| `harness` | `HarnessConfig \| None` | `None` | The agent's program; resolved to its concrete subclass by `--env.<agent>.harness.id`. `None` = the taskset's default harness (its bundled one, else `bash`). See [Harness config](#harness-config). |
+| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--env.<agent>.runtime.type docker\|prime\|modal`. |
 | `model` | `str \| None` | `None` | Pin a model for this agent (None = the run's `--model`). |
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
 | `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
@@ -161,7 +162,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 
 ## Timeout config
 
-`verifiers/v1/agent.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). An **agent** field (`--env.<agent>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default. For an interaction, `rollout` is one cumulative budget across active harness segments and pauses while the caller computes the next user turn.
+`verifiers/v1/configs/agent.py` — `TimeoutConfig(BaseConfig)`. Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no limit). An **agent** field (`--env.<agent>.timeout.*`); precedence: cli/toml > per-task [`TaskTimeout`](#task-resources--timeouts) > default. For an interaction, `rollout` is one cumulative budget across active harness segments and pauses while the caller computes the next user turn.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -170,7 +171,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 | `finalize` | `float \| None` | `None` | Max wall-clock for the task's `finalize` hook. |
 | `scoring` | `float \| None` | `None` | Max wall-clock for task rewards/metrics/judges and harness metrics. |
 
-The separate `verifiers/v1/env.py` `TimeoutConfig` (the env's `--env.timeout.*`) keeps only `episode` — the bound on the whole `run()` interaction — and `finalize` — the bound on the env's `finalize()` hook.
+The separate `verifiers/v1/configs/env.py` `TimeoutConfig` (the env's `--env.timeout.*`) keeps only `episode` — the bound on the whole `run()` interaction — and `finalize` — the bound on the env's `finalize()` hook.
 
 > Remote sandboxes cap any harness timeout at 24 hours (provider max lifetime).
 
@@ -178,7 +179,7 @@ The separate `verifiers/v1/env.py` `TimeoutConfig` (the env's `--env.timeout.*`)
 
 ## Retry config
 
-`verifiers/v1/retries.py`. Per-call model/runtime retries are owned by the harness/runtime SDKs; the framework keeps only **whole-run** retries, in two atoms sharing one shape: each agent's own (`--env.<agent>.retries.*` — rerun that agent's rollout; never into a borrowed box) and the env's whole-episode fallback (`--env.retries.*` — for faults no agent owns; a retried episode reruns whole).
+`verifiers/v1/configs/retries.py`. Per-call model/runtime retries are owned by the harness/runtime SDKs; the framework keeps only **whole-run** retries, in two atoms sharing one shape: each agent's own (`--env.<agent>.retries.*` — rerun that agent's rollout; never into a borrowed box) and the env's whole-episode fallback (`--env.retries.*` — for faults no agent owns; a retried episode reruns whole).
 
 ### `RetryConfig`
 
@@ -194,7 +195,7 @@ Rerun when the run ends with a captured error. Matching is by the error's **exce
 
 ## Pool config
 
-`verifiers/v1/env.py`. Discriminated on `type`; selected with `--pool.type static|elastic`. Drives the env-server worker pool (the `--server` path).
+`verifiers/v1/configs/cli/env.py`. Discriminated on `type`; selected with `--pool.type static|elastic`. Drives the env-server worker pool (the `--server` path).
 
 ### `StaticPoolConfig` — `type: "static"`
 
@@ -217,7 +218,7 @@ Elastic pool: start at one worker and scale up on demand.
 
 ## Taskset config
 
-`verifiers/v1/taskset.py` — `TasksetConfig(BaseConfig)`. Subclass it for values used while `Taskset.load()` builds the task list: dataset id, split, seed, sample count, difficulty filters, and similar load-time choices. The concrete subclass is selected through `env.taskset.id`, so its fields become typed dotted flags such as `--env.taskset.split test`.
+`verifiers/v1/configs/taskset.py` — `TasksetConfig(BaseConfig)`. Subclass it for values used while `Taskset.load()` builds the task list: dataset id, split, seed, sample count, difficulty filters, and similar load-time choices. The concrete subclass is selected through `env.taskset.id`, so its fields become typed dotted flags such as `--env.taskset.split test`.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -242,14 +243,13 @@ that subclass. These are run-wide knobs, not per-row data; the row itself belong
 
 ## Harness config
 
-`verifiers/v1/harness.py` — `HarnessConfig(BaseConfig)`. The base; **subclass per harness to add run knobs**. A harness belongs to an agent: the concrete subclass is resolved by `--env.<agent>.harness.id` (`--env.agent.harness.id` on the single-agent env); an unpinned agent runs the taskset's bundled harness, else `bash`. Mirrors `TasksetConfig`.
+`verifiers/v1/configs/harness.py` — `HarnessConfig(BaseConfig)`. The base; **subclass per harness to add run knobs**. A harness belongs to an agent: the concrete subclass is resolved by `--env.<agent>.harness.id` (`--env.agent.harness.id` on the single-agent env); an unpinned agent runs the taskset's bundled harness, else `bash`. Mirrors `TasksetConfig`.
 
 ### Base `HarnessConfig`
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `id` | `ID` | `"bash"` | The harness id, which selects it. Set via `--env.<agent>.harness.id`. |
-| `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--env.<agent>.harness.runtime.type docker\|prime\|modal`. |
 | `env` | `dict[str, str]` | `{}` | Additional env vars for the harness program. Harness-owned endpoint/auth/model vars take precedence. |
 | `forward_env` | `list[str]` | `[]` | Names of env vars to forward from `os.environ` into the harness program's runtime (for secrets not in checked-in config). Absent names are skipped; explicit `env` wins. |
 | `disabled_tools` | `list[str] \| None` | `None` | Harness-specific tool names to disable. |
@@ -261,7 +261,7 @@ A harness class also declares capability flags (ClassVars, not user-settable):
 
 ### Built-in harness configs
 
-All inherit the base `HarnessConfig` fields (`id`, `runtime`, `env`, `forward_env`, `disabled_tools`).
+All inherit the base `HarnessConfig` fields (`id`, `env`, `forward_env`, `disabled_tools`); the runtime is the agent's (`--env.<agent>.runtime.*`).
 
 #### `BashHarnessConfig` — `id: "bash"` (the fallback)
 
@@ -323,7 +323,7 @@ Installs the Kimi Code CLI and runs it headlessly.
 
 ## Runtime configs
 
-`verifiers/v1/runtimes/`. Discriminated on `type`; selected with the agent's `--env.<agent>.harness.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime`.
+`verifiers/v1/runtimes/`. Discriminated on `type`; selected with the agent's `--env.<agent>.runtime.type` (or `--runtime.type` for the validate CLI). The same union is reused as `ToolsetConfig.runtime`.
 
 ### `SubprocessConfig` — `type: "subprocess"` (default)
 
@@ -486,7 +486,7 @@ control flow supplies (`agent.interaction()`); see the `user-sim` bundled env.
 
 ## Judge config
 
-`verifiers/v1/judge.py`. `TaskConfig.judges` holds plugged judge configs that `Task.score` constructs and runs after the task's own rewards. Each list entry needs an `id`; the loader resolves that plugin's concrete `JudgeConfig` subclass before validation, just like tasksets and harnesses. Duplicate reward keys are rejected unless entries receive distinct `name` values.
+`verifiers/v1/configs/judge.py`. `TaskConfig.judges` holds plugged judge configs that `Task.score` constructs and runs after the task's own rewards. Each list entry needs an `id`; the loader resolves that plugin's concrete `JudgeConfig` subclass before validation, just like tasksets and harnesses. Duplicate reward keys are rejected unless entries receive distinct `name` values.
 
 A task may instead declare a custom `JudgeConfig` field on its own `TaskConfig`, construct the judge inside a reward, and call `evaluate()` directly. That direct-use config may leave `id` empty.
 
@@ -586,12 +586,12 @@ Use `only_gold` or `only_setup` to select one mode; setting both is rejected. Th
 - **Plugin resolution.** The run's `env` field narrows to the selected env's config class
   (`--env.id`, else the taskset's exported env, else `SingleAgentEnvConfig`) *before* validation; inside it, `taskset` narrows by its id and each pinned agent `harness` by its id. Entries in `TaskConfig.judges` are similarly narrowed by each judge `id`. This is why local and Hub plugin fields remain typed and appear in CLI validation instead of living in an untyped arguments dictionary.
 - **Dotted flags.** Every nested field is part of the same CLI tree
-  (`--env.agent.harness.runtime.type docker`, `--env.taskset.split test`, `--pool.max_workers 8`, `--env.agent.retries.max_retries 2`). An `@ file.toml` describes the identical tree; explicit CLI values layer over values loaded from the file.
+  (`--env.agent.runtime.type docker`, `--env.taskset.split test`, `--pool.max_workers 8`, `--env.agent.retries.max_retries 2`). An `@ file.toml` describes the identical tree; explicit CLI values layer over values loaded from the file.
 - **Runtime precedence.** An explicit, non-default CLI/TOML `workdir` or resource field wins over
   `TaskData`; otherwise a non-`None` row value fills it, and otherwise the runtime/provider default remains. `TaskData.image` is the required image for that row and replaces the runtime's base image. Unsupported resource fields are ignored; evaluation warns once per runtime/field.
 - **Timeout precedence.** For eval stages, a non-`None` agent-level `TimeoutConfig` value
   (`--env.<agent>.timeout.*`) wins over the corresponding `TaskData.timeout` value; if both are `None`, there is no framework timeout. The setup value is one deadline shared by task setup and harness provisioning. Validate uses `CheckTimeoutConfig.setup`, then falls back to `TaskData.timeout.setup`, while `CheckTimeoutConfig.total` independently bounds `Task.validate`.
-- **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `env.<agent>.harness.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
+- **Discriminated unions** are selected by their `type` field: `client.type` (eval|train), `pool.type` (static|elastic), `env.<agent>.runtime.type` / `runtime.type` (subprocess|docker|prime|modal).
 - **Frozen models.** `TaskData`, `TaskResources`, and `TaskTimeout` are immutable wire input, not
   mutable runtime state. Put per-rollout coordination on typed `trace.state`. `RolloutLimits` is an immutable framework limit derived from the env's `max_*` fields.
 - **Legacy v0.** Set the run-level `id` (leave `env.taskset` unset) to run a classic `load_environment` env through the bridge. `--resume` is not supported for legacy evals.

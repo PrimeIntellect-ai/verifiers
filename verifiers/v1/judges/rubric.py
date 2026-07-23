@@ -11,13 +11,8 @@ from typing import cast
 
 from pydantic import field_validator
 
-from verifiers.v1.judge import (
-    Judge,
-    JudgeConfig,
-    JudgeView,
-    judge_question,
-    judge_response,
-)
+from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, StrictBaseModel

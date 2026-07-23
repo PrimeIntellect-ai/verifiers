@@ -29,13 +29,13 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic
 
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.judge import Judges, check_judges, resolve_judges
+from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, StrictBaseModel, content_text
 from verifiers.v1.utils.generic import generic_type
@@ -92,30 +92,6 @@ class TaskTimeout(StrictBaseModel):
     harness: float | None = None
     finalize: float | None = None
     scoring: float | None = None
-
-
-class TaskConfig(BaseConfig):
-    """Run-time knobs read by `Task` behavior.
-
-    Subclass for server placement, judge, or scoring settings. Every field needs a
-    default because constructing a task without a config builds the declared config type.
-    Load-time dataset settings belong on `TasksetConfig` instead.
-    """
-
-    judges: Judges = []
-    """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_judges(cls, data):
-        if isinstance(data, dict) and data.get("judges"):
-            data["judges"] = resolve_judges(data["judges"])
-        return data
-
-    @model_validator(mode="after")
-    def _check_judges(self) -> TaskConfig:
-        check_judges(self.judges)
-        return self
 
 
 class TaskData(StrictBaseModel):

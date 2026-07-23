@@ -21,7 +21,7 @@ id = "primeintellect/terminal-bench-2"
 id = "codex"
 version = "0.116.0"
 
-[env.agent.harness.runtime]
+[env.agent.runtime]
 type = "docker"
 ```
 
@@ -109,7 +109,7 @@ Docker harnesses can keep trusted setup online, then restrict the agent to decla
 HTTP(S) destinations:
 
 ```toml
-[env.agent.harness.runtime]
+[env.agent.runtime]
 type = "docker"
 allow = ["https://*.wikipedia.org"]
 block = ["https://upload.wikimedia.org"]

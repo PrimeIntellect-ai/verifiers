@@ -100,13 +100,13 @@ def validate_pairing(
         raise ValueError(
             f"Harness {harness.config.id!r} needs a container runtime "
             "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
-            "use --env.agent.harness.runtime.type docker or prime."
+            "use --env.agent.runtime.type docker or prime."
         )
     if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
             "this run resolves to the subprocess runtime; use "
-            "--env.<agent>.harness.runtime.type docker or prime."
+            "--env.<agent>.runtime.type docker or prime."
         )
 
 
