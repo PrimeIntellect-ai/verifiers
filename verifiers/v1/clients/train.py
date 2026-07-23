@@ -14,9 +14,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
-from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RenderedTokens, RendererConfig
 from renderers.base import is_multimodal
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
@@ -213,11 +212,6 @@ class TrainClient(Client):
         if isinstance(dialect, ChatDialect):
             await asyncio.to_thread(prepare_images_inplace, body)
         return body
-
-    async def prepare_messages(self, dialect: Dialect, messages: list) -> list:
-        if isinstance(dialect, ChatDialect):
-            await asyncio.to_thread(prepare_images_inplace, messages)
-        return messages
 
     async def get_response(
         self,

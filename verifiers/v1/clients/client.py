@@ -38,10 +38,6 @@ class Client(ABC):
         """
         return body
 
-    async def prepare_messages(self, dialect: Dialect, messages: list) -> list:
-        """Normalize typed simulator messages before adding them to the wire body/trace."""
-        return messages
-
     @abstractmethod
     async def get_response(
         self,
