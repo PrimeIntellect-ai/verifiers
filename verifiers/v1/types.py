@@ -197,6 +197,7 @@ class TurnTokens(StrictBaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     prompt_ids: list[int] = Field(default_factory=list)
+    prompt_logprobs: list[float | None] = Field(default_factory=list)
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 

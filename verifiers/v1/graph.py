@@ -102,6 +102,9 @@ class MessageNode(StrictBaseModel):
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
+    prompt_logprobs: list[float | None] = Field(default_factory=list)
+    """Prefill logprobs aligned to `token_ids` when this node first entered a model prompt.
+    Sampled completion positions are None because their generation logprobs live in `logprobs`."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
@@ -483,6 +486,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     tokens = response.tokens
     multi_modal_data = tokens.multi_modal_data if tokens else None
     prompt_ids = tokens.prompt_ids if tokens else []
+    prompt_logprobs = tokens.prompt_logprobs if tokens else []
+    if prompt_logprobs and len(prompt_logprobs) != len(prompt_ids):
+        raise ValueError("prompt logprobs must align with prompt token ids")
     spans = tokens.message_spans if tokens else None
     is_content = tokens.is_content if tokens else None
     has_is_content = is_content is not None and len(is_content) == len(prompt_ids)
@@ -539,6 +545,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 token_ids=node_tokens,
                 mask=[False] * len(node_tokens),
                 is_content=is_content[start:end] if has_is_content else [],
+                prompt_logprobs=prompt_logprobs[start:end] if prompt_logprobs else [],
             )
         )
         parent = len(trace.nodes) - 1
@@ -564,6 +571,11 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
+            prompt_logprobs=(
+                [*prompt_logprobs[gen_start:], *([None] * len(comp_ids))]
+                if prompt_logprobs
+                else []
+            ),
         )
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.

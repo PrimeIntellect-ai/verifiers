@@ -144,6 +144,7 @@ def response_from_generate(
         # million-token contexts synchronously on the event loop.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
+            prompt_logprobs=result.get("prompt_logprobs") or [],
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
