@@ -33,6 +33,7 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+PROBE_UNAVAILABLE_EXIT_CODE = 75
 
 
 class VerifiersClient(Client):
@@ -332,17 +333,17 @@ async def serve_sidecar(socket_path: str) -> None:
             operation = request.get("operation")
             if operation == "ping":
                 response = {"ok": True}
+            elif operation == "shutdown":
+                try:
+                    await session.close()
+                    response = {"ok": True}
+                finally:
+                    shutdown.set()
             else:
                 async with lock:
                     if operation == "prompt":
                         reply = await session.run(request["config"])
                         response = {"ok": True, "reply": reply}
-                    elif operation == "shutdown":
-                        try:
-                            await session.close()
-                            response = {"ok": True}
-                        finally:
-                            shutdown.set()
                     else:
                         raise ValueError(
                             f"unknown ACP sidecar operation: {operation!r}"
@@ -387,12 +388,19 @@ async def connect(
 
 
 async def request_sidecar(
-    socket_path: str, request: dict, wait_seconds: float = 60
+    socket_path: str,
+    request: dict,
+    wait_seconds: float = 60,
+    response_seconds: float | None = None,
 ) -> dict:
     reader, writer = await connect(socket_path, wait_seconds)
     try:
         await write_packet(writer, request)
-        response = await read_packet(reader)
+        response = (
+            await read_packet(reader)
+            if response_seconds is None
+            else await asyncio.wait_for(read_packet(reader), response_seconds)
+        )
     finally:
         writer.close()
         await writer.wait_closed()
@@ -421,17 +429,27 @@ async def main() -> None:
         )
         sys.stdout.write(response["reply"])
     elif operation == "shutdown":
-        await request_sidecar(sys.argv[2], {"operation": "shutdown"}, wait_seconds=2)
+        await request_sidecar(
+            sys.argv[2],
+            {"operation": "shutdown"},
+            wait_seconds=2,
+            response_seconds=5,
+        )
     elif operation == "probe":
         wait_seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 0
-        await asyncio.wait_for(
-            request_sidecar(
-                sys.argv[2],
-                {"operation": "ping"},
-                wait_seconds=wait_seconds,
-            ),
-            timeout=max(2, wait_seconds + 1),
-        )
+        try:
+            await asyncio.wait_for(
+                request_sidecar(
+                    sys.argv[2],
+                    {"operation": "ping"},
+                    wait_seconds=wait_seconds,
+                ),
+                timeout=max(2, wait_seconds + 1),
+            )
+        except RuntimeError as error:
+            if str(error) == "timed out waiting for ACP sidecar":
+                raise SystemExit(PROBE_UNAVAILABLE_EXIT_CODE) from None
+            raise
     else:
         raise ValueError(f"unknown ACP runner operation: {operation!r}")
 

@@ -13,6 +13,7 @@ from verifiers.v1.types import Messages
 from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "_runner.py").read_text()
+PROBE_UNAVAILABLE_EXIT_CODE = 75
 
 __all__ = ["ACP"]
 
@@ -73,7 +74,7 @@ class ACP:
             sidecar_log = f"{sidecar_dir}/acp.log"
             async with self._sidecar_lock(runtime, sidecar_path):
                 probe = await runtime.run([*program, "probe", sidecar_path], {})
-                if probe.exit_code != 0:
+                if probe.exit_code == PROBE_UNAVAILABLE_EXIT_CODE:
                     removed = await runtime.run(["rm", "-f", sidecar_path], {})
                     if removed.exit_code != 0:
                         raise RuntimeError(
@@ -107,6 +108,13 @@ class ACP:
                                 f"{detail}\n\nACP sidecar log:\n{log.stdout.rstrip()}"
                             )
                         raise RuntimeError(f"ACP sidecar failed to start: {detail}")
+                elif probe.exit_code != 0:
+                    detail = (
+                        probe.stderr.strip()
+                        or probe.stdout.strip()
+                        or "sidecar did not respond"
+                    )
+                    raise RuntimeError(f"ACP sidecar probe failed: {detail}")
         directory = f".vf-acp-{secrets.token_hex(8)}"
         created = await runtime.run(["mkdir", "-m", "700", directory], {})
         if created.exit_code != 0:
