@@ -23,6 +23,7 @@ import verifiers.v1 as vf
 from verifiers.v1.types import StrictBaseModel
 
 VERDICT_FILE = "/tmp/verdict.json"
+TRACE_FILE = "/tmp/trace.json"
 
 GRADE_PROMPT = """\
 You are grading another agent's attempt at a task. Verify the work EMPIRICALLY:
@@ -96,24 +97,17 @@ def _render(template: str, **fields: str) -> str:
     return pattern.sub(lambda m: fields[m.group(1)], template)
 
 
-def _sandbox_note(trace_path: str | None) -> str:
-    """What an agentic judge must know about its box before it starts verifying."""
-    world = (
-        "the SAME box the graded agent worked in, in the state the agent "
-        "left it — its edits (and any scoring side effects) are applied"
-    )
-    uploaded = (
-        f" The agent's raw trace record (JSON: messages, tool calls, and its "
-        f"`info` artifacts) is uploaded at `{trace_path}`. The record is complete "
-        "— it may also carry the task's own scores/metrics and reference material "
-        "(a gold answer, a reference solution, held-out tests). Those are context, "
-        "not your standard: recorded scores can be wrong and references can be "
-        "narrower than the task; do not over-index on how a reference solves it. "
-        "Your verdict is what YOU verified by execution."
-        if trace_path is not None
-        else " Nothing about the graded attempt is uploaded; work from the prompt."
-    )
-    return f"## Your workspace\n\nYour sandbox is {world}.{uploaded}"
+SANDBOX_NOTE = f"""\
+## Your workspace
+
+Your sandbox is the SAME box the graded agent worked in, in the state the agent
+left it — its edits (and any scoring side effects) are applied. The agent's raw
+trace record (JSON: messages, tool calls, and its `info` artifacts) is uploaded
+at `{TRACE_FILE}`. The record is complete — it may also carry the task's own
+scores/metrics and reference material (a gold answer, a reference solution,
+held-out tests). Those are context, not your standard: recorded scores can be
+wrong and references can be narrower than the task; do not over-index on how a
+reference solves it. Your verdict is what YOU verified by execution."""
 
 
 class JudgeTask(vf.Task):
@@ -133,21 +127,14 @@ class JudgeTask(vf.Task):
         cls, task: vf.Task, solution: vf.Trace, config: "AgenticJudgeEnvConfig"
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace."""
-        files: dict[str, bytes] = {}
-        if config.task.trace is not None:
-            files[config.task.trace] = json.dumps(solution.to_record()).encode()
-
-        template = config.task.grade_prompt()
+        files = {TRACE_FILE: json.dumps(solution.to_record()).encode()}
+        template = config.task.build_prompt()
         body = _render(template, prompt=task.data.prompt_text)
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=task.data.prompt_text)
         prompt = "\n\n".join(
-            [
-                body,
-                _verdict_section(config.task.criteria()),
-                _sandbox_note(config.task.trace),
-            ]
+            [body, _verdict_section(config.task.criteria()), SANDBOX_NOTE]
         )
         return cls(
             vf.TaskData(
@@ -194,13 +181,8 @@ class JudgeTaskConfig(vf.BaseConfig):
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
     files work for both. None grades the single built-in `solved` criterion."""
-    trace: str | None = "/tmp/trace.json"
-    """Where in the judge's box to upload the solver's raw trace record; null to
-    omit it. The record carries everything about the attempt (messages, tool
-    calls, `trace.info` — e.g. a captured patch), so a policy that needs one of
-    its fields as a file just instructs the judge to extract it."""
 
-    def grade_prompt(self) -> str:
+    def build_prompt(self) -> str:
         if self.prompt is None:
             return GRADE_PROMPT + "\n\n" + TASK_SECTION
         path = Path(self.prompt)
@@ -262,7 +244,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         super().__init__(config)
         self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
-        config.task.grade_prompt()
+        config.task.build_prompt()
         config.task.criteria()
 
     def _check_agents(self) -> None:
@@ -294,11 +276,6 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             await agents.judge.run(judge_task, runtime=box)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        """Grade the scraped verdict against the rubric and record it on the
-        SOLVER's trace. Strict, mirroring the plugged rubric judge: exactly one
-        verdict per criterion, matched by name, answered from that criterion's
-        choices — anything else is a judge failure and fails the episode rather
-        than scoring the solver wrong."""
         by_agent = {t.agent_name: t for t in episode.traces}
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
