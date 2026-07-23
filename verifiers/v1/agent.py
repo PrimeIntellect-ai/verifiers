@@ -28,7 +28,7 @@ from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.retries import backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun, _as_messages
 from verifiers.v1.runtimes import (
-    DockerConfig,
+    NetworkPolicyConfig,
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
@@ -63,20 +63,26 @@ def _check_borrowed_placement(
     be honored. Reject requirements that cannot be applied to the running box; an
     image mismatch on a container only warns, since sharing its world is the point."""
     task_policy = "*" not in task.data.network_allow or bool(task.data.network_block)
-    base_docker = base_config if isinstance(base_config, DockerConfig) else None
-    if task_policy or (base_docker is not None and base_docker.network_isolated):
+    base_policy = base_config if isinstance(base_config, NetworkPolicyConfig) else None
+    if task_policy or (base_policy is not None and base_policy.network_restricted):
         config = runtime.config
-        if not isinstance(config, DockerConfig):
+        if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
-                f"task {task.data.idx!r} requires a Docker URL network policy, but "
-                f"borrowed runtime {runtime.name!r} is not Docker-backed; use "
+                f"task {task.data.idx!r} requires a framework-aware network policy, "
+                f"but borrowed runtime {runtime.name!r} does not support one; use "
                 "agent.provision(task)"
             )
-        policy_base = (
-            base_docker if base_docker is not None else DockerConfig(allow=["*"])
+        if base_policy is not None and type(config) is not type(base_policy):
+            raise ValueError(
+                f"the configured {base_policy.type} network policy cannot be applied "
+                f"to borrowed {config.type} runtime {runtime.name!r}; use "
+                "agent.provision(task)"
+            )
+        policy_base = base_policy or config.model_copy(
+            update={"allow": ["*"], "block": []}
         )
         expected = resolve_runtime_config(policy_base, task)
-        assert isinstance(expected, DockerConfig)
+        assert isinstance(expected, NetworkPolicyConfig)
         # Do not inherit extra destinations from a box provisioned for another task.
         if set(config.allow) != set(expected.allow) or set(config.block) != set(
             expected.block

@@ -72,9 +72,36 @@ Setting `skills` on a harness without native skill support fails up front.
 
 ## Runtime network policies
 
-Prime and Modal expose provider-native `network_access` switches. Docker instead uses
-URL-level `allow` and `block` lists, with a trusted setup phase before enforcement; the
-same policy vocabulary can extend to other runtimes when their sandbox APIs support it.
+Modal exposes a provider-native `network_access` switch. Prime and Docker use `allow`
+and `block` lists after a trusted setup phase; Prime enforces host-level rules in the
+platform, while Docker supports URL-level rules through a host-side proxy.
+
+### Prime host policies
+
+Prime VM sandboxes (`vm = true`) take either a host-level `allow` list or a `block`
+list:
+
+```toml
+[env.agent.harness.runtime]
+type = "prime"
+vm = true
+allow = ["*.wikipedia.org", "1.1.1.1"]
+```
+
+Entries are exact hostnames, leftmost-label `*.` wildcards, IPv4 addresses, or IPv4
+CIDRs; schemes, ports, paths, and IPv6 are not supported. The default `allow = ["*"]`
+keeps egress unrestricted. An empty `allow` list permits only the interception and MCP
+route hosts, which Verifiers adds automatically before enforcement.
+
+Setup stays online. Immediately before the agent starts, Verifiers replaces the
+sandbox's policy and waits up to 60 seconds for the platform to report it applied; the
+rollout fails closed if that acknowledgement never arrives. The provider policy governs
+new connections and does not revoke connections already established during trusted
+setup. Filtered Prime runtimes are therefore single-rollout.
+
+Prime's API accepts only one effective policy mode: a concrete `allow` list cannot be
+combined with `block`. A denylist cannot exempt framework hosts, so do not block an
+interception or MCP route host.
 
 ### Docker URL policies
 
@@ -88,11 +115,11 @@ allow = ["https://*.wikipedia.org"]
 block = ["https://upload.wikimedia.org"]
 ```
 
-Docker is deny-by-default: an empty `allow` list permits only the interception URL and
-every MCP URL, which are added automatically before user entries. A bare `"*"` with no
-block entries opts out of filtering and keeps Docker's host-network behavior; adding a
-block entry enables filtering and narrows the wildcard. User block rules win over user
-allow rules; framework interception and MCP routes always remain reachable. Under every
+Docker defaults to unrestricted with `allow = ["*"]` and no block entries. An empty
+`allow` list enables deny-by-default filtering and permits only the interception URL and
+every MCP URL, which are added automatically before user entries. Adding a block entry
+also enables filtering and narrows the wildcard. User block rules win over user allow
+rules; framework interception and MCP routes always remain reachable. Under every
 filtered policy, non-global destinations—including host-loopback, private, and link-local
 addresses—are reserved for framework routes, so user `allow` rules cannot expose host/LAN
 services or cloud metadata endpoints.
@@ -113,10 +140,11 @@ HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed. As 
 user deny rules win over user allows.
 
 Per-task `TaskData.network_allow` and `TaskData.network_block` entries are merged into
-the Docker runtime lists. The task's default `network_allow=["*"]` is neutral and leaves
-the evaluator policy intact. A concrete list replaces an evaluator wildcard; two
-concrete lists are combined, all block entries are retained, and block entries win. Any
-non-wildcard task URL policy requires Docker's framework-aware policy support.
+Docker or Prime runtime lists. The task's default `network_allow=["*"]` is neutral and
+leaves the evaluator policy intact. Docker combines concrete task/runtime lists and
+retains every block entry. Prime requires `vm = true`, accepts host-level entries, and
+rejects a task/runtime combination that would require both an allowlist and a blocklist.
+Other runtimes reject non-neutral task network policies.
 
 The restriction begins after task and harness setup and remains active through agent
 execution, finalization, and scoring. Debug actions apply it after task setup as well.

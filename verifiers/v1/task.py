@@ -116,11 +116,11 @@ class TaskData(StrictBaseModel):
     workdir: str | None = None
     network_allow: list[str] = ["*"]
     """Execution-time destinations requested by this task. `*` leaves the runtime
-    allowlist unchanged; a concrete list replaces a wildcard or combines with
-    existing entries."""
+    allowlist unchanged; a concrete list replaces a wildcard or combines with existing
+    entries. Prime runtimes accept host-level entries and require `vm=true`."""
     network_block: list[str] = []
     """Execution-time destinations denied by this task and combined with runtime
-    blocks."""
+    blocks. Prime runtimes cannot combine an allowlist and a blocklist."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 

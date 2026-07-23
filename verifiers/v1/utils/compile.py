@@ -7,7 +7,7 @@ from collections.abc import Collection
 
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
-    DockerConfig,
+    NetworkPolicyConfig,
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
@@ -45,19 +45,13 @@ def resolve_runtime_config(
         task.data.network_block
     )
     if task_network_policy:
-        if not isinstance(config, DockerConfig):
+        if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
-                f"task {task.data.idx!r} requires a URL network policy, but the "
-                f"{config.type} runtime does not support framework-aware URL policies"
+                f"task {task.data.idx!r} requires a network policy, but the "
+                f"{config.type} runtime does not support framework-aware policies"
             )
-        if "*" not in task.data.network_allow:
-            updates["allow"] = (
-                task.data.network_allow
-                if "*" in config.allow
-                else list(dict.fromkeys([*task.data.network_allow, *config.allow]))
-            )
-        updates["block"] = list(
-            dict.fromkeys([*task.data.network_block, *config.block])
+        config = config.with_task_network_policy(
+            task.data.network_allow, task.data.network_block
         )
     for resource, value in task.data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(resource)
