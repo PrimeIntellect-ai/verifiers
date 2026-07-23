@@ -2,7 +2,7 @@
 
 from pydantic import AliasChoices, Field
 
-from verifiers.v1.configs.env import EnvServerConfig
+from verifiers.v1.configs.cli.env import EnvServerConfig
 
 
 class ServeConfig(EnvServerConfig):

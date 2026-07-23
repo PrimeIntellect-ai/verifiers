@@ -14,14 +14,15 @@ import shlex
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
 from pydantic import model_validator
-from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
+    NetworkPolicyConfig,
     ProgramResult,
     Runtime,
     parse_gpu,
@@ -34,7 +35,7 @@ MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
 
-class PrimeConfig(BaseConfig):
+class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
     """Docker image to run. Any pullable ref works: on the first use of an image, the
@@ -42,7 +43,6 @@ class PrimeConfig(BaseConfig):
     ~10 minutes) and caches the result, so later sandboxes on the same ref start in
     seconds."""
     workdir: str = "/app"
-    network_access: bool = True
     vm: bool = False
     """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
     guaranteed: bool = False
@@ -66,6 +66,22 @@ class PrimeConfig(BaseConfig):
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
+
+    @model_validator(mode="after")
+    def _validate_egress(self) -> "PrimeConfig":
+        if not self.network_restricted:
+            return self
+        if not self.vm:
+            raise ValueError(
+                "Prime allow/block egress lists require a VM sandbox (vm=true)"
+            )
+        from prime_sandboxes.models import validate_egress_lists
+
+        allow = None if self.allow == ["*"] else self.allow
+        block = self.block or None
+        if allow is not None or block != ["*"]:
+            validate_egress_lists(allow, block)
+        return self
 
     @model_validator(mode="after")
     def _validate_idle_timeout(self) -> "PrimeConfig":
@@ -133,7 +149,6 @@ class PrimeRuntime(Runtime):
                         name=self.name,
                         labels=self.config.labels,
                         docker_image=self.config.image,
-                        network_access=self.config.network_access,
                         vm=self.config.vm,
                         guaranteed=self.config.guaranteed,
                         **{k: v for k, v in options.items() if v is not None},
@@ -164,6 +179,44 @@ class PrimeRuntime(Runtime):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+
+    async def prepare_execution(self, routes: list[str]) -> None:
+        """Apply the host policy after setup and wait until the platform enforces it."""
+        if not self.network_restricted:
+            return
+        try:
+            if self.config.allow == ["*"]:
+                policy = {"deny": self.config.block}
+            else:
+                hosts = [h for h in (urlsplit(route).hostname for route in routes) if h]
+                entries = list(dict.fromkeys([*hosts, *self.config.allow]))
+                from prime_sandboxes.models import validate_egress_lists
+
+                validate_egress_lists(entries, None)
+                policy = {"allow": entries} if entries else {"deny": ["*"]}
+            status = await self._client.set_network(self.info.id, **policy)
+            try:
+                async with asyncio.timeout(60):
+                    delay = 0.1
+                    while not status.applied:
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 3)
+                        status = await self._client.get_network(self.info.id)
+            except TimeoutError as e:
+                raise SandboxError(
+                    "prime egress policy was not applied within 60s on sandbox "
+                    f"{self.info.id}; refusing to start the agent unrestricted"
+                ) from e
+        except SandboxError:
+            raise
+        except Exception as e:
+            raise SandboxError(f"prime egress policy failed: {e}") from e
+        logger.info(
+            "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
+            self.info.id,
+            self.config.allow,
+            self.config.block,
+        )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:

@@ -13,11 +13,10 @@ from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic_config import BaseConfig
-
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
+    NetworkPolicyConfig,
     ProgramResult,
     Runtime,
     parse_gpu,
@@ -27,7 +26,7 @@ from verifiers.v1.runtimes.docker.egress import HOST_ALIAS, EgressProxy, Network
 logger = logging.getLogger(__name__)
 
 
-class DockerConfig(BaseConfig):
+class DockerConfig(NetworkPolicyConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
@@ -42,17 +41,6 @@ class DockerConfig(BaseConfig):
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so
     this is accepted (so a task can declare it without a warning) but not enforced."""
-    allow: list[str] = []
-    """URL origins or host patterns the agent may reach during execution. Framework
-    routes are always added; an empty list allows only those routes and `*` allows all."""
-    block: list[str] = []
-    """URL origins or host patterns denied during execution. Block rules win over
-    `allow`; framework interception and MCP routes always remain reachable."""
-
-    @property
-    def network_isolated(self) -> bool:
-        """True unless a bare wildcard permits every destination without exceptions."""
-        return "*" not in self.allow or bool(self.block)
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
@@ -96,7 +84,6 @@ class DockerRuntime(Runtime):
         self._proxy: EgressProxy | None = None
         self._proxy_host_ip: str | None = None
         self._stopped = False
-        self._setup_claimed = False
         self._cut = False
 
     async def start(self) -> None:
@@ -127,8 +114,8 @@ class DockerRuntime(Runtime):
         _, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]
-        isolated = self.network_isolated
-        if isolated:
+        restricted = self.network_restricted
+        if restricted:
             network = [
                 "--network",
                 "bridge",
@@ -164,7 +151,7 @@ class DockerRuntime(Runtime):
         self.info.id = run.stdout.strip()[
             :12
         ]  # `docker run -d` prints the container id
-        if isolated:
+        if restricted:
             # Setup is trusted; colocated servers fetch their task from host interception
             # before the final framework routes are known.
             self._proxy = EgressProxy(
@@ -236,33 +223,19 @@ class DockerRuntime(Runtime):
         host = urlsplit(url).hostname
         # Keep numeric loopback container-local; the proxy maps this reserved name to
         # the Verifiers process's loopback for interception and host-local MCP routes.
-        if self.network_isolated and host in ("127.0.0.1", "localhost"):
+        if self.network_restricted and host in ("127.0.0.1", "localhost"):
             return url.replace(host, HOST_ALIAS, 1)
         if (
-            not self.network_isolated
+            not self.network_restricted
             and sys.platform != "linux"
             and host in ("127.0.0.1", "localhost")
         ):
             return url.replace(host, "host.docker.internal", 1)
         return url
 
-    @property
-    def network_isolated(self) -> bool:
-        return self.config.network_isolated
-
-    async def prepare_setup(self) -> None:
-        if not self.network_isolated:
-            return
-        if self._setup_claimed:
-            raise SandboxError(
-                "network-filtered Docker runtimes are single-rollout; provision a "
-                "fresh runtime instead of reusing this one"
-            )
-        self._setup_claimed = True
-
     async def prepare_execution(self, routes: list[str]) -> None:
         """Allow the declared framework routes, then leave the proxy as the only route."""
-        if not self.network_isolated:
+        if not self.network_restricted:
             return
         assert self._proxy is not None
         framework = [

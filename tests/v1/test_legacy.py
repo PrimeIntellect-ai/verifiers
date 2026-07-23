@@ -22,7 +22,7 @@ async def test_v0_single_turn_matches_v1_shape(run_v0, run_v1, tmp_path):
     (v0,) = await run_v0("echo-v0", output_dir=tmp_path / "v0")
     (v1,) = await run_v1(
         "echo-v1",
-        harness_overrides={"runtime": {"type": "subprocess"}},
+        runtime={"type": "subprocess"},
         output_dir=tmp_path / "v1",
         max_turns=2,
     )
@@ -36,7 +36,7 @@ async def test_v0_multi_turn_matches_v1_shape(run_v0, run_v1, tmp_path):
     (v0,) = await run_v0("echo-multi-v0", output_dir=tmp_path / "v0")
     (v1,) = await run_v1(
         "echo-v1",
-        harness_overrides={"runtime": {"type": "subprocess"}},
+        runtime={"type": "subprocess"},
         output_dir=tmp_path / "v1",
         max_turns=2,
     )

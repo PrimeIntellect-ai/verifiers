@@ -6,7 +6,7 @@ import logging
 import time
 
 from verifiers.v1.clients import ModelContext, resolve_client
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import (
@@ -108,7 +108,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     from functools import partial
 
     from verifiers.v1.utils.logging import setup_logging
-    from verifiers.v1.configs.env import pool_serve_kwargs
+    from verifiers.v1.configs.cli.env import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
 
     legacy = config.is_legacy

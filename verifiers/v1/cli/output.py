@@ -17,7 +17,7 @@ from pathlib import Path
 import tomli_w
 from pydantic import BaseModel, TypeAdapter
 
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded

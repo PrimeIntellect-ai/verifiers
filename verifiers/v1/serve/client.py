@@ -32,9 +32,8 @@ from verifiers.v1.serve.types import (
     RunRequest,
     RunResponse,
 )
-from verifiers.v1.task import WireTaskData
 from verifiers.v1.episode import WireEpisode
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import WireTrace
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -172,9 +171,9 @@ class EnvClient:
         client: ClientConfig,
         model: str,
         sampling: SamplingConfig,
-    ) -> list[Trace[WireTaskData]]:
+    ) -> list[WireTrace]:
         """Run `n` rollouts for `task_idx` as a scored group — the legacy (v0) route;
-        a v1 server refuses it. Returns typed `Trace[WireTaskData]`s."""
+        a v1 server refuses it. Returns typed `WireTrace`s."""
         response = await self._request(
             RunGroupRequest(
                 task_idx=task_idx, n=n, client=client, model=model, sampling=sampling
