@@ -103,11 +103,18 @@ SANDBOX_NOTE = f"""\
 Your sandbox is the SAME box the graded agent worked in, in the state the agent
 left it — its edits (and any scoring side effects) are applied. The agent's raw
 trace record (JSON: messages, tool calls, and its `info` artifacts) is uploaded
-at `{TRACE_FILE}`. The record is complete — it may also carry the task's own
+at `{TRACE_FILE}`. The record can be very large — never dump it whole; peek
+selectively (list its keys, then slice out specific fields with python or jq)
+and pull only what you need. It is complete — it may also carry the task's own
 scores/metrics and reference material (a gold answer, a reference solution,
 held-out tests). Those are context, not your standard: recorded scores can be
 wrong and references can be narrower than the task; do not over-index on how a
 reference solves it. Your verdict is what YOU verified by execution."""
+
+HINT_SECTION = """\
+## Hints
+
+{hint}"""
 
 
 class JudgeTask(vf.Task):
@@ -132,7 +139,10 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
-        prompt = "\n\n".join([body, _verdict_section(config.criteria()), SANDBOX_NOTE])
+        sections = [body, _verdict_section(config.criteria()), SANDBOX_NOTE]
+        if (hint := config.build_hint()) is not None:
+            sections.insert(1, _render(HINT_SECTION, hint=hint))
+        prompt = "\n\n".join(sections)
         return cls(
             vf.TaskData(
                 idx=solved.idx,
@@ -176,18 +186,30 @@ class JudgeTaskConfig(vf.BaseConfig):
     contract and workspace note are always appended, so a custom policy cannot
     break verdict scraping. May reference `{prompt}` (the solver task's prompt);
     if it doesn't, the task statement is appended after the policy."""
+    hint: Path | str | None = None
+    """Optional hints injected as their own section (inline text or a `.md`/
+    `.txt` file): task-family pointers into the trace or box — e.g. for math,
+    where the reference answer lives in the record; for SWE, to diff the repo
+    or read `info.patch`."""
     rubric: Path | None = None
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
     files work for both. None grades the single built-in `solved` criterion."""
 
+    @staticmethod
+    def _resolve(value: Path | str) -> str:
+        path = Path(value)
+        if isinstance(value, Path) or path.suffix in (".md", ".txt"):
+            return path.read_text(encoding="utf-8")
+        return str(value)
+
     def build_prompt(self) -> str:
         if self.prompt is None:
             return GRADE_PROMPT + "\n\n" + TASK_SECTION
-        path = Path(self.prompt)
-        if isinstance(self.prompt, Path) or path.suffix in (".md", ".txt"):
-            return path.read_text(encoding="utf-8")
-        return str(self.prompt)
+        return self._resolve(self.prompt)
+
+    def build_hint(self) -> str | None:
+        return self._resolve(self.hint) if self.hint is not None else None
 
     def criteria(self) -> list[Criterion]:
         if self.rubric is None:
@@ -250,6 +272,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
         config.task.build_prompt()
+        config.task.build_hint()
         config.task.criteria()
 
     def _check_agents(self) -> None:
