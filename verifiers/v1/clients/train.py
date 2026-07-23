@@ -18,6 +18,7 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, RendererConfig
 from renderers.base import is_multimodal
 
+from verifiers.utils.multimodal import prepare_images_inplace
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
@@ -34,7 +35,6 @@ from verifiers.v1.types import (
     TurnTokens,
     Usage,
 )
-from verifiers.utils.multimodal import prepare_images_inplace
 
 
 def tool_to_wire(tool: Tool) -> dict:
