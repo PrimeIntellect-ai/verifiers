@@ -6,6 +6,7 @@ contract as `prime eval push`, done inline at the end of a run. Auth + base URL
 come from `$PRIME_API_KEY` / `~/.prime/config.json`.
 """
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
+# Repeated /samples posts append; match the Prime Evals client's request ceiling.
+_MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
 
 
 @dataclass
@@ -224,7 +227,32 @@ def push_traces(
                     **team,
                 },
             )["evaluation_id"]
-            post(f"/evaluations/{eval_id}/samples", {"samples": samples})
+            batch = []
+            payload_bytes = len(b'{"samples":[]}')
+            for i, sample in enumerate(samples):
+                sample_bytes = len(
+                    json.dumps(
+                        sample,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                )
+                next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
+                if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+                    post(f"/evaluations/{eval_id}/samples", {"samples": batch})
+                    batch = []
+                    payload_bytes = len(b'{"samples":[]}')
+                    next_payload_bytes = payload_bytes + sample_bytes
+                if next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+                    raise ValueError(
+                        f"sample {i} is too large to upload "
+                        f"({next_payload_bytes} > {_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
+                    )
+                batch.append(sample)
+                payload_bytes = next_payload_bytes
+            if batch or not samples:
+                post(f"/evaluations/{eval_id}/samples", {"samples": batch})
             post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
     except Exception as e:
         logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
