@@ -3,8 +3,8 @@
 A reusable env (`--env.id agentic-judge` over any taskset): the box is
 provisioned from the solver's runtime policy, the solver plays the task in it,
 and a code-executing judge then inspects the work as the agent left it, with
-the solver's full trace record uploaded. The judge grades rubric criteria
-(`[env.task]`: policy prompt, criteria file, trace path) and writes its
+the solver's full trace record uploaded at `/tmp/trace.json`. The judge grades
+rubric criteria (`[env.task]`: policy prompt, criteria file) and writes its
 verdicts to `/tmp/verdict.json`; `finalize()` validates them strictly onto the
 solver's trace — `judge/<name>` metrics plus a weighted-mean `judge` reward,
 composed with the taskset's own rewards via `[env.score]` (judge-only by
