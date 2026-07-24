@@ -11,9 +11,7 @@ import contextlib
 import logging
 import math
 import shlex
-import socket
 import tempfile
-from ipaddress import ip_address, ip_network
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
@@ -191,54 +189,9 @@ class PrimeRuntime(Runtime):
                     h for h in (urlsplit(route).hostname for route in routes) if h
                 )
             )
-            blocked_framework = False
-            if self.config.allow == ["*"]:
-                normalized_hosts = [host.lower().rstrip(".") for host in hosts]
-                block_networks = []
-                for rule in self.config.block:
-                    pattern = rule.strip().lower().rstrip(".")
-                    with contextlib.suppress(ValueError):
-                        block_networks.append(ip_network(pattern, strict=False))
-                    if pattern.startswith("*."):
-                        suffix = pattern[2:]
-                        matches_host = any(
-                            host.endswith(f".{suffix}")
-                            and host.count(".") == suffix.count(".") + 1
-                            for host in normalized_hosts
-                        )
-                    else:
-                        matches_host = pattern in normalized_hosts
-                    if matches_host:
-                        blocked_framework = True
-                        break
-                if block_networks and not blocked_framework:
-                    route_addresses = set()
-                    for host in normalized_hosts:
-                        try:
-                            route_addresses.add(ip_address(host))
-                        except ValueError:
-                            addresses = await asyncio.to_thread(
-                                socket.getaddrinfo,
-                                host,
-                                None,
-                                socket.AF_INET,
-                                socket.SOCK_STREAM,
-                            )
-                            route_addresses.update(
-                                ip_address(address[4][0]) for address in addresses
-                            )
-                    blocked_framework = any(
-                        address in network
-                        for network in block_networks
-                        for address in route_addresses
-                    )
-            framework_only = self.config.block == ["*"] or blocked_framework
-            if framework_only:
-                if blocked_framework:
-                    logger.warning(
-                        "prime: denylist matches a framework route; applying "
-                        "framework-only egress"
-                    )
+            if self.config.block == ["*"]:
+                # Prime cannot combine deny rules with framework route exceptions, so
+                # lower the explicit framework-only sentinel to an allowlist.
                 validate_egress_lists(hosts, None)
                 policy = {"allow": hosts} if hosts else {"deny": ["*"]}
             elif self.config.allow == ["*"]:

@@ -100,11 +100,9 @@ new connections and does not revoke connections already established during trust
 setup. Filtered Prime runtimes are therefore single-rollout.
 
 Prime's API accepts only one effective policy mode: a concrete `allow` list cannot be
-combined with `block`. Framework hosts always remain reachable. `block = ["*"]` is
-normalized to framework-only access; if another deny rule matches a framework host,
-Verifiers fails closed to the same framework-only allowlist because Prime cannot express
-allow exceptions within a denylist. CIDR conflicts are checked against the framework
-hosts' resolved IPv4 addresses.
+combined with `block`. Framework hosts are folded into allowlist modes. `block = ["*"]`
+is normalized to framework-only access; ordinary denylists are applied unchanged and may
+block a matching interception or MCP route host.
 
 ### Docker URL policies
 

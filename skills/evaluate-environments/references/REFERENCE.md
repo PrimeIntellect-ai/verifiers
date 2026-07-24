@@ -354,7 +354,7 @@ Remote Prime sandbox; reached via native port exposure.
 | `image` | `str` | `"python:3.11-slim"` | Container image. |
 | `workdir` | `str` | `"/app"` | Working directory. |
 | `allow` | `list[str]` | `["*"]` | Host-level egress allowlist applied after trusted setup (exact hostnames, leftmost-label `*.` wildcards, IPv4 addresses/CIDRs; no schemes or ports). `["*"]` leaves egress unrestricted; framework route hosts are added automatically, so `[]` permits only interception/MCP. VM-only when restrictive. |
-| `block` | `list[str]` | `[]` | Host-level egress denylist applied after trusted setup. VM-only and otherwise mutually exclusive with a concrete `allow` list; framework routes always remain reachable. Any list containing `*` overrides other rules and permits only interception/MCP; another rule matching a framework hostname or its resolved IPv4 address also fails closed to that mode. |
+| `block` | `list[str]` | `[]` | Host-level egress denylist applied after trusted setup. VM-only and otherwise mutually exclusive with a concrete `allow` list. Any list containing `*` overrides other rules and permits only interception/MCP; ordinary deny rules are passed to Prime unchanged and may block a matching framework route host. |
 | `vm` | `bool` | `False` | Run as a micro-VM (kernel features / stronger isolation). |
 | `guaranteed` | `bool` | `False` | Request guaranteed (vs best-effort) capacity. |
 | `region` | `str \| None` | `None` | Region to provision in (None = provider-chosen). Note: port exposure is region-gated; `us` supports it. |
@@ -440,7 +440,7 @@ Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For
 | `image` | `str \| None` | `None` | Required container/sandbox image for this row. It replaces the base runtime image; subprocess is refused when set. |
 | `workdir` | `str \| None` | `None` | Working directory for harness execution and task hooks. Applied when the runtime supports it and its config remains at the default. |
 | `network_allow` | `list[str]` | `["*"]` | Docker or Prime destinations needed by the task. The wildcard is neutral and leaves evaluator policy intact; empty requests framework-only access. Prime accepts host-level entries and requires `vm=true`. |
-| `network_block` | `list[str]` | `[]` | Destinations merged into Docker or Prime's `block` list. Neither runtime can combine this with an allowlist; framework routes remain reachable. |
+| `network_block` | `list[str]` | `[]` | Destinations merged into Docker or Prime's `block` list. Neither runtime can combine this with an allowlist. Docker framework routes take precedence; ordinary Prime deny rules are passed to the platform unchanged. |
 | `timeout` | `TaskTimeout` | `TaskTimeout()` | Per-stage timeout requests described above. |
 | `resources` | `TaskResources` | `TaskResources()` | Portable runtime resource requests described above. |
 
