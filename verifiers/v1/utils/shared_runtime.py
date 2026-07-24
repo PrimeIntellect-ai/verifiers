@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from verifiers.v1.agent import Agent
+from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task
 
@@ -21,8 +22,9 @@ async def shared_runtime(
     async with owner.provision(task) as runtime:
         if runtime.network_restricted:
             for agent in agents:
-                await asyncio.wait_for(
-                    agent.harness.setup(runtime),
-                    agent.timeout.setup,
-                )
+                async with agent._gated(), boundary(HarnessError, "harness setup"):
+                    await asyncio.wait_for(
+                        agent.harness.setup(runtime),
+                        agent.timeout.setup,
+                    )
         yield runtime

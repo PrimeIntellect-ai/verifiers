@@ -10,7 +10,7 @@ server; un-entered, each run brings its own."""
 import asyncio
 import logging
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import AsyncIterator
 
@@ -290,6 +290,10 @@ class Agent:
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
 
+    def _gated(self) -> AbstractAsyncContextManager[None]:
+        """Acquire the eval's agent-run gate when this agent belongs to an episode."""
+        return self._gate or nullcontext()
+
     async def __aenter__(self) -> "Agent":
         if self._entered:
             raise RuntimeError("Agent is already entered; enter it once and share it")
@@ -481,7 +485,7 @@ class Agent:
             **params,
         )
         interaction = Interaction(run, gate=self._gate)
-        async with self._gate or nullcontext():
+        async with self._gated():
             opened = await run.open()
             if not opened:
                 trace = await run.close()
@@ -644,7 +648,7 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> Trace:
-        async with self._gate or nullcontext():
+        async with self._gated():
             trace = await super().run(
                 task,
                 runtime=runtime,
