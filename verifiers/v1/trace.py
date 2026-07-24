@@ -171,7 +171,12 @@ class Branch(StrictBaseModel):
 
     @property
     def multi_modal_data(self) -> MultiModalData | None:
-        """Node image data concatenated in token order for training; never persisted."""
+        """The branch's multimodal sidecar — every node's images concatenated in path order.
+
+        None when the branch has no images. The raw-image path carries lightweight descriptors
+        plus placeholder ranges, so downstream vLLM/training multimodal payloads can align hashes,
+        placeholders, and item refs without reprocessing images in the env worker.
+        """
         merged = MultiModalData()
         found = False
         for node in self.nodes:
@@ -183,6 +188,8 @@ class Branch(StrictBaseModel):
                 merged.mm_items.setdefault(modality, []).extend(items)
             for modality, hashes in mmd.mm_hashes.items():
                 merged.mm_hashes.setdefault(modality, []).extend(hashes)
+            for modality, placeholders in mmd.mm_placeholders.items():
+                merged.mm_placeholders.setdefault(modality, []).extend(placeholders)
         return merged if found else None
 
     @property
@@ -263,7 +270,9 @@ _NODE_DUMP_EXCLUDE: dict = {
         }
     }
 }
-"""Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
+"""Trainer-only sidecars kept on the msgpack wire but excluded from JSON records: raw
+numpy tensors (``routed_experts``) can't round-trip JSON, while ``multi_modal_data``
+(renderer descriptors) and ``kept_tokens`` exist for training, not the rollout record."""
 
 
 TRACE_VERSION = 4

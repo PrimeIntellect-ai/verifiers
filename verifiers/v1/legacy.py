@@ -13,6 +13,7 @@ This is the only place that imports the v0 ``verifiers`` API; all imports of it 
 v1 stays importable without the v0 package present.
 """
 
+import asyncio
 import contextlib
 import logging
 from pathlib import Path
@@ -191,6 +192,7 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
         prompt_ids=list(raw.get("prompt_ids") or []),
         completion_ids=list(raw.get("completion_ids") or []),
         completion_logprobs=list(raw.get("completion_logprobs") or []),
+        multi_modal_data=raw.get("multi_modal_data"),
     )
 
 
@@ -416,6 +418,20 @@ class LegacyEnvServer(EnvServer):
             self._clients[key] = resolve_client(v0_config)
         return self._clients[key]
 
+    async def _state_output_with_live_trajectory(self, state: Any) -> dict:
+        """Build v0 rollout output metadata while preserving live trajectory sidecars.
+
+        The JSON save path deltas ``tokens.multi_modal_data`` to avoid repeated
+        cumulative multimodal sidecars. Trace reconstruction needs the live,
+        cumulative sidecar for each turn so image descriptors align with the
+        full prompt the renderer saw.
+        """
+        from verifiers.utils.save_utils import state_to_output
+
+        out = await asyncio.to_thread(state_to_output, state, [])
+        out["trajectory"] = state.get("trajectory", [])
+        return out
+
     async def _run_v0(
         self,
         task_idx: int,
@@ -424,13 +440,13 @@ class LegacyEnvServer(EnvServer):
         sampling: SamplingConfig,
     ) -> dict:
         client = self._v0_client(client_config, model)
-        return await self.env.run_rollout(
+        state = await self.env._run_rollout_state(
             input=dict(self.dataset[task_idx]),
             client=client,
             model=model,
             sampling_args=sampling.model_dump(exclude_none=True),
-            state_columns=["trajectory"],
         )
+        return await self._state_output_with_live_trajectory(state)
 
     @staticmethod
     def _row(req: RunRequest) -> int:
@@ -455,12 +471,14 @@ class LegacyEnvServer(EnvServer):
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         client = self._v0_client(req.client, req.model)
         # run_group scores the rollouts together so group/preference reward funcs apply.
-        outs = await self.env.run_group(
+        states = await self.env._run_group_states(
             group_inputs=[dict(self.dataset[req.task_idx]) for _ in range(req.n)],
             client=client,
             model=req.model,
             sampling_args=req.sampling.model_dump(exclude_none=True),
-            state_columns=["trajectory"],
+        )
+        outs = await asyncio.gather(
+            *(self._state_output_with_live_trajectory(state) for state in states)
         )
         traces = [
             rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs

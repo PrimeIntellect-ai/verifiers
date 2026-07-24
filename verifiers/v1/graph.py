@@ -31,6 +31,7 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
 from verifiers.v1.types import (
     AssistantMessage,
+    FinishReason,
     KeptTokens,
     Message,
     Response,
@@ -38,6 +39,7 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
+    Usage,
 )
 
 if TYPE_CHECKING:
@@ -60,6 +62,46 @@ def _encode_ndarray(arr: np.ndarray) -> dict:
 def _decode_ndarray(d: dict) -> np.ndarray:
     """Reverse :func:`_encode_ndarray`."""
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
+
+
+_PROCESSED_MM_KEYS = frozenset({"pixel_values", "image_embeds", "image_features"})
+
+
+def _contains_processed_mm_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        return bool(_PROCESSED_MM_KEYS.intersection(value)) or any(
+            _contains_processed_mm_key(v) for v in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_processed_mm_key(v) for v in value)
+    return False
+
+
+def _validate_raw_mm_item(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise TypeError(
+            "v1 multimodal sidecars must be raw image descriptor dicts, "
+            f"got {type(item).__name__}"
+        )
+    if _contains_processed_mm_key(item):
+        raise TypeError(
+            "v1 multimodal sidecars must be raw image descriptors, "
+            "not processed multimodal payloads"
+        )
+    if not isinstance(item.get("raw_image_uri"), str) or not item["raw_image_uri"]:
+        raise ValueError("v1 multimodal sidecars require raw_image_uri")
+    return dict(item)
+
+
+def _validate_raw_mm_data(mmd: MultiModalData) -> MultiModalData:
+    return MultiModalData(
+        mm_hashes={k: list(v) for k, v in mmd.mm_hashes.items()},
+        mm_placeholders={k: list(v) for k, v in mmd.mm_placeholders.items()},
+        mm_items={
+            modality: [_validate_raw_mm_item(item) for item in items]
+            for modality, items in mmd.mm_items.items()
+        },
+    )
 
 
 class MessageNode(StrictBaseModel):
@@ -102,12 +144,19 @@ class MessageNode(StrictBaseModel):
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
+    finish_reason: FinishReason = None
+    """The response's finish reason (assistant nodes only) — kept for truncation detection."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
-    """The renderer items for the images this message's content introduces (pixel tensors,
-    grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
-    trainer. `Branch.multi_modal_data` concatenates them along the path into the training
-    `mm_kwargs`. Rides the wire as raw bytes (msgpack `bin`) since pydantic can't JSON the numpy;
-    kept off disk by the dump-site `exclude` in prime-rl (the tensors bloat the rollout jsonl)."""
+    """The renderer items for images this message introduces.
+
+    With the raw-image path, items are lightweight descriptors (hashes, grid metadata, and
+    optional run-image refs), not image processor tensors. `Branch.multi_modal_data` concatenates
+    them along the path for the trainer. Old processed-payload sidecars are rejected.
+    """
+    usage: Usage | None = None
+    """Provider-reported token usage for this message's response (assistant nodes). Preserved on
+    the wire and on disk so dashboards can show token counts and cost even when the endpoint
+    returns no token ids."""
     routed_experts: SkipJsonSchema[np.ndarray | None] = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
@@ -125,10 +174,10 @@ class MessageNode(StrictBaseModel):
 
     @field_serializer("multi_modal_data")
     def serialize_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:
-        """`MultiModalData` -> msgpack-safe dict so the pixel tensors ride the wire; numpy
-        `mm_items` values become raw-bytes `__nd__` dicts (every renderer emits `return_tensors="np"`)."""
+        """`MultiModalData` -> msgpack-safe raw descriptor dict."""
         if mmd is None:
             return None
+        mmd = _validate_raw_mm_data(mmd)
         return {
             "mm_hashes": {k: list(v) for k, v in mmd.mm_hashes.items()},
             "mm_placeholders": {
@@ -136,9 +185,7 @@ class MessageNode(StrictBaseModel):
                 for modality, ranges in mmd.mm_placeholders.items()
             },
             "mm_items": {
-                modality: [
-                    {k: _encode_ndarray(v) for k, v in item.items()} for item in items
-                ]
+                modality: [dict(item) for item in items]
                 for modality, items in mmd.mm_items.items()
             },
         }
@@ -146,25 +193,29 @@ class MessageNode(StrictBaseModel):
     @field_validator("multi_modal_data", mode="before")
     @classmethod
     def deserialize_multi_modal_data(cls, value: Any) -> MultiModalData | None:
-        if value is None or isinstance(value, MultiModalData):
+        if value is None:
             return value
+        if isinstance(value, MultiModalData):
+            return _validate_raw_mm_data(value)
         if not isinstance(value, dict):
             raise TypeError(f"cannot build MultiModalData from {type(value).__name__}")
-        return MultiModalData(
-            mm_hashes={k: list(v) for k, v in (value.get("mm_hashes") or {}).items()},
-            mm_placeholders={
-                modality: [
-                    PlaceholderRange(offset=p["offset"], length=p["length"])
-                    for p in ranges
-                ]
-                for modality, ranges in (value.get("mm_placeholders") or {}).items()
-            },
-            mm_items={
-                modality: [
-                    {k: _decode_ndarray(v) for k, v in item.items()} for item in items
-                ]
-                for modality, items in (value.get("mm_items") or {}).items()
-            },
+        return _validate_raw_mm_data(
+            MultiModalData(
+                mm_hashes={
+                    k: list(v) for k, v in (value.get("mm_hashes") or {}).items()
+                },
+                mm_placeholders={
+                    modality: [
+                        PlaceholderRange(offset=p["offset"], length=p["length"])
+                        for p in ranges
+                    ]
+                    for modality, ranges in (value.get("mm_placeholders") or {}).items()
+                },
+                mm_items={
+                    modality: list(items)
+                    for modality, items in (value.get("mm_items") or {}).items()
+                },
+            )
         )
 
     @field_serializer("routed_experts")
@@ -332,6 +383,23 @@ class PendingTurn:
             for span in tail_spans
         ]
 
+    def previous_multi_modal_data(self) -> MultiModalData | None:
+        """Concatenate multimodal sidecars attached to the reusable prefix."""
+        merged = MultiModalData()
+        found = False
+        for nid in self.prefix_node_ids:
+            mmd = self.trace.nodes[nid].multi_modal_data
+            if mmd is None or mmd.is_empty():
+                continue
+            found = True
+            for modality, items in mmd.mm_items.items():
+                merged.mm_items.setdefault(modality, []).extend(items)
+            for modality, hashes in mmd.mm_hashes.items():
+                merged.mm_hashes.setdefault(modality, []).extend(hashes)
+            for modality, placeholders in mmd.mm_placeholders.items():
+                merged.mm_placeholders.setdefault(modality, []).extend(placeholders)
+        return merged if found else None
+
     def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
@@ -392,8 +460,9 @@ def _attribute_mm(
     renderer emits items per modality in prompt order (message order, then content-part order),
     so we walk the path advancing a per-modality cursor over every message's media but write
     only the nodes created this turn — `path[:num_reused]` is the reused prefix, already
-    attributed when first created. Item order is all training needs; placeholder offsets aren't
-    carried."""
+    attributed when first created. Each node gets the hashes/items/placeholders for exactly the
+    media it introduced, preserving vLLM multimodal-list alignment when those node sidecars are
+    later merged for bridge or training."""
     if mmd is None or mmd.is_empty():
         return
     cursors: dict[str, int] = {}
@@ -403,6 +472,7 @@ def _attribute_mm(
             continue
         node_items: dict[str, list] = {}
         node_hashes: dict[str, list] = {}
+        node_placeholders: dict[str, list[PlaceholderRange]] = {}
         for part in content:
             modality = _part_modality(part)
             if modality is None:
@@ -414,13 +484,20 @@ def _attribute_mm(
                 continue
             items = mmd.mm_items.get(modality) or []
             hashes = mmd.mm_hashes.get(modality) or []
+            placeholders = mmd.mm_placeholders.get(modality) or []
             if k < len(items):
                 node_items.setdefault(modality, []).append(items[k])
             if k < len(hashes):
                 node_hashes.setdefault(modality, []).append(hashes[k])
-        if node_items:
-            trace.nodes[node_id].multi_modal_data = MultiModalData(
-                mm_items=node_items, mm_hashes=node_hashes
+            if k < len(placeholders):
+                node_placeholders.setdefault(modality, []).append(placeholders[k])
+        if node_items or node_hashes or node_placeholders:
+            trace.nodes[node_id].multi_modal_data = _validate_raw_mm_data(
+                MultiModalData(
+                    mm_items=node_items,
+                    mm_hashes=node_hashes,
+                    mm_placeholders=node_placeholders,
+                )
             )
 
 
