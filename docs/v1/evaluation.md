@@ -100,9 +100,10 @@ new connections and does not revoke connections already established during trust
 setup. Filtered Prime runtimes are therefore single-rollout.
 
 Prime's API accepts only one effective policy mode: a concrete `allow` list cannot be
-combined with `block`. A denylist cannot exempt framework hosts, so do not block an
-interception or MCP route host. `block = ["*"]` is represented as an allowlist containing
-only those framework hosts.
+combined with `block`. Framework hosts always remain reachable. `block = ["*"]` is
+normalized to framework-only access; if another deny rule matches a framework host,
+Verifiers fails closed to the same framework-only allowlist because Prime cannot express
+allow exceptions within a denylist.
 
 ### Docker URL policies
 
@@ -119,9 +120,9 @@ Docker uses the same mutually exclusive modes as Prime. It defaults to unrestric
 `allow = ["*"]` and no block entries. A concrete `allow` list enables deny-by-default
 filtering; the interception URL and every MCP URL are added before user entries. A
 non-empty `block` list with the default wildcard instead enables default-allow denylist
-filtering. A matching deny rule can block a framework route; `block = ["*"]` is
-represented as a framework-only allowlist. Concrete `allow` and non-empty `block` lists
-cannot be combined.
+filtering. Framework routes take precedence over matching deny rules. Any block list
+containing `*` is normalized to framework-only access. Concrete `allow` and non-empty
+`block` lists cannot otherwise be combined.
 
 Under every filtered policy, non-global destinations—including host-loopback, private,
 and link-local addresses—are reserved for recognized framework routes, so user `allow`

@@ -8,10 +8,12 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 
 import asyncio
 import contextlib
+import fnmatch
 import logging
 import math
 import shlex
 import tempfile
+from ipaddress import ip_address, ip_network
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
@@ -78,7 +80,7 @@ class PrimeConfig(NetworkPolicyConfig):
             )
         allow = None if self.allow == ["*"] else self.allow
         block = self.block or None
-        if allow is not None or block != ["*"]:
+        if block != ["*"]:
             validate_egress_lists(allow, block)
         return self
 
@@ -184,20 +186,44 @@ class PrimeRuntime(Runtime):
         if not self.network_restricted:
             return
         try:
-            if self.config.block == ["*"]:
-                # Prime's `deny=["*"]` also blocks MCP and interception. Express this
-                # mode as an allowlist containing only those framework route hosts.
-                hosts = list(
-                    dict.fromkeys(
-                        h for h in (urlsplit(route).hostname for route in routes) if h
-                    )
+            hosts = list(
+                dict.fromkeys(
+                    h for h in (urlsplit(route).hostname for route in routes) if h
                 )
+            )
+            blocked_framework = False
+            if self.config.allow == ["*"]:
+                normalized_hosts = [host.lower().rstrip(".") for host in hosts]
+                route_addresses = []
+                for host in normalized_hosts:
+                    with contextlib.suppress(ValueError):
+                        route_addresses.append(ip_address(host))
+                for rule in self.config.block:
+                    pattern = rule.strip().lower().rstrip(".")
+                    if any(
+                        fnmatch.fnmatchcase(host, pattern)
+                        or (pattern.startswith("*.") and host == pattern[2:])
+                        for host in normalized_hosts
+                    ):
+                        blocked_framework = True
+                        break
+                    with contextlib.suppress(ValueError):
+                        network = ip_network(pattern, strict=False)
+                        if any(address in network for address in route_addresses):
+                            blocked_framework = True
+                            break
+            framework_only = self.config.block == ["*"] or blocked_framework
+            if framework_only:
+                if blocked_framework:
+                    logger.warning(
+                        "prime: denylist matches a framework route; applying "
+                        "framework-only egress"
+                    )
                 validate_egress_lists(hosts, None)
                 policy = {"allow": hosts} if hosts else {"deny": ["*"]}
             elif self.config.allow == ["*"]:
                 policy = {"deny": self.config.block}
             else:
-                hosts = [h for h in (urlsplit(route).hostname for route in routes) if h]
                 entries = list(dict.fromkeys([*hosts, *self.config.allow]))
                 validate_egress_lists(entries, None)
                 policy = {"allow": entries} if entries else {"deny": ["*"]}

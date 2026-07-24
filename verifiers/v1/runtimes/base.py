@@ -106,7 +106,12 @@ class NetworkPolicyConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _validate_network_policy(self) -> Self:
-        if self.allow != ["*"] and self.block:
+        if "*" in self.block:
+            # A wildcard block means framework-only access; canonicalize it to the
+            # empty allowlist while retaining the sentinel for later task composition.
+            self.allow = []
+            self.block = ["*"]
+        elif self.allow != ["*"] and self.block:
             raise ValueError(
                 "concrete allow and block egress lists are mutually exclusive"
             )
@@ -293,7 +298,7 @@ class Runtime(ABC):
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
-        their policy here, folding interception and MCP `routes` into allowlist modes."""
+        their policy here while keeping the interception and MCP `routes` reachable."""
 
     @property
     def network_restricted(self) -> bool:

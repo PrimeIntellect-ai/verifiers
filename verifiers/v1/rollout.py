@@ -286,7 +286,7 @@ class RolloutRun:
                 )
             )
             # Setup and service provisioning are complete. Apply the runtime's
-            # execution policy, folding framework routes into allowlist modes.
+            # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
