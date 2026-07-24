@@ -4,6 +4,7 @@ import numpy as np
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
+from verifiers.v1.dialects.responses import OpenAIResponse, ResponsesDialect
 from verifiers.v1.types import TurnTokens
 
 
@@ -160,6 +161,88 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
         if isinstance(node.message, vf.AssistantMessage) and node.message.tool_calls
     ]
     assert len(tool_call_nodes) == 2
+
+
+def test_responses_provider_state_round_trip_stays_linear():
+    dialect = ResponsesDialect()
+    output = [
+        {
+            "id": "rs_tmp",
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [],
+            "encrypted_content": "opaque",
+            "format": "openai-responses-v1",
+        },
+        {
+            "id": "msg_tmp",
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Looking it up.",
+                    "annotations": [],
+                    "logprobs": [],
+                }
+            ],
+            "phase": "commentary",
+        },
+        {
+            "id": "fc_tmp",
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call_0",
+            "name": "lookup",
+            "arguments": "{}",
+        },
+    ]
+    first = dialect.parse_response(OpenAIResponse.model_validate({"output": output}))
+    user = vf.UserMessage(content="Find it")
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="Find it"))
+    )
+    first_node = graph.prepare_turn(trace, [user]).commit(first)
+
+    prompt, _ = dialect.parse_request(
+        {
+            "input": [
+                {"role": "user", "content": "Find it"},
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": None,
+                    "encrypted_content": "opaque",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Looking it up."}],
+                    "phase": "commentary",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_0",
+                    "name": "lookup",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_0",
+                    "output": "found",
+                },
+            ]
+        }
+    )
+    assert prompt[1] == first.message
+
+    graph.prepare_turn(trace, prompt).commit(
+        _response(vf.AssistantMessage(content="Done"))
+    )
+
+    assert trace.num_branches == 1
+    assert [node.parent for node in trace.nodes] == [None, 0, first_node, 2]
 
 
 def test_renderer_level_break_forks_by_token_id():
