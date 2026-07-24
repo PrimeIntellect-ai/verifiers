@@ -184,6 +184,8 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
+                network_allow=solved.network_allow,
+                network_block=solved.network_block,
             ),
             files=files,
             artifacts={} if share_runtime else solution.state.artifacts,
@@ -345,10 +347,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         if self.config.share_runtime:
-            async with agents.solver.provision(task) as box:
-                solution = await agents.solver.run(task, runtime=box)
+            async with vf.shared_runtime(agents.solver, task, agents.judge) as shared:
+                solution = await shared.run(agents.solver, task)
                 judge_task = JudgeTask.from_trace(solution, self.config.task)
-                await agents.judge.run(judge_task, runtime=box)
+                await shared.run(agents.judge, judge_task)
             return
 
         solution = await agents.solver.run(task)
