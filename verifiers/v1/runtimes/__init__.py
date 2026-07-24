@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from pydantic import Field
@@ -45,6 +47,18 @@ def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
     return runtime
 
 
+@asynccontextmanager
+async def provision_runtime(
+    config: RuntimeConfig, name: str | None = None
+) -> AsyncIterator[Runtime]:
+    runtime = make_runtime(config, name)
+    try:
+        await runtime.start()
+        yield runtime
+    finally:
+        await runtime.stop()
+
+
 def runtime_is_local(config: RuntimeConfig) -> bool:
     """Whether a runtime of this config exchanges host-local URLs without a public
     tunnel, read off the runtime class without provisioning one."""
@@ -59,6 +73,7 @@ __all__ = [
     "BaseRuntimeInfo",
     "NetworkPolicyConfig",
     "make_runtime",
+    "provision_runtime",
     "runtime_is_local",
     "SubprocessConfig",
     "SubprocessRuntime",

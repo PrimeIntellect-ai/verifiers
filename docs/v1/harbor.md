@@ -69,6 +69,10 @@ resource_multiplier = 2.0
 
 The `timeout_multiplier` multiplies both the agent and verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
 
+## Separate verifier runtimes
+
+Harbor's separate verifier mode is selected from `task.toml`. Docker and Prime VM runtimes collect declared artifacts, confirm that the agent runtime is gone, then grade in a fresh runtime on the same provider. Explicit verifier environments need a pullable image unless `ignore_dockerfile = true`.
+
 ## Network policies
 
 Harbor's effective agent network policy is applied to Docker or Prime VM harness
@@ -89,8 +93,4 @@ accepts host-level entries and rejects combinations that need both policy modes.
 
 ## Shortcomings
 
-verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
-
-- Switching to a different verifier-phase network policy ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
-- Shared & separate verifiers ([Harbor Docs](https://www.harborframework.com/docs/tasks#verifier-environment-shared-vs-separate))
-- Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
+verifiers does not have complete Harbor parity yet. The main missing features are verifier network allowlists, shared-runtime phase switching, compose sidecars, and multi-step tasks.

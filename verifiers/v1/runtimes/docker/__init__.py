@@ -334,15 +334,21 @@ class DockerRuntime(Runtime):
         if run.exit_code != 0:
             raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
 
-    async def read(self, path: str) -> bytes:
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        command = (
+            ["cat", "--", path]
+            if max_bytes is None
+            else ["head", "-c", str(max_bytes + 1), "--", path]
+        )
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
             "--workdir",
             self.config.workdir,
             self._container,
-            "cat",
-            path,
+            *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -351,6 +357,8 @@ class DockerRuntime(Runtime):
             raise SandboxError(
                 f"read {path!r}: {stderr.decode(errors='replace').strip()}"
             )
+        if max_bytes is not None and len(stdout) > max_bytes:
+            raise SandboxError(f"read {path!r}: exceeds the {max_bytes} byte limit")
         return stdout
 
     async def write(self, path: str, data: bytes) -> None:
@@ -374,6 +382,18 @@ class DockerRuntime(Runtime):
             raise SandboxError(
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
+
+    async def teardown_confirmed(self) -> None:
+        if self._container is not None:
+            removed = await docker("rm", "--force", self._container)
+            if removed.exit_code and "No such container" not in removed.stderr:
+                raise SandboxError(
+                    f"docker container {self._container!r} deletion failed: "
+                    f"{removed.stderr.strip()}"
+                )
+            self._stopped = True
+        if self._proxy is not None:
+            await self._proxy.stop()
 
     def cleanup(self) -> None:
         if self._container is None or self._stopped:

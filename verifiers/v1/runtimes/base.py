@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import base64
 import contextlib
 import hashlib
 import logging
@@ -146,6 +147,7 @@ class Runtime(ABC):
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
         borrowing program, caught up front instead of failing opaquely mid-harness."""
+        self.stop_failed = False
 
     @property
     def type(self) -> str:
@@ -163,6 +165,22 @@ class Runtime(ABC):
         `teardown`, not this."""
         self.stopped = True  # before the await: no new borrows once teardown begins
         await run_shielded(self.teardown())
+
+    async def stop_confirmed(self) -> None:
+        """Free the resource or raise unless deletion is confirmed."""
+        self.stopped = True
+        task = asyncio.create_task(self.teardown_confirmed())
+        try:
+            await run_shielded(task)
+        finally:
+            self.stop_failed = (
+                not task.done() or task.cancelled() or task.exception() is not None
+            )
+
+    async def teardown_confirmed(self) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support confirmed teardown"
+        )
 
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
@@ -259,9 +277,33 @@ class Runtime(ABC):
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
-    @abstractmethod
-    async def read(self, path: str) -> bytes:
-        pass
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        """Read a file, optionally bounding its output inside the runtime."""
+        if max_bytes is None:
+            return await self._read(path)
+        if max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        result = await self.run(
+            [
+                "sh",
+                "-c",
+                'head -c "$1" -- "$2" | base64',
+                "sh",
+                str(max_bytes + 1),
+                path,
+            ],
+            {},
+        )
+        if result.exit_code or result.stderr:
+            detail = (result.stderr or result.stdout).strip()
+            raise SandboxError(f"read {path!r}: {detail}")
+        data = base64.b64decode(result.stdout)
+        if len(data) > max_bytes:
+            raise SandboxError(f"read {path!r}: exceeds the {max_bytes} byte limit")
+        return data
+
+    async def _read(self, path: str) -> bytes:
+        raise NotImplementedError(f"{type(self).__name__} does not support read")
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:

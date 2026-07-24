@@ -22,7 +22,7 @@ from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerB
 from verifiers.v1.runtimes import (
     NetworkPolicyConfig,
     Runtime,
-    make_runtime,
+    provision_runtime,
     runtime_is_local,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
@@ -268,9 +268,7 @@ async def serve(
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
         else:
-            runtime = make_runtime(cfg.runtime)
-            await runtime.start()
-            stack.push_async_callback(runtime.stop)
+            runtime = await stack.enter_async_context(provision_runtime(cfg.runtime))
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime
