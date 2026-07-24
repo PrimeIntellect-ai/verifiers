@@ -17,7 +17,8 @@ one without `indirect=True` fails loudly.
 Every combination carries its axes' pytest marks, so subsets select with `-m`:
 
     uv run pytest tests/v1 -n auto                                # everything (needs modal setup)
-    uv run pytest tests/v1 -n auto -m "not prime and not modal"  # the CI set (host + docker only)
+    uv run pytest tests/v1 -n auto -m "not e2e"                   # deterministic CI matrix
+    uv run pytest tests/v1 -n 2 -m "e2e and not prime and not modal"  # live CI job
     uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
     uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
@@ -27,8 +28,8 @@ Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocate
 harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `pool` / `codex` / `claude_code`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
 combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
-prime/modal provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only
-— CI runs `-m "not prime and not modal"`.
+prime/modal provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only.
+CI runs deterministic tests across the Python matrix and the remaining live E2Es once.
 """
 
 import os
