@@ -34,6 +34,7 @@ from verifiers.v1.types import (
     ToolMessage,
     Usage,
     content_text,
+    parse_sampled_logprobs,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,18 +153,31 @@ class Branch(StrictBaseModel):
         """Per-token sampling logprobs aligned to `token_ids` — the node logprobs spread onto
         their sampled positions, 0.0 on every non-sampled token."""
         out: list[float] = []
-        for node in self.nodes:
+        for node_index, node in enumerate(self.nodes):
             mask = node.mask
-            sampled = sum(mask) if node.logprobs else 0
+            if len(mask) != len(node.token_ids):
+                raise ValueError(
+                    f"branch {self.index} node {node_index} has {len(mask)} mask entries "
+                    f"for {len(node.token_ids)} token ids"
+                )
+            if any(not isinstance(sampled, bool) for sampled in mask):
+                raise ValueError(
+                    f"branch {self.index} node {node_index} mask entries must be booleans"
+                )
+            sampled = sum(mask)
+            logprobs = parse_sampled_logprobs(
+                node.logprobs,
+                sampled,
+                what=f"branch {self.index} node {node_index}",
+            )
             # Bulk-fill the canonical unsampled-prefix/sampled-suffix layout.
             if not sampled or all(mask[-sampled:]):
-                out += [0.0] * (len(mask) - sampled) + node.logprobs[:sampled]
-                out += [0.0] * max(0, sampled - len(node.logprobs))
+                out += [0.0] * (len(mask) - sampled) + logprobs
                 continue
             li = 0
-            for sampled in mask:
-                if sampled:
-                    out.append(node.logprobs[li] if li < len(node.logprobs) else 0.0)
+            for is_sampled in mask:
+                if is_sampled:
+                    out.append(logprobs[li])
                     li += 1
                 else:
                     out.append(0.0)
