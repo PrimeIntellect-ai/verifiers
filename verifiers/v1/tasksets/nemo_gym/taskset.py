@@ -24,7 +24,7 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, TextContentPart, ToolMessage
+from verifiers.v1.types import AssistantMessage, ToolMessage
 from verifiers.utils.serve_utils import get_free_port
 
 NEMO_GYM_INSTALL_HINT = "uv sync --python 3.12 --extra nemo-gym"
@@ -188,16 +188,9 @@ def _trace_to_nemo_response(
             content = (
                 message.content
                 if isinstance(message.content, str)
-                else [
-                    {"type": "input_text", "text": part.text}
-                    if isinstance(part, TextContentPart)
-                    else {
-                        "type": "input_image",
-                        "image_url": part.image_url.url,
-                        "detail": "auto",
-                    }
-                    for part in message.content
-                ]
+                else json.dumps(
+                    [part.model_dump(mode="json") for part in message.content]
+                )
             )
             output.append(
                 {
