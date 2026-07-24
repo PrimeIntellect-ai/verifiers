@@ -274,19 +274,47 @@ class PrimeRuntime(Runtime):
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
-    async def read(self, path: str) -> bytes:
-        # Avoid background-job log limits and base64 overhead by downloading binary data directly.
-        # The temporary file is removed on every exit, and its byte read stays off the event loop.
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
         target = (
             path
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
-                return await asyncio.to_thread(download.read_bytes)
+            if max_bytes is None:
+                # Avoid background-job log limits and base64 overhead.
+                with tempfile.TemporaryDirectory() as directory:
+                    download = Path(directory) / "download"
+                    await self._client.download_file(
+                        self.info.id, target, str(download)
+                    )
+                    return await asyncio.to_thread(download.read_bytes)
+            # Stream bounded reads because the SDK buffers the complete response.
+            auth = await self._client._auth_cache.get_or_refresh(self.info.id)
+            url = (
+                f"{auth['gateway_url'].rstrip('/')}/"
+                f"{auth['user_ns']}/{auth['job_id']}/download"
+            )
+            data = bytearray()
+            async with self._client._get_gateway_client().stream(
+                "GET",
+                url,
+                headers={"Authorization": f"Bearer {auth['token']}"},
+                params={"path": target, "sandbox_id": self.info.id},
+                timeout=300,
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(1024 * 1024):
+                    data.extend(chunk)
+                    if len(data) > max_bytes:
+                        raise SandboxError(
+                            f"read {path!r}: exceeds the {max_bytes} byte limit"
+                        )
+            return bytes(data)
+        except SandboxError:
+            raise
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
@@ -311,6 +339,18 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def teardown_confirmed(self) -> None:
+        runtime_id = self.info.id
+        client = self._client
+        if client is None or runtime_id is None:
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without its client and ID"
+            )
+        await client.delete(runtime_id)
+        self._client = None
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

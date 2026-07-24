@@ -22,7 +22,7 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 
 from verifiers import __version__
 from verifiers.v1.configs.agent import AgentConfig
@@ -141,6 +141,7 @@ class RolloutRun:
         self._interception = interception
         self.runtime = runtime
         self._owns_runtime = runtime is None
+        self._scoring_runtime: AbstractAsyncContextManager[Runtime] | None = None
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -237,6 +238,15 @@ class RolloutRun:
                     "task has no prompt and no user to open the conversation; set "
                     "task.prompt, or drive the run through agent.interaction() and open "
                     "it with the first turn(message)"
+                )
+            self._scoring_runtime = self.task.scoring_runtime(
+                runtime, self.trace.agent.config.runtime
+            )
+            if self._scoring_runtime is not None and (
+                not self._owns_runtime or self._shared_tools
+            ):
+                raise TaskError(
+                    "separate scoring needs an owned runtime without shared tool servers"
                 )
             if self._owns_runtime:
                 await runtime.start()
@@ -411,13 +421,21 @@ class RolloutRun:
                 trace.timing.scoring.start = now
                 async with boundary(TaskError, "scoring"):
                     # Cross-trace judgement runs later, after the runtime is gone.
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            self.task.score(trace, runtime),
-                            self.harness.score(trace, runtime),
-                        ),
-                        self._scoring_timeout,
-                    )
+                    assert runtime is not None
+                    if self._scoring_runtime is None:
+                        async with asyncio.timeout(self._scoring_timeout):
+                            await asyncio.gather(
+                                self.task.score(trace, runtime),
+                                self.harness.score(trace, runtime),
+                            )
+                    else:
+                        async with AsyncExitStack() as scoring:
+                            async with asyncio.timeout(self._scoring_timeout):
+                                await self.harness.score(trace, runtime)
+                                target = await scoring.enter_async_context(
+                                    self._scoring_runtime
+                                )
+                                await self.task.score(trace, target)
                 trace.timing.scoring.end = time.time()
         except Exception as e:
             self.fail(e)
@@ -435,7 +453,7 @@ class RolloutRun:
                 if span.start and not span.end:
                     span.end = now
             trace.split_generation()
-            if runtime is not None:
+            if runtime is not None and (not runtime.stopped or runtime.stop_failed):
                 try:
                     await self.harness.cleanup(trace, runtime)
                 except Exception:

@@ -41,9 +41,11 @@ from verifiers.v1.types import Messages, StrictBaseModel, content_text
 from verifiers.v1.utils.generic import generic_type
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -222,6 +224,12 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     async def validate(self, runtime: Runtime) -> bool:
         return True
+
+    def scoring_runtime(
+        self, runtime: Runtime, runtime_policy: RuntimeConfig
+    ) -> AbstractAsyncContextManager[Runtime] | None:
+        """Optionally replace the runtime passed to task scoring."""
+        return None
 
     async def score(
         self,
