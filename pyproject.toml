@@ -49,6 +49,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "prime-pydantic-config[toml]>=0.4.2",
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
+    "tornado>=6.1; sys_platform == 'win32'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
     "renderers>=0.1.8",

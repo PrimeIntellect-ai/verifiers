@@ -118,7 +118,13 @@ def walk_decode_tensors(obj: Any, *, to_torch: bool = True):
 
 
 def make_ipc_address(session_id: str, name: str) -> str:
-    """Build an IPC address for inter-process communication."""
+    """Build an inter-process address.
+
+    POSIX uses a ZMQ ipc:// socket. Windows has no ipc:// transport, so fall back to a
+    loopback tcp:// socket on a free port.
+    """
+    if sys.platform == "win32":
+        return f"tcp://127.0.0.1:{get_free_port()}"
     return f"ipc:///tmp/vf-{session_id}-{name.replace('/', '--')}"
 
 
