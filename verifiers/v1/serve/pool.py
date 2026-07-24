@@ -306,6 +306,14 @@ class EnvServerPool:
                     f"env server worker died (exit code {exitcode})",
                 )
             self._replace_worker()
+        # A replacement that failed to spawn leaves the pool empty, and an empty pool has no
+        # dead worker left to drive another attempt — so retry here while budget remains,
+        # rather than refusing every request forever over one transient failure. Bounded by
+        # this method's own interval and by MAX_WORKER_RESTARTS; once that is spent the pool
+        # stays empty and fails requests fast, which is the honest end state (a host that
+        # cannot fork is not something the broker should paper over).
+        if not self.workers:
+            self._replace_worker()
 
     async def _on_request(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
