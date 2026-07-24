@@ -180,10 +180,8 @@ class PrimeRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def prepare_execution(self, routes: list[str]) -> None:
+    async def _apply_network_policy(self, routes: list[str]) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
-        if not self.network_restricted:
-            return
         try:
             if self.config.allow == ["*"]:
                 policy = {"deny": self.config.block}

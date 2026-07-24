@@ -130,7 +130,6 @@ class InterceptionServer(Interception):
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
         self.config = config or InterceptionServerConfig()
-        self._reservations = 0
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
@@ -142,15 +141,7 @@ class InterceptionServer(Interception):
     @property
     def load(self) -> int:
         """Rollouts currently registered — what the pools balance on."""
-        return len(self.sessions) + self._reservations
-
-    @asynccontextmanager
-    async def reserve(self) -> AsyncIterator["InterceptionServer"]:
-        self._reservations += 1
-        try:
-            yield self
-        finally:
-            self._reservations -= 1
+        return len(self.sessions)
 
     def register(self, session: RolloutSession) -> str:
         """Add a session under a fresh secret (the bearer token the harness must send) and
