@@ -44,6 +44,19 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness
+from verifiers.v1.intercepts import (
+    InterceptRecord,
+    InterceptResult,
+    Interceptor,
+    Terminate,
+    block_code_search,
+    block_shell_commands,
+    block_tool_calls,
+    block_web_search,
+    block_with_judge,
+    disable_provider_tools,
+    match_tool,
+)
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     Criterion,
@@ -116,7 +129,7 @@ from verifiers.v1.utils.artifacts import (
     collect,
     restore,
 )
-from verifiers.v1.utils.decorators import metric, reward, stop, tool
+from verifiers.v1.utils.decorators import intercept, metric, reward, stop, tool
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
 )
@@ -218,6 +231,19 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "tool",
     "metric",
     "reward",
+    "intercept",
+    # interception
+    "InterceptRecord",
+    "InterceptResult",
+    "Interceptor",
+    "Terminate",
+    "block_code_search",
+    "block_shell_commands",
+    "block_tool_calls",
+    "block_web_search",
+    "block_with_judge",
+    "disable_provider_tools",
+    "match_tool",
     # errors
     "RolloutError",
     "EnvError",

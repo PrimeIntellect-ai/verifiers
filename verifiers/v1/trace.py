@@ -18,6 +18,7 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.intercepts.core import InterceptRecord
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -183,6 +184,11 @@ class Branch(BaseModel):
         return [n.message for n in self.nodes]
 
     @property
+    def delivered_messages(self) -> Messages:
+        """The conversation the harness saw, including intercepted replacements."""
+        return [n.delivered_message or n.message for n in self.nodes]
+
+    @property
     def token_ids(self) -> list[int]:
         """Training input IDs formed by concatenating node token spans."""
         tokens: list[int] = []
@@ -318,6 +324,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph; branches are derived views and storage stays linear in turns."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
+    interceptions: list[InterceptRecord] = Field(default_factory=list)
+    """Every rewrite or termination produced by a task's `@intercept` handlers."""
 
     rewards: dict[str, Reward] = Field(default_factory=dict)
     """Named, weighted rewards"""
@@ -347,6 +355,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values())
+
+    @property
+    def terminated_by_intercept(self) -> bool:
+        return any(record.action == "terminate" for record in self.interceptions)
 
     @property
     def has_error(self) -> bool:
@@ -478,6 +490,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.info.setdefault("judge", []).append(response.model_dump())
         if response.usage is not None:
             self.extra_usage.append(response.usage)
+
+    def record_interception(self, record: InterceptRecord) -> None:
+        self.interceptions.append(record)
 
     def record_run(self, run: RunInfo | None = None, **info: Any) -> None:
         """Record the run identity (eval / train), and optional extra info."""
