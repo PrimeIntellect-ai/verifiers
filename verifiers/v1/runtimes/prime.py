@@ -181,17 +181,19 @@ class PrimeRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def _apply_network_policy(self, routes: list[str]) -> None:
+    async def _apply_network_policy(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
         try:
-            hosts = list(
-                dict.fromkeys(
-                    h for h in (urlsplit(route).hostname for route in routes) if h
-                )
-            )
-            if self.config.allow == ["*"]:
+            if routes is None:
+                policy = {"allow": ["*"]}
+            elif self.config.allow == ["*"]:
                 policy = {"deny": self.config.block}
             else:
+                hosts = list(
+                    dict.fromkeys(
+                        h for h in (urlsplit(route).hostname for route in routes) if h
+                    )
+                )
                 entries = list(dict.fromkeys([*hosts, *self.config.allow]))
                 validate_egress_lists(entries, None)
                 policy = {"allow": entries} if entries else {"deny": ["*"]}
@@ -215,8 +217,8 @@ class PrimeRuntime(Runtime):
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
-            self.config.allow,
-            self.config.block,
+            policy.get("allow"),
+            policy.get("deny"),
         )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
