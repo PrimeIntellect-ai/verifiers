@@ -45,6 +45,8 @@ _TERMINAL_MARKERS = tuple(
 )
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
+_RESPONSE_ONLY_ITEM_FIELDS = frozenset({"id", "status", "format"})
+_RESPONSE_ONLY_CONTENT_FIELDS = frozenset({"annotations", "logprobs"})
 
 
 class ProviderUsageInputTokensDetails(BaseModel):
@@ -96,6 +98,32 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
+def _normalize_provider_state(items: list[dict] | None) -> list[dict] | None:
+    """Match response output items to the replay form sent in the next request."""
+    if not items:
+        return items
+    normalized: list[dict] = []
+    for raw in items:
+        item = {
+            key: value
+            for key, value in raw.items()
+            if key not in _RESPONSE_ONLY_ITEM_FIELDS and value is not None
+        }
+        if isinstance(content := item.get("content"), list):
+            item["content"] = [
+                {
+                    key: value
+                    for key, value in part.items()
+                    if key not in _RESPONSE_ONLY_CONTENT_FIELDS and value is not None
+                }
+                if isinstance(part, dict)
+                else part
+                for part in content
+            ]
+        normalized.append(item)
+    return normalized
+
+
 def fold_assistant(items: list[dict]) -> AssistantMessage:
     """One run of assistant-side items (reasoning / message / function_call) -> one typed
     assistant message."""
@@ -129,7 +157,7 @@ def fold_assistant(items: list[dict]) -> AssistantMessage:
         content=content or None,
         reasoning_content="\n".join(r for r in reasoning if r) or None,
         tool_calls=calls or None,
-        provider_state=items,
+        provider_state=_normalize_provider_state(items),
     )
 
 
@@ -189,7 +217,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
             content=content or None,
             reasoning_content="\n".join(r for r in reasoning if r) or None,
             tool_calls=tool_calls,
-            provider_state=data.get("output"),
+            provider_state=_normalize_provider_state(data.get("output")),
         ),
         finish_reason=finish,
         usage=usage,
