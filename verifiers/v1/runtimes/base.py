@@ -40,6 +40,44 @@ _ENSURE_UV = (
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
 
+# A reused restricted box must stop processes left by the prior untrusted agent
+# before trusted setup reopens egress. PID + kernel start time survives PID reuse.
+_PROCESS_SNAPSHOT = r"""
+for proc in /proc/[0-9]*; do
+    pid=${proc##*/}
+    stat=$(cat "$proc/stat" 2>/dev/null) || continue
+    rest=${stat##*) }
+    set -- $rest
+    printf '%s:%s\n' "$pid" "${20}"
+done
+"""
+_KILL_AFTER_SNAPSHOT = r"""
+baseline="
+$VF_PROCESS_BASELINE
+"
+protected=" "
+pid=$$
+while [ "$pid" -gt 1 ] 2>/dev/null; do
+    protected="$protected$pid "
+    stat=$(cat "/proc/$pid/stat" 2>/dev/null) || break
+    rest=${stat##*) }
+    set -- $rest
+    pid=$2
+done
+for proc in /proc/[0-9]*; do
+    pid=${proc##*/}
+    case "$protected" in *" $pid "*) continue ;; esac
+    stat=$(cat "$proc/stat" 2>/dev/null) || continue
+    rest=${stat##*) }
+    set -- $rest
+    identity="$pid:${20}"
+    case "$baseline" in *"
+$identity
+"*) continue ;; esac
+    kill -KILL "$pid" 2>/dev/null || true
+done
+"""
+
 # The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
 # hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
 # at the runtime's public URL.
@@ -143,6 +181,7 @@ class Runtime(ABC):
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
+        self._process_baseline: str | None = None
         self.execution_prepared = False
         """Whether a rollout successfully activated this runtime's execution policy."""
         self.stopped = False
@@ -287,6 +326,23 @@ class Runtime(ABC):
             )
         self._setup_claimed = True
         try:
+            if self._process_baseline is not None:
+                result = await self.run(
+                    ["sh", "-c", _KILL_AFTER_SNAPSHOT],
+                    {"VF_PROCESS_BASELINE": self._process_baseline},
+                )
+                if result.exit_code != 0:
+                    raise SandboxError(
+                        f"failed to isolate reused {self.type} runtime processes: "
+                        f"{result.stderr.strip()[-500:]}"
+                    )
+            snapshot = await self.run(["sh", "-c", _PROCESS_SNAPSHOT], {})
+            if snapshot.exit_code != 0:
+                raise SandboxError(
+                    f"failed to snapshot {self.type} runtime processes: "
+                    f"{snapshot.stderr.strip()[-500:]}"
+                )
+            self._process_baseline = snapshot.stdout
             if self.execution_prepared:
                 await self._apply_network_policy(None)
                 self.execution_prepared = False
