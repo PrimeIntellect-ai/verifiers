@@ -8,8 +8,7 @@ from the endpoint the program's SDK posts to — the harness declares nothing.
 The eval client preserves a request's native JSON fields except for eval-owned overrides, while a
 dialect-owned `StreamParser` incrementally assembles a response copy for the trace; the renderer is chat-only.
 A dialect is therefore mostly wire -> vf (`parse_request`/`parse_response`/`stream_parser`); the
-exceptions are `apply_overrides` (impose the eval's model + sampling in this format's shape) and
-`extend` (chat-only user-sim injection).
+exception is `apply_overrides` (impose the eval's model + sampling in this format's shape).
 """
 
 import json
@@ -177,15 +176,3 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
         the only field mutation the proxy makes to the native JSON object. Model overlays;
         sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
-
-    def extend(
-        self, body: ReqT, completion: dict | None, user_messages: Messages
-    ) -> ReqT:
-        """For user-sim multi-turn: return `body` with the model's turn (`completion`, native
-        wire) + the simulator's `user_messages` appended, in this protocol's shape. A `None`
-        `completion` appends only the user turn(s) — used to seed the opening turn of a task
-        with no prompt, before the model has spoken. Only the chat dialect implements it — the
-        one harness contract with a user simulator speaks chat."""
-        raise NotImplementedError(
-            f"user simulator is not supported over the {type(self).__name__} dialect"
-        )

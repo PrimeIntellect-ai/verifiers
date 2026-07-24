@@ -13,7 +13,7 @@ Seats are deliberately heterogeneous: point the proposer at a code-running harne
 in a real sandbox and keep the solvers on a cheap tool-less chat loop —
 
     uv run eval proposer-solver-v1 -n 4 \
-      --env.proposer.harness.id codex --env.proposer.harness.runtime.type prime \
+      --env.proposer.harness.id codex --env.proposer.runtime.type prime \
       --env.solver.harness.id null
 
 Train-side, the seats flip independently per run (`--env.train_solver false`
@@ -152,7 +152,9 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
         solves = [t for t in traces if t.agent_name == "solver"]
         if not solves:
             return 0.0
-        return sum(t.rewards.get("correct", 0.0) for t in solves) / len(solves)
+        return sum(
+            r.score if (r := t.rewards.get("correct")) else 0.0 for t in solves
+        ) / len(solves)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """The proposer is judged by what its problem DOES to the solvers:

@@ -28,7 +28,8 @@ from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.taskset import Taskset
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
@@ -87,8 +88,8 @@ class HarborData(TaskData):
     difficulty: str | None = None
     category: str | None = None
     tags: list[str] = []
-    task_dir: str = Field("", exclude=True)
-    """Host path to the task dir; used to stage tests/ to verify, not serialized."""
+    task_dir: str = ""
+    """Host path to the task dir; used to stage tests/ to verify."""
     verifier_env: dict[str, str] = {}
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -273,7 +274,14 @@ def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
 
 
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
+    # Harbor is optional, so importing its schema is deferred until a Harbor task loads.
+    from harbor.models.task.config import NetworkMode, TaskConfig as HarborTaskConfig
+
     config = tomllib.loads((task_dir / "task.toml").read_text())
+    parsed = HarborTaskConfig.model_validate(config)
+    network = (
+        parsed.agent.explicit_phase_policy() or parsed.environment.resolve_baseline()
+    )
     task, meta = config.get("task", {}), config.get("metadata", {})
     authors = [Author(**a) for a in task.get("authors", [])]
     # Older registry entries stored one author in [metadata].
@@ -294,6 +302,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             config,
             harbor_config.require_image,
             harbor_config.ignore_dockerfile,
+        ),
+        network_allow=(
+            ["*"]
+            if network.network_mode == NetworkMode.PUBLIC
+            else list(network.allowed_hosts)
         ),
         timeout=TaskTimeout(
             harness=harness_timeout * harbor_config.timeout_multiplier

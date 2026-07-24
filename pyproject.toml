@@ -35,7 +35,7 @@ dependencies = [
     "openai>=2.9.0",
     "openai-agents>=0.8.2",
     "prime-tunnel>=0.1.8",
-    "prime-sandboxes>=0.2.31",
+    "prime-sandboxes>=0.2.33",
     "pydantic>=2.12.3",
     "requests",
     "rich>=11.0.0",
@@ -79,6 +79,7 @@ examples = [
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "proposer-solver-v1", "reverse-text-v1", "color-codeword-v1",
     "wordle-v1", "openenv-wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
+    "kuhn-poker-v1",
 ]
 
 [project.optional-dependencies]
@@ -131,6 +132,7 @@ openenv-wordle-v1 = { path = "environments/openenv_wordle_v1", editable = true }
 color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
+kuhn-poker-v1 = { path = "environments/kuhn_poker_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
@@ -229,6 +231,8 @@ markers = [
     "bash: v1 e2e cases on the bash harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",
+    "pi: v1 e2e cases on the pi harness",
+    "pool: v1 e2e cases on the pool harness",
     "codex: v1 e2e cases on the codex harness",
     "unit: marks tests as unit tests",
     "asyncio: marks tests as async tests",

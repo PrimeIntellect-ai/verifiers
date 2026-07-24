@@ -22,13 +22,13 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.configs.debug import DebugConfig
+from verifiers.v1.configs.cli.debug import DebugConfig
 from verifiers.v1.decorators import invoke
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Error, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
@@ -202,6 +202,14 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     trace = Trace(
         task=TraceTask(type=type(task).__name__, data=task.data),
         state=state_cls(type(task))(),
+        # No agent plays here (no model, no harness): the seat records the
+        # runtime policy, and the provisioned box lands on it below (id, resolved
+        # type, cache status).
+        agent=AgentInfo(
+            config=vf.AgentConfig(runtime=config.runtime),
+            name="debug",
+            trainable=False,
+        ),
     )
     debug = {
         "task": task_info(task),
@@ -214,7 +222,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         resolve_runtime_config(config.runtime, task),
         name=f"debug-{task.data.idx}-{uuid4().hex[:8]}",
     )
-    trace.runtime = runtime.info
+    trace.agent.runtime = runtime.info
     setup_timeout = (
         config.timeout.setup
         if config.timeout.setup is not None
@@ -230,6 +238,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
         )
+        await runtime.prepare_execution([])
         trace.timing.setup.end = time.time()
 
         trace.timing.generation.start = time.time()

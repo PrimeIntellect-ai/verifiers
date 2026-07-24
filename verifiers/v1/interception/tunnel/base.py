@@ -1,12 +1,9 @@
 """The Tunnel contract: expose a host interception port to a remote consumer.
 
-The interception server runs on the host. A *local* consumer (host network) reaches it at
-localhost — no tunnel, whatever the config. A *remote* one needs the port published outward:
-that's a `Tunnel`. It says where the server must bind for the tunnel to reach it
-(`bind_host`/`bind_port`) and `expose`s the bound port as a public URL. So a tunnel knows
-nothing about locality — the caller (`InterceptionServer.start`) uses it only in the remote
-case. The host-side counterpart to a `Runtime`: `Runtime.expose` publishes a port *inside* a
-sandbox; `Tunnel.expose` a *host* port.
+The interception server runs on the host. Local runtimes use a host-local URL directly or
+through their runtime translation; remote runtimes need the port published outward. A
+`Tunnel` supplies the bind address and exposes that host port as a public URL. It is the
+host-side counterpart to `Runtime.expose`, which publishes a port inside a sandbox.
 """
 
 import contextlib

@@ -21,12 +21,10 @@ The command also supports:
 - `-p`, `--path <dir>` — parent directory, default: `./environments`
 - `-T`, `--add-tool` — also scaffold a `vf.Toolset` tool server at `servers/tool.py`
   - Use this to create custom tools which are installed into supported harnesses via MCP.
-- `-U`, `--add-user` — also scaffold a `vf.User` simulator at `servers/user.py`
-  - Use this to simulate a user interacting with the model. Not all harnesses support user simulation.
 - `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--env.agent.harness.id <name>`
   - Prefer a built-in harness unless the model needs to run inside a custom program.
 
-Most tasksets do not need specific tools, user simulations or custom harnesses.
+Most tasksets do not need specific tools or custom harnesses. (To simulate a user interacting with the model, open an interaction from an env's `run()` and script the user's turns — see the [Agent docs](agent.md).)
 
 > For a production-scale catalog of tasksets, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
 
@@ -134,7 +132,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
             )
 ```
 
-Two rules follow from infinity: a run over an infinite taskset must be bounded with `num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is a no-op (warned): there is no whole set to sample from, and the first `n` generated tasks are already an arbitrary sample. Generation must be deterministic — env-server pool workers each run their own `load()` and rely on every worker producing the same sequence, so seed any randomness with a constant (see `alphabet_sort_v1`, `color_codeword_v1`, or the built-in `textarena` taskset).
+Two rules follow from infinity: a run over an infinite taskset must be bounded with `num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is a no-op (warned): there is no whole set to sample from, and the first `n` generated tasks are already an arbitrary sample. The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort_v1`, `color_codeword_v1`, or the built-in `textarena` taskset).
 
 ## Adding Tools
 

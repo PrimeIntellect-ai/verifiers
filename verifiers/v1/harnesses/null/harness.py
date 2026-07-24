@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
 
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
+from verifiers.v1.task import TaskData
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
@@ -17,9 +19,9 @@ class NullHarnessConfig(HarnessConfig):
 class NullHarness(Harness[NullHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_USER_SIM = True
-    SUPPORTS_MESSAGE_PROMPT = True
+    SUPPORTS_RESUME = True
     EXECUTES_CODE = False
+    NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
@@ -32,8 +34,9 @@ class NullHarness(Harness[NullHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        data: TaskData,
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task.data)
+        system_prompt, prompt = self.resolve_prompt(data)
         env = {**self.config.resolved_env}
         args = [
             f"--base-url={endpoint}",

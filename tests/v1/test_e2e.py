@@ -15,43 +15,52 @@ def _pair(a: str, b: str, id: str, *extra_marks):
     return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
 
 
-# harness x harness runtime: every harness once, both local runtimes hit, one remote row
-# per provider. codex/claude-code are excluded here (unreliable on a no-op echo chat
+# harness x harness runtime: every harness once, both local runtimes hit (subprocess
+# only carries the in-house loops — the rest NEEDS_CONTAINER), one remote row per
+# provider. codex/claude-code are excluded here (unreliable on a no-op echo chat
 # task) — test_agentic covers them.
 CHAT_PLACEMENTS = [
     _pair("null", "subprocess", "null-harness-in-subprocess"),
     _pair("bash", "docker", "bash-harness-in-docker"),
-    _pair("rlm", "subprocess", "rlm-harness-in-subprocess"),
+    _pair("rlm", "docker", "rlm-harness-in-docker"),
     _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]
 
 # harness x harness runtime for the shell task: every coding agent once (null is a chat
-# loop with no shell), both local runtimes hit, one remote row per provider.
+# loop with no shell), both local runtimes hit (subprocess only carries bash), one
+# remote row per provider.
 AGENTIC_PLACEMENTS = [
     _pair("bash", "subprocess", "bash-harness-in-subprocess"),
     _pair("rlm", "docker", "rlm-harness-in-docker"),
-    _pair("kimi-code", "subprocess", "kimi-code-harness-in-subprocess"),
+    _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("codex", "docker", "codex-harness-in-docker"),
-    _pair("claude-code", "subprocess", "claude-code-harness-in-subprocess"),
+    _pair("claude-code", "docker", "claude-code-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]
 
-# harness runtime x user placement: colocated in both local runtimes, each own-runtime
-# across the opposite boundary, modal rows local-only. No prime rows: a user sim in a
-# prime sandbox needs prime port exposure (unreachable from the host here).
-USER_PLACEMENTS = [
-    _pair("subprocess", "colocated", "harness-in-subprocess-with-user-colocated"),
-    _pair("docker", "colocated", "harness-in-docker-with-user-colocated"),
-    _pair("subprocess", "docker", "harness-in-subprocess-with-user-in-docker"),
-    _pair("docker", "subprocess", "harness-in-docker-with-user-in-subprocess"),
-    _pair("modal", "colocated", "harness-in-modal-with-user-colocated"),
-    _pair("subprocess", "modal", "harness-in-subprocess-with-user-in-modal"),
+# The scripted user runs in the eval process itself (no placement axis); the harness
+# runtime is the exchange's only axis.
+USER_RUNTIMES = [
+    pytest.param("subprocess", marks=[_m.subprocess], id="harness-in-subprocess"),
+    pytest.param("docker", marks=[_m.docker], id="harness-in-docker"),
+    pytest.param("prime", marks=[_m.prime], id="harness-in-prime"),
+    pytest.param("modal", marks=[_m.modal], id="harness-in-modal"),
 ]
 
-# harness runtime x tool placement: as USER_PLACEMENTS plus the two-container case
+# ACP-backed harnesses: each must preserve an exchange across process relaunches and
+# retain MCP access after resuming. Cover every harness in the local container runtime,
+# plus one remote placement for the sandbox/tunnel boundary.
+ACP_RESUME_PLACEMENTS = [
+    _pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
+    _pair("pi", "docker", "pi-acp-in-docker"),
+    _pair("pool", "docker", "pool-acp-in-docker"),
+    _pair("pool", "prime", "pool-acp-in-prime"),
+]
+
+# harness runtime x tool placement: every axis value once plus the two-container case
 # (harness and tool in separate docker boxes) and a prime-colocated row (a tool in its
 # OWN prime sandbox needs port exposure; colocated rides the harness's box).
 TOOL_PLACEMENTS = [
@@ -91,15 +100,16 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-v1",
         harness=harness,
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=2,
     )
     assert trace.ok
     assert trace.num_turns == 1
+    assert trace.stop_condition == "agent_completed"
     assert trace.reward == 1.0
     # The seat's resolved identity rides the trace (policy metadata for trainers).
-    assert trace.agent is not None and trace.agent.sampling.temperature == 0
+    assert trace.agent is not None and trace.agent.config.sampling.temperature == 0
     # Every sampled turn has one per-call record, linked to its assistant node.
     sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
     assert [c.node for c in trace.calls if c.error is None] == sampled
@@ -109,23 +119,92 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
-@pytest.mark.parametrize("harness_runtime,user_runtime", USER_PLACEMENTS, indirect=True)
-async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
-    """Multi-turn, driven by a (container-safe) `vf.User` simulator, across the user's
-    placement (`user_runtime`: colocated in the harness's runtime, or its own runtime) x
-    the harness `runtime`. Either way the framework drives the user and must reach it
-    from wherever the harness runs."""
+@pytest.mark.parametrize("harness_runtime", USER_RUNTIMES, indirect=True)
+async def test_user(run_v1, harness_runtime, tmp_path):
+    """Multi-turn, driven by a scripted user — an interaction loop in the env's
+    `run()` — across the harness runtime axis. The task is prompt-less, so one
+    run covers the whole exchange shape: the caller opens (the user speaks first),
+    each later turn resumes the harness onto the conversation, and leaving the loop
+    ends the exchange (`user_closed`). The user runs in the eval process itself, so
+    there is no placement axis."""
     (trace,) = await run_v1(
         "echo-user-sim-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=6,
-        taskset_overrides={"task": {"user": user_runtime}},
     )
     assert trace.ok
     assert trace.num_turns >= 2  # genuinely multi-turn
+    assert trace.stop_condition == "user_closed"  # leaving the interaction ended it
     assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+async def test_interaction(live_ctx):
+    """Drive an agent turn-by-turn through `agent.interaction()` — the caller IS
+    the run's user. Runs on the tool-less `null` harness: nothing but the exchange
+    itself, yet a real rollout — trace, scoring, and the `user_closed` stop all
+    apply."""
+    import verifiers.v1 as vf
+    from verifiers.v1.harnesses.null import NullHarnessConfig
+
+    agent = vf.make_agent(
+        vf.AgentConfig(
+            harness=NullHarnessConfig(id="null"),
+            model=live_ctx.model,
+            sampling=live_ctx.sampling,
+        ),
+        client=live_ctx.client,
+    )
+    task = vf.Task(
+        vf.TaskData(
+            idx=0,
+            prompt=None,  # the interaction's caller opens the conversation
+            system_prompt="Repeat the user's message back exactly, no extra words.",
+        )
+    )
+    async with agent.interaction(task) as interaction:
+        first = await interaction.turn("hello world")
+        assert isinstance(first, vf.Segment)
+        assert not first.terminated
+        assert [message.role for message in first.messages] == ["assistant"]
+        assert "hello world" in first.last_reply.lower()
+        second = await interaction.turn("goodbye world")
+        assert not second.terminated
+        assert [message.role for message in second.messages] == ["assistant"]
+        assert "goodbye world" in second.last_reply.lower()
+    trace = interaction.trace
+    assert trace is not None and trace.errors == []
+    assert trace.stop_condition == "user_closed"  # closing the interaction ended it
+    assert trace.num_turns == 2
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    "harness,harness_runtime", ACP_RESUME_PLACEMENTS, indirect=True
+)
+async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
+    """Each ACP harness preserves context and MCP access across two segments."""
+    (trace,) = await run_v1(
+        "echo-acp-resume-v1",
+        harness=harness,
+        runtime={"type": harness_runtime},
+        output_dir=tmp_path,
+        max_turns=8,
+        max_tokens=8192,
+        rollout_timeout=600,
+    )
+    assert trace.ok, trace.errors
+    assert trace.stop_condition == "user_closed"
+    assert trace.rewards["resumed"].score == 1.0
+    assert trace.tools  # ACP-native tools, or Pi's MCP adapter meta-tool
+    segments = trace.info["acp_segments"]
+    assert len(segments) == 2
+    assert segments[0]["terminated"] is False
+    assert segments[1]["terminated"] is False
+    assert "tool" in segments[1]["roles"]
+    assert segments[1]["tool_outputs"]
 
 
 @pytest.mark.e2e
@@ -140,7 +219,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-tool-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=6,
         taskset_overrides={"task": {"tools": tool_runtime}},
@@ -167,7 +246,7 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
     (trace,) = await run_v1(
         "counter-tool-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=8,
         taskset_overrides={"task": {"tools": tool_runtime}},
@@ -188,7 +267,7 @@ async def test_shared_tool_isolation(
     traces = await run_v1_server(
         "scratchpad-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         num_tasks=2,
         n=1,
@@ -208,7 +287,7 @@ async def test_tool_response_image(run_v1, tmp_path):
     (trace,) = await run_v1(
         "tool-response-image-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": "subprocess"}},
+        runtime={"type": "subprocess"},
         model="openai/gpt-5.6-luna",
         reasoning_effort="none",
         output_dir=tmp_path,
@@ -235,13 +314,13 @@ async def test_rubric_judge(run_v1, tmp_path):
     (trace,) = await run_v1(
         "echo-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": "subprocess"}},
+        runtime={"type": "subprocess"},
         output_dir=tmp_path,
         taskset_overrides={"task": {"judges": [{"id": "rubric", "path": str(rubric)}]}},
         max_turns=2,
     )
     assert trace.ok
-    assert trace.rewards["rubric"] > 0  # the judge's verdict landed in the reward
+    assert trace.rewards["rubric"].score > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0
     assert trace.info["judge"]  # the call was recorded onto the trace
 
@@ -253,7 +332,7 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=harness,
-        harness_overrides={"runtime": {"type": harness_runtime}},
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=10,
     )
@@ -313,23 +392,32 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 
 @pytest.mark.e2e
 async def test_env_id_agentic_judge(run_v1, tmp_path):
-    """The agentic judge over the echo taskset (needs docker): the judge lands in
-    its own box with the graded transcript uploaded, investigates with real
-    execution, and its parsed verdict lands on the solver's trace under the spec's
-    reward key. Wiring, not taste: the judge followed the verdict-file contract's
-    output contract — the grade itself is the model's call."""
+    """The agentic judge over the echo taskset (needs docker): the box is
+    provisioned once from the solver's runtime policy, the solver plays in it,
+    the judge lands in the SAME box with the graded trace uploaded,
+    investigates with real execution, and its parsed verdict
+    lands on the solver's trace under the spec's reward key. Wiring, not taste:
+    the judge followed the verdict-file contract — the grade itself is the
+    model's call. Exercises the config surface too: a policy-only prompt
+    override (the verdict contract is appended regardless) and
+    reward-composition weights."""
     traces = await run_v1(
         "echo-v1",
         harness=None,  # seats pin their own harness; there is no run-level one
         env={
             "id": "agentic-judge",
-            "solver": {"harness": {"id": "null"}},
-            # The judge reads the transcript and reasons before it writes the
+            # The solver owns the shared box, so the container is pinned here.
+            "solver": {"harness": {"id": "bash"}, "runtime": {"type": "docker"}},
+            # The judge reads the trace and reasons before it writes the
             # verdict file; the shared 2048-token run cap truncates it mid-audit.
             "judge": {
-                "harness": {"runtime": {"type": "docker"}},
+                "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
             },
+            "task": {
+                "prompt": "Check EMPIRICALLY that the agent echoed the word back.",
+            },
+            "score": {"task_weight": 0.5},
         },
         output_dir=tmp_path,
         max_turns=10,
@@ -340,9 +428,107 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     (judge,) = [t for t in traces if t.agent_name == "judge"]
     assert solver.ok and judge.ok
     assert judge.trainable is False
-    assert solver.rewards["echoed"] == 1.0  # the task's own reward still runs
+    # The task's own reward keeps its raw score; the rescale lands on the weight.
+    assert solver.rewards["echoed"].score == 1.0
+    assert solver.rewards["echoed"].weight == 0.5
     assert isinstance(judge.info.get("verdict"), dict)  # scraped off the box
-    assert 0.0 <= solver.rewards["judge"] <= 1.0
+    assert 0.0 <= solver.rewards["judge"].score <= 1.0
+
+
+@pytest.mark.e2e
+async def test_env_id_user_sim(run_v1, tmp_path):
+    """The user-sim env over the echo taskset: a modeled user (null harness) opens
+    the conversation from the task's prompt-as-scenario; the assistant's trace is
+    judged by the task's own reward; both sides land agent-stamped on one episode."""
+    traces = await run_v1(
+        "echo-v1",
+        harness=None,  # multi-agent: each seat pins its own
+        env={"id": "user-sim", "assistant": {"harness": {"id": "null"}}},
+        output_dir=tmp_path,
+        max_turns=6,
+        rollout_timeout=300,
+    )
+    assert sorted(t.agent_name for t in traces) == ["assistant", "user"]
+    (assistant,) = [t for t in traces if t.agent_name == "assistant"]
+    (user,) = [t for t in traces if t.agent_name == "user"]
+    assert assistant.ok and user.ok
+    assert user.trainable is False
+    assert user.num_turns >= 1  # the modeled user actually spoke
+    assert assistant.metrics["user_turns"] >= 1
+    # `mask_prompt`: the scenario is hidden from the assistant's harness (the run's
+    # visible data) while the task's own rewards still scored the real row. The
+    # masked view is what persists (provenance is the row's idx); both sides land
+    # as ONE durable episode.
+    assert assistant.task.data.prompt is None
+    assert "echoed" in assistant.rewards
+    from verifiers.v1.cli.output import read_episodes
+    from verifiers.v1.trace import WireTrace
+
+    (record,) = read_episodes(tmp_path, WireTrace)
+    assert {t.agent_name for t in record.traces} == {"assistant", "user"}
+    assert record.id  # both traces are persisted under one durable episode identity
+
+
+@pytest.mark.e2e
+async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
+    """THE tau-bench shape — a tool-using assistant composed with a modeled user.
+    The assistant's MCP tool loop runs entirely inside a harness segment and the
+    user exchange advances between segments, so the two can never race or amputate
+    each other (the failure mode of injecting user turns at the model boundary).
+    Reward 1.0 proves the tool actually ran mid-conversation: its token never
+    appears in any prompt."""
+    traces = await run_v1(
+        "echo-tool-v1",
+        harness=None,  # multi-agent: each seat pins its own
+        env={"id": "user-sim", "assistant": {"harness": {"id": "null"}}},
+        output_dir=tmp_path,
+        max_turns=8,
+        # Reasoning models can spend thousands of tokens on a turn; the default
+        # 2048 truncates the reply mid-relay, cutting the stamp out of the text.
+        max_tokens=8192,
+        rollout_timeout=300,
+    )
+    (assistant,) = [t for t in traces if t.agent_name == "assistant"]
+    (user,) = [t for t in traces if t.agent_name == "user"]
+    assert assistant.ok and user.ok
+    assert assistant.task.data.prompt is None  # the scenario stayed off the wire
+    assert user.num_turns >= 1  # the modeled user actually drove the exchange
+    assert assistant.rewards["echoed"].score == 1.0  # the tool ran, mid-conversation
+    # The tool was advertised to the masked chat exactly as to any run.
+    assert assistant.tools is not None
+    assert any(tool.name == "echo_back" for tool in assistant.tools)
+
+
+@pytest.mark.e2e
+async def test_kuhn_poker_self_play(run_v1, tmp_path):
+    """The turn-coupled proof env: one Kuhn poker hand, both seats live interactions
+    of the run's own model (self-play), refereed host-side, paid out zero-sum."""
+    traces = await run_v1(
+        "kuhn-poker-v1",
+        harness=None,  # both seats pin the null harness themselves
+        output_dir=tmp_path,
+        max_turns=8,
+        # The Q decision (the one mixed-strategy spot in Kuhn) can cost a reasoning
+        # model thousands of tokens; the default 2048 truncates to an empty reply AND
+        # exhausts the rollout budget, so the invalid-move retry is never served.
+        max_tokens=8192,
+        rollout_timeout=300,
+    )
+    assert sorted(t.agent_name for t in traces) == ["player0", "player1"]
+    payoffs = {t.agent_name: t.rewards["payoff"].score for t in traces}
+    assert payoffs["player0"] + payoffs["player1"] == 0  # zero-sum
+    assert abs(payoffs["player0"]) in (1.0, 2.0)
+    for trace in traces:
+        assert trace.ok
+        assert trace.info["kuhn"]["seat"] in (0, 1)
+    # A played-out hand has both seats speaking. A forfeit (the model never produced
+    # a legal move) still pays out zero-sum, but the hand dies mid-exchange, so only
+    # the seat that acted is guaranteed a turn — a hand where NOBODY spoke means the
+    # exchange machinery never ran at all.
+    if traces[0].info["kuhn"]["forfeited"] is None:
+        assert all(t.num_turns >= 1 for t in traces)
+    else:
+        assert any(t.num_turns >= 1 for t in traces)
 
 
 @pytest.mark.e2e
@@ -376,13 +562,13 @@ async def test_replay_round_trip(run_v1, tmp_path):
 
     from verifiers.v1.cli.output import CONFIG_FILE
     from verifiers.v1.cli.replay import run_replay
-    from verifiers.v1.configs.replay import ReplayConfig
+    from verifiers.v1.configs.cli.replay import ReplayConfig
 
     run_dir = tmp_path / "run"
     (source,) = await run_v1(
         "reverse-text-v1",
         harness="null",
-        harness_overrides={"runtime": {"type": "subprocess"}},
+        runtime={"type": "subprocess"},
         output_dir=run_dir,
         max_turns=2,
     )

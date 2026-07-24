@@ -18,7 +18,7 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.configs.validate import ValidateConfig
+from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.decorators import invoke
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime

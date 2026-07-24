@@ -43,7 +43,7 @@ uv run pre-commit install
 
 ## Project Structure
 
-```
+```text
 verifiers/
 ├── verifiers/          # Main package
 │   ├── envs/           # Environment classes

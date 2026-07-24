@@ -19,7 +19,7 @@ from verifiers.v1.cli.resolve import (
 )
 from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
 from verifiers.v1.cli.eval.runner import run_eval
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 
 logger = logging.getLogger(__name__)
 

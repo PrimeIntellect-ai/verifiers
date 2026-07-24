@@ -16,12 +16,12 @@ This section covers how to use Verifiers environments for RL training with our H
 - [RL Rules of Thumb](#rl-rules-of-thumb)
   - [Before Training](#before-training)
   - [Performance Trade-offs](#performance-trade-offs)
+  - [Inference Client Types](#inference-client-types)
   - [Common Issues](#common-issues)
 - [Other Trainers](#other-trainers)
   - [Tinker](#tinker)
   - [SkyRL](#skyrl)
   - [rLLM](#rllm)
-  - [Integrating with Other Trainers](#integrating-with-other-trainers)
 
 ## Hosted Training
 
@@ -37,7 +37,7 @@ prime lab setup
 
 This will download example TOML configs for Hosted Training into `configs/rl/`, example eval configs into `configs/eval/`, along with `configs/endpoints.toml` and GEPA starter configs in `configs/gepa/`:
 
-```
+```text
 configs/
 ├── endpoints.toml
 ├── eval/
@@ -193,7 +193,7 @@ For production RL training, use `openai_chat_completions_token` — it's the tri
 
 ### Common Issues
 
-**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn training. We provide versions of many of these models with modified chat templates [here](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
+**Non-Increasing Chat Templates:** The Qwen3 and DeepSeek-R1 model series both remove `<think>` sections from messages when processing inputs, which violates the increasing context requirement for multi-turn training. We provide versions of many of these models with [modified chat templates](https://huggingface.co/collections/willcb/qwen3-68434f4883925bfdb4570ee5).
 
 **OOM during generation:**
 

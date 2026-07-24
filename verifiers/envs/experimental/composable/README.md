@@ -115,7 +115,7 @@ Each taskset provides its own rubric via `get_rubric()`. The rubric owns **all s
 
 Use `keep_sandbox_for_scoring=True` on the environment so the sandbox stays alive after the rollout for the rubric to use.
 
-```
+```text
 Rollout completes → sandbox kept alive → rubric.score_rollout() runs tests
     → rubric.cleanup() deletes sandbox
 ```

@@ -25,31 +25,18 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, ClassVar, Generic
 
-from pydantic import SerializeAsAny
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
-from verifiers.v1.task import TaskConfig, TaskT, resolve_server_config
-from verifiers.v1.types import ID
-from verifiers.v1.utils.install import env_name
+from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.task import Task, TaskT, resolve_server_config
+from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.utils.sampling import sample
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
 
 logger = logging.getLogger(__name__)
-
-
-class TasksetConfig(BaseConfig):
-    id: ID = ""
-    """Local package or Hub `org/name[@version]`, set with `--env.taskset.id` (or the
-    positional `eval <taskset-id>`)."""
-    task: SerializeAsAny[TaskConfig] = TaskConfig()
-    """Config passed to each task, under `--env.taskset.task.*`."""
-
-    @property
-    def name(self) -> str:
-        return env_name(self.id)
 
 
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
@@ -65,6 +52,10 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
 
     def __init__(self, config: TasksetConfigT) -> None:
         self.config = config
+
+    @classmethod
+    def task_type(cls) -> type[Task]:
+        return generic_type(cls, Task, origin=Taskset) or Task
 
     def load(self) -> Iterable[TaskT]:
         raise NotImplementedError

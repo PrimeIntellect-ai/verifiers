@@ -37,6 +37,7 @@ from verifiers.v1.trace import (
     Error,
     GenerationSpan,
     ModelCall,
+    Reward,
     TimeSpan,
     TimeSplit,
     Timing,
@@ -270,7 +271,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
         ),
         tools=_to_v1_tools(out.get("tool_defs")),
-        rewards={"reward": float(out.get("reward") or 0.0)},
+        rewards={"reward": Reward(score=float(out.get("reward") or 0.0))},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         info=dict(out.get("info") or {}),
         is_completed=bool(out.get("is_completed", True)),
@@ -431,12 +432,23 @@ class LegacyEnvServer(EnvServer):
             state_columns=["trajectory"],
         )
 
+    @staticmethod
+    def _row(req: RunRequest) -> int:
+        """The dataset row a request addresses — the bridge's dataset lives
+        server-side, so requests must carry `task_idx` (v1 servers take `task_data`)."""
+        if req.task_idx is None:
+            raise ValueError(
+                "legacy env server requests address the dataset by task_idx"
+            )
+        return req.task_idx
+
     async def _run(self, req: RunRequest) -> RunResponse:
-        out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
+        task_idx = self._row(req)
+        out = await self._run_v0(task_idx, req.client, req.model, req.sampling)
         # Trust the bridge-minted record; serialize it once (mirrors `EnvServer`).
         return RunResponse.model_construct(
             episode=Episode.of(
-                rollout_output_to_trace(out, req.task_idx), env=self.taskset_id
+                rollout_output_to_trace(out, task_idx), env=self.taskset_id
             )
         )
 

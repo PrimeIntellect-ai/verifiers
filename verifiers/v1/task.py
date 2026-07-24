@@ -2,11 +2,11 @@
 
 `TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
 row IS — the base fields plus your typed, task-specific fields. It rides on
-`trace.task.data`, is what `traces.jsonl` stores, and what tool/user servers receive
+`trace.task.data`, is what `traces.jsonl` stores, and what tool servers receive
 over the `/task` channel. Subclass it per dataset.
 
 `Task` is the behavior half: runtime prep (`setup`/`finalize`), server declarations
-(`tools`/`user`), well-formedness (`validate`), and per-trace judgement
+(`tools`), well-formedness (`validate`), and per-trace judgement
 (`@reward`/`@metric` methods plus the plugged judges from `config.judges`, run by
 `score`). Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]`
 (all three default); judgement that compares sibling traces lives on
@@ -29,20 +29,20 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic
 
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.judge import Judges, check_judges, resolve_judges
+from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, StrictBaseModel, content_text
 from verifiers.v1.utils.generic import generic_type
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
-    from verifiers.v1.mcp import Toolset, User
+    from verifiers.v1.mcp import Toolset
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.trace import Trace
 
@@ -94,30 +94,6 @@ class TaskTimeout(StrictBaseModel):
     scoring: float | None = None
 
 
-class TaskConfig(BaseConfig):
-    """Run-time knobs read by `Task` behavior.
-
-    Subclass for server placement, judge, or scoring settings. Every field needs a
-    default because constructing a task without a config builds the declared config type.
-    Load-time dataset settings belong on `TasksetConfig` instead.
-    """
-
-    judges: Judges = []
-    """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_judges(cls, data):
-        if isinstance(data, dict) and data.get("judges"):
-            data["judges"] = resolve_judges(data["judges"])
-        return data
-
-    @model_validator(mode="after")
-    def _check_judges(self) -> TaskConfig:
-        check_judges(self.judges)
-        return self
-
-
 class TaskData(StrictBaseModel):
     """The task's wire half: one row's pure data, a frozen pydantic model. Subclass
     per dataset to add typed task-specific fields next to the base fields; behavior
@@ -131,12 +107,20 @@ class TaskData(StrictBaseModel):
     name: str | None = None
     description: str | None = None
     prompt: str | Messages | None = None
-    """Initial user prompt; `None` lets the user simulator open the conversation. (A
+    """Initial user prompt; `None` means the user opens the conversation — run the
+    task through `agent.interaction()`, whose first `turn(message)` speaks first. (A
     default, not just optional: the wire drops `None`s — `traces.jsonl` rows for
     prompt-less tasks must read back.)"""
     system_prompt: str | None = None
     image: str | None = None
     workdir: str | None = None
+    network_allow: list[str] = ["*"]
+    """Execution-time destinations requested by this task. `*` leaves the runtime
+    allowlist unchanged; a concrete list replaces a wildcard or combines with existing
+    entries. Prime runtimes accept host-level entries and require `vm=true`."""
+    network_block: list[str] = []
+    """Execution-time destinations denied by this task and combined with runtime
+    blocks. Prime runtimes cannot combine an allowlist and a blocklist."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 
@@ -208,8 +192,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
 
-    user: ClassVar[type[User] | None] = None
-
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else task_config_cls(type(self))()
@@ -220,19 +202,17 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return [load_judge(config) for config in self.config.judges]
 
     def server_config(self, server_cls: type) -> BaseConfig:
-        """The config a declared server class (`tools` / `user`) is built with (see
+        """The config a declared server class (`tools`) is built with (see
         `resolve_server_config`). Override to pair explicitly."""
-        declared = set(type(self).tools) | ({type(self).user} - {None})
         return resolve_server_config(
-            type(self).__name__, self.config, server_cls, sole=len(declared) == 1
+            type(self).__name__,
+            self.config,
+            server_cls,
+            sole=len(set(type(self).tools)) == 1,
         )
 
     def tool_servers(self) -> list[Toolset]:
         return [cls(self.server_config(cls)) for cls in type(self).tools]
-
-    def user_server(self) -> User | None:
-        cls = type(self).user
-        return cls(self.server_config(cls)) if cls is not None else None
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None

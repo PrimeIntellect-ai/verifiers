@@ -13,8 +13,8 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.configs.serve import ServeConfig
-from verifiers.v1.configs.env import pool_serve_kwargs
+from verifiers.v1.configs.cli.serve import ServeConfig
+from verifiers.v1.configs.cli.env import pool_serve_kwargs
 from verifiers.v1.serve import serve_env
 
 USAGE = "usage: uv run serve [<taskset-id>] [--env.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"

@@ -1,100 +1,166 @@
-"""agentic-judge: a solver plays the task, a code-executing judge verifies it in a sandbox.
+"""agentic-judge: a solver plays the task, a judge verifies it in the same box.
 
-Agent-as-judge as a reusable env (`--env.id agentic-judge` over any taskset). The
-judge's task mirrors the solver task's world — same image/workdir/resources, in a
-FRESH box in its original state (the solver's runtime is gone by judge time) —
-with the graded transcript uploaded, so the judge reconstructs and tests the work
-empirically, always in its own sandbox, never on the host.
-
-The verdict channel is a file, not the chat: the judge writes
-`{"score": 0-10, "reasoning": ...}` to `/tmp/verdict.json` in its box (a file
-survives a chatty final reply), `JudgeTask.finalize` scrapes it off the live
-runtime onto the judge's trace, and the env's `finalize()` validates it strictly
-onto the solver's trace — a missing, malformed, or off-scale verdict fails loudly instead
-of clamping to full marks.
+A reusable env (`--env.id agentic-judge` over any taskset): the box is
+provisioned from the solver's runtime policy, the solver plays the task in it,
+and a code-executing judge then inspects the work as the agent left it, with
+the solver's full trace record uploaded at `/tmp/trace.json`. The judge grades
+rubric criteria (`[env.task]`: policy prompt, criteria file) and writes its
+verdicts to `/tmp/verdict.json`; `finalize()` validates them strictly onto the
+solver's trace — `judge/<name>` metrics plus a weighted-mean `judge` reward,
+composed with the taskset's own rewards via `[env.score]` (judge-only by
+default).
 """
 
 import json
 import math
+import re
+import tomllib
+from pathlib import Path
+
+from pydantic import field_validator
 
 import verifiers.v1 as vf
-from verifiers.v1.harness import Harness
+from verifiers.v1.types import StrictBaseModel
 
-TRANSCRIPT_MD = "/tmp/transcript.md"
-TRANSCRIPT_JSON = "/tmp/transcript.json"
 VERDICT_FILE = "/tmp/verdict.json"
+TRACE_FILE = "/tmp/trace.json"
 
-GRADE_PROMPT = f"""\
+GRADE_PROMPT = """\
 You are grading another agent's attempt at a task. Verify the work EMPIRICALLY:
-reconstruct what the agent did from its transcript and test it with real
-execution in your sandbox — never take the transcript's word for an outcome you
-can check.
+reconstruct what the agent did from its trace and test it with real execution
+in your sandbox — never take the trace's word for an outcome you can check."""
 
+TASK_SECTION = """\
 ## The task the agent was given
 
-{{prompt}}
+{prompt}"""
 
+
+class Criterion(StrictBaseModel):
+    """One rubric criterion — the plugged rubric judge's format, mirrored so the
+    same `criteria` files grade both judges."""
+
+    name: str
+    """Key for the criterion's metric (`judge/<name>`)."""
+    text: str
+    weight: float = 1.0
+    """The criterion's share of the reward."""
+    choices: list[str] = ["no", "yes"]
+    """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
+    evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
+
+    @field_validator("choices")
+    @classmethod
+    def _check_choices(cls, v: list[str]) -> list[str]:
+        if len(v) < 2:
+            raise ValueError(f"`choices` needs at least two options, got {v}")
+        if len(set(v)) != len(v):
+            raise ValueError(f"`choices` has duplicate options: {v}")
+        return v
+
+
+SOLVED = Criterion(
+    name="solved",
+    text="The task is fully solved: what the task asked for is achieved, and "
+    "you verified it with real execution.",
+)
+
+
+def _verdict_section(criteria: list[Criterion]) -> str:
+    listing = "\n".join(
+        f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
+        for c in criteria
+    )
+    return f"""\
 ## Your verdict
+
+Grade the attempt on these criteria:
+
+{listing}
 
 When you are done verifying, write your verdict as JSON to `{VERDICT_FILE}`:
 
-    {{{{"score": <integer 0-10>, "reasoning": "<one paragraph>"}}}}
+    {{"verdicts": [{{"name": "<criterion name>", "reason": "<one sentence citing \
+what you verified>", "verdict": "<answer>"}}, ...]}}
 
-10 = the task is fully solved (you verified it); 0 = no progress. The score MUST
-be an integer between 0 and 10 — nothing else is accepted."""
+with one entry per criterion, using each criterion's exact name. For each, first
+write the one-sentence reason grounded in what you actually verified, then set
+verdict to exactly one of the options listed in parentheses after that
+criterion."""
 
 
-def _sandbox_note(solver: vf.TaskData) -> str:
-    """What an agentic judge must know about its box before it starts verifying."""
-    world = (
-        f"a fresh instance of the same environment the graded agent worked in "
-        f"(image {solver.image}), in its ORIGINAL state — the agent's edits are "
-        "NOT applied; reconstruct them from the transcript to verify"
-        if solver.image is not None
-        else "your own — the graded agent worked elsewhere"
-    )
-    return (
-        f"\n\n## Your workspace\nYour sandbox is {world}. The agent's full transcript "
-        f"is uploaded at {TRANSCRIPT_MD} (rendered) and {TRANSCRIPT_JSON} (the raw "
-        "trace record)."
-    )
+def _render(template: str, **fields: str) -> str:
+    """Substitute documented placeholders in one pass over the original template —
+    str.format would crash on any literal brace in a custom prompt, and sequential
+    replaces would re-scan substituted values. An unknown placeholder stays as written."""
+    pattern = re.compile(r"\{(" + "|".join(map(re.escape, fields)) + r")\}")
+    return pattern.sub(lambda m: fields[m.group(1)], template)
+
+
+SANDBOX_NOTE = f"""\
+## Your workspace
+
+Your sandbox is the SAME box the graded agent worked in, in the state the agent
+left it — its edits (and any scoring side effects) are applied. The agent's raw
+trace record (JSON: messages, tool calls, and its `info` artifacts) is uploaded
+at `{TRACE_FILE}`. The record can be very large — never dump it whole; peek
+selectively (list its keys, then slice out specific fields with python or jq)
+and pull only what you need. It is complete — it may also carry the task's own
+scores/metrics and reference material (a gold answer, a reference solution,
+held-out tests). Those are context, not your standard: recorded scores can be
+wrong and references can be narrower than the task; do not over-index on how a
+reference solves it. Your verdict is what YOU verified by execution."""
+
+HINT_SECTION = """\
+## Hints
+
+{hint}"""
 
 
 class JudgeTask(vf.Task):
     """The judge's verdict task: the solver task's world mirrored onto the minted
-    row, transcript uploaded (and any stale verdict removed) before the judge
-    starts, verdict scraped off the live box after it exits. `NEEDS_CONTAINER`
+    row, the trace record written (and any stale verdict removed) before the
+    judge starts, verdict scraped off the live box after it exits. `NEEDS_CONTAINER`
     keeps `Agent.run`'s per-task backstop aligned with the judge's declared need."""
 
     NEEDS_CONTAINER = True
 
     def __init__(self, data: vf.TaskData, files: dict[str, bytes]) -> None:
         super().__init__(data)
-        self._files = files
+        self.files = files
 
     @classmethod
-    def from_trace(cls, task: vf.Task, solution: vf.Trace) -> "JudgeTask":
+    def from_trace(cls, solution: vf.Trace, config: "JudgeTaskConfig") -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace."""
-        prompt = GRADE_PROMPT.format(prompt=task.data.prompt_text)
+        solved = solution.task.data
+        files = {TRACE_FILE: json.dumps(solution.to_record()).encode()}
+        template = config.build_prompt()
+        body = _render(template, prompt=solved.prompt_text)
+        if "{prompt}" not in template:
+            # A policy that doesn't place the task statement itself still needs it.
+            body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
+        sections = [body, _verdict_section(config.criteria()), SANDBOX_NOTE]
+        if (hint := config.build_hint()) is not None:
+            sections.insert(1, _render(HINT_SECTION, hint=hint))
+        prompt = "\n\n".join(sections)
         return cls(
             vf.TaskData(
-                idx=task.data.idx,
-                prompt=prompt + _sandbox_note(task.data),
-                image=task.data.image,
-                workdir=task.data.workdir,
-                resources=task.data.resources,
+                idx=solved.idx,
+                prompt=prompt,
+                image=solved.image,
+                workdir=solved.workdir,
+                resources=solved.resources,
             ),
-            files={
-                TRANSCRIPT_MD: solution.transcript.encode(),
-                TRANSCRIPT_JSON: json.dumps(solution.to_record()).encode(),
-            },
+            files=files,
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        # A pre-seeded verdict (baked into the image) must never read as the
-        # judge's own; remove it before the judge starts.
-        await runtime.run(["rm", "-f", VERDICT_FILE], env={})
-        for path, content in self._files.items():
+        # The solver had this box first: a pre-seeded verdict must never read as
+        # the judge's own, and a file (or planted symlink) at an upload path must
+        # never survive it — a symlinked TRACE_FILE would redirect the write onto
+        # any file the solver chose.
+        await runtime.run(["rm", "-f", VERDICT_FILE, *self.files], env={})
+        for path, content in self.files.items():
             await runtime.write(path, content)
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
@@ -106,39 +172,125 @@ class JudgeTask(vf.Task):
         except Exception as e:
             raise ValueError(
                 f"the judge wrote no verdict to {VERDICT_FILE}; its final act must "
-                'be writing {"score": <0-10>, "reasoning": ...} there'
+                'be writing {"verdicts": [{"name", "reason", "verdict"}, ...]} there'
             ) from e
         trace.info["verdict"] = json.loads(raw)
 
 
+class JudgeTaskConfig(vf.BaseConfig):
+    """The judge's minted task: the grading policy and what lands in its box."""
+
+    prompt: Path | str | None = None
+    """Grading-policy override: inline text, or a policy file (a value ending in
+    `.md`/`.txt` is read from disk). Replaces only the policy body — the verdict
+    contract and workspace note are always appended, so a custom policy cannot
+    break verdict scraping. May reference `{prompt}` (the solver task's prompt);
+    if it doesn't, the task statement is appended after the policy."""
+    hint: Path | str | None = None
+    """Optional hints injected as their own section (inline text or a `.md`/
+    `.txt` file): task-family pointers into the trace or box — e.g. for math,
+    where the reference answer lives in the record; for SWE, to diff the repo
+    or read `info.patch`."""
+    rubric: Path | None = None
+    """Criteria the judge grades against: a `.toml`/`.json` file with a
+    `criteria` list — the plugged rubric judge's format, so the same rubric
+    files work for both. None grades the single built-in `solved` criterion."""
+
+    @staticmethod
+    def _resolve(value: Path | str) -> str:
+        path = Path(value)
+        if isinstance(value, Path) or path.suffix in (".md", ".txt"):
+            return path.read_text(encoding="utf-8")
+        return str(value)
+
+    def build_prompt(self) -> str:
+        if self.prompt is None:
+            return GRADE_PROMPT + "\n\n" + TASK_SECTION
+        return self._resolve(self.prompt)
+
+    def build_hint(self) -> str | None:
+        return self._resolve(self.hint) if self.hint is not None else None
+
+    def criteria(self) -> list[Criterion]:
+        if self.rubric is None:
+            return [SOLVED]
+        text = self.rubric.read_text(encoding="utf-8")
+        data = (
+            tomllib.loads(text)
+            if self.rubric.suffix.lower() == ".toml"
+            else json.loads(text)
+        )
+        items = data.get("criteria", []) if isinstance(data, dict) else data
+        criteria = [Criterion.model_validate(item) for item in items]
+        if not criteria:
+            raise ValueError(f"rubric file '{self.rubric}' lists no criteria")
+        names = [criterion.name for criterion in criteria]
+        if len(set(names)) != len(names):
+            raise ValueError(
+                f"rubric file '{self.rubric}' has duplicate criterion names"
+            )
+        if bad := [c.name for c in criteria if not 0 <= c.weight < math.inf]:
+            raise ValueError(
+                f"rubric '{self.rubric}' has negative or non-finite criterion "
+                f"weights: {bad}"
+            )
+        if sum(criterion.weight for criterion in criteria) <= 0:
+            raise ValueError(f"rubric '{self.rubric}' has no positive criterion weight")
+        return criteria
+
+
+class ScoreConfig(vf.BaseConfig):
+    """How the judge's verdict composes with the taskset's own rewards on the
+    solver's trace. Judge-only by default."""
+
+    task_weight: float = 0.0
+    """Scale applied to the taskset's own rewards; 1 keeps them next to the verdict."""
+    judge_weight: float = 1.0
+    """Weight of the judge's verdict in the solver's reward."""
+
+
 class AgenticJudgeEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
+    """The solver agent. It owns the shared box, so its runtime must be a
+    container: `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. Its runtime must be a container:
-    `--env.judge.harness.runtime.type docker|prime`."""
+    """The judge agent. It plays in the solver's box; its own runtime policy is
+    ignored (overwritten with the solver's)."""
+    task: JudgeTaskConfig = JudgeTaskConfig()
+    score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
+        # The judge plays in the solver's box, so its effective runtime IS the
+        # solver's policy — aligning the config keeps the base env's subprocess
+        # warning and the runtime stamped on the judge's trace truthful.
+        config.judge = config.judge.model_copy(
+            update={"runtime": config.solver.runtime}
+        )
         super().__init__(config)
-        self._check_judge_harness(self._harnesses["judge"])
+        self._check_agents()
+        # A missing policy file or a malformed rubric fails here, not mid-episode.
+        config.task.build_prompt()
+        config.task.build_hint()
+        config.task.criteria()
 
-    def _check_judge_harness(self, harness: Harness) -> None:
+    def _check_agents(self) -> None:
         """The judge executes real code, never on the host — refuse an impossible
-        judge at construction, not after burning a full solver run."""
-        if not harness.EXECUTES_CODE:
+        pairing at construction, not after burning a full solver run."""
+        judge = self._harnesses["judge"]
+        if not judge.EXECUTES_CODE:
             raise ValueError(
                 "agentic-judge plays a code-executing judge in its own sandbox, but "
-                f"harness {harness.config.id!r} is a tool-less chat loop — a verdict "
+                f"harness {judge.config.id!r} is a tool-less chat loop — a verdict "
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
-        if isinstance(harness.config.runtime, vf.SubprocessConfig):
+        if isinstance(self.config.solver.runtime, vf.SubprocessConfig):
             raise ValueError(
-                "agentic-judge plays its judge in a container (JudgeTask mirrors "
-                "the solver task's image), but the judge resolves to the "
-                "subprocess runtime; use --env.judge.harness.runtime.type docker "
-                "or prime."
+                "agentic-judge plays its judge in the solver's box, but the solver "
+                "(which provisions it) resolves to the subprocess runtime; use "
+                "--env.solver.runtime.type docker or prime"
             )
 
     async def setup(self, agents: vf.Agents) -> None:
@@ -146,29 +298,50 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        solution = await agents.solver.run(task)
-        await agents.judge.run(JudgeTask.from_trace(task, solution))
+        async with agents.solver.provision(task) as box:
+            solution = await agents.solver.run(task, runtime=box)
+            judge_task = JudgeTask.from_trace(solution, self.config.task)
+            await agents.judge.run(judge_task, runtime=box)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        """Record the scraped verdict on the SOLVER's trace. Strict on scale: an
-        off-scale score raises (a judge answering `95` must not clamp to full
-        marks), failing the episode rather than scoring the solver wrong."""
         by_agent = {t.agent_name: t for t in episode.traces}
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
             raise ValueError(
-                f"no verdict on the judge's trace (expected {VERDICT_FILE})"
+                f"no verdicts on the judge's trace (expected {VERDICT_FILE} with a "
+                '"verdicts" list)'
             )
-        score = data.get("score")
-        if (
-            not isinstance(score, (int, float))
-            or isinstance(score, bool)
-            or math.isnan(float(score))
-            or not 0 <= float(score) <= 10
-        ):
+        criteria = self.config.task.criteria()
+        by_criterion = {c.name: c for c in criteria}
+        answers: dict[str, str] = {}
+        for entry in data["verdicts"]:
+            if not isinstance(entry, dict):
+                raise ValueError(f"verdict entry {entry!r} is not an object")
+            name = str(entry.get("name"))
+            if name in answers:
+                # Contradictory duplicates must not collapse to whichever came last.
+                raise ValueError(f"judge answered criterion {name!r} more than once")
+            answers[name] = str(entry.get("verdict"))
+        if sorted(answers) != sorted(by_criterion):
             raise ValueError(
-                f"verdict score {score!r} is not on the 0-10 scale; refusing to "
-                "clamp or coerce it"
+                f"judge verdicts name {sorted(answers)}, expected the rubric's "
+                f"{sorted(by_criterion)}"
             )
-        solution.record_reward("judge", float(score) / 10.0)
+        scores: dict[str, float] = {}
+        for name, answer in answers.items():
+            choices = by_criterion[name].choices
+            # An off-menu answer is a judge failure, not a zero score.
+            if answer not in choices:
+                raise ValueError(
+                    f"judge answered {answer!r} for '{name}', expected one of {choices}"
+                )
+            scores[name] = choices.index(answer) / (len(choices) - 1)
+        for criterion in criteria:
+            solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
+        if self.config.score.task_weight != 1.0:
+            for reward in solution.rewards.values():
+                reward.weight *= self.config.score.task_weight
+        total = sum(criterion.weight for criterion in criteria)
+        reward = sum(c.weight * scores[c.name] for c in criteria) / total
+        solution.record_reward("judge", reward, weight=self.config.score.judge_weight)

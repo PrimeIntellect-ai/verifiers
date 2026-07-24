@@ -2,6 +2,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.acp import ACP
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -12,18 +13,16 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.decorators import metric, reward, stop, tool
-from verifiers.v1.agent import Agent, AgentConfig, Agents, make_agent
-from verifiers.v1.configs.env import (
+from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+from verifiers.v1.configs.cli.env import (
     ElasticPoolConfig,
     EnvServerConfig,
     StaticPoolConfig,
     pool_serve_kwargs,
 )
-from verifiers.v1.env import (
-    EnvConfig,
-    Env,
-    default_agent_harness,
-)
+from verifiers.v1.configs.env import EnvConfig, default_agent_harness
+from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
     EnvError,
@@ -35,17 +34,11 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     TunnelError,
-    UserError,
 )
-from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.judge import (
-    Judge,
-    JudgeConfig,
-    JudgeResponse,
-    Judges,
-    JudgeSamplingConfig,
-    JudgeView,
-)
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harness import Harness
+from verifiers.v1.configs.judge import JudgeConfig, JudgeSamplingConfig, Judges
+from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     ReferenceJudge,
     ReferenceJudgeConfig,
@@ -79,7 +72,7 @@ from verifiers.v1.scoring import (
     read_answer_file_or_last_reply as read_answer_file_or_last_reply,
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
-from verifiers.v1.retries import RetryConfig
+from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
     capture_patch as capture_patch,
@@ -95,21 +88,14 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import (
-    Task,
-    TaskConfig,
-    TaskData,
-    TaskResources,
-    TaskTimeout,
-    WireTaskData,
-)
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.configs.task import TaskConfig
+from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
+from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.taskset import Taskset
 from verifiers.v1.mcp import (
     Toolset,
     SharedToolsetConfig,
     ToolsetConfig,
-    User,
-    UserConfig,
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.episode import Episode, WireEpisode
@@ -121,6 +107,7 @@ from verifiers.v1.trace import (
     EvalRunInfo,
     GenerationSpan,
     ModelCall,
+    Reward,
     RunInfo,
     TimeSpan,
     TimeSplit,
@@ -185,6 +172,7 @@ __all__ = [
     "Trace",
     "TraceTask",
     "WireTrace",
+    "Reward",
     "Episode",
     "WireEpisode",
     "TRACE_VERSION",
@@ -216,7 +204,6 @@ __all__ = [
     "ProviderError",
     "HarnessError",
     "ToolsetError",
-    "UserError",
     "SandboxError",
     "TaskError",
     "InterceptionError",
@@ -235,6 +222,7 @@ __all__ = [
     "BaseConfig",
     "Harness",
     "HarnessConfig",
+    "ACP",
     "ModelContext",
     "Runtime",
     "RuntimeConfig",
@@ -302,9 +290,9 @@ __all__ = [
     "Toolset",
     "SharedToolsetConfig",
     "ToolsetConfig",
-    # user simulator
-    "User",
-    "UserConfig",
+    # the user channel
+    "Interaction",
+    "Segment",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

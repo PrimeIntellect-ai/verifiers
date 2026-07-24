@@ -8,12 +8,10 @@ from verifiers.v1.tasksets.lean import (
 from verifiers.v1.tasksets.openenv import (
     OpenEnvConfig,
     OpenEnvData,
-    OpenEnvState,
+    OpenEnvEnv,
+    OpenEnvEnvConfig,
     OpenEnvTask,
-    OpenEnvTaskConfig,
     OpenEnvTaskset,
-    OpenEnvUser,
-    OpenEnvUserConfig,
 )
 
 __all__ = [
@@ -25,10 +23,8 @@ __all__ = [
     "LeanTaskset",
     "OpenEnvConfig",
     "OpenEnvData",
-    "OpenEnvState",
+    "OpenEnvEnv",
+    "OpenEnvEnvConfig",
     "OpenEnvTask",
-    "OpenEnvTaskConfig",
     "OpenEnvTaskset",
-    "OpenEnvUser",
-    "OpenEnvUserConfig",
 ]

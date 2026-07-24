@@ -6,6 +6,7 @@ contract as `prime eval push`, done inline at the end of a run. Auth + base URL
 come from `$PRIME_API_KEY` / `~/.prime/config.json`.
 """
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ from typing import Any
 import httpx
 
 from verifiers.utils.client_utils import load_prime_config
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Trace
 
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
+# Repeated /samples posts append; match the Prime Evals client's request ceiling.
+_MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
 
 
 @dataclass
@@ -87,9 +90,10 @@ def trace_to_sample(
         else None,
         "info": dict(trace.info) or None,
     }
-    # Flatten sub-rewards to top-level keys the way v0 does; env metrics stay nested.
-    for name, value in trace.rewards.items():
-        sample.setdefault(name, value)
+    # Flatten sub-rewards to top-level keys the way v0 does (raw scores, as v0's
+    # per-function outputs were); env metrics stay nested.
+    for name, reward in trace.rewards.items():
+        sample.setdefault(name, reward.score)
     return sample
 
 
@@ -124,7 +128,8 @@ def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
     for trace in scored:
-        for name, value in {**trace.rewards, **trace.metrics}.items():
+        scores = {name: reward.score for name, reward in trace.rewards.items()}
+        for name, value in {**scores, **trace.metrics}.items():
             sums[name] = sums.get(name, 0.0) + value
             counts[name] = counts.get(name, 0) + 1
     n = len(scored)
@@ -181,9 +186,7 @@ def push_traces(
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
     traces = [trace for episode in episodes for trace in episode.traces]
-    env_name = (
-        config.env.taskset.id if config.env.taskset is not None else ""
-    ) or config.id
+    env_name = (config.env.taskset.id) or config.id
     metrics = _run_metrics(episodes, traces)
     samples = _build_samples(episodes)
     num_examples = len({t.task.data.idx for t in traces})
@@ -202,6 +205,36 @@ def push_traces(
     # The run is done and its results saved; a network blip here must not crash it
     # — log and skip the upload instead.
     try:
+        batches: list[list[dict[str, Any]]] = []
+        batch: list[dict[str, Any]] = []
+        payload_bytes = len(b'{"samples":[]}')
+        for i, sample in enumerate(samples):
+            sample_bytes = len(
+                json.dumps(
+                    sample,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            )
+            sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
+            if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+                raise ValueError(
+                    f"sample {i} is too large to upload "
+                    f"({sample_payload_bytes} > "
+                    f"{_MAX_SAMPLES_PAYLOAD_BYTES} bytes)"
+                )
+            next_payload_bytes = payload_bytes + (1 if batch else 0) + sample_bytes
+            if batch and next_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
+                batches.append(batch)
+                batch = []
+                payload_bytes = len(b'{"samples":[]}')
+                next_payload_bytes = payload_bytes + sample_bytes
+            batch.append(sample)
+            payload_bytes = next_payload_bytes
+        if batch or not samples:
+            batches.append(batch)
+
         with httpx.Client(headers=headers, timeout=300.0) as client:
 
             def post(path: str, body: dict) -> dict:
@@ -226,7 +259,18 @@ def push_traces(
                     **team,
                 },
             )["evaluation_id"]
-            post(f"/evaluations/{eval_id}/samples", {"samples": samples})
+            for batch in batches:
+                body = json.dumps(
+                    {"samples": batch},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+                resp = client.post(
+                    f"{api}/evaluations/{eval_id}/samples",
+                    content=body,
+                )
+                resp.raise_for_status()
             post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
     except Exception as e:
         logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
