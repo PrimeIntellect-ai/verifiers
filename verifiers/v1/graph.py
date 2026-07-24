@@ -247,16 +247,25 @@ def message_hash(message: Message) -> str:
             add("reasoning_content")
             add(message.reasoning_content)
         for item in message.provider_state or []:
+            kind = item.get("type") or ""
             opaque_state = {
                 key: item[key]
                 for key in _OPAQUE_PROVIDER_STATE_FIELDS
                 if item.get(key) is not None
             }
-            if not opaque_state:
+            represented = kind in ("message", "reasoning") or (
+                kind in ("function_call", "custom_tool_call")
+                and any(
+                    call.id == item.get("call_id") for call in message.tool_calls or []
+                )
+            )
+            if represented and not opaque_state:
                 continue
+            # Unknown provider items still distinguish built-in calls and actions.
+            state = opaque_state or item
             add("provider_state")
-            add(item.get("type") or "")
-            add(json.dumps(opaque_state, sort_keys=True))
+            add(kind)
+            add(json.dumps(state, sort_keys=True))
         for tc in message.tool_calls or []:
             add("tool_call")
             add(tc.id)
