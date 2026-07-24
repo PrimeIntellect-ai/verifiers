@@ -233,10 +233,8 @@ class DockerRuntime(Runtime):
             return url.replace(host, "host.docker.internal", 1)
         return url
 
-    async def prepare_execution(self, routes: list[str]) -> None:
+    async def _apply_network_policy(self, routes: list[str]) -> None:
         """Allow the declared framework routes, then leave the proxy as the only route."""
-        if not self.network_restricted:
-            return
         assert self._proxy is not None
         framework = [
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
@@ -247,6 +245,8 @@ class DockerRuntime(Runtime):
             self.config.block,
             framework,
         )
+        if self._cut:
+            return
         script = (
             "set -eu; HOST=$1; "
             "PORT=$2; "
