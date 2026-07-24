@@ -108,6 +108,27 @@ def test_build_module_command_gepa_adds_workspace_env_dir_path(
     ]
 
 
+def test_build_module_command_play_adds_workspace_env_dir_path(
+    tmp_path: Path, monkeypatch
+):
+    workspace, env_dir = _make_workspace(tmp_path)
+    plugin = prime_plugin.PrimeCLIPlugin()
+
+    monkeypatch.chdir(env_dir)
+    monkeypatch.setattr(prime_plugin, "_resolve_workspace_python", lambda *_: "python")
+
+    command = plugin.build_module_command(plugin.play_module, ["my-env"])
+
+    assert command == [
+        "python",
+        "-m",
+        plugin.play_module,
+        "my-env",
+        "--env-dir-path",
+        str((workspace / "environments").resolve()),
+    ]
+
+
 def test_build_module_command_build_adds_workspace_env_path(
     tmp_path: Path, monkeypatch
 ):

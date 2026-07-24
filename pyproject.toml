@@ -40,6 +40,8 @@ dependencies = [
     "requests",
     "rich>=11.0.0",
     "tenacity>=8.5.0",
+    "textual",
+    "textual-image>=0.13.2; python_version >= '3.12'",
     "gepa>=0.0.6",
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
@@ -156,6 +158,7 @@ vf-install = "verifiers.scripts.install:main"
 vf-setup = "verifiers.scripts.setup:main"
 vf-build = "verifiers.scripts.build:main"
 vf-tui = "verifiers.scripts.tui:main"
+vf-play = "verifiers.scripts.play:main"
 
 # hatchling configuration
 [tool.hatch.version]

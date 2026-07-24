@@ -85,6 +85,7 @@ The plugin exposes:
   - `init_module` (`verifiers.cli.commands.init`)
   - `setup_module` (`verifiers.cli.commands.setup`)
   - `build_module` (`verifiers.cli.commands.build`)
+  - `play_module` (`verifiers.cli.commands.play`)
 - `build_module_command(module_name, args)` to construct subprocess invocation for a command module
 
 Contributor guidance:
@@ -320,6 +321,7 @@ prime eval view                              # Browse evals in the tree browser
  | Command | Description |
 | --------- | ------------- |
 | `prime eval run` | Run evaluations on environments |
+| `uv run vf-play` | Manually play through one rollout as the model |
 | `prime env init` | Initialize new environment from template |
 | `prime env install` | Install environment module |
 | `prime lab setup` | Set up training workspace |

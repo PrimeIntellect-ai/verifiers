@@ -145,6 +145,7 @@ class PrimeCLIPlugin:
     init_module: str = "verifiers.cli.commands.init"
     setup_module: str = "verifiers.cli.commands.setup"
     build_module: str = "verifiers.cli.commands.build"
+    play_module: str = "verifiers.cli.commands.play"
 
     def build_module_command(
         self, module_name: str, args: Sequence[str] | None = None
@@ -166,7 +167,7 @@ class PrimeCLIPlugin:
                 fallback_value=workspace_env_dir,
                 cwd=cwd,
             )
-        elif module_name in (self.eval_module, self.gepa_module):
+        elif module_name in (self.eval_module, self.gepa_module, self.play_module):
             normalized_args = _normalize_or_append_dir_option(
                 normalized_args,
                 long_flag="--env-dir-path",
