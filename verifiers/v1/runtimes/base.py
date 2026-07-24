@@ -64,17 +64,25 @@ while [ "$pid" -gt 1 ] 2>/dev/null; do
     set -- $rest
     pid=$2
 done
-for proc in /proc/[0-9]*; do
-    pid=${proc##*/}
-    case "$protected" in *" $pid "*) continue ;; esac
-    stat=$(cat "$proc/stat" 2>/dev/null) || continue
-    rest=${stat##*) }
-    set -- $rest
-    identity="$pid:${20}"
-    case "$baseline" in *"
+while :; do
+    targeted=
+    for proc in /proc/[0-9]*; do
+        pid=${proc##*/}
+        case "$protected" in *" $pid "*) continue ;; esac
+        stat=$(cat "$proc/stat" 2>/dev/null) || continue
+        rest=${stat##*) }
+        set -- $rest
+        case "$1" in Z|X) continue ;; esac
+        identity="$pid:${20}"
+        case "$baseline" in *"
 $identity
 "*) continue ;; esac
-    kill -KILL "$pid" 2>/dev/null || true
+        if kill -STOP "$pid" 2>/dev/null; then
+            kill -KILL "$pid" 2>/dev/null || true
+            targeted=1
+        fi
+    done
+    [ -z "$targeted" ] && break
 done
 """
 
