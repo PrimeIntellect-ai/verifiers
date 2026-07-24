@@ -40,8 +40,9 @@ _ENSURE_UV = (
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
 
-# A reused restricted box must stop processes left by the prior untrusted agent
-# before trusted setup reopens egress. PID + kernel start time survives PID reuse.
+# A reused restricted box must stop processes and discard framework setup caches
+# left by the prior untrusted agent before trusted setup reopens egress.
+# PID + kernel start time survives PID reuse.
 _PROCESS_SNAPSHOT = r"""
 for proc in /proc/[0-9]*; do
     pid=${proc##*/}
@@ -344,6 +345,20 @@ class Runtime(ABC):
                         f"failed to isolate reused {self.type} runtime processes: "
                         f"{result.stderr.strip()[-500:]}"
                     )
+                uv_envs = [
+                    str(PurePosixPath(path).parent.parent)
+                    for path in self._uv_interpreters.values()
+                ]
+                reset = await self.run(
+                    ["sh", "-c", 'rm -rf "$@" /tmp/vf-*', "reset", *uv_envs],
+                    {},
+                )
+                if reset.exit_code != 0:
+                    raise SandboxError(
+                        f"failed to reset reused {self.type} runtime setup caches: "
+                        f"{reset.stderr.strip()[-500:]}"
+                    )
+                self._uv_interpreters.clear()
             snapshot = await self.run(["sh", "-c", _PROCESS_SNAPSHOT], {})
             if snapshot.exit_code != 0:
                 raise SandboxError(
