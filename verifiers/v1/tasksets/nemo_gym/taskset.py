@@ -13,7 +13,6 @@ from urllib.parse import urljoin
 
 import httpx
 from pydantic import Field
-from typing_extensions import TypeVar
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.dialects.responses import ResponsesDialect
@@ -280,10 +279,7 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         return float(result["reward"])
 
 
-NeMoGymConfigT = TypeVar("NeMoGymConfigT", bound=NeMoGymConfig, default=NeMoGymConfig)
-
-
-class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfigT]):
+class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
     resource_server: ClassVar[str | None] = None
     """Import reference for a package-provided resource server, if managed."""
 
