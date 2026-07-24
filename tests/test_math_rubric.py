@@ -51,9 +51,11 @@ class TestMathRubric:
         state["trajectory"] = []
         state["timing"] = RolloutTiming()
 
-        await rubric.score_rollout(state)
-
-        assert state["metrics"]["correct_answer"] == 1.0
+        try:
+            await rubric.score_rollout(state)
+            assert state["metrics"]["correct_answer"] == 1.0
+        finally:
+            await rubric.teardown()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -79,9 +81,11 @@ class TestMathRubric:
         state["trajectory"] = []
         state["timing"] = RolloutTiming()
 
-        await rubric.score_rollout(state)
-
-        assert state["metrics"]["correct_answer"] == 0.0
+        try:
+            await rubric.score_rollout(state)
+            assert state["metrics"]["correct_answer"] == 0.0
+        finally:
+            await rubric.teardown()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("timeout_seconds", [0.1, 10])
@@ -106,13 +110,16 @@ class TestMathRubric:
         state["trajectory"] = []
         state["timing"] = RolloutTiming()
 
-        await rubric.score_rollout(state)
+        try:
+            await rubric.score_rollout(state)
 
-        # rollout should only pass for large timeout
-        if timeout_seconds == 10:
-            assert state["metrics"]["correct_answer"] == 1.0
-        else:
-            assert state["metrics"]["correct_answer"] == 0.0
+            # rollout should only pass for large timeout
+            if timeout_seconds == 10:
+                assert state["metrics"]["correct_answer"] == 1.0
+            else:
+                assert state["metrics"]["correct_answer"] == 0.0
+        finally:
+            await rubric.teardown()
 
 
 class TestVerifyResponseExceptionHandling:
