@@ -665,6 +665,7 @@ def load_toml_config(
         "max_retries",
         "num_workers",
         "disable_env_server",
+        "metrics_port",
         "timeout",
         # logging
         "verbose",
@@ -1095,6 +1096,7 @@ async def run_evaluation(
                 log_level=get_log_level(config.verbose),
                 log_dir=log_dir,
                 console_logging=config.disable_tui,
+                metrics_port=config.metrics_port,
             )
             if on_log_file is not None:
                 from verifiers.serve import EnvServer
