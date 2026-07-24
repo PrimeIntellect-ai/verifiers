@@ -12,7 +12,7 @@ from verifiers.v1.clients import (
     TrainClientConfig,
     resolve_client,
 )
-from verifiers.v1.decorators import metric, reward, stop, tool
+from verifiers.v1.decorators import intercept, metric, reward, stop, tool
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
 from verifiers.v1.configs.cli.env import (
@@ -37,6 +37,19 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
+from verifiers.v1.intercepts import (
+    InterceptRecord,
+    InterceptResult,
+    Interceptor,
+    Terminate,
+    block_code_search,
+    block_shell_commands,
+    block_tool_calls,
+    block_web_search,
+    block_with_judge,
+    disable_provider_tools,
+    match_tool,
+)
 from verifiers.v1.configs.judge import JudgeConfig, JudgeSamplingConfig, Judges
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
@@ -198,6 +211,19 @@ __all__ = [
     "tool",
     "metric",
     "reward",
+    "intercept",
+    # interception
+    "InterceptRecord",
+    "InterceptResult",
+    "Interceptor",
+    "Terminate",
+    "block_code_search",
+    "block_shell_commands",
+    "block_tool_calls",
+    "block_web_search",
+    "block_with_judge",
+    "disable_provider_tools",
+    "match_tool",
     # errors
     "RolloutError",
     "EnvError",

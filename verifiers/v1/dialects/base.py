@@ -22,7 +22,7 @@ from pydantic_core import from_json
 
 from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
-ReqT = TypeVar("ReqT")
+ReqT = TypeVar("ReqT", bound=dict)
 RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
@@ -166,6 +166,106 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def validate_response(self, raw: dict) -> RespT:
         """Validate a native response, normalizing provider-compatible extensions if needed."""
         return self.response_type.model_validate(raw)
+
+    @abstractmethod
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        """Replace a native assistant response with inert text."""
+
+    @abstractmethod
+    def rewrite_tool_result(self, body: ReqT, tool_call_id: str, text: str) -> None:
+        """Replace one native tool result in a request."""
+
+    def disable_provider_tools(
+        self, body: ReqT, matcher: Callable[[str], bool]
+    ) -> list[str]:
+        """Remove matching provider-hosted tool definitions and stale forced choices."""
+        tools = body.get("tools")
+        if not isinstance(tools, list):
+            return []
+
+        def client_name(tool: dict) -> str | None:
+            if not (
+                "function" in tool
+                or "custom" in tool
+                or "input_schema" in tool
+                or tool.get("type") in ("function", "custom")
+            ):
+                return None
+            wrapped = tool.get("function") or tool.get("custom") or tool
+            return wrapped.get("name") if isinstance(wrapped, dict) else None
+
+        def matches(tool: dict) -> bool:
+            return any(
+                matcher(label)
+                for label in (tool.get("type"), tool.get("name"))
+                if isinstance(label, str)
+            )
+
+        kept: list = []
+        removed: list[str] = []
+        for tool in tools:
+            if isinstance(tool, dict) and client_name(tool) is None and matches(tool):
+                removed.append(tool.get("type") or tool.get("name") or "")
+                continue
+            kept.append(tool)
+        if not removed:
+            return []
+        body["tools"] = kept
+
+        kept_names = {
+            name
+            for tool in kept
+            if isinstance(tool, dict)
+            if (name := client_name(tool)) is not None
+        }
+        choice = body.get("tool_choice")
+        if isinstance(choice, str):
+            selected_provider = choice not in ("auto", "none", "required", "any") and (
+                matcher(choice)
+            )
+            if (selected_provider and choice not in kept_names) or (
+                choice in ("required", "any") and not kept
+            ):
+                body.pop("tool_choice", None)
+            return removed
+        if not isinstance(choice, dict):
+            return removed
+
+        container = choice.get("allowed_tools")
+        container = container if isinstance(container, dict) else choice
+        allowed = container.get("tools")
+        if isinstance(allowed, list):
+            container["tools"] = [
+                tool
+                for tool in allowed
+                if not (
+                    isinstance(tool, str) and matcher(tool) and tool not in kept_names
+                )
+                and not (
+                    isinstance(tool, dict)
+                    and client_name(tool) is None
+                    and matches(tool)
+                    and tool.get("name") not in kept_names
+                )
+            ]
+            if not container["tools"]:
+                body.pop("tool_choice", None)
+            return removed
+
+        selected = client_name(choice) or choice.get("name")
+        if isinstance(tool := choice.get("tool"), dict):
+            selected = tool.get("name") or selected
+        labels = (choice.get("type"), selected)
+        matched = any(matcher(label) for label in labels if isinstance(label, str))
+        if (matched and selected not in kept_names) or (
+            choice.get("type") in ("required", "any") and not kept
+        ):
+            body.pop("tool_choice", None)
+        return removed
+
+    @abstractmethod
+    def stream_events(self, raw: dict) -> list[bytes]:
+        """Serialize a complete native response as a valid SSE stream."""
 
     @abstractmethod
     def stream_parser(self) -> StreamParser:
