@@ -106,9 +106,9 @@ class NetworkPolicyConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _validate_network_policy(self) -> Self:
-        if "*" in self.block:
-            # A wildcard block means framework-only access; canonicalize it to the
-            # empty allowlist while retaining the sentinel for later task composition.
+        if "*" in self.block or (not self.allow and self.block):
+            # Wildcard blocks and empty allowlists both mean framework-only access.
+            # Discard redundant block entries but retain the composition sentinel.
             self.allow = []
             self.block = ["*"]
         elif self.allow != ["*"] and self.block:
