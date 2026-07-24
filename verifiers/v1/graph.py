@@ -212,12 +212,17 @@ def _canonical_tool_arguments(arguments: str) -> str:
         return arguments
 
 
+# Responses, chat reasoning details, and Anthropic thinking blocks use these payload keys.
+_OPAQUE_PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data"})
+
+
 def message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
     (None and "" equal), assistant reasoning content when present, assistant tool calls,
-    tool call id. Two messages hash equal iff they're the same conversational message, so a
-    re-stated prefix message dedups to one node. The dedup key for sharing a prefix across
-    turns/branches; salt-free so it is identical across processes and after deserialization."""
+    opaque continuation state, tool call id. Two messages hash equal iff they're the same
+    conversational message, so a re-stated prefix message dedups to one node. The dedup key
+    for sharing a prefix across turns/branches; salt-free so it is identical across processes
+    and after deserialization."""
     digest = hashlib.blake2b(digest_size=16)
 
     def add(value: str) -> None:
@@ -241,10 +246,17 @@ def message_hash(message: Message) -> str:
         if message.reasoning_content is not None:
             add("reasoning_content")
             add(message.reasoning_content)
-        if message.provider_state:
-            # Signed/encrypted continuation state distinguishes otherwise equal turns.
+        for item in message.provider_state or []:
+            opaque_state = {
+                key: item[key]
+                for key in _OPAQUE_PROVIDER_STATE_FIELDS
+                if item.get(key) is not None
+            }
+            if not opaque_state:
+                continue
             add("provider_state")
-            add(json.dumps(message.provider_state, sort_keys=True))
+            add(item.get("type") or "")
+            add(json.dumps(opaque_state, sort_keys=True))
         for tc in message.tool_calls or []:
             add("tool_call")
             add(tc.id)
