@@ -214,7 +214,7 @@ class ResponseTokens(CustomBaseModel):
     completion_logprobs: list[float]
     routed_experts: RoutedExpertsPayload | None = None
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
-    # carrying processed pixel_values / placeholder ranges per modality.
+    # carrying raw image descriptors / placeholder ranges per modality.
     # Populated by the renderer client when the rollout went through a
     # multimodal-aware renderer; ``None`` otherwise. Stored as ``Any`` to
     # avoid a hard import dependency on ``renderers`` at this layer.
@@ -261,7 +261,7 @@ class TrajectoryStepTokens(TypedDict):
     is_truncated: bool
     routed_experts: RoutedExpertsPayload | None
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
-    # carrying processed pixel_values / placeholder ranges per modality.
+    # carrying raw image descriptors / placeholder ranges per modality.
     # ``NotRequired`` because text-only rollouts (and non-renderer client
     # types) never populate it.
     multi_modal_data: NotRequired[Any]

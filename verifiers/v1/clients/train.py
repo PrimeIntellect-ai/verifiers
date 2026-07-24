@@ -13,9 +13,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
-from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RenderedTokens, RendererConfig
+from renderers.base import is_multimodal
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -170,16 +170,6 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-def _has_multimodal_content(messages) -> bool:
-    for message in messages:
-        content = getattr(message, "content", None)
-        if not isinstance(content, list):
-            continue
-        if any(getattr(part, "type", None) == "image_url" for part in content):
-            return True
-    return False
-
-
 class TrainClient(Client):
     """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine."""
 
@@ -266,23 +256,24 @@ class TrainClient(Client):
         )
         bridged_turn: PendingTurn | None = None
 
-        # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
-        # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
-        can_bridge = (
-            turn is not None
-            and not _has_multimodal_content(prompt)
-            and _is_valid_incremental_tail(wire_messages)
-        )
+        # Only build the (O(context)) previous-turn token ids once the cheap guards pass: a
+        # tail that isn't a clean `[tool*, user?]` extension can't bridge.
+        can_bridge = turn is not None and _is_valid_incremental_tail(wire_messages)
         previous_ids = turn.previous_token_ids() if can_bridge else None
         if previous_ids is not None:
             previous_prompt_ids, previous_completion_ids = previous_ids
 
             def bridge():
+                kwargs: dict[str, Any] = {"tools": wire_tools}
+                if is_multimodal(renderer):
+                    kwargs["previous_multi_modal_data"] = (
+                        turn.previous_multi_modal_data()
+                    )
                 return renderer.bridge_to_next_turn(
                     previous_prompt_ids,
                     previous_completion_ids,
                     wire_messages,
-                    tools=wire_tools,
+                    **kwargs,
                 )
 
             bridged = await _maybe_offload(renderer, bridge)

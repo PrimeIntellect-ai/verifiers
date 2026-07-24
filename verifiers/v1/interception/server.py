@@ -33,9 +33,9 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
+from verifiers.v1 import graph
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
-from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
     ProviderError,
