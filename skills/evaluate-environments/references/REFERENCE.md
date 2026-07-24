@@ -354,7 +354,7 @@ Remote Prime sandbox; reached via native port exposure.
 | `image` | `str` | `"python:3.11-slim"` | Container image. |
 | `workdir` | `str` | `"/app"` | Working directory. |
 | `allow` | `list[str]` | `["*"]` | Host-level egress allowlist applied after trusted setup (exact hostnames, leftmost-label `*.` wildcards, IPv4 addresses/CIDRs; no schemes or ports). `["*"]` leaves egress unrestricted; framework route hosts are added automatically, so `[]` permits only interception/MCP. VM-only when restrictive. |
-| `block` | `list[str]` | `[]` | Host-level egress denylist applied after trusted setup. VM-only and otherwise mutually exclusive with a concrete `allow` list; framework routes always remain reachable. Any list containing `*` overrides other rules and permits only interception/MCP; another rule matching a framework host also fails closed to that mode. |
+| `block` | `list[str]` | `[]` | Host-level egress denylist applied after trusted setup. VM-only and otherwise mutually exclusive with a concrete `allow` list; framework routes always remain reachable. Any list containing `*` overrides other rules and permits only interception/MCP; another rule matching a framework hostname or its resolved IPv4 address also fails closed to that mode. |
 | `vm` | `bool` | `False` | Run as a micro-VM (kernel features / stronger isolation). |
 | `guaranteed` | `bool` | `False` | Request guaranteed (vs best-effort) capacity. |
 | `region` | `str \| None` | `None` | Region to provision in (None = provider-chosen). Note: port exposure is region-gated; `us` supports it. |
