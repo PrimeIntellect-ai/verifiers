@@ -206,7 +206,7 @@ class AsyncCallable:
         return self.function(*args, **kwargs)
 
 
-def test_prime_start_forwards_egress_idle_timeout_and_hard_lifetime(monkeypatch):
+def test_prime_start_forwards_idle_timeout_and_hard_lifetime(monkeypatch):
     requests = []
 
     class CreateSandboxRequest:
@@ -236,7 +236,6 @@ def test_prime_start_forwards_egress_idle_timeout_and_hard_lifetime(monkeypatch)
     runtime = PrimeRuntime(
         PrimeConfig(
             image="pinned@example",
-            network_access=False,
             idle_timeout=61,
             timeout=121,
             labels=["generic-runtime-test"],
@@ -248,7 +247,7 @@ def test_prime_start_forwards_egress_idle_timeout_and_hard_lifetime(monkeypatch)
     assert runtime._confirmed_stop_id is None
     assert len(requests) == 1
     request = requests[0]
-    assert request["network_access"] is False
+    assert "network_access" not in request
     assert request["idle_timeout_minutes"] == 2
     assert request["timeout_minutes"] == 3
     assert request["labels"] == ["generic-runtime-test"]
