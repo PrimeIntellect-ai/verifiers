@@ -120,8 +120,8 @@ class TaskData(StrictBaseModel):
     entries. Prime runtimes accept host-level entries and require `vm=true`."""
     network_block: list[str] = []
     """Execution-time destinations denied by this task and combined with runtime
-    blocks. Concrete allowlists cannot be combined with blocklists. Docker framework
-    routes take precedence; ordinary Prime deny rules are passed through unchanged."""
+    blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
+    framework routes take precedence; ordinary Prime deny rules pass through unchanged."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 

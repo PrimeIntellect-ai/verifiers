@@ -76,10 +76,12 @@ class PrimeConfig(NetworkPolicyConfig):
             raise ValueError(
                 "Prime allow/block egress lists require a VM sandbox (vm=true)"
             )
-        allow = None if self.allow == ["*"] else self.allow
-        block = self.block or None
-        if block != ["*"]:
-            validate_egress_lists(allow, block)
+        if not self.allow:
+            return self
+        validate_egress_lists(
+            None if self.allow == ["*"] else self.allow,
+            self.block or None,
+        )
         return self
 
     @model_validator(mode="after")
@@ -189,12 +191,7 @@ class PrimeRuntime(Runtime):
                     h for h in (urlsplit(route).hostname for route in routes) if h
                 )
             )
-            if self.config.block == ["*"]:
-                # Prime cannot combine deny rules with framework route exceptions, so
-                # lower the explicit framework-only sentinel to an allowlist.
-                validate_egress_lists(hosts, None)
-                policy = {"allow": hosts} if hosts else {"deny": ["*"]}
-            elif self.config.allow == ["*"]:
+            if self.config.allow == ["*"]:
                 policy = {"deny": self.config.block}
             else:
                 entries = list(dict.fromkeys([*hosts, *self.config.allow]))
