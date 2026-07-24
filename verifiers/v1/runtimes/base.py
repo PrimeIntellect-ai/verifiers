@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
 
+from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -102,6 +103,14 @@ class NetworkPolicyConfig(BaseConfig):
     """Destinations allowed during execution; `*` leaves egress unrestricted."""
     block: list[str] = []
     """Destinations denied during execution."""
+
+    @model_validator(mode="after")
+    def _validate_network_policy(self) -> Self:
+        if self.allow != ["*"] and self.block:
+            raise ValueError(
+                "concrete allow and block egress lists are mutually exclusive"
+            )
+        return self
 
     @property
     def network_restricted(self) -> bool:
@@ -284,7 +293,7 @@ class Runtime(ABC):
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
-        their policy here while keeping the interception and MCP `routes` reachable."""
+        their policy here, folding interception and MCP `routes` into allowlist modes."""
 
     @property
     def network_restricted(self) -> bool:
