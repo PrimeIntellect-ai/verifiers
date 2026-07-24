@@ -104,6 +104,7 @@ from verifiers.v1.scoring import (
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.utils.shared_runtime import SharedRuntime, shared_runtime
 from verifiers.v1.trace import (
     TRACE_VERSION,
     AgentInfo,
@@ -260,6 +261,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Agent",
     "Agents",
     "make_agent",
+    "SharedRuntime",
+    "shared_runtime",
     # loaders
     "import_taskset",
     "import_harness",

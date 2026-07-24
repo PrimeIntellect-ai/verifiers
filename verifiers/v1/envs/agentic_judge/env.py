@@ -150,6 +150,8 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
+                network_allow=solved.network_allow,
+                network_block=solved.network_block,
             ),
             files=files,
         )
@@ -298,10 +300,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        async with agents.solver.provision(task) as box:
-            solution = await agents.solver.run(task, runtime=box)
+        async with vf.shared_runtime(agents.solver, task, agents.judge) as shared:
+            solution = await shared.run(agents.solver, task)
             judge_task = JudgeTask.from_trace(solution, self.config.task)
-            await agents.judge.run(judge_task, runtime=box)
+            await shared.run(agents.judge, judge_task)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent_name: t for t in episode.traces}

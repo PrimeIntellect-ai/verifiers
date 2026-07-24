@@ -11,7 +11,8 @@ shared: whoever entered it owns the lifecycle; borrowers only `acquire`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Self
 
 from pydantic_config import BaseConfig
@@ -66,3 +67,8 @@ class Interception(ABC):
     def acquire(self, session: RolloutSession) -> AbstractAsyncContextManager[Slot]:
         """Register `session` on a server (bringing one up if needed) and yield its `Slot`;
         free it on exit."""
+
+    @asynccontextmanager
+    async def reserve(self) -> AsyncIterator[Interception]:
+        """Pin sequential rollouts to this interception route."""
+        yield self

@@ -406,8 +406,12 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
         harness=None,  # seats pin their own harness; there is no run-level one
         env={
             "id": "agentic-judge",
-            # The solver owns the shared box, so the container is pinned here.
-            "solver": {"harness": {"id": "bash"}, "runtime": {"type": "docker"}},
+            # The solver owns the shared box. The blocklist makes it a restricted
+            # runtime, so both harnesses must install before its policy activates.
+            "solver": {
+                "harness": {"id": "bash"},
+                "runtime": {"type": "docker", "block": ["example.com"]},
+            },
             # The judge reads the trace and reasons before it writes the
             # verdict file; the shared 2048-token run cap truncates it mid-audit.
             "judge": {
