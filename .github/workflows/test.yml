@@ -23,10 +23,6 @@ jobs:
   test:
     name: Verifiers
     runs-on: ubuntu-latest
-    env:
-      PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
-      PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -56,13 +52,48 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Install prime
-        run: uv pip install prime
-
       - name: Run tests
         run: |
           uv run pytest tests/ -v --ignore=tests/v1 -m "not prime" --cov=verifiers --cov-report=xml --cov-report=term
 
-      - name: Run v1 tests
+      - name: Run deterministic v1 tests
         run: |
-          uv run pytest tests/v1 -vv -n auto -m "not prime and not modal" --cov=verifiers --cov-append --cov-report=xml --cov-report=term
+          uv run pytest tests/v1 -vv -n auto -m "not e2e" --cov=verifiers --cov-append --cov-report=xml --cov-report=term
+
+  v1-e2e:
+    name: V1 live E2E (Python 3.12)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+      PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Cache Hugging Face tokenizers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-tokenizers-${{ runner.os }}-${{ hashFiles('uv.lock', 'tests/test_renderer_client.py', 'tests/test_renderer_e2e.py') }}
+          restore-keys: |
+            hf-tokenizers-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run live v1 E2Es
+        run: |
+          uv run pytest tests/v1 -vv -n 2 -m "e2e and not prime and not modal" --cov=verifiers --cov-report=xml --cov-report=term
