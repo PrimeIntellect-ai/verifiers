@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.intercepts.core import InterceptRecord
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
@@ -128,6 +129,11 @@ class Branch(StrictBaseModel):
     @property
     def messages(self) -> Messages:
         return [n.message for n in self.nodes]
+
+    @property
+    def delivered_messages(self) -> Messages:
+        """The conversation the harness saw, including intercepted replacements."""
+        return [n.delivered_message or n.message for n in self.nodes]
 
     @property
     def token_ids(self) -> list[int]:
@@ -383,6 +389,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every provider exchange behind the sampled turns, in order: raw wire request/response
     plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
+    interceptions: list[InterceptRecord] = Field(default_factory=list)
+    """Every rewrite or termination produced by a task's `@intercept` handlers."""
 
     rewards: dict[str, Reward] = Field(default_factory=dict)
     """Named rewards from tasks, judges, and the env's `score()` — each keeps its
@@ -417,6 +425,10 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values())
+
+    @property
+    def terminated_by_intercept(self) -> bool:
+        return any(record.action == "terminate" for record in self.interceptions)
 
     @property
     def error(self) -> Error | None:
@@ -581,6 +593,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
                 "reward %r overridden: %s -> %s", name, self.rewards[name], reward
             )
         self.rewards[name] = reward
+
+    def record_interception(self, record: InterceptRecord) -> None:
+        self.interceptions.append(record)
 
     def stamp(self, run: RunInfo | None = None, **info: Any) -> None:
         """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the
