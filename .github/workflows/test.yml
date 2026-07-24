@@ -19,6 +19,9 @@ on:
 env:
   HF_HOME: ${{ github.workspace }}/.cache/huggingface
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Verifiers
@@ -62,7 +65,10 @@ jobs:
 
   v1-e2e:
     name: V1 live E2E (Python 3.12)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
