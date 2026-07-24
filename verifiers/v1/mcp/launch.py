@@ -23,7 +23,6 @@ from verifiers.v1.runtimes import (
     NetworkPolicyConfig,
     Runtime,
     make_runtime,
-    runtime_is_local,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
 
@@ -248,6 +247,7 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    _runtime: Runtime | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
@@ -268,7 +268,7 @@ async def serve(
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
         else:
-            runtime = make_runtime(cfg.runtime)
+            runtime = _runtime or make_runtime(cfg.runtime)
             await runtime.start()
             stack.push_async_callback(runtime.stop)
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
@@ -315,7 +315,8 @@ class SharedToolServer:
     """One live taskset-scoped (shared) server, as the rollouts see it: its eval-level
     `url` plus whether its runtime is `local` (host-reachable) — a remote one is an
     interception consumer, so the interception must be exposed for it to reach the
-    `/state` channel (see `Env._requires_tunnel`). An `external` server (a
+    `/state` channel (see `Env._requires_tunnel`). `runtime` is retained for translating
+    that channel into the server's network. An `external` server (a
     config-`url` endpoint) was not launched by the framework and sits outside its state
     machinery entirely: rollouts get its URL bare — no state tag (and no per-rollout
     secret sent to a third party)."""
@@ -323,6 +324,7 @@ class SharedToolServer:
     url: str
     local: bool
     external: bool = False
+    runtime: Runtime | None = None
 
 
 @contextlib.asynccontextmanager
@@ -359,11 +361,18 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     url=cfg.url, local=False, external=True
                 )
             else:
+                runtime = make_runtime(cfg.runtime)
                 url = await stack.enter_async_context(
-                    serve(toolset, harness_is_local=harness_is_local)
+                    serve(
+                        toolset,
+                        harness_is_local=harness_is_local,
+                        _runtime=runtime,
+                    )
                 )
                 servers[name] = SharedToolServer(
-                    url=url, local=runtime_is_local(cfg.runtime)
+                    url=url,
+                    local=runtime.is_local,
+                    runtime=runtime,
                 )
             logger.info("shared tool server '%s': %s", name, servers[name].url)
         yield servers
@@ -395,8 +404,8 @@ async def serve_tools(
     taskset-scoped `shared` servers — already
     running eval-level (see `serve_shared`) — join under their per-rollout state tag.
     `state_base`/`state_secret` wire each server to the interception server's shared-state
-    channel — `state_base` is universally reachable, so every server (per-rollout or
-    `shared`, any runtime) uses it directly."""
+    channel. Each launched server translates the host-local base for its own runtime;
+    external servers stay untagged."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
         for name, server in (shared or {}).items():
@@ -408,7 +417,12 @@ async def serve_tools(
                 logger.info("tool server '%s' (shared, external): %s", name, server.url)
                 continue
             url = harness_runtime.host_url(server.url) if server.local else server.url
-            urls[name] = _shared_url_for_rollout(url, state_base, state_secret)
+            shared_state_base = (
+                server.runtime.host_url(state_base.rstrip("/"))
+                if server.runtime is not None and state_base
+                else state_base
+            )
+            urls[name] = _shared_url_for_rollout(url, shared_state_base, state_secret)
             # The tagged URL contains the bearer secret; log only the untagged base URL.
             logger.info("tool server '%s' (shared): %s", name, server.url)
         for toolset in toolsets:
