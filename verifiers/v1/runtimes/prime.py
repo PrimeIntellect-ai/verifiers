@@ -17,6 +17,7 @@ from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
+from prime_sandboxes.models import validate_egress_lists
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
@@ -75,8 +76,6 @@ class PrimeConfig(NetworkPolicyConfig):
             raise ValueError(
                 "Prime allow/block egress lists require a VM sandbox (vm=true)"
             )
-        from prime_sandboxes.models import validate_egress_lists
-
         allow = None if self.allow == ["*"] else self.allow
         block = self.block or None
         if allow is not None or block != ["*"]:
@@ -192,8 +191,6 @@ class PrimeRuntime(Runtime):
                         h for h in (urlsplit(route).hostname for route in routes) if h
                     )
                 )
-                from prime_sandboxes.models import validate_egress_lists
-
                 validate_egress_lists(hosts, None)
                 policy = {"allow": hosts} if hosts else {"deny": ["*"]}
             elif self.config.allow == ["*"]:
@@ -201,8 +198,6 @@ class PrimeRuntime(Runtime):
             else:
                 hosts = [h for h in (urlsplit(route).hostname for route in routes) if h]
                 entries = list(dict.fromkeys([*hosts, *self.config.allow]))
-                from prime_sandboxes.models import validate_egress_lists
-
                 validate_egress_lists(entries, None)
                 policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
