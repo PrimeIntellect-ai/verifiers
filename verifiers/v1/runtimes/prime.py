@@ -8,10 +8,10 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 
 import asyncio
 import contextlib
-import fnmatch
 import logging
 import math
 import shlex
+import socket
 import tempfile
 from ipaddress import ip_address, ip_network
 from pathlib import Path, PurePosixPath
@@ -194,24 +194,44 @@ class PrimeRuntime(Runtime):
             blocked_framework = False
             if self.config.allow == ["*"]:
                 normalized_hosts = [host.lower().rstrip(".") for host in hosts]
-                route_addresses = []
-                for host in normalized_hosts:
-                    with contextlib.suppress(ValueError):
-                        route_addresses.append(ip_address(host))
+                block_networks = []
                 for rule in self.config.block:
                     pattern = rule.strip().lower().rstrip(".")
-                    if any(
-                        fnmatch.fnmatchcase(host, pattern)
-                        or (pattern.startswith("*.") and host == pattern[2:])
-                        for host in normalized_hosts
-                    ):
+                    with contextlib.suppress(ValueError):
+                        block_networks.append(ip_network(pattern, strict=False))
+                    if pattern.startswith("*."):
+                        suffix = pattern[2:]
+                        matches_host = any(
+                            host.endswith(f".{suffix}")
+                            and host.count(".") == suffix.count(".") + 1
+                            for host in normalized_hosts
+                        )
+                    else:
+                        matches_host = pattern in normalized_hosts
+                    if matches_host:
                         blocked_framework = True
                         break
-                    with contextlib.suppress(ValueError):
-                        network = ip_network(pattern, strict=False)
-                        if any(address in network for address in route_addresses):
-                            blocked_framework = True
-                            break
+                if block_networks and not blocked_framework:
+                    route_addresses = set()
+                    for host in normalized_hosts:
+                        try:
+                            route_addresses.add(ip_address(host))
+                        except ValueError:
+                            addresses = await asyncio.to_thread(
+                                socket.getaddrinfo,
+                                host,
+                                None,
+                                socket.AF_INET,
+                                socket.SOCK_STREAM,
+                            )
+                            route_addresses.update(
+                                ip_address(address[4][0]) for address in addresses
+                            )
+                    blocked_framework = any(
+                        address in network
+                        for network in block_networks
+                        for address in route_addresses
+                    )
             framework_only = self.config.block == ["*"] or blocked_framework
             if framework_only:
                 if blocked_framework:
