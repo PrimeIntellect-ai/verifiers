@@ -1,9 +1,9 @@
 """The OpenAI Responses dialect (codex and friends).
 
 Request parsing walks the `input` items, folding each run of assistant-side items (reasoning /
-assistant message / function_call) into one typed assistant message; response parsing reads the
-`output` items. Relay-only: the eval client forwards the program's bytes to a `/responses`
-endpoint and this dialect parses a copy for the trace. Server-side statefulness
+assistant message / function or custom tool call) into one typed assistant message; response
+parsing reads the `output` items. Relay-only: the eval client forwards the program's bytes to a
+`/responses` endpoint and this dialect parses a copy for the trace. Server-side statefulness
 (`previous_response_id`) is not emulated — the endpoint owns it.
 """
 
@@ -96,9 +96,17 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
+def _parse_tool_call(item: dict) -> ToolCall:
+    arguments_key = "input" if item.get("type") == "custom_tool_call" else "arguments"
+    return ToolCall(
+        id=item.get("call_id", ""),
+        name=item.get("name", ""),
+        arguments=item.get(arguments_key, ""),
+    )
+
+
 def fold_assistant(items: list[dict]) -> AssistantMessage:
-    """One run of assistant-side items (reasoning / message / function_call) -> one typed
-    assistant message."""
+    """One run of assistant-side items -> one typed assistant message."""
     content = ""
     reasoning: list[str] = []
     calls: list[ToolCall] = []
@@ -106,14 +114,8 @@ def fold_assistant(items: list[dict]) -> AssistantMessage:
         if item.get("type") == "reasoning":
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
-        elif item.get("type") == "function_call":
-            calls.append(
-                ToolCall(
-                    id=item.get("call_id", ""),
-                    name=item.get("name", ""),
-                    arguments=item.get("arguments", ""),
-                )
-            )
+        elif item.get("type") in ("function_call", "custom_tool_call"):
+            calls.append(_parse_tool_call(item))
         else:  # an assistant message item
             raw = item.get("content")
             content += (
@@ -151,14 +153,8 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         elif kind == "reasoning":
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
-        elif kind == "function_call":
-            calls.append(
-                ToolCall(
-                    id=item.get("call_id", ""),
-                    name=item.get("name", ""),
-                    arguments=item.get("arguments", ""),
-                )
-            )
+        elif kind in ("function_call", "custom_tool_call"):
+            calls.append(_parse_tool_call(item))
     tool_calls = calls or None
     finish: FinishReason = (
         "length"
@@ -279,7 +275,10 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 run = []
             if assistant:
                 run.append(item)
-            elif item.get("type") == "function_call_output":
+            elif item.get("type") in (
+                "function_call_output",
+                "custom_tool_call_output",
+            ):
                 output = item.get("output")
                 content = (
                     parse_content(output)

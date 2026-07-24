@@ -4,6 +4,7 @@ import numpy as np
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
+from verifiers.v1.dialects.responses import OpenAIResponse, ResponsesDialect
 from verifiers.v1.types import TurnTokens
 
 
@@ -160,6 +161,45 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
         if isinstance(node.message, vf.AssistantMessage) and node.message.tool_calls
     ]
     assert len(tool_call_nodes) == 2
+
+
+def test_responses_custom_tool_calls_are_typed():
+    dialect = ResponsesDialect()
+    patch = "*** Begin Patch\n*** End Patch"
+    output = [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Applying the fix."}],
+        },
+        {
+            "type": "custom_tool_call",
+            "call_id": "call_0",
+            "name": "apply_patch",
+            "input": patch,
+        },
+    ]
+
+    response = dialect.parse_response(OpenAIResponse.model_validate({"output": output}))
+    prompt, _ = dialect.parse_request(
+        {
+            "input": [
+                {"role": "user", "content": "Fix it"},
+                *output,
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_0",
+                    "output": "Done!",
+                },
+            ]
+        }
+    )
+
+    call = vf.ToolCall(id="call_0", name="apply_patch", arguments=patch)
+    assert response.finish_reason == "tool_calls"
+    assert response.message.tool_calls == [call]
+    assert prompt[1].tool_calls == [call]
+    assert prompt[2] == vf.ToolMessage(tool_call_id="call_0", content="Done!")
 
 
 def test_renderer_level_break_forks_by_token_id():
