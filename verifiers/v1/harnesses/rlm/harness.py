@@ -1,4 +1,4 @@
-"""RLM exposes `RLM_MCP_CONFIG` tools as pre-imported IPython skills."""
+"""RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import json
 import logging
@@ -8,31 +8,31 @@ from typing import Literal
 
 from pydantic import model_validator
 
-from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
+from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.decorators import metric
-from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
-from verifiers.v1.trace import Trace
 from verifiers.v1.task import TaskData
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
 BuiltinSkill = Literal["edit", "search"]
 
-RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
-# rlm writes its session under $RLM_HOME/sessions/<id>/; point it at a workdir-
-# relative dir so it stays in the runtime (and is cleaned up with the workdir).
-RLM_HOME = ".rlm"
+RLM_REPO = "github.com/PrimeIntellect-ai/rlm-harness.git"
+RLM_VERSION = "56218f33796ecbe465445bc43948886354fde196"
 RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
+RLM_STATE_DIR = ".vf-rlm"
+RLM_ACP = ACP()
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = "main"
-    """Git ref (branch, tag, or commit) of rlm to install."""
+    version: str = RLM_VERSION
+    """Git ref (branch, tag, or commit) of rlm-harness to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
     builtin_skills: list[BuiltinSkill] = []
@@ -93,10 +93,11 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
         ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
-        env = {**self.config.resolved_env, "RLM_HOME": RLM_HOME}
+        env = self.config.resolved_env
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
+        await RLM_ACP.setup(self, runtime)
 
     def summarize_threshold(self, task_idx: int | None) -> str:
         """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index —
@@ -123,34 +124,37 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         system_prompt, prompt = self.resolve_prompt(data)
         if prompt is None:
             raise ValueError("RLM requires a prompt")
-        if not isinstance(prompt, str):
-            prompt = json.dumps(
-                [message_to_wire(message) for message in prompt], ensure_ascii=False
-            )
         env = {
             **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,
             "RLM_API_KEY": secret,
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
-            "RLM_HOME": RLM_HOME,
+            "RLM_HOME": self._home(trace),
             "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(data.idx),
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
         if self.config.builtin_skills:
             env["RLM_SKILLS"] = ",".join(self.config.builtin_skills)
-        if mcp_urls:
-            env["RLM_MCP_CONFIG"] = json.dumps(
-                {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
-            )
-        # RLM has no interactive mode; resumed segments explicitly replay the transcript.
-        return await runtime.run_program([RLM_BIN, "--", prompt], env)
+        return await RLM_ACP.run(
+            runtime,
+            env,
+            [RLM_BIN, "--acp"],
+            prompt,
+            mcp_urls=mcp_urls,
+            sidecar_path=self._sidecar(trace),
+        )
 
     @metric
-    async def rlm(self, runtime: Runtime) -> dict[str, float]:
-        # Stateless continuation creates one session per segment; report the latest.
-        latest = f'cat "$(ls -t {RLM_HOME}/sessions/*/meta.json | head -1)"'
+    async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:
+        # Closing finalizes RLM's meta.json; keep the state until cleanup.
+        try:
+            await RLM_ACP.close(runtime, self._sidecar(trace), remove=False)
+        except Exception:
+            logger.warning("rlm: sidecar shutdown failed before metrics", exc_info=True)
+        home = shlex.quote(self._home(trace))
+        latest = f'cat "$(ls -t {home}/sessions/*/meta.json | head -1)"'
         result = await runtime.run(["sh", "-c", latest], {})
         if result.exit_code != 0 or not result.stdout.strip():
             return {}
@@ -163,3 +167,18 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             for key, value in meta.get("metrics", {}).items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        await RLM_ACP.close(runtime, self._sidecar(trace))
+
+    @staticmethod
+    def _state_dir(trace: Trace) -> str:
+        return f"{RLM_STATE_DIR}/{trace.id}"
+
+    @classmethod
+    def _home(cls, trace: Trace) -> str:
+        return f"{cls._state_dir(trace)}/home"
+
+    @classmethod
+    def _sidecar(cls, trace: Trace) -> str:
+        return f"{cls._state_dir(trace)}/acp.sock"

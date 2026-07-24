@@ -286,11 +286,14 @@ Installs the Codex CLI into the runtime and runs `codex exec`.
 
 #### `RLMHarnessConfig` — `id: "rlm"`
 
-Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `HarnessConfig.env` passes any other `RLM_*` var through verbatim.
+Installs rlm-harness and runs its ACP agent. MCP tools become pre-imported
+IPython skills while the model-facing tool surface remains `ipython`. Knobs map
+onto `RLM_*` env vars; base `HarnessConfig.env` passes any other `RLM_*` var
+through verbatim.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `version` | `str` | `"main"` | Git ref (branch/tag/commit) of rlm to install. |
+| `version` | `str` | `"56218f33796ecbe465445bc43948886354fde196"` | Git ref (branch/tag/commit) of rlm-harness to install. |
 | `max_depth` | `int` | `0` | Recursion depth rlm may spawn sub-harnesses to (`RLM_MAX_DEPTH`). |
 | `skills` | `list["edit" \| "search"]` | `[]` | Built-in rlm skills to enable (`RLM_SKILLS`). Empty enables none. |
 | `summarize_at_tokens` | `int \| (int, int) \| None` | `None` | Auto-compaction threshold (`RLM_SUMMARIZE_AT_TOKENS`): compact once context grows past this many tokens. An int is fixed; a `(lo, hi)` pair draws a per-group threshold (seeded by task index). `None` disables. Ints must be positive. |
