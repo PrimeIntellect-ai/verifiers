@@ -239,9 +239,7 @@ class RolloutRun:
                 )
             if self._owns_runtime:
                 await runtime.start()
-            runtime_prepared = runtime.network_restricted and runtime.execution_prepared
-            if not runtime_prepared:
-                await runtime.prepare_setup()
+            needs_setup = await runtime.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
@@ -256,7 +254,7 @@ class RolloutRun:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
-            if not runtime_prepared:
+            if needs_setup:
                 async with (
                     boundary(HarnessError, "harness setup"),
                     asyncio.timeout_at(setup_deadline),
@@ -290,10 +288,7 @@ class RolloutRun:
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            if not runtime_prepared:
-                await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-                if runtime.network_restricted:
-                    runtime.execution_prepared = True
+            await runtime.prepare_execution([self._endpoint, *self._urls.values()])
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False

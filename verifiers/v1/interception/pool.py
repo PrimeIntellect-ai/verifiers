@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from pydantic import Field
@@ -67,12 +67,6 @@ class StaticInterceptionPool(Interception):
         server = min(self.servers, key=lambda s: s.load)
         async with server.acquire(session) as slot:
             yield slot
-
-    @asynccontextmanager
-    async def reserve(self) -> AsyncIterator[InterceptionServer]:
-        server = min(self.servers, key=lambda s: s.load)
-        async with server.reserve() as reserved:
-            yield reserved
 
 
 class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
@@ -147,15 +141,3 @@ class ElasticInterceptionPool(Interception):
             yield server.base_url, secret
         finally:
             server.unregister(secret)
-
-    @asynccontextmanager
-    async def reserve(self) -> AsyncIterator[InterceptionServer]:
-        if self._warm_task is not None:
-            with contextlib.suppress(Exception):
-                await asyncio.shield(self._warm_task)
-            self._warm_task = None
-        async with AsyncExitStack() as stack:
-            async with self._lock:
-                server = await self._server()
-                reserved = await stack.enter_async_context(server.reserve())
-            yield reserved
