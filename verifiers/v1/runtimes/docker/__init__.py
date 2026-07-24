@@ -234,7 +234,7 @@ class DockerRuntime(Runtime):
         return url
 
     async def prepare_execution(self, routes: list[str]) -> None:
-        """Allow the declared framework routes, then leave the proxy as the only route."""
+        """Apply the policy, then leave the proxy as the only route."""
         if not self.network_restricted:
             return
         assert self._proxy is not None
@@ -242,9 +242,10 @@ class DockerRuntime(Runtime):
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
             for url in routes
         ]
+        deny_all = self.config.block == ["*"]
         self._proxy.policy = NetworkPolicy(
-            self.config.allow,
-            self.config.block,
+            [] if deny_all else self.config.allow,
+            [] if deny_all else self.config.block,
             framework,
         )
         script = (

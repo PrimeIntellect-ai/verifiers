@@ -185,7 +185,18 @@ class PrimeRuntime(Runtime):
         if not self.network_restricted:
             return
         try:
-            if self.config.allow == ["*"]:
+            if self.config.block == ["*"]:
+                # Prime's deny-all policy would also block the framework routes.
+                hosts = list(
+                    dict.fromkeys(
+                        h for h in (urlsplit(route).hostname for route in routes) if h
+                    )
+                )
+                from prime_sandboxes.models import validate_egress_lists
+
+                validate_egress_lists(hosts, None)
+                policy = {"allow": hosts} if hosts else {"deny": ["*"]}
+            elif self.config.allow == ["*"]:
                 policy = {"deny": self.config.block}
             else:
                 hosts = [h for h in (urlsplit(route).hostname for route in routes) if h]

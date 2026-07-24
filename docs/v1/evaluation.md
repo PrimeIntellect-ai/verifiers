@@ -101,7 +101,8 @@ setup. Filtered Prime runtimes are therefore single-rollout.
 
 Prime's API accepts only one effective policy mode: a concrete `allow` list cannot be
 combined with `block`. A denylist cannot exempt framework hosts, so do not block an
-interception or MCP route host.
+interception or MCP route host. `block = ["*"]` is represented as an allowlist containing
+only those framework hosts.
 
 ### Docker URL policies
 
@@ -112,17 +113,19 @@ HTTP(S) destinations:
 [env.agent.runtime]
 type = "docker"
 allow = ["https://*.wikipedia.org"]
-block = ["https://upload.wikimedia.org"]
 ```
 
-Docker defaults to unrestricted with `allow = ["*"]` and no block entries. An empty
-`allow` list enables deny-by-default filtering and permits only the interception URL and
-every MCP URL, which are added automatically before user entries. Adding a block entry
-also enables filtering and narrows the wildcard. User block rules win over user allow
-rules; framework interception and MCP routes always remain reachable. Under every
-filtered policy, non-global destinations—including host-loopback, private, and link-local
-addresses—are reserved for framework routes, so user `allow` rules cannot expose host/LAN
-services or cloud metadata endpoints.
+Docker uses the same mutually exclusive modes as Prime. It defaults to unrestricted with
+`allow = ["*"]` and no block entries. A concrete `allow` list enables deny-by-default
+filtering; the interception URL and every MCP URL are added before user entries. A
+non-empty `block` list with the default wildcard instead enables default-allow denylist
+filtering. A matching deny rule can block a framework route; `block = ["*"]` is
+represented as a framework-only allowlist. Concrete `allow` and non-empty `block` lists
+cannot be combined.
+
+Under every filtered policy, non-global destinations—including host-loopback, private,
+and link-local addresses—are reserved for recognized framework routes, so user `allow`
+rules cannot expose host/LAN services or cloud metadata endpoints.
 
 Filtered Docker runtimes are single-rollout. Reusing one would require reopening trusted
 setup networking to processes left by the previous agent, so each rollout gets a fresh box.
@@ -135,16 +138,14 @@ port. Both the CONNECT authority and the TLS ClientHello SNI must satisfy the po
 
 The enforcement shape follows
 [Docker Sandboxes network isolation](https://docs.docker.com/ai/sandboxes/security/isolation/):
-HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed. As in
-[Docker's policy evaluation](https://docs.docker.com/ai/sandboxes/governance/concepts/),
-user deny rules win over user allows.
+HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed.
 
 Per-task `TaskData.network_allow` and `TaskData.network_block` entries are merged into
 Docker or Prime runtime lists. The task's default `network_allow=["*"]` is neutral and
-leaves the evaluator policy intact. Docker combines concrete task/runtime lists and
-retains every block entry. Prime requires `vm = true`, accepts host-level entries, and
-rejects a task/runtime combination that would require both an allowlist and a blocklist.
-Other runtimes reject non-neutral task network policies.
+leaves the evaluator policy intact. Concrete task/runtime allowlists combine, as do
+task/runtime blocklists. Docker and Prime reject a combination that would require both
+an allowlist and a blocklist; Prime additionally requires `vm = true` and accepts only
+host-level entries. Other runtimes reject non-neutral task network policies.
 
 The restriction begins after task and harness setup and remains active through agent
 execution, finalization, and scoring. Debug actions apply it after task setup as well.
