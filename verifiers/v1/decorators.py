@@ -19,10 +19,12 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
         if callable(fn) and hasattr(fn, attr)
     }
     # An undecorated override suppresses a decorated base method.
-    methods = [method for name in names if hasattr(method := getattr(obj, name), attr)]
+    methods = [
+        (name, method) for name in names if hasattr(method := getattr(obj, name), attr)
+    ]
     priority_attr = f"{attr}_priority"
-    methods.sort(key=lambda m: (-getattr(m, priority_attr, 0), m.__name__))
-    return methods
+    methods.sort(key=lambda item: (-getattr(item[1], priority_attr, 0), item[0]))
+    return [method for _, method in methods]
 
 
 def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
@@ -65,6 +67,17 @@ def stop(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """Mark a stop condition `(self, trace) -> bool`."""
     decorator = mark("stop", stop_priority=priority)
+    return decorator if func is None else decorator(func)
+
+
+@overload
+def intercept(func: F, priority: int = 0) -> F: ...
+@overload
+def intercept(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Mark a message interceptor returning replacement text, `Terminate`, or `None`.
+    Annotate `message` as `ToolMessage` for requests or `AssistantMessage` for responses."""
+    decorator = mark("intercept", intercept_priority=priority)
     return decorator if func is None else decorator(func)
 
 

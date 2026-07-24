@@ -184,7 +184,7 @@ class Harness(ABC, Generic[ConfigT]):
                 "overrides resume() nor supports a Messages prompt for the default "
                 "relaunch-on-the-conversation."
             )
-        branch = trace.branches[-1].messages if trace.branches else []
+        branch = trace.branches[-1].delivered_messages if trace.branches else []
         # `resolve_prompt` re-emits `data.system_prompt`; only de-duplicate those
         # system messages when it has something to re-emit. Explicit system
         # messages in a Messages prompt must survive a resumed segment.

@@ -212,9 +212,10 @@ class ResponsesStreamParser(StreamParser):
         events = self.terminal_events or self.events
         for event in iter_sse_reverse(b"".join(events)):
             if event.get("type") in FINAL_EVENTS:
-                return response_from_wire(
-                    OpenAIResponse.model_validate(event["response"])
-                )
+                raw = event["response"]
+                response = response_from_wire(OpenAIResponse.model_validate(raw))
+                response.raw = raw
+                return response
         raise ValueError("Responses stream ended without a terminal event")
 
 
@@ -312,6 +313,136 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
 
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
+
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        output = raw.get("output") or []
+        original = next(
+            (
+                item
+                for item in output
+                if isinstance(item, dict) and item.get("type") == "message"
+            ),
+            {},
+        )
+        raw["output"] = [
+            item
+            for item in output
+            if isinstance(item, dict) and item.get("type") == "reasoning"
+        ] + [
+            {
+                "type": "message",
+                "id": original.get("id") or "msg_intercepted",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        ]
+        raw["status"] = "completed"
+        raw["error"] = None
+        raw["incomplete_details"] = None
+        raw.pop("required_action", None)
+        if "output_text" in raw:
+            raw["output_text"] = text
+
+    def rewrite_tool_result(self, body: dict, tool_call_id: str, text: str) -> None:
+        for item in body.get("input") or []:
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "function_call_output"
+                and item.get("call_id") == tool_call_id
+            ):
+                item["output"] = text
+
+    def stream_events(self, raw: dict) -> list[bytes]:
+        sequence = 0
+        events: list[bytes] = []
+
+        def emit(kind: str, **fields) -> None:
+            nonlocal sequence
+            event = {"type": kind, "sequence_number": sequence, **fields}
+            events.append(f"data: {json.dumps(event)}\n\n".encode())
+            sequence += 1
+
+        head = {
+            **raw,
+            "status": "in_progress",
+            "output": [],
+            "error": None,
+            "incomplete_details": None,
+            "completed_at": None,
+        }
+        emit("response.created", response=head)
+        for output_index, item in enumerate(raw.get("output") or []):
+            if item.get("type") != "message":
+                emit(
+                    "response.output_item.added",
+                    output_index=output_index,
+                    item=item,
+                )
+                emit(
+                    "response.output_item.done",
+                    output_index=output_index,
+                    item=item,
+                )
+                continue
+
+            item_id = item.get("id") or "msg_intercepted"
+            emit(
+                "response.output_item.added",
+                output_index=output_index,
+                item={**item, "status": "in_progress", "content": []},
+            )
+            for content_index, part in enumerate(item.get("content") or []):
+                empty = (
+                    {**part, "text": ""} if part.get("type") == "output_text" else part
+                )
+                emit(
+                    "response.content_part.added",
+                    output_index=output_index,
+                    item_id=item_id,
+                    content_index=content_index,
+                    part=empty,
+                )
+                if part.get("type") == "output_text":
+                    logprobs = part.get("logprobs") or []
+                    text = part.get("text", "")
+                    emit(
+                        "response.output_text.delta",
+                        output_index=output_index,
+                        item_id=item_id,
+                        content_index=content_index,
+                        delta=text,
+                        logprobs=logprobs,
+                    )
+                    emit(
+                        "response.output_text.done",
+                        output_index=output_index,
+                        item_id=item_id,
+                        content_index=content_index,
+                        text=text,
+                        logprobs=logprobs,
+                    )
+                emit(
+                    "response.content_part.done",
+                    output_index=output_index,
+                    item_id=item_id,
+                    content_index=content_index,
+                    part=part,
+                )
+            emit(
+                "response.output_item.done",
+                output_index=output_index,
+                item=item,
+            )
+
+        status = raw.get("status")
+        terminal = (
+            f"response.{status}"
+            if status in ("incomplete", "failed")
+            else "response.completed"
+        )
+        emit(terminal, response=raw)
+        return [*events, b"data: [DONE]\n\n"]
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()

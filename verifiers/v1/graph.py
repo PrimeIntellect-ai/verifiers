@@ -71,6 +71,9 @@ class MessageNode(StrictBaseModel):
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
+    delivered_message: AssistantMessage | None = None
+    """An intercepted replacement delivered to the harness. The original sampled
+    `message` and its tokens remain the training record."""
     sampled: bool = False
     """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context
