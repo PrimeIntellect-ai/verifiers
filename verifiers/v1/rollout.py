@@ -21,7 +21,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers import __version__
@@ -126,8 +126,6 @@ class RolloutRun:
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
         runtime: Runtime | None = None,
-        runtime_prepared: bool = False,
-        runtime_setup: Callable[[], Awaitable[None]] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> None:
         self.task = task
@@ -143,8 +141,6 @@ class RolloutRun:
         self._interception = interception
         self.runtime = runtime
         self._owns_runtime = runtime is None
-        self._runtime_prepared = runtime_prepared
-        self._runtime_setup = runtime_setup
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -244,7 +240,8 @@ class RolloutRun:
                 )
             if self._owns_runtime:
                 await runtime.start()
-            if not self._runtime_prepared:
+            runtime_prepared = runtime.network_restricted and runtime.execution_prepared
+            if not runtime_prepared:
                 await runtime.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
@@ -260,18 +257,12 @@ class RolloutRun:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
-            if not self._runtime_prepared:
+            if not runtime_prepared:
                 async with (
                     boundary(HarnessError, "harness setup"),
                     asyncio.timeout_at(setup_deadline),
                 ):
                     await self.harness.setup(runtime)
-            if self._runtime_setup is not None:
-                async with (
-                    boundary(HarnessError, "shared runtime setup"),
-                    asyncio.timeout_at(setup_deadline),
-                ):
-                    await self._runtime_setup()
             async with boundary(ToolsetError, "building tool servers"):
                 tool_servers = self.task.tool_servers()
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -300,9 +291,10 @@ class RolloutRun:
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            if not self._runtime_prepared:
+            if not runtime_prepared:
                 await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-                runtime.execution_prepared = True
+                if runtime.network_restricted:
+                    runtime.execution_prepared = True
         except Exception as e:
             self.fail(e)
             return False

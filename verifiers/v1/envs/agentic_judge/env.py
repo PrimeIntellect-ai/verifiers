@@ -300,10 +300,14 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        async with vf.shared_runtime(agents.solver, task, agents.judge) as shared:
-            solution = await shared.run(agents.solver, task)
+        async with vf.shared_runtime(agents.solver, task, agents.judge) as box:
+            solution = await agents.solver.run(task, runtime=box)
+            if box.network_restricted and not box.execution_prepared:
+                raise RuntimeError(
+                    "solver failed before the shared runtime's network policy activated"
+                )
             judge_task = JudgeTask.from_trace(solution, self.config.task)
-            await shared.run(agents.judge, judge_task)
+            await agents.judge.run(judge_task, runtime=box)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent_name: t for t in episode.traces}
