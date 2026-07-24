@@ -1,0 +1,104 @@
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from verifiers.v1.loaders import harness_class, import_harness
+
+
+FIXTURE_PACKAGE = Path(__file__).parent / "fixtures" / "external_plugin_package"
+
+
+def test_installed_external_package_constructs_full_environment(tmp_path):
+    site_packages = tmp_path / "site-packages"
+    install = subprocess.run(
+        [
+            shutil.which("uv") or "uv",
+            "pip",
+            "install",
+            "--target",
+            str(site_packages),
+            "--no-deps",
+            str(FIXTURE_PACKAGE),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert install.returncode == 0, install.stderr
+
+    script = r"""
+import sys
+
+sys.path.insert(0, sys.argv[1])
+
+from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
+
+config = SingleAgentEnvConfig.model_validate(
+    {
+        "taskset": {
+            "id": "external-plugin-v1",
+            "custom_taskset_flag": True,
+            "task": {
+                "judges": [
+                    {
+                        "id": "external-plugin-v1",
+                        "custom_judge_flag": True,
+                    }
+                ]
+            },
+        },
+        "agent": {
+            "harness": {"id": "external-plugin-v1", "custom_harness_flag": True},
+        },
+    }
+)
+assert type(config.taskset).__name__ == "ExternalTasksetConfig"
+assert config.taskset.custom_taskset_flag is True
+assert type(config.agent.harness).__name__ == "SuperSecretHarnessConfig"
+assert config.agent.harness.custom_harness_flag is True
+assert type(config.taskset.task.judges[0]).__name__ == "ExternalJudgeConfig"
+assert config.taskset.task.judges[0].custom_judge_flag is True
+
+environment = SingleAgentEnv(config)
+assert type(environment.taskset).__name__ == "ExternalTaskset"
+harness = environment._harnesses["agent"]
+assert type(harness).__name__ == "SuperSecretHarness"
+assert harness.config is config.agent.harness
+tasks = environment.taskset.select()
+assert len(tasks) == 1
+judges = tasks[0].plugged_judges()
+assert len(judges) == 1
+assert type(judges[0]).__name__ == "ExternalJudge"
+assert judges[0].config is config.taskset.task.judges[0]
+"""
+    construct = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(site_packages)],
+        capture_output=True,
+        text=True,
+    )
+    assert construct.returncode == 0, construct.stderr
+
+
+def test_external_harness_internal_import_errors_are_not_hidden(tmp_path, monkeypatch):
+    (tmp_path / "broken_harness_v1.py").write_text(
+        "import missing_dependency_for_loader_test\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ModuleNotFoundError) as exc_info:
+        harness_class("broken-harness-v1")
+
+    assert exc_info.value.name == "missing_dependency_for_loader_test"
+
+
+def test_missing_external_harness_reports_both_import_candidates():
+    with pytest.raises(ModuleNotFoundError) as exc_info:
+        import_harness("missing-external-harness-v1")
+
+    message = str(exc_info.value)
+    assert "normalized module 'missing_external_harness_v1'" in message
+    assert "'verifiers.v1.harnesses.missing_external_harness_v1'" in message
+    assert "'missing_external_harness_v1'" in message
+    assert exc_info.value.__cause__.name == "missing_external_harness_v1"

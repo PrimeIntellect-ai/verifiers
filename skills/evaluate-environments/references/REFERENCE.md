@@ -363,7 +363,8 @@ Remote Prime sandbox; reached via native port exposure.
 | `memory` | `float` | `2.0` | Memory in GB. |
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"A100:2"` (bare count = provider-chosen type). |
 | `disk` | `float` | `5.0` | Disk in GB. |
-| `idle_timeout` | `float \| None` | `3600` | Seconds of inactivity before the sandbox is deleted; `None` disables it. |
+| `idle_timeout` | `float \| None` | `3600` | Seconds of inactivity before the sandbox is deleted; `None` disables it. Must be positive and ≤ `timeout` when set. |
+| `timeout` | `float` | `86400` | Hard maximum sandbox lifetime in seconds (60–86400). |
 | `creates_per_min` | `int \| None` | `None` | Pace sandbox creation to this many per minute, host-wide across every env-server worker (None/≤0 disables). Tunnel creation is limited separately and globally. |
 
 ### `ModalConfig` — `type: "modal"`
@@ -381,6 +382,7 @@ Remote Modal sandbox; reached via Modal's own port forwarding (`encrypted_ports`
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"A100:2"`. |
 | `disk` | `float` | `5.0` | Disk in GB. Modal sandboxes have no disk knob, so **accepted but not enforced**. |
 | `creates_per_sec` | `float \| None` | `40.0` | Pace sandbox creation to this many per second, host-wide across every env-server worker (None/≤0 disables). |
+| `timeout` | `float` | `86400` | Hard maximum sandbox lifetime in seconds (60–86400). |
 
 Before each rollout or validation check, `resolve_runtime_config` combines the selected runtime config with the row's `TaskData`:
 

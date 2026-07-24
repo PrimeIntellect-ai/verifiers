@@ -2,7 +2,6 @@
 
 import contextvars
 import importlib
-import importlib.util
 import pkgutil
 from types import ModuleType
 from typing import Callable
@@ -78,28 +77,38 @@ def narrow_plugin_field(
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     module = ensure_installed(plugin_id)
-    namespaced = f"{group}.{module}"
-    target = namespaced if importlib.util.find_spec(namespaced) else module
-    try:
-        return importlib.import_module(target)
-    except ModuleNotFoundError as e:
-        if kind == "harness" and plugin_id == "default":
-            raise ModuleNotFoundError(
-                "the `default` harness was renamed to `bash`: "
-                "--env.agent.harness.id bash (or your env's role name)"
-            ) from e
-        hint = (
-            f" The built-in harnesses are: {', '.join(builtin_harness_ids())}."
-            if kind == "harness"
-            else ""
-        )
-        article = "An" if kind[0] in "aeiou" else "A"
+    targets = (f"{group}.{module}", module)
+    last_error: ModuleNotFoundError | None = None
+    for target in targets:
+        try:
+            return importlib.import_module(target)
+        except ModuleNotFoundError as error:
+            # A missing candidate (or one of its parent packages) permits the flat-module
+            # fallback. A dependency imported from inside a found plugin does not.
+            if error.name is None or not (
+                error.name == target or target.startswith(f"{error.name}.")
+            ):
+                raise
+            last_error = error
+    if kind == "harness" and plugin_id == "default":
         raise ModuleNotFoundError(
-            f"{kind} {plugin_id!r} not found (tried to import {target!r}). {article} {kind} is a "
-            f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
-            f"ones ship with verifiers in the `{group}` package, installed from "
-            f"the Environments Hub (`org/name`), or authored yourself.{hint}"
-        ) from e
+            "the `default` harness was renamed to `bash`: "
+            "--env.agent.harness.id bash (or your env's role name)"
+        ) from last_error
+    hint = (
+        f" The built-in harnesses are: {', '.join(builtin_harness_ids())}."
+        if kind == "harness"
+        else ""
+    )
+    tried = ", ".join(repr(target) for target in targets)
+    article = "An" if kind[0] in "aeiou" else "A"
+    raise ModuleNotFoundError(
+        f"{kind} {plugin_id!r} not found (normalized module {module!r}; tried imports: "
+        f"{tried}). {article} {kind} is a package exporting its {kind.capitalize()} subclass via "
+        f"`__all__` — the built-in ones ship with verifiers in the `{group}` package, "
+        f"installed from the Environments Hub (`org/name`), installed from an external "
+        f"package, or authored yourself.{hint}"
+    ) from last_error
 
 
 def _plugin_class(module: ModuleType, base: type, kind: str) -> type:

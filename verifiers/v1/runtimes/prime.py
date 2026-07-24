@@ -62,6 +62,8 @@ class PrimeConfig(NetworkPolicyConfig):
     """Disk in GB."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
+    timeout: float = MAX_LIFETIME
+    """Hard maximum sandbox lifetime in seconds."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
@@ -85,11 +87,16 @@ class PrimeConfig(NetworkPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_idle_timeout(self) -> "PrimeConfig":
-        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
-            raise ValueError(
-                f"idle_timeout ({self.idle_timeout}s) must not exceed the "
-                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
-            )
+        if not 60 <= self.timeout <= MAX_LIFETIME:
+            raise ValueError(f"timeout must be between 60 and {MAX_LIFETIME} seconds")
+        if self.idle_timeout is not None:
+            if self.idle_timeout <= 0:
+                raise ValueError("idle_timeout must be positive or None")
+            if self.idle_timeout > self.timeout:
+                raise ValueError(
+                    f"idle_timeout ({self.idle_timeout}s) must not exceed the "
+                    f"hard sandbox timeout ({self.timeout}s)"
+                )
         return self
 
 
@@ -107,6 +114,7 @@ class PrimeRuntime(Runtime):
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
+        self._confirmed_stop_id: str | None = None
 
     @property
     def published_port(self) -> int | None:
@@ -132,7 +140,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": MAX_LIFETIME // 60,
+            "timeout_minutes": math.ceil(self.config.timeout / 60),
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
@@ -154,6 +162,7 @@ class PrimeRuntime(Runtime):
                         **{k: v for k, v in options.items() if v is not None},
                     )
                 )
+            self._confirmed_stop_id = None
             self.info.id = sandbox.id
             # The create response says whether the platform already has the image:
             # `pending_image_build_id` set means a first-use auto-build is running and the
@@ -311,6 +320,48 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def stop_confirmed(self) -> None:
+        """Delete the Prime sandbox or preserve cleanup state and raise."""
+        runtime_id = self.info.id
+        if runtime_id is not None and runtime_id == self._confirmed_stop_id:
+            return
+        client = self._client
+        if client is None:
+            if runtime_id is None:
+                return
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without its live client"
+            )
+        if runtime_id is None:
+            # Provisioning failed before a provider ID was assigned; release
+            # the live client so it doesn't leak.
+            self._client = None
+            with contextlib.suppress(Exception):
+                await client.aclose()
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without a provider ID"
+            )
+        try:
+            await client.delete(runtime_id)
+        except Exception as exc:
+            # A 404 from the provider means the sandbox was already removed
+            # (idle timeout, max lifetime, or an earlier best-effort cleanup).
+            # That is confirmed success — treat it as such so retries don't keep
+            # failing.  Match the provider's own APIError with an HTTP 404
+            # prefix, not a loose substring, so unrelated errors can't be
+            # misread as the sandbox being gone.
+            from prime_sandboxes.core.client import APIError
+
+            if isinstance(exc, APIError) and str(exc).startswith("HTTP 404"):
+                logger.info("prime: sandbox %s already gone (404): %s", runtime_id, exc)
+            else:
+                raise
+        self._confirmed_stop_id = runtime_id
+        self.stopped = True
+        self._client = None
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
