@@ -158,6 +158,7 @@ class RolloutRun:
             ctx, self.trace, discover_decorated(task, "stop"), limits or RolloutLimits()
         )
         self._stack = AsyncExitStack()
+        self._runtime_stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None
         self._opened = False
@@ -240,7 +241,7 @@ class RolloutRun:
                 )
             if self._owns_runtime:
                 await runtime.start()
-            await runtime.prepare_setup()
+            await self._runtime_stack.enter_async_context(runtime.rollout())
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
@@ -377,6 +378,8 @@ class RolloutRun:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
+        with contextlib.suppress(Exception):
+            await self._runtime_stack.aclose()
         if self._owns_runtime and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
@@ -442,6 +445,7 @@ class RolloutRun:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True
                     )
+            await self._runtime_stack.aclose()
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

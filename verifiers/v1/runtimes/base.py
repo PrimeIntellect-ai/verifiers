@@ -9,6 +9,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
@@ -38,6 +39,57 @@ _ENSURE_UV = (
     "pip install -q -U --user uv 2>/dev/null "
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
+
+# A reused restricted box must stop processes and discard framework setup caches
+# left by the prior untrusted agent before trusted setup reopens egress.
+# PID + kernel start time survives PID reuse.
+_PROCESS_SNAPSHOT = r"""
+for proc in /proc/[0-9]*; do
+    pid=${proc##*/}
+    stat=$(cat "$proc/stat" 2>/dev/null) || continue
+    rest=${stat##*) }
+    set -- $rest
+    printf '%s:%s\n' "$pid" "${20}"
+done
+"""
+_KILL_AFTER_SNAPSHOT = r"""
+baseline="
+$VF_PROCESS_BASELINE
+"
+protected=" "
+pid=$$
+while [ "$pid" -gt 1 ] 2>/dev/null; do
+    protected="$protected$pid "
+    stat=$(cat "/proc/$pid/stat" 2>/dev/null) || break
+    rest=${stat##*) }
+    set -- $rest
+    pid=$2
+done
+while :; do
+    targeted=
+    for proc in /proc/[0-9]*; do
+        pid=${proc##*/}
+        case "$protected" in *" $pid "*) continue ;; esac
+        stat=$(cat "$proc/stat" 2>/dev/null) || continue
+        rest=${stat##*) }
+        set -- $rest
+        case "$1" in Z|X) continue ;; esac
+        if [ "$1" = D ]; then
+            echo "process $pid is stuck in uninterruptible sleep" >&2
+            exit 1
+        fi
+        identity="$pid:${20}"
+        case "$baseline" in *"
+$identity
+"*) continue ;; esac
+        if kill -STOP "$pid" 2>/dev/null; then
+            kill -KILL "$pid" 2>/dev/null || true
+            targeted=1
+        fi
+    done
+    [ -z "$targeted" ] && break
+done
+"""
 
 # The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
 # hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
@@ -142,6 +194,9 @@ class Runtime(ABC):
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
+        self._process_baseline: str | None = None
+        self.execution_prepared = False
+        """Whether a rollout successfully activated this runtime's execution policy."""
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -271,20 +326,70 @@ class Runtime(ABC):
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
 
-    async def prepare_setup(self) -> None:
-        """Claim the runtime for trusted setup; restricted runtimes may reject reuse."""
+    @contextlib.asynccontextmanager
+    async def rollout(self) -> AsyncIterator[None]:
+        """Claim one restricted rollout, reopening trusted setup only between runs."""
         if not self.network_restricted:
+            yield
             return
         if self._setup_claimed:
             raise SandboxError(
-                f"network-filtered {self.type} runtimes are single-rollout; "
-                "provision a fresh runtime instead of reusing this one"
+                f"network-filtered {self.type} runtime {self.name!r} is already in "
+                "use; wait for its rollout to finish before reusing it"
             )
         self._setup_claimed = True
+        try:
+            if self._process_baseline is not None:
+                result = await self.run(
+                    ["sh", "-c", _KILL_AFTER_SNAPSHOT],
+                    {"VF_PROCESS_BASELINE": self._process_baseline},
+                )
+                if result.exit_code != 0:
+                    raise SandboxError(
+                        f"failed to isolate reused {self.type} runtime processes: "
+                        f"{result.stderr.strip()[-500:]}"
+                    )
+                uv_envs = [
+                    str(PurePosixPath(path).parent.parent)
+                    for path in self._uv_interpreters.values()
+                ]
+                reset = await self.run(
+                    ["sh", "-c", 'rm -rf "$@" /tmp/vf-*', "reset", *uv_envs],
+                    {},
+                )
+                if reset.exit_code != 0:
+                    raise SandboxError(
+                        f"failed to reset reused {self.type} runtime setup caches: "
+                        f"{reset.stderr.strip()[-500:]}"
+                    )
+                self._uv_interpreters.clear()
+            snapshot = await self.run(["sh", "-c", _PROCESS_SNAPSHOT], {})
+            if snapshot.exit_code != 0:
+                raise SandboxError(
+                    f"failed to snapshot {self.type} runtime processes: "
+                    f"{snapshot.stderr.strip()[-500:]}"
+                )
+            self._process_baseline = snapshot.stdout
+            if self.execution_prepared:
+                await self._apply_network_policy(None)
+                self.execution_prepared = False
+            yield
+        finally:
+            self._setup_claimed = False
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
         their policy here while keeping the interception and MCP `routes` reachable."""
+        if not self.network_restricted:
+            return
+        await self._apply_network_policy(routes)
+        self.execution_prepared = True
+
+    async def _apply_network_policy(self, routes: list[str] | None) -> None:
+        """Apply execution routes, or restore unrestricted trusted setup for None."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support restricted networking"
+        )
 
     @property
     def network_restricted(self) -> bool:

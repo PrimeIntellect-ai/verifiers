@@ -150,6 +150,8 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
+                network_allow=solved.network_allow,
+                network_block=solved.network_block,
             ),
             files=files,
         )
@@ -300,6 +302,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
+            if box.network_restricted and not box.execution_prepared:
+                raise RuntimeError(
+                    "solver failed before the shared runtime's network policy activated"
+                )
             judge_task = JudgeTask.from_trace(solution, self.config.task)
             await agents.judge.run(judge_task, runtime=box)
 
