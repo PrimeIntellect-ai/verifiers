@@ -82,7 +82,7 @@ Prime VM sandboxes (`vm = true`) take either a host-level `allow` list or a `blo
 list:
 
 ```toml
-[env.agent.harness.runtime]
+[env.agent.runtime]
 type = "prime"
 vm = true
 allow = ["*.wikipedia.org", "1.1.1.1"]
