@@ -32,6 +32,7 @@ from verifiers.v1.types import (
     ToolCall,
     TurnTokens,
     Usage,
+    parse_sampled_logprobs,
 )
 
 
@@ -116,6 +117,14 @@ def response_from_generate(
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
+    try:
+        completion_logprobs = parse_sampled_logprobs(
+            result.get("completion_logprobs", []),
+            len(completion_ids),
+            what="generate response",
+        )
+    except ValueError as e:
+        raise model_error(str(e)) from e
     # Per-message token spans (the renderer's attribution) let the trace graph store each
     # message's tokens once; carried transiently on TurnTokens and consumed by turn.commit().
     attribution = result.get("prompt_attribution")
@@ -140,12 +149,12 @@ def response_from_generate(
         usage=Usage(
             prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
         ),
-        # generate() returns owned, typed lists. Skip revalidation here to avoid copying
-        # million-token contexts synchronously on the event loop.
+        # The token lists are generate()-owned. Validate the small sampled-evidence list above,
+        # then bypass model copies of the potentially million-token context lists.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
-            completion_logprobs=result.get("completion_logprobs") or [],
+            completion_logprobs=completion_logprobs,
             message_spans=message_spans,
             is_content=attribution.is_content if attribution is not None else None,
             multi_modal_data=result.get("multi_modal_data"),

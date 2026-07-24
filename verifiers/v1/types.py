@@ -1,3 +1,4 @@
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
@@ -30,6 +31,31 @@ ContentPart = Annotated[
 ]
 MessageContent = str | list[ContentPart]
 """Plain text or typed multimodal content parts."""
+
+
+def parse_sampled_logprobs(
+    values: object, sampled_count: int, *, what: str
+) -> list[float]:
+    """Parse one finite real logprob per sampled token into built-in floats."""
+    if not isinstance(values, list):
+        raise ValueError(f"{what} logprobs must be a list")
+    if len(values) != sampled_count:
+        raise ValueError(
+            f"{what} has {len(values)} logprobs for {sampled_count} sampled tokens"
+        )
+
+    parsed: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{what} logprobs must be finite real numbers")
+        try:
+            value = float(value)
+        except OverflowError as exc:
+            raise ValueError(f"{what} logprobs must be finite real numbers") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"{what} logprobs must be finite real numbers")
+        parsed.append(value)
+    return parsed
 
 
 def content_to_parts(content) -> MessageContent:
