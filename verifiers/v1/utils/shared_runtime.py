@@ -25,6 +25,8 @@ async def shared_runtime(
                 async with agent._gated(), boundary(HarnessError, "harness setup"):
                     await asyncio.wait_for(
                         agent.harness.setup(runtime),
-                        agent.timeout.setup,
+                        agent.timeout.setup
+                        if agent.timeout.setup is not None
+                        else task.data.timeout.setup,
                     )
         yield runtime

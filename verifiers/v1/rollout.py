@@ -278,6 +278,10 @@ class RolloutRun:
             )
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
             self._secret = secret
+            if runtime.execution_prepared:
+                # A reused restricted runtime needs this rollout's state route before
+                # colocated tool servers fetch their task during startup.
+                await runtime.prepare_execution([self._endpoint])
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     tool_servers,
