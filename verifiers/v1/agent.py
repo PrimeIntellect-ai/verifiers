@@ -9,7 +9,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import AsyncIterator
@@ -363,6 +363,8 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        _runtime_prepared: bool = False,
+        _runtime_setup: Callable[[], Awaitable[None]] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -377,7 +379,14 @@ class Agent:
         retry = self.config.retries
         history: list = []
         for attempt in range(retry.max_retries + 1):
-            trace = await self._run_once(task, runtime, tools, on_trace)
+            trace = await self._run_once(
+                task,
+                runtime,
+                tools,
+                on_trace,
+                _runtime_prepared,
+                _runtime_setup,
+            )
             if attempt == retry.max_retries or not trace_should_retry(trace, retry):
                 break
             if runtime is not None:
@@ -408,8 +417,16 @@ class Agent:
         runtime: Runtime | None,
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
+        runtime_prepared: bool = False,
+        runtime_setup: Callable[[], Awaitable[None]] | None = None,
     ) -> Trace:
-        params = self._rollout_params(task, runtime, dict(shared_tools or {}))
+        params = self._rollout_params(
+            task,
+            runtime,
+            dict(shared_tools or {}),
+            runtime_prepared,
+            runtime_setup,
+        )
         run = RolloutRun(task=task, on_trace=on_trace, **params)
         try:
             if await run.open():
@@ -506,10 +523,22 @@ class Agent:
                 trace.runtime.borrowed = runtime is not None
 
     def _rollout_params(
-        self, task: Task, runtime: Runtime | None, shared_tools: dict
+        self,
+        task: Task,
+        runtime: Runtime | None,
+        shared_tools: dict,
+        runtime_prepared: bool = False,
+        runtime_setup: Callable[[], Awaitable[None]] | None = None,
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
+        if runtime_prepared:
+            if runtime is None:
+                raise ValueError("_runtime_prepared requires a borrowed runtime")
+            if not runtime.execution_prepared:
+                raise ValueError(
+                    "_runtime_prepared requires an active execution policy"
+                )
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
@@ -555,6 +584,8 @@ class Agent:
             shared_tools=shared_tools,
             interception=self._interception_for(run_is_local, task, shared_tools),
             runtime=runtime,
+            runtime_prepared=runtime_prepared,
+            runtime_setup=runtime_setup,
         )
 
     @asynccontextmanager
@@ -643,6 +674,8 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        _runtime_prepared: bool = False,
+        _runtime_setup: Callable[[], Awaitable[None]] | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -650,6 +683,8 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
+                _runtime_prepared=_runtime_prepared,
+                _runtime_setup=_runtime_setup,
             )
         self._completed.append(trace)
         return trace

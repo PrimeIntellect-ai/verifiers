@@ -142,6 +142,8 @@ class Runtime(ABC):
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
+        self.execution_prepared = False
+        """Whether a rollout successfully activated this runtime's execution policy."""
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the

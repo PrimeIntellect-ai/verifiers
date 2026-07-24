@@ -92,6 +92,7 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.utils.shared_runtime import SharedRuntime, shared_runtime
 from verifiers.v1.mcp import (
     Toolset,
     SharedToolsetConfig,
@@ -246,6 +247,8 @@ __all__ = [
     "Agent",
     "Agents",
     "make_agent",
+    "SharedRuntime",
+    "shared_runtime",
     # loaders
     "import_taskset",
     "import_harness",
