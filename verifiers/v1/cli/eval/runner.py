@@ -109,7 +109,12 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
 
     from verifiers.v1.utils.logging import setup_logging
     from verifiers.v1.configs.cli.env import pool_serve_kwargs
-    from verifiers.v1.serve import EnvClient, env_config_data, serve_env
+    from verifiers.v1.serve import (
+        EnvClient,
+        env_config_data,
+        serve_env,
+        wait_for_address,
+    )
 
     legacy = config.is_legacy
     server_kwargs = (
@@ -155,9 +160,8 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     proc.start()
     child_conn.close()  # the child holds its end; we keep parent_conn so our exit closes it
     try:
-        address = await asyncio.to_thread(address_queue.get, timeout=600)
+        address = await wait_for_address(proc, address_queue, log_file=log_file)
         client = EnvClient(address=address)
-        await client.wait_for_server_startup(timeout=600)
         # A v1 run dispatches — and resumes — tasks by content: the client owns them,
         # and `resume.task_key` is their identity. Only the legacy bridge is addressed
         # by dataset row (its dataset lives server-side, reported via `info`), and

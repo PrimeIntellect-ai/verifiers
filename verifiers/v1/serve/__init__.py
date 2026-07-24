@@ -1,5 +1,11 @@
 from verifiers.v1.serve.client import EnvClient
-from verifiers.v1.serve.pool import EnvServerPool, env_config_data, serve_env
+from verifiers.v1.serve.pool import (
+    ENV_SERVER_SPAWN_TIMEOUT,
+    EnvServerPool,
+    env_config_data,
+    serve_env,
+    wait_for_address,
+)
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
     HealthRequest,
@@ -17,6 +23,8 @@ __all__ = [
     "EnvServerPool",
     "serve_env",
     "env_config_data",
+    "wait_for_address",
+    "ENV_SERVER_SPAWN_TIMEOUT",
     "EnvClient",
     "HealthRequest",
     "HealthResponse",
