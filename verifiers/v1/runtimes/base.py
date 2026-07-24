@@ -74,6 +74,10 @@ while :; do
         rest=${stat##*) }
         set -- $rest
         case "$1" in Z|X) continue ;; esac
+        if [ "$1" = D ]; then
+            echo "process $pid is stuck in uninterruptible sleep" >&2
+            exit 1
+        fi
         identity="$pid:${20}"
         case "$baseline" in *"
 $identity
