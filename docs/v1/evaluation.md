@@ -99,10 +99,10 @@ rollout fails closed if that acknowledgement never arrives. The provider policy 
 new connections and does not revoke connections already established during trusted
 setup. Filtered Prime runtimes are therefore single-rollout.
 
-Prime's API accepts only one effective policy mode: a concrete `allow` list cannot be
-combined with `block`. Framework hosts are folded into allowlist modes. `block = ["*"]`
-is normalized to framework-only access; ordinary denylists are applied unchanged and may
-block a matching interception or MCP route host.
+Prime's API accepts only one effective policy mode: a non-empty concrete `allow` list
+cannot be combined with `block`. Framework hosts are folded into allowlist modes.
+`block = ["*"]` is normalized to the empty framework-only allowlist; ordinary denylists
+are applied unchanged and may block a matching interception or MCP route host.
 
 ### Docker URL policies
 
@@ -120,7 +120,7 @@ Docker uses the same mutually exclusive modes as Prime. It defaults to unrestric
 filtering; the interception URL and every MCP URL are added before user entries. A
 non-empty `block` list with the default wildcard instead enables default-allow denylist
 filtering. Framework routes take precedence over matching deny rules. Any block list
-containing `*` is normalized to framework-only access. Concrete `allow` and non-empty
+containing `*` is normalized to framework-only access. Non-empty concrete `allow` and
 `block` lists cannot otherwise be combined.
 
 Under every filtered policy, non-global destinations—including host-loopback, private,
@@ -143,9 +143,10 @@ HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed.
 Per-task `TaskData.network_allow` and `TaskData.network_block` entries are merged into
 Docker or Prime runtime lists. The task's default `network_allow=["*"]` is neutral and
 leaves the evaluator policy intact. Concrete task/runtime allowlists combine, as do
-task/runtime blocklists. Docker and Prime reject a combination that would require both
-an allowlist and a blocklist; Prime additionally requires `vm = true` and accepts only
-host-level entries. Other runtimes reject non-neutral task network policies.
+task/runtime blocklists. A framework-only policy on either side takes precedence. Docker
+and Prime reject a combination that would otherwise require both an allowlist and a
+blocklist; Prime additionally requires `vm = true` and accepts only host-level entries.
+Other runtimes reject non-neutral task network policies.
 
 The restriction begins after task and harness setup and remains active through agent
 execution, finalization, and scoring. Debug actions apply it after task setup as well.
