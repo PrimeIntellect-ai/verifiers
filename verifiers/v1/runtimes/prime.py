@@ -185,7 +185,8 @@ class PrimeRuntime(Runtime):
             return
         try:
             if self.config.block == ["*"]:
-                # Prime's deny-all policy would also block the framework routes.
+                # Prime's `deny=["*"]` also blocks MCP and interception. Express this
+                # mode as an allowlist containing only those framework route hosts.
                 hosts = list(
                     dict.fromkeys(
                         h for h in (urlsplit(route).hostname for route in routes) if h
