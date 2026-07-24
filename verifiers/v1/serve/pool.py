@@ -180,6 +180,18 @@ class EnvServerPool:
         if self._poller is not None:
             self._poller.register(dealer, zmq.POLLIN)
 
+    def _try_spawn_worker(self) -> bool:
+        """Spawn a worker mid-serve, where failing to spawn must not be fatal: this process
+        holds every client's in-flight requests, so dying here strands all of them. A pool
+        one worker short still serves. (At startup the opposite holds — a pool with no
+        workers has nothing to serve — so `run` lets that failure propagate.)"""
+        try:
+            self._spawn_worker()
+            return True
+        except Exception:
+            logger.exception("EnvServerPool failed to spawn a worker")
+            return False
+
     def _maybe_scale_up(self) -> None:
         """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
 
@@ -188,8 +200,10 @@ class EnvServerPool:
         up once already saturated. `max_workers=None` scales without a cap."""
         if self.max_workers is not None and len(self.workers) >= self.max_workers:
             return
-        if self.in_flight >= 0.9 * len(self.workers) * self.multiplex:
-            self._spawn_worker()
+        if (
+            self.in_flight >= 0.9 * len(self.workers) * self.multiplex
+            and self._try_spawn_worker()
+        ):
             logger.info(
                 "EnvServerPool scaled up to %d/%s workers (in_flight=%d)",
                 len(self.workers),
@@ -250,13 +264,13 @@ class EnvServerPool:
                 MAX_WORKER_RESTARTS,
             )
             return
-        self._restarts += 1
-        self._spawn_worker()
-        logger.warning(
-            "EnvServerPool replaced a dead worker (restart %d/%d)",
-            self._restarts,
-            MAX_WORKER_RESTARTS,
-        )
+        self._restarts += 1  # counts attempts, so a failing spawn can't loop hot
+        if self._try_spawn_worker():
+            logger.warning(
+                "EnvServerPool replaced a dead worker (restart %d/%d)",
+                self._restarts,
+                MAX_WORKER_RESTARTS,
+            )
 
     async def _reap_dead_workers(self) -> None:
         """Retire exited workers, fail their in-flight requests, and replace them.
@@ -269,6 +283,10 @@ class EnvServerPool:
         self._last_reap = now
         for w in [w for w in self.workers if w["process"].exitcode is not None]:
             exitcode = w["process"].exitcode
+            # Relay what it already answered before closing its socket: a worker can queue
+            # several replies and then exit, and retiring it first would discard them —
+            # reporting finished rollouts as deaths.
+            await self._drain_replies(w)
             self._retire(w)
             orphaned = [
                 rid for rid, entry in self.pending.items() if entry["worker"] is w
@@ -322,6 +340,13 @@ class EnvServerPool:
         await worker["dealer"].send_multipart([request_id, method, payload])
         if self.elastic:
             self._maybe_scale_up()
+
+    async def _drain_replies(self, w: dict) -> None:
+        """Relay every reply already queued from this worker, then return. The serve loop
+        takes one reply per pass (so a chatty worker can't starve the frontend); a worker
+        about to be retired instead has to be emptied, since its socket is closing."""
+        while await w["dealer"].poll(timeout=0):
+            await self._on_reply(w)
 
     async def _on_reply(self, w: dict) -> None:
         """Relay one worker reply back to the client that asked for it."""
