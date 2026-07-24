@@ -9,6 +9,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
@@ -142,7 +143,6 @@ class Runtime(ABC):
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
-        self._execution_routes: list[str] = []
         self.execution_prepared = False
         """Whether a rollout successfully activated this runtime's execution policy."""
         self.stopped = False
@@ -274,33 +274,36 @@ class Runtime(ABC):
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
 
-    async def prepare_setup(self) -> bool:
-        """Claim trusted setup, returning whether setup still needs to run."""
+    @contextlib.asynccontextmanager
+    async def rollout(self) -> AsyncIterator[None]:
+        """Claim one restricted rollout, reopening trusted setup only between runs."""
         if not self.network_restricted:
-            return True
-        if self.execution_prepared:
-            return False
+            yield
+            return
         if self._setup_claimed:
             raise SandboxError(
-                f"network-filtered {self.type} runtimes are single-rollout; "
-                "provision a fresh runtime instead of reusing this one"
+                f"network-filtered {self.type} runtime {self.name!r} is already in "
+                "use; wait for its rollout to finish before reusing it"
             )
         self._setup_claimed = True
-        return True
+        try:
+            if self.execution_prepared:
+                await self._apply_network_policy(None)
+                self.execution_prepared = False
+            yield
+        finally:
+            self._setup_claimed = False
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
         their policy here while keeping the interception and MCP `routes` reachable."""
         if not self.network_restricted:
             return
-        routes = list(dict.fromkeys([*self._execution_routes, *routes]))
-        if self.execution_prepared and routes == self._execution_routes:
-            return
         await self._apply_network_policy(routes)
-        self._execution_routes = routes
         self.execution_prepared = True
 
-    async def _apply_network_policy(self, routes: list[str]) -> None:
+    async def _apply_network_policy(self, routes: list[str] | None) -> None:
+        """Apply execution routes, or restore unrestricted trusted setup for None."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support restricted networking"
         )

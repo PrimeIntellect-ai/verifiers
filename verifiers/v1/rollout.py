@@ -158,6 +158,7 @@ class RolloutRun:
             ctx, self.trace, discover_decorated(task, "stop"), limits or RolloutLimits()
         )
         self._stack = AsyncExitStack()
+        self._runtime_stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None
         self._opened = False
@@ -240,7 +241,7 @@ class RolloutRun:
                 )
             if self._owns_runtime:
                 await runtime.start()
-            needs_setup = await runtime.prepare_setup()
+            await self._runtime_stack.enter_async_context(runtime.rollout())
             now = time.time()
             self.trace.timing.boot.end = now
             self.trace.timing.setup.start = now
@@ -255,12 +256,11 @@ class RolloutRun:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
-            if needs_setup:
-                async with (
-                    boundary(HarnessError, "harness setup"),
-                    asyncio.timeout_at(setup_deadline),
-                ):
-                    await self.harness.setup(runtime)
+            async with (
+                boundary(HarnessError, "harness setup"),
+                asyncio.timeout_at(setup_deadline),
+            ):
+                await self.harness.setup(runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 tool_servers = self.task.tool_servers()
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -278,10 +278,6 @@ class RolloutRun:
             )
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
             self._secret = secret
-            if runtime.execution_prepared:
-                # A reused restricted runtime needs this rollout's state route before
-                # colocated tool servers fetch their task during startup.
-                await runtime.prepare_execution([self._endpoint])
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     tool_servers,
@@ -382,6 +378,8 @@ class RolloutRun:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
+        with contextlib.suppress(Exception):
+            await self._runtime_stack.aclose()
         if self._owns_runtime and self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.stop()
@@ -447,6 +445,7 @@ class RolloutRun:
                     logger.warning(
                         "harness cleanup failed (rollout %s)", trace.id, exc_info=True
                     )
+            await self._runtime_stack.aclose()
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

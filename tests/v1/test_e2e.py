@@ -407,7 +407,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
         env={
             "id": "agentic-judge",
             # The solver owns the shared box. The blocklist makes it a restricted
-            # runtime, so both harnesses must install before its policy activates.
+            # runtime; each sequential agent gets trusted setup before its own cut.
             "solver": {
                 "harness": {"id": "bash"},
                 "runtime": {"type": "docker", "block": ["example.com"]},

@@ -233,9 +233,14 @@ class DockerRuntime(Runtime):
             return url.replace(host, "host.docker.internal", 1)
         return url
 
-    async def _apply_network_policy(self, routes: list[str]) -> None:
+    async def _apply_network_policy(self, routes: list[str] | None) -> None:
         """Allow the declared framework routes, then leave the proxy as the only route."""
         assert self._proxy is not None
+        if routes is None:
+            self._proxy.policy = NetworkPolicy(
+                ["*"], [], [HOST_ALIAS], allow_non_global=True
+            )
+            return
         framework = [
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
             for url in routes

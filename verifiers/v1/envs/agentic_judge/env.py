@@ -300,7 +300,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        async with vf.shared_runtime(agents.solver, task, agents.judge) as box:
+        async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
             if box.network_restricted and not box.execution_prepared:
                 raise RuntimeError(
