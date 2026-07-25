@@ -85,10 +85,7 @@ def _tool_name(name: str) -> str:
 def match_tool(name: str, *patterns: str) -> bool:
     """Whether a provider- or harness-specific tool name matches any pattern."""
     name = _tool_name(name)
-    return any(
-        pattern and (name == pattern or name in pattern or pattern in name)
-        for pattern in map(_tool_name, patterns)
-    )
+    return any(name == pattern for pattern in map(_tool_name, patterns) if pattern)
 
 
 def _find_tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
