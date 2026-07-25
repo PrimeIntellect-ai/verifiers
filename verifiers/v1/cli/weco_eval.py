@@ -389,6 +389,7 @@ def _evaluate(argv: list[str], spool) -> str:
     os.dup2(log_fd, 1)
     os.dup2(log_fd, 2)
     os.close(log_fd)  # fds 1/2 hold the log now — for the rest of the process's life
+    spool.close()  # fds 1/2 are independent dups, so this only drops the spare handle
     os.unlink(spool.name)
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         return f"wrote config to {str(write_config(config, out))!r}"
