@@ -5,12 +5,13 @@ import contextlib
 import importlib.metadata
 import io
 import logging
+import secrets
 import shlex
 import sys
 import tarfile
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,13 +19,20 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
-from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
+from verifiers.v1.mcp.server import (
+    STATE_ROUTE_PARAM,
+    STATE_SIGNATURE_PARAM,
+    STATE_URL_PARAM,
+    ServerBase,
+    state_signature,
+)
 from verifiers.v1.runtimes import (
     NetworkPolicyConfig,
     Runtime,
     make_runtime,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.state import State
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp.toolset import Toolset
@@ -169,14 +177,17 @@ async def serve_in_runtime(
     the OS choose and report the result through a file. With a state channel, the server fetches
     the current rollout task from the adjacent `/task` endpoint rather than a launch argument.
     """
-    env = {"VF_CONFIG": server.config.model_dump_json()}
+    # A shared server has a private service secret but no fixed state URL. Set
+    # both controls explicitly so a subprocess cannot inherit stale host values.
+    env = {
+        "VF_CONFIG": server.config.model_dump_json(),
+        "VF_STATE_URL": state_url or "",
+        "VF_STATE_SECRET": state_secret,
+    }
     if runtime.type == "subprocess":
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
         env["TMPDIR"] = runtime.info.id
-    if state_url:
-        env["VF_STATE_URL"] = state_url
-        env["VF_STATE_SECRET"] = state_secret
     if runtime.published_port is not None:
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
@@ -239,15 +250,20 @@ async def reachable_url(
             yield url
 
 
+@dataclass(frozen=True)
+class _ServedServer:
+    url: str
+    runtime: Runtime
+
+
 @contextlib.asynccontextmanager
-async def serve(
+async def _serve(
     server: ServerBase,
     harness_runtime: Runtime | None = None,
     harness_is_local: bool = True,
     *,
     state_secret: str = "",
     state_base: str | None = None,
-    runtime: Runtime | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
@@ -268,7 +284,7 @@ async def serve(
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
         else:
-            runtime = runtime or make_runtime(cfg.runtime)
+            runtime = make_runtime(cfg.runtime)
             await runtime.start()
             stack.push_async_callback(runtime.stop)
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
@@ -307,7 +323,27 @@ async def serve(
             base = base.replace("127.0.0.1", "localhost", 1)
         elif not colocated and harness_runtime is not None:
             base = harness_runtime.host_url(base)
-        yield f"{base.rstrip('/')}/mcp"
+        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime)
+
+
+@contextlib.asynccontextmanager
+async def serve(
+    server: ServerBase,
+    harness_runtime: Runtime | None = None,
+    harness_is_local: bool = True,
+    *,
+    state_secret: str = "",
+    state_base: str | None = None,
+):
+    """Serve one MCP server and yield the URL visible to its consumer."""
+    async with _serve(
+        server,
+        harness_runtime,
+        harness_is_local,
+        state_secret=state_secret,
+        state_base=state_base,
+    ) as served:
+        yield served.url
 
 
 @dataclass(frozen=True)
@@ -324,7 +360,8 @@ class SharedToolServer:
     url: str
     local: bool
     external: bool = False
-    runtime: Runtime | None = None
+    runtime: Runtime | None = field(default=None, repr=False)
+    state_secret: str = field(default="", repr=False)
 
 
 @contextlib.asynccontextmanager
@@ -361,31 +398,45 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     url=cfg.url, local=False, external=True
                 )
             else:
-                runtime = make_runtime(cfg.runtime)
-                url = await stack.enter_async_context(
-                    serve(
+                state_secret = (
+                    secrets.token_urlsafe(24) if toolset._state_cls is not State else ""
+                )
+                served = await stack.enter_async_context(
+                    _serve(
                         toolset,
                         harness_is_local=harness_is_local,
-                        runtime=runtime,
+                        state_secret=state_secret,
                     )
                 )
                 servers[name] = SharedToolServer(
-                    url=url,
-                    local=runtime.is_local,
-                    runtime=runtime,
+                    url=served.url,
+                    local=served.runtime.is_local,
+                    runtime=served.runtime,
+                    state_secret=state_secret,
                 )
             logger.info("shared tool server '%s': %s", name, servers[name].url)
         yield servers
 
 
-def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str) -> str:
-    """Attach one rollout's state bridge to a shared server URL."""
-    if not state_base:
-        return url
-    parts = urlsplit(url)
+def _shared_url_for_rollout(
+    server: SharedToolServer,
+    visible_url: str,
+    state_base: str | None,
+    state_route: str,
+) -> str:
+    """Attach signed state coordinates; the shared server keeps its bearer private."""
+    if not state_base or not server.state_secret:
+        return visible_url
+    state_url = f"{state_base.rstrip('/')}/state"
+    if server.runtime is not None:
+        state_url = server.runtime.host_url(state_url)
+    parts = urlsplit(visible_url)
     query = dict(parse_qsl(parts.query))
-    query[STATE_URL_PARAM] = f"{state_base.rstrip('/')}/state"
-    query[STATE_SECRET_PARAM] = state_secret
+    query[STATE_URL_PARAM] = state_url
+    query[STATE_ROUTE_PARAM] = state_route
+    query[STATE_SIGNATURE_PARAM] = state_signature(
+        server.state_secret, state_url, state_route
+    )
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
@@ -396,6 +447,7 @@ async def serve_tools(
     shared: dict[str, SharedToolServer] | None = None,
     *,
     state_secret: str = "",
+    state_route: str = "",
     state_base: str | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
@@ -403,9 +455,9 @@ async def serve_tools(
     server fetches its task over the interception `/task` channel), and the
     taskset-scoped `shared` servers — already
     running eval-level (see `serve_shared`) — join under their per-rollout state tag.
-    `state_base`/`state_secret` wire each server to the interception server's shared-state
-    channel. Each launched server translates the host-local base for its own runtime;
-    external servers stay untagged."""
+    `state_secret` is private to task-scoped servers; shared servers keep an
+    eval-level service secret and receive only signed `state_route` coordinates.
+    `state_base` is universally reachable from either placement."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
         for name, server in (shared or {}).items():
@@ -417,13 +469,7 @@ async def serve_tools(
                 logger.info("tool server '%s' (shared, external): %s", name, server.url)
                 continue
             url = harness_runtime.host_url(server.url) if server.local else server.url
-            shared_state_base = (
-                server.runtime.host_url(state_base.rstrip("/"))
-                if server.runtime is not None and state_base
-                else state_base
-            )
-            urls[name] = _shared_url_for_rollout(url, shared_state_base, state_secret)
-            # The tagged URL contains the bearer secret; log only the untagged base URL.
+            urls[name] = _shared_url_for_rollout(server, url, state_base, state_route)
             logger.info("tool server '%s' (shared): %s", name, server.url)
         for toolset in toolsets:
             name = toolset.server_name

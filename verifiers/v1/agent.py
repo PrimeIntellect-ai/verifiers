@@ -334,6 +334,10 @@ class Agent:
             return self.interception
         if self._server is None:
             return None
+        if any(tool.state_secret for tool in shared_tools.values()):
+            # Shared state credentials are attached per run, after this owned
+            # server was created; let the rollout size a scoped server instead.
+            return None
         if self._server.tunnel is not None or (
             run_is_local and not shared_tools and not task.toolsets(task.config)
         ):

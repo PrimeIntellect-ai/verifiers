@@ -350,7 +350,13 @@ class Env(ABC, Generic[ConfigT]):
         run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(
-                self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+                self.config.interception,
+                requires_tunnel=self._requires_tunnel(shared),
+                state_service_secrets=tuple(
+                    server.state_secret
+                    for server in shared.values()
+                    if server.state_secret
+                ),
             )
             async with interception:
                 self._shared_tools = shared
