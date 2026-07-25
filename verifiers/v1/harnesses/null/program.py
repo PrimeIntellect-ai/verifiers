@@ -158,7 +158,11 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
-    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    client = AsyncOpenAI(
+        base_url=args.base_url,
+        api_key=args.api_key,
+        timeout=httpx.Timeout(None, connect=5.0),
+    )
     config = json.loads(args.mcp_config or "{}")
     if config.get("mcpServers"):
         # Bound only tool enumeration; each session is opened and closed within this task.
