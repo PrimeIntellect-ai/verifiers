@@ -438,6 +438,10 @@ class InterceptionServer(Interception):
                     )
 
             if dialect.streaming(body):
+                if not session.has_response_intercepts:
+                    return await self._stream(
+                        request, session, dialect, body, prompt, tools
+                    )
                 return await self._buffered_stream(
                     request,
                     session,
