@@ -212,8 +212,8 @@ def _canonical_tool_arguments(arguments: str) -> str:
         return arguments
 
 
-# Responses, chat reasoning details, and Anthropic thinking blocks use these payload keys.
-_OPAQUE_PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data"})
+# Provider-specific fields not represented by typed messages but required on replay.
+_PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data", "phase"})
 
 
 def message_hash(message: Message) -> str:
@@ -247,10 +247,12 @@ def message_hash(message: Message) -> str:
             add("reasoning_content")
             add(message.reasoning_content)
         for item in message.provider_state or []:
-            kind = item.get("type") or ""
+            kind = item.get("type") or (
+                "message" if item.get("role") == "assistant" else ""
+            )
             hashed_state = {
                 key: item[key]
-                for key in _OPAQUE_PROVIDER_STATE_FIELDS
+                for key in _PROVIDER_STATE_FIELDS
                 if item.get(key) is not None
             }
             if kind == "message" and isinstance(item.get("content"), list):
