@@ -253,7 +253,7 @@ def message_hash(message: Message) -> str:
                 for key in _OPAQUE_PROVIDER_STATE_FIELDS
                 if item.get(key) is not None
             }
-            if kind == "message":
+            if kind == "message" and isinstance(item.get("content"), list):
                 # Keep content parts the typed message does not expose, such as refusals.
                 unparsed_content = [
                     part
@@ -271,7 +271,7 @@ def message_hash(message: Message) -> str:
             if represented and not hashed_state:
                 continue
             # Unknown provider items still distinguish built-in calls and actions.
-            state = hashed_state or item
+            state = hashed_state if represented else item
             add("provider_state")
             add(kind)
             add(json.dumps(state, sort_keys=True))
