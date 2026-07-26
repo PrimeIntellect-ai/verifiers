@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Error
 
 logger = logging.getLogger(__name__)
+MCP_DELIVERY_UNKNOWN = "MCPDeliveryUnknownError"
 
 
 def backoff(attempt: int) -> float:
@@ -87,7 +88,13 @@ def _retryable(error: Error | None, retry: RetryConfig) -> bool:
 
 def trace_should_retry(trace, retry: RetryConfig) -> bool:
     """Whether a finished agent rollout should be retried: any captured error on
-    its trace is retryable (all captures count, not just the most recent)."""
+    its trace is retryable (all captures count, not just the most recent).
+    A possibly-delivered MCP mutation vetoes replay unless explicitly included."""
+    if any(
+        e.type == MCP_DELIVERY_UNKNOWN and MCP_DELIVERY_UNKNOWN not in retry.include
+        for e in trace.errors
+    ):
+        return False
     return any(_retryable(e, retry) for e in trace.errors)
 
 
@@ -98,9 +105,22 @@ def episode_should_retry(episode: Episode, retry: RetryConfig) -> bool:
     grounds to re-run the episode. All of a failed trace's captures count, not just
     the most recent: a retryable failure followed by a teardown error would
     otherwise never retry. Episode-atomic — a half-played sibling context isn't
-    reproducible."""
+    reproducible. A possibly-delivered MCP mutation has the same explicit opt-in
+    replay contract as an agent retry."""
+    errors = [
+        *episode.errors,
+        *(e for trace in episode.traces for e in trace.errors),
+    ]
+    if any(
+        e.type == MCP_DELIVERY_UNKNOWN and MCP_DELIVERY_UNKNOWN not in retry.include
+        for e in errors
+    ):
+        return False
     return any(_retryable(e, retry) for e in episode.errors) or any(
-        _retryable(e, retry) for t in episode.traces if not t.ok for e in t.errors
+        _retryable(e, retry)
+        for trace in episode.traces
+        if not trace.ok
+        for e in trace.errors
     )
 
 

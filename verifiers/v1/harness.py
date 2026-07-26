@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -8,10 +9,17 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError, SandboxError, boundary
+from verifiers.v1.errors import (
+    HarnessError,
+    MCPDeliveryUnknownError,
+    MCPTransportError,
+    SandboxError,
+    boundary,
+)
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
+from verifiers.v1.utils.decorators import discover_decorated, invoke_all
 from verifiers.v1.utils.decorators import discover_decorated, invoke_all
 
 if TYPE_CHECKING:
@@ -145,6 +153,17 @@ class Harness(ABC, Generic[ConfigT]):
                     f"runtime died under harness {self.config.id!r} "
                     f"(exit {result.exit_code}): {detail}"
                 )
+            marker = "VF_MCP_ERROR="
+            if marker in detail:
+                diagnostic = detail.rsplit(marker, 1)[1].splitlines()[0]
+                payload = json.loads(diagnostic)
+                error_cls = (
+                    MCPDeliveryUnknownError
+                    if payload["delivery"] == "response_unknown"
+                    and not payload["replay_safe"]
+                    else MCPTransportError
+                )
+                raise error_cls(diagnostic)
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )

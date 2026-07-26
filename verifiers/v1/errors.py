@@ -56,6 +56,14 @@ class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
 
+class MCPTransportError(HarnessError):
+    """A harness-owned MCP session lost its transport; the message is structured JSON."""
+
+
+class MCPDeliveryUnknownError(MCPTransportError):
+    """An MCP transport failed after a non-replayable operation may have been accepted."""
+
+
 class ToolsetError(RolloutError):
     """A task's `Toolset` could not be built or served."""
 

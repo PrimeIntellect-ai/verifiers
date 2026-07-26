@@ -10,7 +10,12 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+MCP_CLIENT_SOURCE = (Path(__file__).resolve().parents[1] / "mcp_client.py").read_text()
+PROGRAM_SOURCE = (
+    (Path(__file__).resolve().parent / "program.py")
+    .read_text()
+    .replace("# <vf:mcp-client>", MCP_CLIENT_SOURCE)
+)
 
 # Frames the model as a coding agent and names its local tools (a pure-text chat loop gets no
 # harness-injected prompt). The edit clause is appended only when the `edit` tool is enabled.
@@ -72,6 +77,7 @@ class BashHarness(Harness[BashHarnessConfig]):
             f"--api-key={secret}",
             f"--model={ctx.model}",
             f"--system-prompt={system_prompt}",
+            "--bash",
         ]
         if self.config.edit:
             args.append("--edit")
