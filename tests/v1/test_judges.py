@@ -3,13 +3,14 @@
 import asyncio
 import json
 import re
+from collections.abc import Callable
 
 import httpx
 import pytest
 from openai import APITimeoutError, ContentFilterFinishReasonError
 from openai.resources.chat.completions import AsyncCompletions
 from openai.types.chat import ChatCompletion
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PydanticInvalidForJsonSchema
 
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
@@ -112,6 +113,16 @@ async def test_complete_uses_sdk_strict_schema(monkeypatch):
     assert trace_to_sample(trace)["info"]["judge_calls"] == [
         trace.judge_calls[0].model_dump(mode="json", exclude_none=True)
     ]
+
+
+async def test_invalid_schema_is_not_recorded_as_provider_call():
+    class InvalidSchema(BaseModel):
+        callback: Callable[[], None]
+
+    trace = make_trace()
+    with pytest.raises(PydanticInvalidForJsonSchema):
+        await vf.Judge().complete("grade this", trace=trace, schema=InvalidSchema)
+    assert trace.judge_calls == []
 
 
 async def test_complete_rejects_truncated_structured_output(monkeypatch):
