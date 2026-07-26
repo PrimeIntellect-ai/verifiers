@@ -243,9 +243,9 @@ class ScoreConfig(vf.BaseConfig):
     """How the judge's verdict composes with the taskset's own rewards on the
     solver's trace. Judge-only by default."""
 
-    task_weight: float = 0.0
+    task_weight: float = Field(0.0, ge=0, allow_inf_nan=False)
     """Scale applied to the taskset's own rewards; 1 keeps them next to the verdict."""
-    judge_weight: float = 1.0
+    judge_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
     """Weight of the judge's verdict in the solver's reward."""
 
 

@@ -117,6 +117,7 @@ class RolloutRun:
         runtime_config: RuntimeConfig,
         wire_data: TaskData | None = None,
         has_user: bool = False,
+        respect_task_stops: bool = True,
         setup_timeout: float | None = None,
         harness_timeout: float | None = None,
         finalize_timeout: float | None = None,
@@ -154,7 +155,10 @@ class RolloutRun:
         if on_trace is not None:
             on_trace(self.trace)
         self._session = RolloutSession(
-            ctx, self.trace, discover_decorated(task, "stop"), limits or RolloutLimits()
+            ctx,
+            self.trace,
+            discover_decorated(task, "stop") if respect_task_stops else [],
+            limits or RolloutLimits(),
         )
         self._stack = AsyncExitStack()
         self._failed = False

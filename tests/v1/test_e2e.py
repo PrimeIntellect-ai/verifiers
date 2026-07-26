@@ -5,6 +5,9 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+from collections.abc import Iterator
+from typing import ClassVar
+
 import pytest
 
 _m = pytest.mark
@@ -279,6 +282,137 @@ async def test_shared_tool_isolation(
         assert trace.ok
         assert trace.num_turns >= 2  # tool call + answer
         assert trace.reward == 1.0
+
+
+@pytest.mark.parametrize(
+    ("name", "kind"),
+    [
+        ("../escape", "file"),
+        (".git/config", "file"),
+        (".vf-pi-agent/session.json", "file"),
+        (".rlm/session.json", "file"),
+        ("link", "symlink"),
+    ],
+)
+def test_sandbox_judge_rejects_hostile_archives(name, kind):
+    import io
+    import tarfile
+
+    from verifiers.v1.envs.sandbox_judge.env import (
+        SubmissionConfig,
+        _validate_archive,
+    )
+
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:") as archive:
+        member = tarfile.TarInfo(name)
+        if kind == "symlink":
+            member.type = tarfile.SYMTYPE
+            member.linkname = "target"
+            archive.addfile(member)
+        else:
+            data = b"x"
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    with pytest.raises(ValueError, match="escapes|excluded|regular file"):
+        _validate_archive(stream.getvalue(), SubmissionConfig())
+
+
+async def test_sandbox_judge_bounds_archive_before_reading():
+    from verifiers.v1.envs.sandbox_judge.env import SubmissionConfig, _snapshot
+    from verifiers.v1.runtimes import SubprocessConfig, SubprocessRuntime
+
+    runtime = SubprocessRuntime(SubprocessConfig())
+    try:
+        await runtime.start()
+        await runtime.write("large.bin", b"x" * 2048)
+        config = SubmissionConfig(submit_paths=["large.bin"], max_artifact_bytes=1024)
+        with pytest.raises(ValueError, match="submission is 1025 bytes"):
+            await _snapshot(runtime, config)
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.docker
+async def test_sandbox_judge_uses_two_agent_interactions():
+    """Both sandboxes persist while task stops and feedback alternate."""
+    import verifiers.v1 as vf
+    from verifiers.v1.clients import Client
+    from verifiers.v1.clients.train import serialize_completion
+
+    class ScriptedClient(Client):
+        replies: ClassVar[dict[str, Iterator[str]]] = {
+            "solver-model": iter(["hello world attempt 1", "hello world attempt 2"]),
+            "judge-model": iter(
+                [
+                    '{"score":0.8,"feedback":"try again","metrics":{"index":1}}',
+                    '{"score":0.4,"feedback":"regressed","metrics":{"index":2}}',
+                ]
+            ),
+        }
+        calls: ClassVar[list[str]] = []
+
+        async def get_response(
+            self,
+            dialect,
+            body,
+            model,
+            sampling_args,
+            session_id=None,
+            turn=None,
+            headers=None,
+        ):
+            self.calls.append(model)
+            content = next(self.replies[model])
+            response = vf.Response(
+                id=f"response-{len(self.calls)}",
+                created=0,
+                model=model,
+                message=vf.AssistantMessage(content=content),
+                finish_reason="stop",
+            )
+            response.raw = serialize_completion(response, model)
+            return response
+
+    config = vf.resolve_env_config(
+        {
+            "id": "sandbox-judge",
+            "taskset": {"id": "echo-v1"},
+            "solver": {
+                "harness": {"id": "null", "env": {"UV_FROZEN": "false"}},
+                "model": "solver-model",
+                "max_turns": 2,
+            },
+            "judge": {
+                "harness": {"id": "bash", "env": {"UV_FROZEN": "false"}},
+                "model": "judge-model",
+                "max_turns": 4,
+            },
+        }
+    )
+    env = vf.load_environment(config)
+    client = ScriptedClient()
+    ctx = vf.ModelContext(model="unused", client=client)
+    async with env.serving():
+        episode = await env.run_episode(env.taskset.select(1)[0], ctx)
+    assert episode.ok, episode.errors
+    assert len(episode.traces) == 2
+    by_agent = {trace.agent_name: trace for trace in episode.traces}
+    solver, judge = by_agent["solver"], by_agent["judge"]
+    assert client.calls == ["solver-model", "judge-model"] * 2
+    assert solver.num_turns == judge.num_turns == 2
+    assert solver.runtime.id != judge.runtime.id
+    assert not solver.runtime.borrowed and not judge.runtime.borrowed
+    assert not judge.trainable
+    assert solver.stop_condition == "max_turns"
+    assert solver.rewards["echoed"].score == 1
+    assert solver.rewards["echoed"].weight == 0
+    assert solver.rewards["sandbox_judge"].score == solver.reward == 0.8
+    assert solver.metrics["sandbox_judge/submissions"] == 2
+    assert solver.info["sandbox_judge"]["selected"] == 1
+    assert [
+        record["score"] for record in solver.info["sandbox_judge"]["submissions"]
+    ] == [0.8, 0.4]
 
 
 @pytest.mark.e2e

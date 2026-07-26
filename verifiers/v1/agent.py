@@ -163,6 +163,13 @@ class Interaction:
     def trace(self) -> Trace:
         return self._run.trace
 
+    @property
+    def runtime(self) -> Runtime:
+        """The live runtime (owned or borrowed) while the interaction is open."""
+        if self._run.runtime is None or self._run.closed or self._run.runtime.stopped:
+            raise RuntimeError("the interaction runtime is not open")
+        return self._run.runtime
+
     async def turn(self, message: str | Messages | None = None) -> Segment:
         """Send one user turn (a string, or full `Messages` for multimodal /
         multi-message turns); run one segment; return its `Segment`. A
@@ -431,6 +438,7 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         mask_prompt: bool = False,
+        respect_task_stops: bool = True,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
@@ -450,10 +458,12 @@ class Agent:
 
         `runtime` and `tools` borrow live resources from their owners, just as
         they do for `run()`; an env supplies its taskset's shared tools
-        automatically for tasks loaded from that taskset.
+        automatically for tasks loaded from that taskset. `respect_task_stops=False`
+        lets an env keep requesting segments after the task's normal terminal condition;
+        rollout limits still apply and the task still finalizes and scores on close.
 
         Everything is a real rollout — the trace (live on `interaction.trace`),
-        limits, `@stop`s, and scoring all apply; leaving the context ends the
+        limits, enabled `@stop`s, and scoring all apply; leaving the context ends the
         exchange (`user_closed`) and finishes the rollout, hooks and scoring
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
@@ -474,6 +484,7 @@ class Agent:
                 task.data.model_copy(update={"prompt": None}) if mask_prompt else None
             ),
             has_user=True,
+            respect_task_stops=respect_task_stops,
             on_trace=on_trace,
             **params,
         )
@@ -659,6 +670,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         mask_prompt: bool = False,
+        respect_task_stops: bool = True,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
@@ -680,6 +692,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 mask_prompt=mask_prompt,
+                respect_task_stops=respect_task_stops,
                 on_trace=self._watch(remember),
             ) as interaction:
                 yield interaction
