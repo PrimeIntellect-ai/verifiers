@@ -461,7 +461,10 @@ async def chat(
     client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
 ):
     completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
+        model=model,
+        messages=messages,
+        tools=tools or None,
+        extra_body={"messages": messages},  # preserve private fields for interception
     )
     return completion.choices[0].message
 
@@ -551,9 +554,7 @@ async def main() -> None:
                 continue
             is_error = False
             if name in dispatch:
-                content, is_error = await call_mcp(
-                    servers, dispatch, name, tool_args
-                )
+                content, is_error = await call_mcp(servers, dispatch, name, tool_args)
             elif name == "bash" and args.bash:
                 content = await asyncio.to_thread(
                     run_bash, tool_args.get("command", "")
@@ -582,4 +583,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
