@@ -81,6 +81,23 @@ async def test_complete_uses_sdk_strict_schema(monkeypatch):
     assert response.parsed == Verdict(score=1)
 
 
+async def test_complete_rejects_truncated_structured_output(monkeypatch):
+    class Verdict(BaseModel):
+        score: int
+
+    async def fake_response(self, dialect, body, model, sampling_args):
+        response = model_response('{"score": 1}')
+        response.finish_reason = "length"
+        return response
+
+    monkeypatch.setattr(EvalClient, "get_response", fake_response)
+    trace = make_trace()
+    with pytest.raises(ValueError, match="structured output was truncated"):
+        await vf.Judge().complete("grade this", trace=trace, schema=Verdict)
+    assert trace.judge_calls[-1].outcome == "parse_error"
+    assert trace.judge_calls[-1].calls[-1].finish_reason == "length"
+
+
 async def test_complete_honors_provider_retry_headers(monkeypatch):
     attempts = 0
     delays = []

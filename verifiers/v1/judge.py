@@ -275,6 +275,8 @@ class Judge(Generic[ParsedT, ConfigT]):
                 call.outcome = "refusal"
                 raise ValueError(f"judge refused output: {refusal}")
             try:
+                if schema is not None and provider_response.finish_reason == "length":
+                    raise ValueError("judge structured output was truncated")
                 if schema is not None:
                     response.parsed = schema.model_validate_json(response.text)
                 if parse is not None:
