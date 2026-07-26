@@ -1,12 +1,12 @@
 """A rollout: one trajectory — drive a harness segment by segment and score its trace.
 
-A rollout's exchange is a sequence of SEGMENTS: the harness program runs until it
-yields (= exits), the run's user answers its final message, and the next segment
-resumes the exchange with that answer (`Harness.resume` — a relaunch on the accreted
-conversation by default, a native continuation for harnesses with their own session
-state). The user loop lives between segments, at the exchange's natural turn
-granularity — never inside the model boundary, so a harness's own tool loop can
-never race or amputate it.
+A rollout's exchange is a sequence of SEGMENTS: its rollout-scoped `HarnessSession`
+runs until it yields, the run's user answers its final message, and the next segment
+continues the same handle with that answer. The default handle adapts `Harness.resume`
+by relaunching on the accreted conversation; stateful transports can keep a live
+process and native session behind the same interface. The user loop lives between
+segments, at the exchange's natural turn granularity — never inside the model
+boundary, so a harness's own tool loop can never race or amputate it.
 
 `RolloutRun` is the engine, a staged lifecycle: `open()` boots the world, each
 `step()` runs one segment, `close()` finalizes, scores, and tears the world down —
@@ -26,7 +26,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers import __version__
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.harness import Harness
+from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.dialects import parse_message
@@ -164,6 +164,7 @@ class RolloutRun:
         self._closed = False
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
+        self._harness_session: HarnessSession | None = None
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
@@ -289,6 +290,16 @@ class RolloutRun:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
+            async with boundary(HarnessError, "opening harness session"):
+                self._harness_session = await self.harness.open_session(
+                    self.ctx,
+                    self.trace,
+                    runtime,
+                    self._endpoint,
+                    self._secret,
+                    self._urls,
+                    self.trace.task.data,
+                )
         except Exception as e:
             self.fail(e)
             return False
@@ -325,16 +336,8 @@ class RolloutRun:
         # A timeout still scores the partial trajectory.
         try:
             async with asyncio.timeout_at(self.deadline_at):
-                await self.harness.run(
-                    self.ctx,
-                    trace,
-                    self.runtime,
-                    self._endpoint,
-                    self._secret,
-                    self._urls,
-                    trace.task.data,
-                    messages,
-                )
+                assert self._harness_session is not None
+                await self._harness_session.turn(messages)
         except TimeoutError as e:
             # Only the rollout deadline reads as a clean truncation; a TimeoutError
             # from the harness's own I/O with no expired deadline is a failure —
@@ -372,6 +375,9 @@ class RolloutRun:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        if self._harness_session is not None:
+            with contextlib.suppress(Exception):
+                await self._harness_session.close()
         with contextlib.suppress(Exception):
             await self._stack.aclose()
         if self.runtime is not None:
@@ -392,6 +398,17 @@ class RolloutRun:
         trace = self.trace
         runtime = self.runtime
         try:
+            if self._harness_session is not None:
+                try:
+                    await self._harness_session.close()
+                except Exception:
+                    # Generation already completed. A transport teardown failure
+                    # must not discard its otherwise scoreable trajectory.
+                    logger.warning(
+                        "harness session close failed (rollout %s)",
+                        trace.id,
+                        exc_info=True,
+                    )
             try:
                 await self._stack.aclose()
             finally:
@@ -422,6 +439,11 @@ class RolloutRun:
         except Exception as e:
             self.fail(e)
         finally:
+            if self._harness_session is not None:
+                with contextlib.suppress(Exception):
+                    await self._harness_session.close()
+            with contextlib.suppress(Exception):
+                await self._stack.aclose()
             trace.is_completed = True
             trace.ok = not self._failed
             now = time.time()

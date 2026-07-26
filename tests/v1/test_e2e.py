@@ -54,6 +54,7 @@ USER_RUNTIMES = [
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus one remote placement for the sandbox/tunnel boundary.
 ACP_RESUME_PLACEMENTS = [
+    _pair("rlm", "docker", "rlm-acp-in-docker"),
     _pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
     _pair("pi", "docker", "pi-acp-in-docker"),
     _pair("pool", "docker", "pool-acp-in-docker"),
@@ -205,6 +206,8 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["terminated"] is False
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
+    if harness == "rlm":
+        assert "turns_since_last_compaction" in trace.metrics
 
 
 @pytest.mark.e2e
