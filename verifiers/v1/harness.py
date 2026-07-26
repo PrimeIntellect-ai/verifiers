@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -9,7 +10,12 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke_all
-from verifiers.v1.errors import HarnessError, boundary
+from verifiers.v1.errors import (
+    HarnessError,
+    MCPDeliveryUnknownError,
+    MCPTransportError,
+    boundary,
+)
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -141,6 +147,17 @@ class Harness(ABC, Generic[ConfigT]):
         if result.exit_code != 0:
             # The real cause is at the END of a traceback, so keep the tail.
             detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
+            marker = "VF_MCP_ERROR="
+            if marker in detail:
+                diagnostic = detail.rsplit(marker, 1)[1].splitlines()[0]
+                payload = json.loads(diagnostic)
+                error_cls = (
+                    MCPDeliveryUnknownError
+                    if payload["delivery"] == "response_unknown"
+                    and not payload["replay_safe"]
+                    else MCPTransportError
+                )
+                raise error_cls(diagnostic)
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )
