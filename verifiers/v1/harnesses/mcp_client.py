@@ -114,14 +114,18 @@ async def mcp_session(server: str, spec: dict, operation: str, replay_safe: bool
     )
     failure = None
     initialized = False
+    operation_completed = False
     try:
         read, write, *_ = await ready
         async with ClientSession(read, write) as session:
             await session.initialize()
             initialized = True
             yield session
+            operation_completed = True
     except BaseException as error:
-        failure = error
+        task = asyncio.current_task()
+        if not operation_completed or (task is not None and task.cancelling()):
+            failure = error
     finally:
         stop.set()
         task = asyncio.current_task()
