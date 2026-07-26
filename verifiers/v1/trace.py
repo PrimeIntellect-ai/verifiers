@@ -126,21 +126,14 @@ class ModelCall(StrictBaseModel):
     success. A failed call still records the settings it was sent with."""
 
 
-JudgeOutcome = Literal[
-    "success", "refusal", "provider_error", "parse_error", "cancelled"
-]
-
-
 class JudgeCall(StrictBaseModel):
-    """One off-graph judge decision. Its provider exchanges use the same
-    ``ModelCall`` records as an agentic judge's trace."""
+    """One off-graph judge decision and its shared model-call record."""
 
     judge: str
     """Fully qualified Judge class."""
-    request_digest: str
-    calls: list[ModelCall] = Field(default_factory=list)
-    outcome: JudgeOutcome | None = None
+    call: ModelCall
     text: str | None = None
+    refusal: str | None = None
     error: Error | None = None
 
 
@@ -491,16 +484,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
         return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
-
-    @property
-    def judge_usage(self) -> Usage | None:
-        """Provider-reported usage summed across every judge provider call."""
-        return Usage.aggregate(
-            provider_call.usage
-            for call in self.judge_calls
-            for provider_call in call.calls
-            if provider_call.usage is not None
-        )
 
     @property
     def branches(self) -> list[Branch]:

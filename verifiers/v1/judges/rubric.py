@@ -112,7 +112,7 @@ class RubricJudgeConfig(JudgeConfig):
     output parsed as JSON when `False` (the default). Plain text is far more reliable on endpoints
     whose structured decoding is flaky (e.g. GLM-5.2 and other non-OpenAI models on some providers
     return empty completions for structured calls, especially over long transcripts); OpenAI models
-    handle either. Transient HTTP failures are already retried by the judge client."""
+    handle either."""
 
 
 class CriterionVerdict(StrictBaseModel):
@@ -224,16 +224,11 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 scores[verdict.name] = normalize_choice(verdict.verdict, choices)
             return scores
 
-        if self.config.structured_output:
-            result = await self.complete(
-                self.build_messages(**fields),
-                trace=trace,
-                schema=self.schema,
-                parse=parse,
-            )
-        else:
-            messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
-            result = await self.complete(messages, trace=trace, parse=parse)
+        messages = self.build_messages(**fields)
+        schema = self.schema if self.config.structured_output else None
+        if schema is None:
+            messages = cast(str, messages) + JSON_SUFFIX
+        result = await self.complete(messages, trace=trace, schema=schema, parse=parse)
         return cast(dict[str, float], result.parsed)
 
     async def score(self, task: TaskData, trace: Trace) -> float:

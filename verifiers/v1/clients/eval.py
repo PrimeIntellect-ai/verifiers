@@ -178,8 +178,7 @@ class EvalClient(Client):
         finally:
             await response.aclose()
         raise model_error(
-            f"upstream {response.status_code}: {text}",
-            status_code=response.status_code,
+            f"upstream {response.status_code}: {text}", status_code=response.status_code
         )
 
     async def relay(

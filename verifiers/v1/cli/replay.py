@@ -29,7 +29,6 @@ from verifiers.v1.cli.output import (
 )
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.configs.cli.replay import ReplayConfig
-from verifiers.v1.errors import TaskError
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, WireTaskData, task_data_cls
 from verifiers.v1.trace import Trace
@@ -154,24 +153,13 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     ) -> None:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
-            error = trace.error
-            replayable = bool(
-                trace.timing.scoring.start
-                and error
-                and error.type == TaskError.__name__
-            )
-            # Only offline task scoring and its judge calls can be rerun here.
-            if not trace.ok and not replayable:
+            # Generation failures have no complete transcript to score.
+            if trace.stop_condition == "error":
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
                 # Clear the recorded scores; only offline-recomputable ones come back.
-                trace.info.pop("judge", None)
                 trace.judge_calls, trace.rewards, trace.metrics = [], {}, {}
-                if not trace.ok:
-                    trace.errors.pop()  # replace the old scoring failure
-                    if trace.stop_condition == "error":
-                        trace.stop_condition = None
                 # The declared Task for a rebuilt row, the base Task for the
                 # WireTaskData fallback.
                 task = (task_cls if isinstance(row, data_cls) else Task)(
@@ -179,8 +167,6 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 )
                 try:
                     await task.score(trace)
-                    trace.ok = True
-                    trace.stop()
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__

@@ -35,7 +35,7 @@ from typing_extensions import TypeVar
 
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.decorators import discover_decorated, invoke_all
-from verifiers.v1.errors import ProviderError, TaskError, boundary
+from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, StrictBaseModel, content_text
 from verifiers.v1.utils.generic import generic_type
@@ -234,11 +234,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         if runtime is not None:
             available["runtime"] = runtime
 
-        async with boundary(
-            TaskError,
-            f"task {type(self).__name__} scoring",
-            wrap=ProviderError,
-        ):
+        async with boundary(TaskError, f"task {type(self).__name__} scoring"):
             metrics = discover_decorated(self, "metric")
             rewards = discover_decorated(self, "reward")
             if runtime is None:

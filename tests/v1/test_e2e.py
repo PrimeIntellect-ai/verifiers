@@ -560,11 +560,9 @@ async def test_replay_round_trip(run_v1, tmp_path):
     import tomllib
     from pathlib import Path
 
-    from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, write_episode
+    from verifiers.v1.cli.output import CONFIG_FILE
     from verifiers.v1.cli.replay import run_replay
     from verifiers.v1.configs.cli.replay import ReplayConfig
-    from verifiers.v1.episode import Episode
-    from verifiers.v1.trace import Error, JudgeCall
 
     run_dir = tmp_path / "run"
     (source,) = await run_v1(
@@ -597,50 +595,3 @@ async def test_replay_round_trip(run_v1, tmp_path):
     # The wire task keeps its taskset-specific fields in the replay's own output.
     raw = (tmp_path / "replay2" / "traces.jsonl").read_text()
     assert '"answer"' in raw
-
-    # A judge/parser failure happens after generation and is recoverable by re-scoring.
-    failed_dir = tmp_path / "failed-score"
-    failed_dir.mkdir()
-    (failed_dir / CONFIG_FILE).write_text((run_dir / CONFIG_FILE).read_text())
-    (failed_dir / TRACES_FILE).write_text("")
-    failed = source.model_copy(deep=True)
-    failed.ok = False
-    failed.stop_condition = "error"
-    judge_call = JudgeCall(
-        judge="test.Judge",
-        request_digest="request",
-        outcome="provider_error",
-        error=Error(type="OverlongPromptError", message="judge prompt too long"),
-    )
-    failed.errors.append(Error(type="TaskError", message="judge prompt too long"))
-    failed.judge_calls.append(judge_call)
-    write_episode(failed_dir, Episode.of(failed))
-    recovered = await replay(failed_dir, tmp_path / "recovered-score")
-    assert recovered.ok and recovered.stop_condition == "done"
-    assert recovered.errors == source.errors
-
-    # Ordinary task scoring failures are also replayable without judge evidence.
-    failed.judge_calls = []
-    failed.errors[-1] = Error(type="TaskError", message="task scoring failed")
-    (failed_dir / TRACES_FILE).write_text("")
-    write_episode(failed_dir, Episode.of(failed))
-    recovered = await replay(failed_dir, tmp_path / "recovered-task-score")
-    assert recovered.ok and recovered.stop_condition == "done"
-
-    # Harness scoring is runtime-dependent and replay only reruns task scoring.
-    failed.errors[-1] = Error(type="HarnessError", message="harness metric failed")
-    (failed_dir / TRACES_FILE).write_text("")
-    write_episode(failed_dir, Episode.of(failed))
-    skipped = await replay(failed_dir, tmp_path / "skipped-harness-score")
-    assert not skipped.ok
-    assert skipped.errors[-1].message == "harness metric failed"
-
-    # A judge called during finalization cannot be recovered by task scoring.
-    failed.judge_calls = [judge_call]
-    failed.errors[-1] = Error(type="ProviderError", message="judge failed")
-    failed.timing.scoring.start = 0.0
-    (failed_dir / TRACES_FILE).write_text("")
-    write_episode(failed_dir, Episode.of(failed))
-    skipped = await replay(failed_dir, tmp_path / "skipped-finalize-judge")
-    assert not skipped.ok
-    assert skipped.errors[-1].message == "judge failed"

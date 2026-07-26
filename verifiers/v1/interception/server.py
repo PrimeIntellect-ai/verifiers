@@ -24,7 +24,6 @@ import json
 import logging
 import secrets
 import time
-import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -38,7 +37,6 @@ from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1.errors import (
     OverlongPromptError,
-    ProviderError,
     RolloutError,
     TaskError,
 )
@@ -271,19 +269,7 @@ class InterceptionServer(Interception):
                 finish_reason=finish_reason,
                 usage=usage,
                 time=TimeSpan(start=started, end=time.time()),
-                error=None
-                if error is None
-                else Error(
-                    type=type(error).__name__,
-                    message=str(error),
-                    status_code=getattr(error, "status_code", None),
-                    # Provider errors already carry the actionable upstream diagnostic.
-                    # Format from the exception object: the record is written in a
-                    # `finally`, where the ambient exception state is already cleared.
-                    traceback=None
-                    if isinstance(error, ProviderError)
-                    else "".join(traceback.format_exception(error)),
-                ),
+                error=None if error is None else Error.from_exception(error),
             )
         )
 
