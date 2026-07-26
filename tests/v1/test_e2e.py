@@ -606,27 +606,42 @@ async def test_replay_round_trip(run_v1, tmp_path):
     failed = source.model_copy(deep=True)
     failed.ok = False
     failed.stop_condition = "error"
-    judge_error = Error(type="ValueError", message="judge failed")
-    failed.errors.append(Error(type="TaskError", message="scoring: judge failed"))
-    failed.judge_calls.append(
-        JudgeCall(
-            judge="test.Judge",
-            config_digest="config",
-            request_digest="request",
-            outcome="parse_error",
-            error=judge_error,
-        )
+    judge_call = JudgeCall(
+        judge="test.Judge",
+        config_digest="config",
+        request_digest="request",
+        outcome="provider_error",
+        error=Error(type="ProviderError", message="judge failed"),
     )
+    failed.errors.append(Error(type="ProviderError", message="judge failed"))
+    failed.judge_calls.append(judge_call)
     write_episode(failed_dir, Episode.of(failed))
     recovered = await replay(failed_dir, tmp_path / "recovered-score")
     assert recovered.ok and recovered.stop_condition == "done"
     assert recovered.errors == source.errors
 
-    # Harness scoring is runtime-dependent and replay only reruns task scoring.
+    # Ordinary task scoring failures are also replayable without judge evidence.
     failed.judge_calls = []
-    failed.errors[-1] = Error(type="TaskError", message="scoring: harness failed")
+    failed.errors[-1] = Error(type="TaskError", message="task scoring failed")
+    (failed_dir / TRACES_FILE).write_text("")
+    write_episode(failed_dir, Episode.of(failed))
+    recovered = await replay(failed_dir, tmp_path / "recovered-task-score")
+    assert recovered.ok and recovered.stop_condition == "done"
+
+    # Harness scoring is runtime-dependent and replay only reruns task scoring.
+    failed.errors[-1] = Error(type="HarnessError", message="harness metric failed")
     (failed_dir / TRACES_FILE).write_text("")
     write_episode(failed_dir, Episode.of(failed))
     skipped = await replay(failed_dir, tmp_path / "skipped-harness-score")
     assert not skipped.ok
-    assert skipped.errors[-1].message == "scoring: harness failed"
+    assert skipped.errors[-1].message == "harness metric failed"
+
+    # A judge called during finalization cannot be recovered by task scoring.
+    failed.judge_calls = [judge_call]
+    failed.errors[-1] = Error(type="ProviderError", message="judge failed")
+    failed.timing.scoring.start = 0.0
+    (failed_dir / TRACES_FILE).write_text("")
+    write_episode(failed_dir, Episode.of(failed))
+    skipped = await replay(failed_dir, tmp_path / "skipped-finalize-judge")
+    assert not skipped.ok
+    assert skipped.errors[-1].message == "judge failed"
