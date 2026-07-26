@@ -16,6 +16,7 @@ from openai import AsyncOpenAI
 SERPER_URL = "https://google.serper.dev/search"
 
 # <vf:mcp-client>
+TOOL_ERROR_KEY = "_vf_is_error"
 
 BASH_TOOL = {
     "type": "function",
@@ -263,8 +264,9 @@ async def main() -> None:
                     }
                 )
                 continue
+            is_error = False
             if name in dispatch:
-                content = await call_mcp(  # noqa: F821
+                content, is_error = await call_mcp(  # noqa: F821
                     servers, dispatch, name, tool_args
                 )
             elif name == "bash" and args.bash:
@@ -287,9 +289,10 @@ async def main() -> None:
                 )
             else:
                 content = f"error: unknown tool {name!r}"
-            messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": content}
-            )
+            message = {"role": "tool", "tool_call_id": call.id, "content": content}
+            if is_error:
+                message[TOOL_ERROR_KEY] = True
+            messages.append(message)
 
 
 if __name__ == "__main__":

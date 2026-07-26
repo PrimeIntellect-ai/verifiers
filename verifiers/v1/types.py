@@ -89,6 +89,8 @@ class ToolMessage(StrictBaseModel):
     content: MessageContent
     name: str | None = None
     """Needed by templates such as Harmony when bridge tails omit the issuing call."""
+    is_error: bool = False
+    """Whether the tool returned a model-visible failure rather than a successful result."""
 
 
 Message = Annotated[

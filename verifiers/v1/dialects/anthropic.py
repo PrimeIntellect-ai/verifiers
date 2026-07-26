@@ -106,6 +106,7 @@ def parse_messages(body: dict) -> Messages:
                     ToolMessage(
                         tool_call_id=block.get("tool_use_id", ""),
                         content=parse_content(block.get("content")),
+                        is_error=bool(block.get("is_error")),
                     )
                 )
             else:

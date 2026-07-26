@@ -270,7 +270,7 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
-) -> str | list[dict]:
+) -> tuple[str | list[dict], bool]:
     """Call once after initialization; a lost response is never replayed in this session."""
     server, raw = dispatch[name]
 
@@ -281,4 +281,4 @@ async def call_mcp(
             return await session.call_tool(raw, arguments)
 
     result = await with_retry(call)
-    return mcp_content_to_chat_content(result.content)
+    return mcp_content_to_chat_content(result.content), result.isError

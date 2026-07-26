@@ -63,7 +63,9 @@ class NullHarness(Harness[NullHarnessConfig]):
             path = f".vf-initial-messages-{trace.id}.json"
             await runtime.write(
                 path,
-                json.dumps([message_to_wire(m) for m in prompt]).encode(),
+                json.dumps(
+                    [message_to_wire(m, include_internal=True) for m in prompt]
+                ).encode(),
             )
             args.append(f"--initial-messages-file={path}")
         program = await runtime.prepare_uv_script(

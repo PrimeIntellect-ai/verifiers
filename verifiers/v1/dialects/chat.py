@@ -47,6 +47,8 @@ FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
 # Fireworks / Kimi), `reasoning_details` (OpenRouter / MiniMax).
 REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
+TOOL_ERROR_KEY = "_vf_is_error"
+TOOL_ERROR_PREFIX = "Tool execution failed:\n"
 
 
 def reasoning_text(data: Mapping[str, Any]) -> str | None:
@@ -86,6 +88,7 @@ def parse_message(raw: dict) -> Message:
             tool_call_id=raw.get("tool_call_id", ""),
             content=content_to_parts(content),
             name=raw.get("name"),
+            is_error=bool(raw.get(TOOL_ERROR_KEY)),
         )
     if role == "assistant":
         details = raw.get("reasoning_details")
@@ -138,7 +141,7 @@ def _content_to_wire(content):
     return [part.model_dump() for part in content]
 
 
-def message_to_wire(message: Message) -> dict:
+def message_to_wire(message: Message, *, include_internal: bool = False) -> dict:
     if message.role == "assistant":
         wire: dict = {"role": "assistant", "content": message.content}
         if message.provider_state:
@@ -156,13 +159,25 @@ def message_to_wire(message: Message) -> dict:
             ]
         return wire
     if message.role == "tool":
+        content = _content_to_wire(message.content)
+        if message.is_error and not include_internal:
+            content = (
+                TOOL_ERROR_PREFIX + content
+                if isinstance(content, str)
+                else [
+                    {"type": "text", "text": TOOL_ERROR_PREFIX.rstrip()},
+                    *content,
+                ]
+            )
         wire = {
             "role": "tool",
             "tool_call_id": message.tool_call_id,
-            "content": _content_to_wire(message.content),
+            "content": content,
         }
         if message.name:
             wire["name"] = message.name
+        if include_internal and message.is_error:
+            wire[TOOL_ERROR_KEY] = True
         return wire
     return {"role": message.role, "content": _content_to_wire(message.content)}
 
@@ -349,4 +364,14 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set (later keys win, so the eval's override the program's).
-        return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
+        return {
+            **body,
+            "messages": [
+                message_to_wire(parse_message(message))
+                if message.get(TOOL_ERROR_KEY)
+                else message
+                for message in body.get("messages", [])
+            ],
+            "model": model,
+            **sampling.model_dump(exclude_none=True),
+        }
