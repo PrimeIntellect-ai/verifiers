@@ -564,7 +564,7 @@ async def test_replay_round_trip(run_v1, tmp_path):
     from verifiers.v1.cli.replay import run_replay
     from verifiers.v1.configs.cli.replay import ReplayConfig
     from verifiers.v1.episode import Episode
-    from verifiers.v1.trace import Error
+    from verifiers.v1.trace import Error, JudgeCall
 
     run_dir = tmp_path / "run"
     (source,) = await run_v1(
@@ -606,8 +606,27 @@ async def test_replay_round_trip(run_v1, tmp_path):
     failed = source.model_copy(deep=True)
     failed.ok = False
     failed.stop_condition = "error"
-    failed.errors.append(Error(type="TaskError", message="judge failed"))
+    judge_error = Error(type="ValueError", message="judge failed")
+    failed.errors.append(Error(type="TaskError", message="scoring: judge failed"))
+    failed.judge_calls.append(
+        JudgeCall(
+            judge="test.Judge",
+            config_digest="config",
+            request_digest="request",
+            outcome="parse_error",
+            error=judge_error,
+        )
+    )
     write_episode(failed_dir, Episode.of(failed))
     recovered = await replay(failed_dir, tmp_path / "recovered-score")
     assert recovered.ok and recovered.stop_condition == "done"
     assert recovered.errors == source.errors
+
+    # Harness scoring is runtime-dependent and replay only reruns task scoring.
+    failed.judge_calls = []
+    failed.errors[-1] = Error(type="TaskError", message="scoring: harness failed")
+    (failed_dir / TRACES_FILE).write_text("")
+    write_episode(failed_dir, Episode.of(failed))
+    skipped = await replay(failed_dir, tmp_path / "skipped-harness-score")
+    assert not skipped.ok
+    assert skipped.errors[-1].message == "scoring: harness failed"

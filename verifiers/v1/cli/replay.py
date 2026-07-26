@@ -153,8 +153,8 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     ) -> None:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
-            # Failures before scoring have no finalized transcript to re-score.
-            if not trace.ok and not trace.timing.scoring.start:
+            # Only failures tied to recorded judge evidence are replayable.
+            if not trace.ok and not any(call.error for call in trace.judge_calls):
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
