@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 import verifiers.v1 as vf
 from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import JudgeResponse
 from verifiers.v1.loaders import judge_class, judge_config_type, load_judge
@@ -135,6 +136,23 @@ async def test_complete_honors_provider_retry_headers(monkeypatch):
     with pytest.raises(vf.ProviderError, match="do not retry"):
         await vf.Judge(vf.JudgeConfig(max_retries=1)).complete("grade this")
     assert attempts == 1
+
+
+async def test_task_score_owns_exhausted_judge_provider_error(monkeypatch):
+    class JudgeTask(vf.Task[QAData]):
+        @vf.reward
+        async def judged(self, trace: vf.Trace) -> float:
+            await vf.Judge().complete("grade this", trace=trace)
+            return 1.0
+
+    async def fail(self, dialect, body, model, sampling_args):
+        raise OverlongPromptError("judge prompt too long")
+
+    monkeypatch.setattr(EvalClient, "get_response", fail)
+    trace = make_trace()
+    with pytest.raises(vf.TaskError, match="OverlongPromptError"):
+        await JudgeTask(trace.task.data).score(trace)
+    assert trace.judge_calls[-1].error.type == "OverlongPromptError"
 
 
 @pytest.fixture

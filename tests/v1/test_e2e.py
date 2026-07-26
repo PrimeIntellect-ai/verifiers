@@ -611,9 +611,9 @@ async def test_replay_round_trip(run_v1, tmp_path):
         config_digest="config",
         request_digest="request",
         outcome="provider_error",
-        error=Error(type="ProviderError", message="judge failed"),
+        error=Error(type="OverlongPromptError", message="judge prompt too long"),
     )
-    failed.errors.append(Error(type="ProviderError", message="judge failed"))
+    failed.errors.append(Error(type="TaskError", message="judge prompt too long"))
     failed.judge_calls.append(judge_call)
     write_episode(failed_dir, Episode.of(failed))
     recovered = await replay(failed_dir, tmp_path / "recovered-score")

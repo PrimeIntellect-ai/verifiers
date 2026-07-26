@@ -9,7 +9,8 @@ Four mechanisms, each in one place:
    any escaping error to that boundary's type. Extension code (task hooks, harness subclasses)
    raises plain Python errors — it never constructs a `vf` error type; `boundary` classifies them.
    Infra that fails raises its type at the source (`runtimes` → `SandboxError`, `clients` →
-   `ProviderError`, tunnels → `TunnelError`); an already-typed `RolloutError` passes through unchanged.
+   `ProviderError`, tunnels → `TunnelError`); typed errors pass through unless the owning boundary
+   explicitly wraps one source type.
 3. Surfacing (`session.RolloutSession.error`): a model or tool call fails behind the harness
    subprocess and comes back as HTTP, so the interception server stashes the real error there and
    the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
@@ -98,16 +99,22 @@ class TunnelError(InterceptionError):
 
 
 @contextlib.asynccontextmanager
-async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[None]:
+async def boundary(
+    error_cls: type[RolloutError],
+    what: str,
+    *,
+    wrap: type[RolloutError] | None = None,
+) -> AsyncIterator[None]:
     """Run a framework→code boundary, attributing any error escaping it to `error_cls`. An
-    already-typed `RolloutError` passes through unchanged — it crossed a more specific boundary
-    first (e.g. a `SandboxError` from `runtime.run` inside a reward stays a `SandboxError`). A
+    already-typed `RolloutError` passes through unchanged unless it matches `wrap`. A
     `TimeoutError` (the stage exceeded its budget) becomes `error_cls` too. `what` names the
     boundary in the error message."""
     try:
         yield
-    except RolloutError:
-        raise
+    except RolloutError as e:
+        if wrap is None or not isinstance(e, wrap):
+            raise
+        raise error_cls(f"{what}: {type(e).__name__}: {e}") from e
     except TimeoutError as e:
         raise error_cls(f"{what} timed out") from e
     except Exception as e:
