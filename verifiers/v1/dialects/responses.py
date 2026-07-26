@@ -96,15 +96,6 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def _parse_tool_call(item: dict) -> ToolCall:
-    arguments_key = "input" if item.get("type") == "custom_tool_call" else "arguments"
-    return ToolCall(
-        id=item.get("call_id", ""),
-        name=item.get("name", ""),
-        arguments=item.get(arguments_key, ""),
-    )
-
-
 def fold_assistant(items: list[dict]) -> AssistantMessage:
     """One run of assistant-side items -> one typed assistant message."""
     content = ""
@@ -115,7 +106,13 @@ def fold_assistant(items: list[dict]) -> AssistantMessage:
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
         elif item.get("type") in ("function_call", "custom_tool_call"):
-            calls.append(_parse_tool_call(item))
+            calls.append(
+                ToolCall(
+                    id=item.get("call_id", ""),
+                    name=item.get("name", ""),
+                    arguments=item.get("arguments", item.get("input", "")),
+                )
+            )
         else:  # an assistant message item
             raw = item.get("content")
             content += (
@@ -154,7 +151,13 @@ def response_from_wire(response: OpenAIResponse) -> Response:
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
         elif kind in ("function_call", "custom_tool_call"):
-            calls.append(_parse_tool_call(item))
+            calls.append(
+                ToolCall(
+                    id=item.get("call_id", ""),
+                    name=item.get("name", ""),
+                    arguments=item.get("arguments", item.get("input", "")),
+                )
+            )
     tool_calls = calls or None
     finish: FinishReason = (
         "length"
