@@ -51,7 +51,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
-from openai import OpenAIError
+from openai import ContentFilterFinishReasonError, OpenAIError
 from pydantic import BaseModel
 from openai.lib._parsing import type_to_response_format_param
 from typing_extensions import TypeVar
@@ -234,6 +234,8 @@ class Judge(Generic[ParsedT, ConfigT]):
             if refusal is not None:
                 call.refusal = refusal
                 raise ValueError(f"judge refused output: {refusal}")
+            if completion.choices[0].finish_reason == "content_filter":
+                raise ContentFilterFinishReasonError()
             if schema is not None and provider_response.finish_reason == "length":
                 raise ValueError("judge structured output was truncated")
             if schema is not None:

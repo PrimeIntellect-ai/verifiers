@@ -6,7 +6,7 @@ import re
 
 import httpx
 import pytest
-from openai import APITimeoutError
+from openai import APITimeoutError, ContentFilterFinishReasonError
 from openai.resources.chat.completions import AsyncCompletions
 from openai.types.chat import ChatCompletion
 from pydantic import BaseModel, Field
@@ -127,6 +127,23 @@ async def test_complete_rejects_truncated_structured_output(monkeypatch):
         await vf.Judge().complete("grade this", trace=trace, schema=Verdict)
     assert trace.judge_calls[-1].call.finish_reason == "length"
     assert trace.judge_calls[-1].error is not None
+
+
+async def test_complete_rejects_content_filtered_output(monkeypatch):
+    class Verdict(BaseModel):
+        score: int
+
+    async def fake_response(self, **kwargs):
+        return model_response('{"score": 1}', finish_reason="content_filter")
+
+    monkeypatch.setattr(AsyncCompletions, "create", fake_response)
+    trace = make_trace()
+    with pytest.raises(ContentFilterFinishReasonError):
+        await vf.Judge().complete("grade this", trace=trace, schema=Verdict)
+    judge_call = trace.judge_calls[-1]
+    assert judge_call.call.error is None
+    assert judge_call.error is not None
+    assert judge_call.error.type == "ContentFilterFinishReasonError"
 
 
 async def test_complete_records_refusal_and_cancellation(monkeypatch):
