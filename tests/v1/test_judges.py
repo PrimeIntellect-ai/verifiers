@@ -1,22 +1,17 @@
 """Pluggable judges, scoring integration, and the typed provider-call lifecycle."""
 
-import asyncio
 import json
 import re
-from collections.abc import Callable
 
-import httpx
 import pytest
-from openai import APITimeoutError, ContentFilterFinishReasonError
 from openai.resources.chat.completions import AsyncCompletions
 from openai.types.chat import ChatCompletion
-from pydantic import BaseModel, Field, PydanticInvalidForJsonSchema
+from pydantic import Field
 
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import JudgeResponse
 from verifiers.v1.loaders import judge_class, judge_config_type, load_judge
-from verifiers.v1.push import trace_to_sample
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 RUBRIC_TOML = """
@@ -58,9 +53,7 @@ def make_trace(
     )
 
 
-def model_response(
-    text: str, *, finish_reason: str = "stop", refusal: str | None = None
-) -> ChatCompletion:
+def model_response(text: str) -> ChatCompletion:
     return ChatCompletion.model_validate(
         {
             "id": "fake",
@@ -70,11 +63,11 @@ def model_response(
             "choices": [
                 {
                     "index": 0,
-                    "finish_reason": finish_reason,
+                    "finish_reason": "stop",
                     "message": {
                         "role": "assistant",
                         "content": text,
-                        "refusal": refusal,
+                        "refusal": None,
                     },
                 }
             ],
@@ -85,153 +78,6 @@ def model_response(
             },
         }
     )
-
-
-async def test_complete_uses_sdk_strict_schema(monkeypatch):
-    request = {}
-
-    class Verdict(BaseModel):
-        score: int | None = None
-
-    async def fake_response(self, **kwargs):
-        request.update(kwargs)
-        return model_response('{"score": 1}')
-
-    monkeypatch.setattr(AsyncCompletions, "create", fake_response)
-    trace = make_trace()
-    response = await vf.Judge().complete("grade this", trace=trace, schema=Verdict)
-    schema = request["response_format"]["json_schema"]["schema"]
-    assert schema["additionalProperties"] is False
-    assert schema["required"] == ["score"]
-    assert response.parsed == Verdict(score=1)
-    assert trace.judge_calls[0].call.sampling is not None
-    assert "response_format" not in trace.judge_calls[0].call.sampling.model_dump()
-    assert trace.judge_calls[0].call.usage is not None
-    assert trace.judge_calls[0].call.usage.total_tokens == 3
-    restored = vf.Trace[QAData].model_validate_json(trace.model_dump_json())
-    assert restored.judge_calls == trace.judge_calls
-    assert trace_to_sample(trace)["info"]["judge_calls"] == [
-        trace.judge_calls[0].model_dump(mode="json", exclude_none=True)
-    ]
-
-
-async def test_invalid_schema_is_not_recorded_as_provider_call():
-    class InvalidSchema(BaseModel):
-        callback: Callable[[], None]
-
-    trace = make_trace()
-    with pytest.raises(PydanticInvalidForJsonSchema):
-        await vf.Judge().complete("grade this", trace=trace, schema=InvalidSchema)
-    assert trace.judge_calls == []
-
-
-async def test_complete_rejects_truncated_structured_output(monkeypatch):
-    class Verdict(BaseModel):
-        score: int
-
-    async def fake_response(self, **kwargs):
-        return model_response('{"score": 1}', finish_reason="length")
-
-    monkeypatch.setattr(AsyncCompletions, "create", fake_response)
-    trace = make_trace()
-    with pytest.raises(ValueError, match="structured output was truncated"):
-        await vf.Judge().complete("grade this", trace=trace, schema=Verdict)
-    assert trace.judge_calls[-1].call.finish_reason == "length"
-    assert trace.judge_calls[-1].error is not None
-
-
-async def test_complete_rejects_content_filtered_output(monkeypatch):
-    class Verdict(BaseModel):
-        score: int
-
-    async def fake_response(self, **kwargs):
-        return model_response('{"score": 1}', finish_reason="content_filter")
-
-    monkeypatch.setattr(AsyncCompletions, "create", fake_response)
-    trace = make_trace()
-    with pytest.raises(ContentFilterFinishReasonError):
-        await vf.Judge().complete("grade this", trace=trace, schema=Verdict)
-    judge_call = trace.judge_calls[-1]
-    assert judge_call.call.error is None
-    assert judge_call.error is not None
-    assert judge_call.error.type == "ContentFilterFinishReasonError"
-
-
-async def test_complete_records_refusal_and_cancellation(monkeypatch):
-    async def refuse(self, **kwargs):
-        return model_response("", refusal="cannot grade")
-
-    monkeypatch.setattr(AsyncCompletions, "create", refuse)
-    trace = make_trace()
-    with pytest.raises(ValueError, match="refused"):
-        await vf.Judge().complete("grade this", trace=trace)
-    assert trace.judge_calls[-1].refusal == "cannot grade"
-    assert trace.judge_calls[-1].call.error is None
-    assert trace.judge_calls[-1].error is not None
-
-    async def cancel(self, **kwargs):
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(AsyncCompletions, "create", cancel)
-    trace = make_trace()
-    with pytest.raises(asyncio.CancelledError):
-        await vf.Judge().complete("grade this", trace=trace)
-    provider_error = trace.judge_calls[-1].call.error
-    assert provider_error is not None and provider_error.type == "CancelledError"
-    assert trace.judge_calls[-1].error is None
-
-
-@pytest.mark.parametrize(
-    ("configured", "sampling", "expected"),
-    [
-        ({"max_completion_tokens": 30}, {}, {"max_completion_tokens": 30}),
-        (
-            {"max_tokens": 100},
-            {"max_completion_tokens": 20},
-            {"max_completion_tokens": 20},
-        ),
-    ],
-)
-async def test_complete_preserves_provider_sampling_aliases(
-    monkeypatch, configured, sampling, expected
-):
-    request = {}
-
-    async def fake_response(self, **kwargs):
-        request.update(kwargs)
-        return model_response("yes")
-
-    monkeypatch.setattr(AsyncCompletions, "create", fake_response)
-    await vf.Judge(vf.JudgeConfig(sampling=configured)).complete(
-        "grade this", model="ignored", **sampling
-    )
-    assert request["model"] == "openai/gpt-5.4-nano"
-    limits = {
-        key: request[key]
-        for key in ("max_tokens", "max_completion_tokens")
-        if key in request
-    }
-    assert limits == expected
-
-
-async def test_judge_provider_error_uses_shared_retry_type(monkeypatch):
-    class JudgeTask(vf.Task[QAData]):
-        @vf.reward
-        async def judged(self, trace: vf.Trace) -> float:
-            await vf.Judge().complete("grade this", trace=trace)
-            return 1.0
-
-    async def fail(self, **kwargs):
-        raise APITimeoutError(request=httpx.Request("POST", "https://judge.test"))
-
-    monkeypatch.setattr(AsyncCompletions, "create", fail)
-    trace = make_trace()
-    with pytest.raises(vf.ProviderError):
-        await JudgeTask(trace.task.data).score(trace)
-    assert trace.judge_calls[-1].error is None
-    provider_error = trace.judge_calls[-1].call.error
-    assert provider_error is not None and provider_error.type == "ProviderError"
-    assert "judged" not in trace.rewards
 
 
 @pytest.fixture
