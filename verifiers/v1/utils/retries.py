@@ -90,10 +90,11 @@ def trace_should_retry(trace, retry: RetryConfig) -> bool:
     """Whether a finished agent rollout should be retried: any captured error on
     its trace is retryable (all captures count, not just the most recent).
     A possibly-delivered MCP mutation vetoes replay unless explicitly included."""
-    if any(
-        e.type == MCP_DELIVERY_UNKNOWN and MCP_DELIVERY_UNKNOWN not in retry.include
-        for e in trace.errors
-    ):
+    replay_unknown = (
+        MCP_DELIVERY_UNKNOWN in retry.include
+        and MCP_DELIVERY_UNKNOWN not in retry.exclude
+    )
+    if not replay_unknown and any(e.type == MCP_DELIVERY_UNKNOWN for e in trace.errors):
         return False
     return any(_retryable(e, retry) for e in trace.errors)
 
@@ -111,10 +112,11 @@ def episode_should_retry(episode: Episode, retry: RetryConfig) -> bool:
         *episode.errors,
         *(e for trace in episode.traces for e in trace.errors),
     ]
-    if any(
-        e.type == MCP_DELIVERY_UNKNOWN and MCP_DELIVERY_UNKNOWN not in retry.include
-        for e in errors
-    ):
+    replay_unknown = (
+        MCP_DELIVERY_UNKNOWN in retry.include
+        and MCP_DELIVERY_UNKNOWN not in retry.exclude
+    )
+    if not replay_unknown and any(e.type == MCP_DELIVERY_UNKNOWN for e in errors):
         return False
     return any(_retryable(e, retry) for e in episode.errors) or any(
         _retryable(e, retry)

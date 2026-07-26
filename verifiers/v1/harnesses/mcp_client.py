@@ -86,16 +86,16 @@ async def _mcp_transport(
     )
 
     try:
-        async with create_mcp_http_client(
-            headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
-        ) as http_client:
-            async with streamable_http_client(
-                spec["url"], http_client=http_client
-            ) as streams:
-                if not ready.done():
-                    ready.set_result(streams)
-                await stop.wait()
-    except BaseException as error:
+        async with (
+            create_mcp_http_client(
+                headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
+            ) as http_client,
+            streamable_http_client(spec["url"], http_client=http_client) as streams,
+        ):
+            if not ready.done():
+                ready.set_result(streams)
+            await stop.wait()
+    except BaseException as error:  # noqa: BLE001 - preserve transport cancellation
         if not ready.done():
             ready.set_exception(error)
         return error
@@ -114,14 +114,18 @@ async def mcp_session(server: str, spec: dict, operation: str, replay_safe: bool
     )
     failure = None
     initialized = False
+    operation_completed = False
     try:
         read, write, *_ = await ready
         async with ClientSession(read, write) as session:
             await session.initialize()
             initialized = True
             yield session
-    except BaseException as error:
-        failure = error
+            operation_completed = True
+    except BaseException as error:  # noqa: BLE001 - preserve caller cancellation
+        task = asyncio.current_task()
+        if not operation_completed or (task is not None and task.cancelling()):
+            failure = error
     finally:
         stop.set()
         task = asyncio.current_task()
