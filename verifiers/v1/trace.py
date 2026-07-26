@@ -137,8 +137,6 @@ class JudgeCall(StrictBaseModel):
 
     judge: str
     """Fully qualified Judge class."""
-    config_digest: str
-    """SHA-256 of the resolved judge config."""
     request_digest: str
     calls: list[ModelCall] = Field(default_factory=list)
     outcome: JudgeOutcome | None = None

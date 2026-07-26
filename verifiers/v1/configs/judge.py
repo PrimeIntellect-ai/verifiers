@@ -5,11 +5,18 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, SerializeAsAny, model_validator
+from pydantic import BaseModel, SerializeAsAny, model_validator
 
 from verifiers.v1.clients import BaseClientConfig
 from verifiers.v1.types import ID, SamplingConfig
 from verifiers.v1.utils.install import env_name
+
+
+class JudgeSamplingConfig(SamplingConfig):
+    """Keep provider token-limit aliases distinct on the wire."""
+
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
 
 
 class JudgeConfig(BaseClientConfig):
@@ -19,11 +26,7 @@ class JudgeConfig(BaseClientConfig):
     """Reward key override for a plugged judge."""
     weight: float = 1.0
     model: str = "openai/gpt-5.4-nano"
-    sampling: SamplingConfig = SamplingConfig()
-    timeout: float = Field(600.0, gt=0)
-    """Per-attempt timeout in seconds."""
-    max_retries: int = Field(2, ge=0)
-    """Retries after the first transient provider failure."""
+    sampling: JudgeSamplingConfig = JudgeSamplingConfig()
     prompt: str | None = None
     prompt_file: Path | None = None
     """Prompt file override, mutually exclusive with `prompt`."""

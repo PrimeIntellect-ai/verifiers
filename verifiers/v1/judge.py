@@ -60,15 +60,12 @@ from pydantic_core import to_json
 from openai.lib._parsing import type_to_response_format_param
 from typing_extensions import TypeVar
 
-from verifiers.v1.clients.config import resolve_api_key
-from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.clients.config import resolve_client
 from verifiers.v1.configs.judge import (
     JudgeConfig,
     judge_key,
 )
 from verifiers.v1.dialects.chat import ChatDialect, message_to_wire
-from verifiers.v1.errors import ProviderError
-from verifiers.v1.retries import backoff
 from verifiers.v1.scoring import parse_judge_choice
 from verifiers.v1.trace import (
     Error,
@@ -192,9 +189,10 @@ class Judge(Generic[ParsedT, ConfigT]):
         effective = type(self.config.sampling).model_validate(
             {**self.config.sampling.model_dump(exclude_none=True), **sampling}
         )
-        if (completion_limit := sampling.get("max_completion_tokens")) is not None:
+        if sampling.get("max_tokens") is not None:
+            effective.max_completion_tokens = None
+        elif sampling.get("max_completion_tokens") is not None:
             effective.max_tokens = None
-            setattr(effective, "max_completion_tokens", completion_limit)
         body: dict[str, Any] = {"messages": wire}
         if schema is not None:
             body["response_format"] = type_to_response_format_param(schema)
@@ -203,69 +201,35 @@ class Judge(Generic[ParsedT, ConfigT]):
         request_digest = hashlib.sha256(
             to_json(request, inf_nan_mode="null")
         ).hexdigest()
-        config_digest = hashlib.sha256(
-            to_json(self.config.model_dump(mode="json"), inf_nan_mode="null")
-        ).hexdigest()
         call = JudgeCall(
             judge=f"{type(self).__module__}.{type(self).__qualname__}",
-            config_digest=config_digest,
             request_digest=request_digest,
         )
         if trace is not None:
             trace.judge_calls.append(call)
 
         try:
-            client = EvalClient(
-                self.config.base_url,
-                resolve_api_key(self.config),
-                self.config.headers,
+            client = resolve_client(self.config)
+            provider_call = ModelCall(
+                model=self.config.model,
+                sampling=dialect.parse_sampling(request),
+                endpoint=dialect.upstream_path,
+                time=TimeSpan(start=time.time()),
             )
+            call.calls.append(provider_call)
             try:
-                provider_response = None
-                for attempt in range(self.config.max_retries + 1):
-                    provider_call = ModelCall(
-                        model=self.config.model,
-                        sampling=dialect.parse_sampling(request),
-                        endpoint=dialect.upstream_path,
-                        time=TimeSpan(start=time.time()),
-                    )
-                    call.calls.append(provider_call)
-                    try:
-                        async with asyncio.timeout(self.config.timeout):
-                            provider_response = await client.get_response(
-                                dialect, body, self.config.model, effective
-                            )
-                    except BaseException as error:
-                        provider_call.error = Error.from_exception(error)
-                        if not isinstance(error, (ProviderError, TimeoutError)):
-                            raise
-                        transient = isinstance(error, TimeoutError)
-                        delay = backoff(attempt)
-                        if isinstance(error, ProviderError):
-                            transient = (
-                                error.should_retry
-                                if error.should_retry is not None
-                                else error.status_code in (408, 409, 429)
-                                or error.status_code >= 500
-                            )
-                            if (
-                                error.retry_after is not None
-                                and 0 < error.retry_after <= 60
-                            ):
-                                delay = error.retry_after
-                        if attempt == self.config.max_retries or not transient:
-                            raise
-                    else:
-                        provider_call.finish_reason = provider_response.finish_reason
-                        provider_call.usage = provider_response.usage
-                        break
-                    finally:
-                        provider_call.time.end = time.time()
-                    await asyncio.sleep(delay)
+                provider_response = await client.get_response(
+                    dialect, body, self.config.model, effective
+                )
+                provider_call.finish_reason = provider_response.finish_reason
+                provider_call.usage = provider_response.usage
+            except BaseException as error:
+                provider_call.error = Error.from_exception(error)
+                raise
             finally:
+                provider_call.time.end = time.time()
                 await client.close()
 
-            assert provider_response is not None
             raw = cast(dict, provider_response.raw)
             refusal = raw["choices"][0]["message"].get("refusal")
             response = JudgeResponse[Any](

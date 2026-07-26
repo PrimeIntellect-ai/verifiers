@@ -99,7 +99,20 @@ async def test_complete_rejects_truncated_structured_output(monkeypatch):
     assert trace.judge_calls[-1].calls[-1].finish_reason == "length"
 
 
-async def test_complete_preserves_provider_sampling_alias(monkeypatch):
+@pytest.mark.parametrize(
+    ("configured", "sampling", "expected"),
+    [
+        ({"max_completion_tokens": 30}, {}, {"max_completion_tokens": 30}),
+        (
+            {"max_tokens": 100},
+            {"max_completion_tokens": 20},
+            {"max_completion_tokens": 20},
+        ),
+    ],
+)
+async def test_complete_preserves_provider_sampling_aliases(
+    monkeypatch, configured, sampling, expected
+):
     request = {}
 
     async def fake_response(self, dialect, body, model, sampling_args):
@@ -107,52 +120,18 @@ async def test_complete_preserves_provider_sampling_alias(monkeypatch):
         return model_response("yes")
 
     monkeypatch.setattr(EvalClient, "get_response", fake_response)
-    judge = vf.Judge(vf.JudgeConfig(sampling={"max_tokens": 100}))
-    await judge.complete("grade this", max_completion_tokens=20)
-    assert request["max_completion_tokens"] == 20
-    assert "max_tokens" not in request
+    await vf.Judge(vf.JudgeConfig(sampling=configured)).complete(
+        "grade this", **sampling
+    )
+    limits = {
+        key: request[key]
+        for key in ("max_tokens", "max_completion_tokens")
+        if key in request
+    }
+    assert limits == expected
 
 
-async def test_complete_honors_provider_retry_headers(monkeypatch):
-    attempts = 0
-    delays = []
-
-    async def retry_once(self, dialect, body, model, sampling_args):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise vf.ProviderError(
-                "retry",
-                status_code=400,
-                headers={"retry-after-ms": "250", "x-should-retry": "true"},
-            )
-        return model_response("yes")
-
-    async def record_sleep(delay):
-        delays.append(delay)
-
-    monkeypatch.setattr(EvalClient, "get_response", retry_once)
-    monkeypatch.setattr("verifiers.v1.judge.asyncio.sleep", record_sleep)
-    response = await vf.Judge(vf.JudgeConfig(max_retries=1)).complete("grade this")
-    assert attempts == 2
-    assert delays == [0.25]
-    assert len(response.call.calls) == 2
-
-    async def refuse_retry(self, dialect, body, model, sampling_args):
-        nonlocal attempts
-        attempts += 1
-        raise vf.ProviderError(
-            "do not retry", status_code=503, headers={"x-should-retry": "false"}
-        )
-
-    attempts = 0
-    monkeypatch.setattr(EvalClient, "get_response", refuse_retry)
-    with pytest.raises(vf.ProviderError, match="do not retry"):
-        await vf.Judge(vf.JudgeConfig(max_retries=1)).complete("grade this")
-    assert attempts == 1
-
-
-async def test_task_score_owns_exhausted_judge_provider_error(monkeypatch):
+async def test_task_score_owns_judge_provider_error(monkeypatch):
     class JudgeTask(vf.Task[QAData]):
         @vf.reward
         async def judged(self, trace: vf.Trace) -> float:
@@ -167,6 +146,8 @@ async def test_task_score_owns_exhausted_judge_provider_error(monkeypatch):
     with pytest.raises(vf.TaskError, match="OverlongPromptError"):
         await JudgeTask(trace.task.data).score(trace)
     assert trace.judge_calls[-1].error.type == "OverlongPromptError"
+    assert len(trace.judge_calls[-1].calls) == 1
+    assert trace.judge_calls[-1].calls[-1].error.type == "OverlongPromptError"
 
 
 @pytest.fixture

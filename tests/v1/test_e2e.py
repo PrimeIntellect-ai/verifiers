@@ -608,7 +608,6 @@ async def test_replay_round_trip(run_v1, tmp_path):
     failed.stop_condition = "error"
     judge_call = JudgeCall(
         judge="test.Judge",
-        config_digest="config",
         request_digest="request",
         outcome="provider_error",
         error=Error(type="OverlongPromptError", message="judge prompt too long"),
