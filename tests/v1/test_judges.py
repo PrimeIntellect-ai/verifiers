@@ -99,6 +99,20 @@ async def test_complete_rejects_truncated_structured_output(monkeypatch):
     assert trace.judge_calls[-1].calls[-1].finish_reason == "length"
 
 
+async def test_complete_preserves_provider_sampling_alias(monkeypatch):
+    request = {}
+
+    async def fake_response(self, dialect, body, model, sampling_args):
+        request.update(dialect.apply_overrides(body, model, sampling_args))
+        return model_response("yes")
+
+    monkeypatch.setattr(EvalClient, "get_response", fake_response)
+    judge = vf.Judge(vf.JudgeConfig(sampling={"max_tokens": 100}))
+    await judge.complete("grade this", max_completion_tokens=20)
+    assert request["max_completion_tokens"] == 20
+    assert "max_tokens" not in request
+
+
 async def test_complete_honors_provider_retry_headers(monkeypatch):
     attempts = 0
     delays = []

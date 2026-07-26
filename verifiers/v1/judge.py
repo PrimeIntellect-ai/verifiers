@@ -192,6 +192,9 @@ class Judge(Generic[ParsedT, ConfigT]):
         effective = type(self.config.sampling).model_validate(
             {**self.config.sampling.model_dump(exclude_none=True), **sampling}
         )
+        if (completion_limit := sampling.get("max_completion_tokens")) is not None:
+            effective.max_tokens = None
+            setattr(effective, "max_completion_tokens", completion_limit)
         body: dict[str, Any] = {"messages": wire}
         if schema is not None:
             body["response_format"] = type_to_response_format_param(schema)
