@@ -1,16 +1,15 @@
-"""Pluggable judges: plugin resolution, base-`TaskConfig.judges` narrowing, the built-in
-`reference` / `rubric` judges, and `Task.score` running plugged judges after the decorated
-rewards. Judge model calls are faked at `Judge.complete` — no network."""
+"""Pluggable judges, scoring integration, and the typed provider-call lifecycle."""
 
 import json
 import re
 
 import pytest
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 import verifiers.v1 as vf
+from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.judge import Judge, JudgeResponse
+from verifiers.v1.judge import JudgeResponse
 from verifiers.v1.loaders import judge_class, judge_config_type, load_judge
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -53,6 +52,74 @@ def make_trace(
     )
 
 
+def model_response(text: str) -> vf.Response:
+    return vf.Response(
+        id="fake",
+        created=0,
+        model="fake",
+        message=AssistantMessage(content=text),
+        finish_reason="stop",
+        raw={"choices": [{"message": {"content": text, "refusal": None}}]},
+    )
+
+
+async def test_complete_uses_sdk_strict_schema(monkeypatch):
+    request = {}
+
+    class Verdict(BaseModel):
+        score: int | None = None
+
+    async def fake_response(self, dialect, body, model, sampling_args):
+        request.update(body)
+        return model_response('{"score": 1}')
+
+    monkeypatch.setattr(EvalClient, "get_response", fake_response)
+    response = await vf.Judge().complete("grade this", schema=Verdict)
+    schema = request["response_format"]["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["score"]
+    assert response.parsed == Verdict(score=1)
+
+
+async def test_complete_honors_provider_retry_headers(monkeypatch):
+    attempts = 0
+    delays = []
+
+    async def retry_once(self, dialect, body, model, sampling_args):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise vf.ProviderError(
+                "retry",
+                status_code=400,
+                headers={"retry-after-ms": "250", "x-should-retry": "true"},
+            )
+        return model_response("yes")
+
+    async def record_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(EvalClient, "get_response", retry_once)
+    monkeypatch.setattr("verifiers.v1.judge.asyncio.sleep", record_sleep)
+    response = await vf.Judge(vf.JudgeConfig(max_retries=1)).complete("grade this")
+    assert attempts == 2
+    assert delays == [0.25]
+    assert len(response.call.calls) == 2
+
+    async def refuse_retry(self, dialect, body, model, sampling_args):
+        nonlocal attempts
+        attempts += 1
+        raise vf.ProviderError(
+            "do not retry", status_code=503, headers={"x-should-retry": "false"}
+        )
+
+    attempts = 0
+    monkeypatch.setattr(EvalClient, "get_response", refuse_retry)
+    with pytest.raises(vf.ProviderError, match="do not retry"):
+        await vf.Judge(vf.JudgeConfig(max_retries=1)).complete("grade this")
+    assert attempts == 1
+
+
 @pytest.fixture
 def fake_judge_model(monkeypatch):
     """Fake the judge's model call, recording each prompt for assertions. Rubric calls (a JSON
@@ -60,13 +127,12 @@ def fake_judge_model(monkeypatch):
     "yes" iff it mentions Paris; other judges reply plain "yes"/"no" by the response block."""
     prompts: list[str] = []
 
-    async def fake_complete(
-        self, messages, *, trace=None, schema=None, parse=None, **sampling
-    ):
+    async def fake_response(self, dialect, body, model, sampling_args):
+        messages = body["messages"][0]["content"]
         prompts.append(messages)
         # Rubric calls carry criteria lines + a JSON `verdicts` instruction; reply one verdict per
         # criterion (yes iff its text mentions Paris) with a reason. Other judges get plain yes/no.
-        if schema is not None or '"verdicts"' in messages:
+        if "response_format" in body or '"verdicts"' in messages:
             verdicts = [
                 {
                     "name": name,
@@ -77,23 +143,12 @@ def fake_judge_model(monkeypatch):
                     r"^- ([^:]+): (.+)$", messages, re.MULTILINE
                 )
             ]
-            response = JudgeResponse(
-                text=json.dumps({"verdicts": verdicts}),
-                parsed=schema.model_validate({"verdicts": verdicts})
-                if schema
-                else None,
-            )
+            text = json.dumps({"verdicts": verdicts})
         else:
-            response = JudgeResponse(
-                text="yes" if "Paris" in messages.split("Response:")[-1] else "no"
-            )
-        if parse is not None:
-            response.parsed = parse(response)
-        if trace is not None:
-            trace.record_judge(response)
-        return response
+            text = "yes" if "Paris" in messages.split("Response:")[-1] else "no"
+        return model_response(text)
 
-    monkeypatch.setattr(Judge, "complete", fake_complete)
+    monkeypatch.setattr(EvalClient, "get_response", fake_response)
     return prompts
 
 
@@ -223,10 +278,12 @@ async def test_reference_score(fake_judge_model):
     assert (
         "Capital of France?" in fake_judge_model[0]
     )  # the task prompt is in the judge prompt
-    assert len(trace.info["judge"]) == 1  # the call is recorded onto the trace
+    assert len(trace.judge_calls) == 1  # the call is recorded onto the trace
+    assert trace.judge_calls[0].outcome == "success"
 
     trace = make_trace(reply="It is Rome.")
     assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
+    assert trace.judge_calls[0].outcome == "success"
 
     judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(answer_field="gold"))
     with pytest.raises(ValueError, match="no 'gold' field"):  # misconfig raises, not 0
@@ -441,21 +498,12 @@ async def test_reference_choices(fake_judge_model):
 
 async def test_error_attribution(monkeypatch, tmp_path):
     # The policy: a MODEL failure scores 0.0; a JUDGE failure errors the rollout (raises
-    # out of Task.score as a TaskError) so training skips the sample instead of
+    # out of Task.score) so training skips the sample instead of
     # punishing the model for a broken judge.
-    async def gibberish_judge(
-        self, messages, *, trace=None, schema=None, parse=None, **s
-    ):
-        response = JudgeResponse(text="as an AI language model I cannot grade this")
-        try:
-            if parse is not None:
-                response.parsed = parse(response)
-            return response
-        finally:
-            if trace is not None:
-                trace.record_judge(response)
+    async def gibberish_judge(self, dialect, body, model, sampling_args):
+        return model_response("as an AI language model I cannot grade this")
 
-    monkeypatch.setattr(Judge, "complete", gibberish_judge)
+    monkeypatch.setattr(EvalClient, "get_response", gibberish_judge)
     taskset = JudgedTaskset(
         JudgedConfig.model_validate({"task": {"judges": [{"id": "reference"}]}})
     )
@@ -470,7 +518,8 @@ async def test_error_attribution(monkeypatch, tmp_path):
             trace, runtime=None
         )
     assert "reference" not in trace.rewards
-    assert len(trace.info["judge"]) == 1  # the billed call is still recorded
+    assert trace.judge_calls[0].outcome == "parse_error"
+    assert trace.judge_calls[0].error is not None
 
 
 # --- rubric --------------------------------------------------------------------------------
@@ -530,21 +579,22 @@ async def test_rubric_score(tmp_path, fake_judge_model):
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.75
     assert trace.metrics == {"rubric/mentions_paris": 1.0, "rubric/is_polite": 0.0}
-    assert len(trace.info["judge"]) == 1  # one call for the whole rubric
+    assert len(trace.judge_calls) == 1  # one call for the whole rubric
 
 
 async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
     # A reply that doesn't verdict exactly the rubric's criteria is a judge failure: raise
     # (-> rollout error), don't guess or silently score 0.
-    async def wrong_names(self, messages, *, trace=None, schema=None, parse=None, **s):
+    async def wrong_names(self, dialect, body, model, sampling_args):
         verdicts = {"verdicts": [{"name": "typo", "reason": "x", "verdict": "yes"}]}
-        return JudgeResponse(text=json.dumps(verdicts), parsed=None)
+        return model_response(json.dumps(verdicts))
 
-    monkeypatch.setattr(Judge, "complete", wrong_names)
+    monkeypatch.setattr(EvalClient, "get_response", wrong_names)
     judge = rubric_judge(tmp_path)
     trace = make_trace()
     with pytest.raises(ValueError, match="expected the batch"):
         await judge.score(trace.task.data, trace)
+    assert trace.judge_calls[0].outcome == "parse_error"
 
 
 CHOICES_TOML = '[[criteria]]\nname = "depth"\ntext = "How thorough?"\nchoices = ["none", "partial", "good"]\n'
@@ -552,11 +602,11 @@ CHOICES_TOML = '[[criteria]]\nname = "depth"\ntext = "How thorough?"\nchoices = 
 
 async def test_rubric_choices_normalize(tmp_path, monkeypatch):
     # Ordered choices (worst→best) score by rank: "partial" of ["none","partial","good"] -> 0.5.
-    async def graded(self, messages, *, trace=None, schema=None, parse=None, **s):
+    async def graded(self, dialect, body, model, sampling_args):
         v = {"verdicts": [{"name": "depth", "reason": "r", "verdict": "partial"}]}
-        return JudgeResponse(text=json.dumps(v), parsed=None)
+        return model_response(json.dumps(v))
 
-    monkeypatch.setattr(Judge, "complete", graded)
+    monkeypatch.setattr(EvalClient, "get_response", graded)
     judge = rubric_judge(tmp_path, body=CHOICES_TOML, name="q")
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.5
@@ -565,11 +615,11 @@ async def test_rubric_choices_normalize(tmp_path, monkeypatch):
 
 async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
     # A verdict that isn't one of the criterion's choices is a judge failure, not a 0.
-    async def off_menu(self, messages, *, trace=None, schema=None, parse=None, **s):
+    async def off_menu(self, dialect, body, model, sampling_args):
         v = {"verdicts": [{"name": "depth", "reason": "r", "verdict": "maybe"}]}
-        return JudgeResponse(text=json.dumps(v), parsed=None)
+        return model_response(json.dumps(v))
 
-    monkeypatch.setattr(Judge, "complete", off_menu)
+    monkeypatch.setattr(EvalClient, "get_response", off_menu)
     judge = rubric_judge(tmp_path, body=CHOICES_TOML)
     trace = make_trace()
     with pytest.raises(ValueError, match="expected one of"):
@@ -639,9 +689,7 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     assert (
         trace.rewards["quality"].score == 0.75
     )  # the rubric's aggregate, under its `name`
-    assert (
-        len(trace.info["judge"]) == 2
-    )  # every judge call recorded (rubric = one call)
+    assert len(trace.judge_calls) == 2  # every judge call recorded (rubric = one call)
 
 
 async def test_task_without_judges_scores_as_before():

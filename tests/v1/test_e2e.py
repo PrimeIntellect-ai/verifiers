@@ -322,7 +322,7 @@ async def test_rubric_judge(run_v1, tmp_path):
     assert trace.ok
     assert trace.rewards["rubric"].score > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0
-    assert trace.info["judge"]  # the call was recorded onto the trace
+    assert trace.judge_calls  # the call was recorded onto the trace
 
 
 @pytest.mark.e2e
@@ -560,9 +560,11 @@ async def test_replay_round_trip(run_v1, tmp_path):
     import tomllib
     from pathlib import Path
 
-    from verifiers.v1.cli.output import CONFIG_FILE
+    from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, write_episode
     from verifiers.v1.cli.replay import run_replay
     from verifiers.v1.configs.cli.replay import ReplayConfig
+    from verifiers.v1.episode import Episode
+    from verifiers.v1.trace import Error
 
     run_dir = tmp_path / "run"
     (source,) = await run_v1(
@@ -595,3 +597,17 @@ async def test_replay_round_trip(run_v1, tmp_path):
     # The wire task keeps its taskset-specific fields in the replay's own output.
     raw = (tmp_path / "replay2" / "traces.jsonl").read_text()
     assert '"answer"' in raw
+
+    # A judge/parser failure happens after generation and is recoverable by re-scoring.
+    failed_dir = tmp_path / "failed-score"
+    failed_dir.mkdir()
+    (failed_dir / CONFIG_FILE).write_text((run_dir / CONFIG_FILE).read_text())
+    (failed_dir / TRACES_FILE).write_text("")
+    failed = source.model_copy(deep=True)
+    failed.ok = False
+    failed.stop_condition = "error"
+    failed.errors.append(Error(type="TaskError", message="judge failed"))
+    write_episode(failed_dir, Episode.of(failed))
+    recovered = await replay(failed_dir, tmp_path / "recovered-score")
+    assert recovered.ok and recovered.stop_condition == "done"
+    assert recovered.errors == source.errors

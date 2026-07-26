@@ -53,6 +53,12 @@ def trace_to_sample(
 
     task = trace.task.data.model_dump(mode="json", exclude_none=True)
     branches = trace.branches
+    info = dict(trace.info)
+    if trace.judge_calls:
+        info["judge_calls"] = [
+            call.model_dump(mode="json", exclude_none=True)
+            for call in trace.judge_calls
+        ]
     sample = {
         "sample_id": trace.id,
         "example_id": trace.task.data.idx,
@@ -88,7 +94,7 @@ def trace_to_sample(
         "token_usage": trace.usage.model_dump(mode="json", exclude_none=True)
         if trace.usage
         else None,
-        "info": dict(trace.info) or None,
+        "info": info or None,
     }
     # Flatten sub-rewards to top-level keys the way v0 does (raw scores, as v0's
     # per-function outputs were); env metrics stay nested.

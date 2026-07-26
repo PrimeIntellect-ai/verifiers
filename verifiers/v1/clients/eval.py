@@ -169,6 +169,7 @@ class EvalClient(Client):
                 raise model_error(
                     f"upstream {e.response.status_code}: {e.response.text}",
                     status_code=e.response.status_code,
+                    headers=e.response.headers,
                 ) from e
             return response
         if response.status_code < 400:
@@ -178,7 +179,9 @@ class EvalClient(Client):
         finally:
             await response.aclose()
         raise model_error(
-            f"upstream {response.status_code}: {text}", status_code=response.status_code
+            f"upstream {response.status_code}: {text}",
+            status_code=response.status_code,
+            headers=response.headers,
         )
 
     async def relay(

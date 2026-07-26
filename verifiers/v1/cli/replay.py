@@ -153,14 +153,18 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     ) -> None:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
-            # Generation failures have no complete transcript to score.
-            if trace.stop_condition == "error":
+            # Failures before scoring have no finalized transcript to re-score.
+            if not trace.ok and not trace.timing.scoring.start:
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
                 # Clear the recorded scores; only offline-recomputable ones come back.
                 trace.info.pop("judge", None)
-                trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+                trace.judge_calls, trace.rewards, trace.metrics = [], {}, {}
+                if not trace.ok:
+                    trace.errors.pop()  # replace the old scoring failure
+                    if trace.stop_condition == "error":
+                        trace.stop_condition = None
                 # The declared Task for a rebuilt row, the base Task for the
                 # WireTaskData fallback.
                 task = (task_cls if isinstance(row, data_cls) else Task)(
@@ -168,6 +172,8 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 )
                 try:
                     await task.score(trace)
+                    trace.ok = True
+                    trace.stop()
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__

@@ -18,7 +18,6 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import (
     format_count,
     format_mean,
@@ -405,8 +404,8 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
         if trace.usage is not None and trace.usage.cost is not None:
             total_cost += trace.usage.cost
             have_cost = True
-        # Judge / auxiliary scoring calls (off the message graph) shown separately from the agent's.
-        judge = Usage.aggregate(trace.extra_usage)
+        # Judge calls (off the message graph) shown separately from the agent's.
+        judge = trace.judge_usage
         if judge is not None:
             total_judge_in += judge.input_tokens
             total_judge_out += judge.completion_tokens

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, SerializeAsAny, model_validator
+from pydantic import BaseModel, Field, SerializeAsAny, model_validator
 
 from verifiers.v1.clients import BaseClientConfig
 from verifiers.v1.types import ID, SamplingConfig
@@ -20,6 +20,10 @@ class JudgeConfig(BaseClientConfig):
     weight: float = 1.0
     model: str = "openai/gpt-5.4-nano"
     sampling: SamplingConfig = SamplingConfig()
+    timeout: float = Field(600.0, gt=0)
+    """Per-attempt timeout in seconds."""
+    max_retries: int = Field(2, ge=0)
+    """Retries after the first transient provider failure."""
     prompt: str | None = None
     prompt_file: Path | None = None
     """Prompt file override, mutually exclusive with `prompt`."""

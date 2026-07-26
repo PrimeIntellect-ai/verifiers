@@ -12,7 +12,13 @@ from typing import cast
 from pydantic import Field, field_validator
 
 from verifiers.v1.configs.judge import JudgeConfig
-from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
+from verifiers.v1.judge import (
+    Judge,
+    JudgeResponse,
+    JudgeView,
+    judge_question,
+    judge_response,
+)
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, StrictBaseModel
@@ -23,7 +29,7 @@ RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
 
 # Appended to the prompt when `structured_output` is off, so the reply is JSON we can parse. Each
 # criterion carries a one-sentence `reason` written *before* the verdict (chain-of-thought), so the
-# verdict follows from it and the reasoning is auditable in `trace.info["judge"]`.
+# verdict follows from it and the reasoning is auditable in `trace.judge_calls`.
 JSON_SUFFIX = (
     "\n\nRespond with ONLY a JSON object and nothing else, in exactly this shape:\n"
     '{"verdicts": [{"name": "<criterion name>", "reason": "<one sentence citing specific '
@@ -106,7 +112,7 @@ class RubricJudgeConfig(JudgeConfig):
     output parsed as JSON when `False` (the default). Plain text is far more reliable on endpoints
     whose structured decoding is flaky (e.g. GLM-5.2 and other non-OpenAI models on some providers
     return empty completions for structured calls, especially over long transcripts); OpenAI models
-    handle either. Transient HTTP failures are already retried by the OpenAI client."""
+    handle either. Transient HTTP failures are already retried by the judge client."""
 
 
 class CriterionVerdict(StrictBaseModel):
@@ -193,36 +199,42 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             "criteria": "\n".join(render(c) for c in batch),
             "reference": reference,
         }
+        by_criterion = {c.name: c for c in batch}
+
+        def parse(response: JudgeResponse) -> dict[str, float]:
+            parsed = response.parsed or first_verdicts_object(response.text)
+            if parsed is None:
+                raise ValueError(
+                    f"judge returned no verdicts JSON object: {response.text!r}"
+                )
+            verdicts = RubricVerdicts.model_validate(parsed).verdicts
+            if sorted(v.name for v in verdicts) != sorted(by_criterion):
+                raise ValueError(
+                    f"judge verdicts name {sorted(v.name for v in verdicts)}, expected the "
+                    f"batch's {sorted(by_criterion)}"
+                )
+            scores: dict[str, float] = {}
+            for verdict in verdicts:
+                choices = by_criterion[verdict.name].choices
+                if verdict.verdict not in choices:
+                    raise ValueError(
+                        f"judge answered {verdict.verdict!r} for '{verdict.name}', "
+                        f"expected one of {choices}"
+                    )
+                scores[verdict.name] = normalize_choice(verdict.verdict, choices)
+            return scores
+
         if self.config.structured_output:
-            result = await self.evaluate(trace=trace, **fields)
-            verdicts = cast(RubricVerdicts, result.parsed).verdicts
+            result = await self.complete(
+                self.build_messages(**fields),
+                trace=trace,
+                schema=self.schema,
+                parse=parse,
+            )
         else:
             messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
-            result = await self.complete(messages, trace=trace)
-            obj = first_verdicts_object(result.text)
-            if obj is None:
-                raise ValueError(
-                    f"judge returned no verdicts JSON object: {result.text!r}"
-                )
-            verdicts = RubricVerdicts.model_validate(obj).verdicts
-        # Exactly one verdict per criterion in the batch, matched by name — anything else is a
-        # judge failure and must error the rollout, not score the model (see `judge_verdict`).
-        by_criterion = {c.name: c for c in batch}
-        if sorted(v.name for v in verdicts) != sorted(by_criterion):
-            raise ValueError(
-                f"judge verdicts name {sorted(v.name for v in verdicts)}, expected the "
-                f"batch's {sorted(by_criterion)}"
-            )
-        scores: dict[str, float] = {}
-        for v in verdicts:
-            choices = by_criterion[v.name].choices
-            # An off-menu answer is a judge failure, not a zero score.
-            if v.verdict not in choices:
-                raise ValueError(
-                    f"judge answered {v.verdict!r} for '{v.name}', expected one of {choices}"
-                )
-            scores[v.name] = normalize_choice(v.verdict, choices)
-        return scores
+            result = await self.complete(messages, trace=trace, parse=parse)
+        return cast(dict[str, float], result.parsed)
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria

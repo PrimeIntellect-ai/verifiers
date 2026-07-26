@@ -32,11 +32,11 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
 A judge is cheap to construct (the HTTP client is opened per call, inside `complete`, and
 closed when the call returns), so build it where you use it.
 
-Passing `trace=` records the call onto it — a typed record appended to `trace.info["judge"]` and
-the call's tokens + cost added to `trace.extra_usage` (kept separate from the agent's `trace.usage`),
-so judge behaviour and spend are no longer invisible. The record lands even if the judge refuses, an
-empty structured output comes back, or `parse` raises (the request was already billed). Omit `trace`
-for a pure call (e.g. in tests).
+Passing `trace=` appends a small typed `JudgeCall` before the first provider attempt. Like an
+agentic judge trace, it uses `ModelCall` for every provider exchange; opaque digests identify the
+request and config without copying gold-bearing prompts into the trace. `JudgeResponse.call`
+exposes the same evidence when no trace is supplied. On failure, the raised exception exposes it
+as `error.judge_call`.
 
 A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
 `score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
@@ -48,20 +48,34 @@ pre-plug them as class defaults) — and `Task.score` builds and runs it after t
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from pydantic_core import to_json
+from openai.lib._parsing import type_to_response_format_param
 from typing_extensions import TypeVar
 
-from verifiers.v1.clients.config import build_async_openai
+from verifiers.v1.clients.config import resolve_api_key
+from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.configs.judge import (
     JudgeConfig,
     judge_key,
 )
-from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.dialects.chat import ChatDialect, message_to_wire
+from verifiers.v1.errors import ProviderError
+from verifiers.v1.retries import backoff
 from verifiers.v1.scoring import parse_judge_choice
+from verifiers.v1.trace import (
+    Error,
+    JudgeCall,
+    ModelCall,
+    TimeSpan,
+)
 from verifiers.v1.types import Messages, StrictBaseModel, Usage
 from verifiers.v1.utils.generic import generic_type
 
@@ -76,6 +90,7 @@ class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
     text: str
     parsed: ParsedT | None = None
     usage: Usage | None = None
+    call: JudgeCall | None = Field(default=None, exclude=True, repr=False)
 
 
 JudgeView = Literal["last_reply", "full_trace"]
@@ -168,50 +183,116 @@ class Judge(Generic[ParsedT, ConfigT]):
         parse: Callable[[JudgeResponse[Any]], Any] | None = None,
         **sampling: Any,
     ) -> JudgeResponse[Any]:
-        """Call the judge and record billed usage even when parsing fails."""
+        """Call the judge and preserve its full attempt/result lifecycle."""
         wire = (
             [{"role": "user", "content": messages}]
             if isinstance(messages, str)
             else [message_to_wire(m) for m in messages]
         )
-        kwargs: dict[str, Any] = {"model": self.config.model, "messages": wire}
-        kwargs.update(self.config.sampling.model_dump(exclude_none=True))
-        kwargs.update(sampling)
+        effective = type(self.config.sampling).model_validate(
+            {**self.config.sampling.model_dump(exclude_none=True), **sampling}
+        )
+        body: dict[str, Any] = {"messages": wire}
+        if schema is not None:
+            body["response_format"] = type_to_response_format_param(schema)
+        dialect = ChatDialect()
+        request = dialect.apply_overrides(body, self.config.model, effective)
+        request_digest = hashlib.sha256(
+            to_json(request, inf_nan_mode="null")
+        ).hexdigest()
+        config_digest = hashlib.sha256(
+            to_json(self.config.model_dump(mode="json"), inf_nan_mode="null")
+        ).hexdigest()
+        call = JudgeCall(
+            judge=f"{type(self).__module__}.{type(self).__qualname__}",
+            config_digest=config_digest,
+            request_digest=request_digest,
+        )
+        if trace is not None:
+            trace.judge_calls.append(call)
 
-        response: JudgeResponse[Any] | None = None
         try:
-            async with build_async_openai(self.config) as client:
+            client = EvalClient(
+                self.config.base_url,
+                resolve_api_key(self.config),
+                self.config.headers,
+            )
+            try:
+                provider_response = None
+                for attempt in range(self.config.max_retries + 1):
+                    provider_call = ModelCall(
+                        model=self.config.model,
+                        sampling=dialect.parse_sampling(request),
+                        endpoint=dialect.upstream_path,
+                        time=TimeSpan(start=time.time()),
+                    )
+                    call.calls.append(provider_call)
+                    try:
+                        async with asyncio.timeout(self.config.timeout):
+                            provider_response = await client.get_response(
+                                dialect, body, self.config.model, effective
+                            )
+                    except BaseException as error:
+                        provider_call.error = Error.from_exception(error)
+                        if not isinstance(error, (ProviderError, TimeoutError)):
+                            raise
+                        transient = isinstance(error, TimeoutError)
+                        delay = backoff(attempt)
+                        if isinstance(error, ProviderError):
+                            transient = (
+                                error.should_retry
+                                if error.should_retry is not None
+                                else error.status_code in (408, 409, 429)
+                                or error.status_code >= 500
+                            )
+                            if (
+                                error.retry_after is not None
+                                and 0 < error.retry_after <= 60
+                            ):
+                                delay = error.retry_after
+                        if attempt == self.config.max_retries or not transient:
+                            raise
+                    else:
+                        provider_call.finish_reason = provider_response.finish_reason
+                        provider_call.usage = provider_response.usage
+                        break
+                    finally:
+                        provider_call.time.end = time.time()
+                    await asyncio.sleep(delay)
+            finally:
+                await client.close()
+
+            assert provider_response is not None
+            raw = cast(dict, provider_response.raw)
+            refusal = raw["choices"][0]["message"].get("refusal")
+            response = JudgeResponse[Any](
+                text=provider_response.message.content or "",
+                usage=provider_response.usage,
+                call=call,
+            )
+            call.text = response.text
+            if refusal is not None:
+                call.outcome = "refusal"
+                raise ValueError(f"judge refused output: {refusal}")
+            try:
                 if schema is not None:
-                    completion = await client.beta.chat.completions.parse(
-                        response_format=schema, **kwargs
-                    )
-                    choice = completion.choices[0]
-                    response = JudgeResponse(
-                        text=choice.message.content or "",
-                        parsed=choice.message.parsed,
-                        usage=Usage.from_openai(completion.usage),
-                    )
-                    if choice.message.refusal is not None:
-                        raise RuntimeError(
-                            f"judge refused structured output: {choice.message.refusal}"
-                        )
-                    if response.parsed is None:
-                        raise RuntimeError(
-                            f"judge returned no parseable structured output "
-                            f"(finish_reason={choice.finish_reason})"
-                        )
-                else:
-                    completion = await client.chat.completions.create(**kwargs)
-                    response = JudgeResponse(
-                        text=completion.choices[0].message.content or "",
-                        usage=Usage.from_openai(completion.usage),
-                    )
-            if parse is not None:
-                response.parsed = parse(response)
+                    response.parsed = schema.model_validate_json(response.text)
+                if parse is not None:
+                    response.parsed = parse(response)
+            except Exception:
+                call.outcome = "parse_error"
+                raise
+            call.outcome = "success"
             return response
-        finally:
-            if trace is not None and response is not None:
-                trace.record_judge(response)
+        except BaseException as error:
+            call.outcome = call.outcome or (
+                "cancelled"
+                if isinstance(error, asyncio.CancelledError)
+                else "provider_error"
+            )
+            call.error = Error.from_exception(error)
+            setattr(error, "judge_call", call)
+            raise
 
     async def evaluate(
         self, *, trace: Trace | None = None, **fields: Any

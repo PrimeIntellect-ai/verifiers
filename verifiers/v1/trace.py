@@ -5,15 +5,12 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
+from typing import Annotated, Any, Generic, Literal
 
 import numpy as np
 from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 from typing_extensions import TypeVar
-
-if TYPE_CHECKING:
-    from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
@@ -85,6 +82,18 @@ class Error(StrictBaseModel):
     chosen for a transport fault); None when the failure carried no HTTP exchange."""
     traceback: str | None = None
 
+    @classmethod
+    def from_exception(cls, error: BaseException) -> "Error":
+        """Capture one exception without depending on ambient ``except`` state."""
+        return cls(
+            type=type(error).__name__,
+            message=str(error) or type(error).__name__,
+            status_code=getattr(error, "status_code", None),
+            traceback=None
+            if isinstance(error, ProviderError)
+            else "".join(traceback.format_exception(error)),
+        )
+
 
 class ModelCall(StrictBaseModel):
     """One provider exchange behind a sampled turn; its conversation is the linked
@@ -93,7 +102,7 @@ class ModelCall(StrictBaseModel):
     node: int | None = None
     """Index into `Trace.nodes` of the assistant node this call committed — the link into
     the message graph (the call's conversation is that node's root-to-self path). None for
-    a call that committed no turn (see `error`)."""
+    a failed agent call or an off-graph call nested under `JudgeCall`."""
     model: str | None = None
     """The model requested from the provider. The rollout's model override makes this
     `agent.config.model` on every call; recorded per call because it is cheap and provable."""
@@ -115,6 +124,26 @@ class ModelCall(StrictBaseModel):
     error: Error | None = None
     """The failure that ended this call, coupled to the exchange that caused it; None on
     success. A failed call still records the settings it was sent with."""
+
+
+JudgeOutcome = Literal[
+    "success", "refusal", "provider_error", "parse_error", "cancelled"
+]
+
+
+class JudgeCall(StrictBaseModel):
+    """One off-graph judge decision. Its provider exchanges use the same
+    ``ModelCall`` records as an agentic judge's trace."""
+
+    judge: str
+    """Fully qualified Judge class."""
+    config_digest: str
+    """SHA-256 of the resolved judge config."""
+    request_digest: str
+    calls: list[ModelCall] = Field(default_factory=list)
+    outcome: JudgeOutcome | None = None
+    text: str | None = None
+    error: Error | None = None
 
 
 class Branch(StrictBaseModel):
@@ -265,7 +294,7 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
-TRACE_VERSION = 4
+TRACE_VERSION = 5
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
@@ -382,6 +411,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every provider exchange behind the sampled turns, in order: raw wire request/response
     plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
+    judge_calls: list[JudgeCall] = Field(default_factory=list)
+    """Every LLM judge decision made while scoring this trace."""
 
     rewards: dict[str, Reward] = Field(default_factory=dict)
     """Named rewards from tasks, judges, and the env's `score()` — each keeps its
@@ -392,9 +423,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Persistent JSON scratch space for task metadata that is not a reward or metric."""
     state: StateT = Field(default_factory=State, exclude=True)
     """Transient state shared with servers and scoring; excluded from every dump."""
-
-    extra_usage: list[Usage] = Field(default_factory=list)
-    """Usage from judges and other calls outside the agent's message graph."""
 
     is_completed: bool = False
     ok: bool = False
@@ -465,6 +493,16 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
         return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
+
+    @property
+    def judge_usage(self) -> Usage | None:
+        """Provider-reported usage summed across every judge provider call."""
+        return Usage.aggregate(
+            provider_call.usage
+            for call in self.judge_calls
+            for provider_call in call.calls
+            if provider_call.usage is not None
+        )
 
     @property
     def branches(self) -> list[Branch]:
@@ -568,11 +606,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         for name, value in values.items():
             self.record_metric(name, value)
 
-    def record_judge(self, response: JudgeResponse) -> None:
-        self.info.setdefault("judge", []).append(response.model_dump())
-        if response.usage is not None:
-            self.extra_usage.append(response.usage)
-
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
         reward = Reward(score=float(value), weight=float(weight))
         if name in self.rewards:
@@ -606,18 +639,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         gen.harness.duration = gen.duration - gen.model.duration
 
     def capture_error(self, error: Exception) -> None:
-        self.errors.append(
-            Error(
-                type=type(error).__name__,
-                message=str(error),
-                status_code=getattr(error, "status_code", None),
-                # Provider errors already carry the actionable upstream diagnostic.
-                # Keep full tracebacks for every other failure.
-                traceback=None
-                if isinstance(error, ProviderError)
-                else traceback.format_exc(),
-            )
-        )
+        self.errors.append(Error.from_exception(error))
         self.ok = False
         self.stop("error")
 

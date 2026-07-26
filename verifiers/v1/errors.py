@@ -22,9 +22,11 @@ the boundary isn't already clear from it.
 """
 
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
+from httpx import Headers
 from openai import OpenAIError
+from openai._base_client import BaseClient
 
 
 class RolloutError(Exception):
@@ -37,9 +39,22 @@ class ProviderError(RolloutError):
     (5xx/429/timeout) and not deterministic ones (4xx) — relayed from the provider, or chosen for a
     transport fault."""
 
-    def __init__(self, message: str = "", *, status_code: int = 502) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        status_code: int = 502,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        response_headers = Headers(headers)
+        # Preserve the retry policy from the OpenAI SDK that ordinary judges bypass.
+        self.retry_after = BaseClient._parse_retry_after_header(None, response_headers)
+        should_retry = response_headers.get("x-should-retry")
+        self.should_retry = (
+            should_retry == "true" if should_retry in ("true", "false") else None
+        )
 
 
 class OverlongPromptError(ProviderError):
@@ -128,7 +143,10 @@ def _provider_status(e: OpenAIError | str) -> int:
 
 
 def model_error(
-    e: OpenAIError | str, *, status_code: int | None = None
+    e: OpenAIError | str,
+    *,
+    status_code: int | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> ProviderError:
     """Map a provider failure to our error type: an overlong prompt (a budget limit the interception
     server turns into a clean truncation) is told apart from any other provider call failure, which
@@ -137,6 +155,8 @@ def model_error(
     an SDK error (the renderer) or the provider's raw error body (the httpx proxy)."""
     from openai import APIStatusError
 
+    if headers is None and isinstance(e, APIStatusError):
+        headers = e.response.headers
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
     if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):
@@ -150,4 +170,5 @@ def model_error(
     return ProviderError(
         text,
         status_code=status_code if status_code is not None else _provider_status(e),
+        headers=headers,
     )
