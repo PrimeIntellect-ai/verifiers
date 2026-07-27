@@ -26,6 +26,8 @@ jobs:
   test:
     name: Verifiers
     runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
