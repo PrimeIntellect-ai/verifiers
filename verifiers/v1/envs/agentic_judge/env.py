@@ -361,9 +361,11 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
             if not solution.ok:
-                # The rollout errored, so its own scoring never ran either. Provisioning
-                # a second sandbox to grade it would spend a box to reproduce a failure
-                # already recorded on the trace.
+                # The rollout errored, so its own scoring never ran either; grading it
+                # would spend a second sandbox to reproduce a failure the trace already
+                # records. Return rather than raise: `episode.ok` follows the failed
+                # trace, and `episode_should_retry` classifies off that trace's own
+                # error — an exception raised here would bury the real type.
                 return
             collected = await vf.collect(box, task.data.artifacts)
 
