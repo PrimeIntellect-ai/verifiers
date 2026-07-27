@@ -87,6 +87,29 @@ added automatically; evaluator-provided `allow` entries add exceptions and `bloc
 entries can narrow them. Restricted Harbor tasks require Docker or a Prime VM; Prime
 accepts host-level entries and rejects combinations that need both policy modes.
 
+## Fystash cloud sandboxes (experimental)
+
+[Fystash](https://fystash.ai) provides warm Firecracker rooms as a Harbor cloud
+environment (`-e fystash`). Use it when you want denser episode-style runtimes
+under the same Verifiers `HarborTaskset` path — not as Environments Hub content.
+
+Upstream Harbor provider PR (merge out of band):
+https://github.com/harbor-framework/harbor/pull/2491
+
+```bash
+export FYSTASH_API=https://api.fystash.ai
+export FYSTASH_API_KEY=key-…   # https://fystash.ai/signup → Account
+# optional: FYSTASH_TEMPLATE_ID=default|docker
+
+harbor run -d "<org/dataset>" -a "<agent>" -m "<model>" -e fystash -n 4
+```
+
+Partner notes: https://docs.fystash.ai/guides/verifiers
+
+Treat as experimental until the Harbor PR merges and you validate your taskset
+on Fystash. Fystash is not a Prime Sandboxes SDK plugin and is not listed on
+Environments Hub.
+
 ## Shortcomings
 
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
