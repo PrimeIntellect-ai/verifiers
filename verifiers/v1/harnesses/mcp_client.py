@@ -115,16 +115,25 @@ async def mcp_session(server: str, spec: dict, operation: str, replay_safe: bool
     failure = None
     initialized = False
     operation_completed = False
+    outer_cancel = None
     try:
         read, write, *_ = await ready
         async with ClientSession(read, write) as session:
-            await session.initialize()
-            initialized = True
-            yield session
+            try:
+                await session.initialize()
+                initialized = True
+                yield session
+            except asyncio.CancelledError as error:
+                outer_cancel = error
+                raise
             operation_completed = True
     except BaseException as error:  # noqa: BLE001 - preserve caller cancellation
         task = asyncio.current_task()
-        if not operation_completed or (task is not None and task.cancelling()):
+        if outer_cancel is None and isinstance(error, asyncio.CancelledError):
+            outer_cancel = error
+        if task is not None and task.cancelling():
+            failure = outer_cancel or asyncio.CancelledError()
+        elif not operation_completed:
             failure = error
     finally:
         stop.set()
