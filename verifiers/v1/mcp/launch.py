@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from verifiers.v1.mcp.toolset import Toolset
 
 logger = logging.getLogger(__name__)
+_MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 
 # Sandboxed servers install the working tree, so only wheel inputs need to cross the boundary.
 VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
@@ -444,7 +445,7 @@ async def mcp_session(
     url: str,
     *,
     headers: dict[str, str] | None = None,
-    timeout: float | httpx.Timeout = httpx.Timeout(600.0, connect=5.0),
+    timeout: float | httpx.Timeout = _MCP_TIMEOUT,
 ) -> AsyncIterator[ClientSession]:
     """One fresh session to an MCP server, opened and closed within the caller's task so AnyIO
     cancellation scopes stay correctly nested. A teardown failure after the body completed is
