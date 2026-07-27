@@ -31,6 +31,12 @@ from verifiers.v1.session import RolloutSession
 
 logger = logging.getLogger(__name__)
 
+# How often the elastic pool polls its servers' tunnels. A dead tunnel keeps absorbing
+# rollout assignments until the next poll (fast-failing ones drain and re-land on it), so
+# the interval bounds how long that black hole lives; per-server checks are one GET to the
+# tunnel service, so polling even a large pool this often is cheap.
+_HEALTH_CHECK_INTERVAL = 60.0
+
 
 class StaticInterceptionPoolConfig(BaseInterceptionConfig):
     """A fixed set of interception servers, each configured like a `server` type; rollouts
@@ -47,14 +53,10 @@ class StaticInterceptionPool(Interception):
     a slot on the least-loaded one. No capacity cap — sizing the set to the load is the
     operator's call (it's the shape for pre-provisioned/bring-your-own endpoints)."""
 
-    def __init__(
-        self, config: StaticInterceptionPoolConfig, requires_tunnel: bool = False
-    ) -> None:
+    def __init__(self, config: StaticInterceptionPoolConfig, requires_tunnel: bool = False) -> None:
         super().__init__()
         self.config = config
-        self.servers = [
-            InterceptionServer(server, requires_tunnel) for server in config.servers
-        ]
+        self.servers = [InterceptionServer(server, requires_tunnel) for server in config.servers]
 
     async def start(self) -> None:
         for server in self.servers:
@@ -83,7 +85,9 @@ class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
 class ElasticInterceptionPool(Interception):
     """Warm the first interception server on start, then grow on demand: `multiplex`
     rollouts share one server (one prime tunnel behind a remote consumer); `acquire` hands
-    a rollout a slot on one, bringing up a new server when all are at capacity."""
+    a rollout a slot on one, bringing up a new server when all are at capacity. A health
+    loop retires servers whose tunnel has died (see `Tunnel.is_alive`), so the pool grows
+    back with fresh tunnels instead of black-holing rollouts on dead URLs."""
 
     def __init__(
         self,
@@ -94,18 +98,66 @@ class ElasticInterceptionPool(Interception):
         self.config = config or ElasticInterceptionPoolConfig()
         self.requires_tunnel = requires_tunnel
         self.servers: list[InterceptionServer] = []
+        self._draining: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
         self._warm_task: asyncio.Task[InterceptionServer] | None = None
+        self._health_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         self._warm_task = asyncio.create_task(self._server())
+        if self.requires_tunnel:
+            self._health_task = asyncio.create_task(self._health_loop())
 
     async def stop(self) -> None:
-        if self._warm_task is not None:
-            self._warm_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._warm_task
+        for task in (self._warm_task, self._health_task):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        self._warm_task = None
+        self._health_task = None
         await super().stop()
+
+    async def _health_loop(self) -> None:
+        """Retire servers whose tunnel has died, so rollouts stop landing on dead URLs.
+
+        A dead server otherwise poisons the pool forever: its rollouts fail instantly, its
+        load drops back to 0, and `_server` hands it out again — while healthy servers work
+        real (slow) rollouts, so the dead one absorbs most assignments. Retiring also covers
+        tunnels in a terminal status that still route on a surviving frpc connection: they
+        die for good on the next connection drop, so they're replaced proactively."""
+        while True:
+            await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
+            try:
+                await self._retire_dead_servers()
+            except Exception:
+                logger.exception("interception pool: health check failed")
+
+    async def _retire_dead_servers(self) -> None:
+        # Liveness checks call the tunnel service — keep them off the acquire lock.
+        for server in list(self.servers):
+            if server.tunnel is None or await server.tunnel.is_alive():
+                continue
+            async with self._lock:
+                if server in self.servers:
+                    self.servers.remove(server)
+                    self._draining.append(server)
+                    logger.warning(
+                        "interception pool: retired server with dead tunnel %s (%d rollouts draining)",
+                        server.base_url,
+                        server.load,
+                    )
+        # Tear a retired server down only once its in-flight rollouts have drained; until
+        # then its interception server keeps serving whatever still reaches it. The pool's
+        # exit stack still holds every retired server, so this early stop is an optimization
+        # (frees the frpc process and registration) and the double-stop at pool shutdown is
+        # a no-op.
+        for server in list(self._draining):
+            if server.load > 0:
+                continue
+            self._draining.remove(server)
+            with contextlib.suppress(Exception):
+                await server.stop()
 
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
@@ -115,9 +167,7 @@ class ElasticInterceptionPool(Interception):
             if server.load < self.config.multiplex:
                 return server
         # Pin prime explicitly — the only tunnel kind that can be minted on demand.
-        server = InterceptionServer(
-            InterceptionServerConfig(tunnel=PrimeTunnelConfig()), self.requires_tunnel
-        )
+        server = InterceptionServer(InterceptionServerConfig(tunnel=PrimeTunnelConfig()), self.requires_tunnel)
         await self.stack.enter_async_context(server)
         self.servers.append(server)
         logger.info(

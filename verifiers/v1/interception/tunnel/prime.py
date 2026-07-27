@@ -6,17 +6,24 @@ pool scales with."""
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.utils.aio import run_shielded
+
+if TYPE_CHECKING:
+    from prime_tunnel import Tunnel as TunnelClient
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
 # tunnel service, shared by every process on the host that opens one. One host-global
 # limiter, not a per-runtime config knob.
 _TUNNELS_PER_MIN = 512
 TUNNEL_LIMITER = creation_limiter(_TUNNELS_PER_MIN / 60, "prime-tunnel")
+
+# Registration statuses after which the tunnel service never routes the URL again (frps
+# rejects every reconnect). Matches the platform's terminal tunnel statuses.
+_TERMINAL_STATUSES = frozenset({"expired", "terminated"})
 
 
 class PrimeTunnelConfig(BaseTunnelConfig):
@@ -27,6 +34,10 @@ class PrimeTunnelConfig(BaseTunnelConfig):
 
 
 class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
+    def __init__(self, config: PrimeTunnelConfig | None = None) -> None:
+        super().__init__(config)
+        self._client: "TunnelClient | None" = None  # held while expose() is active
+
     @contextlib.asynccontextmanager
     async def expose(self, port: int) -> AsyncIterator[str]:
         """Bridge the host `port` to a public URL via prime_tunnel (frpc). Tunnel creation
@@ -47,10 +58,34 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
                         url = str(await client.start()).rstrip("/")
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
+        self._client = client
         try:
             yield url
         finally:
+            self._client = None
             # Run the synchronous stop to completion even under cancellation (`run_shielded`
             # re-raises the cancellation after); tunnel-stop failures are best-effort.
             with contextlib.suppress(Exception):
                 await run_shielded(asyncio.to_thread(client.sync_stop))
+
+    async def is_alive(self) -> bool:
+        """Whether the exposed URL still routes (or ever will again).
+
+        Dead means dead for good: frpc exited (nothing restarts it), or the service put the
+        registration in a terminal status — after which frps rejects every reconnect, so
+        even a tunnel that still routes on its surviving connection dies permanently on the
+        next drop. The status must be read explicitly: a terminal registration still exists
+        (the SDK's `check_registered` existence probe stays True), and a transient check
+        failure reports alive so a flaky control plane can't mass-retire healthy servers."""
+        client = self._client
+        if client is None:
+            return True  # not exposed — nothing to have died
+        if not client.is_running:
+            return False
+        try:
+            info = await client._client.get_tunnel(client.tunnel_id)
+        except Exception:
+            return True
+        if info is None:
+            return False  # registration deleted
+        return (info.status or "").lower() not in _TERMINAL_STATUSES
