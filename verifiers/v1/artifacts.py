@@ -18,7 +18,6 @@ import asyncio
 import logging
 import shlex
 import uuid
-from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -51,19 +50,13 @@ class Artifact(StrictBaseModel):
     """`tar --exclude` patterns, applied when `source` is a directory."""
 
 
-@dataclass(frozen=True)
-class CollectedArtifact:
-    """One source, tarred out of the agent's box and held on the host in between.
-    Transient: only `Trace.info` is durable."""
-
-    root: str
-    archive: bytes
-
-
 async def collect(
     runtime: Runtime, artifacts: list[Artifact] | None = None
-) -> list[CollectedArtifact]:
+) -> dict[str, bytes]:
     """Tar the convention dir and every declared path out of `runtime`.
+
+    Keyed by source path; the values are tar archives. Insertion order is the order
+    they were declared, and a path cannot be collected twice.
 
     A declared source that is missing raises: it was declared because grading needs it,
     and grading a partial state scores the rollout wrong rather than failing it. The
@@ -82,7 +75,7 @@ async def collect(
     )
     entries = ([Artifact(source=CONVENTION_DIR)] if sweep else []) + declared
 
-    collected: list[CollectedArtifact] = []
+    collected: dict[str, bytes] = {}
     budget = MAX_ARTIFACT_BYTES
     for artifact in entries:
         source = artifact.source
@@ -95,13 +88,13 @@ async def collect(
             )
         archive = await _tar_out(runtime, artifact, budget)
         budget -= len(archive)
-        collected.append(CollectedArtifact(root=source, archive=archive))
+        collected[source] = archive
 
-    logger.debug("collected artifact roots: %s", [c.root for c in collected])
+    logger.debug("collected artifact roots: %s", list(collected))
     return collected
 
 
-async def restore(runtime: Runtime, collected: list[CollectedArtifact]) -> None:
+async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
     """Extract `collected` in `runtime` at the original absolute paths."""
     if not collected:
         return
@@ -115,15 +108,15 @@ async def restore(runtime: Runtime, collected: list[CollectedArtifact]) -> None:
     # Clear every root up front, not per entry: a later nested root would otherwise
     # delete content an earlier one just restored. Clearing also drops any file or
     # symlink the image left at the target.
-    roots = " ".join(shlex.quote(entry.root) for entry in collected)
+    roots = " ".join(shlex.quote(root) for root in collected)
     await _run(runtime, f"rm -rf -- {roots}", "clear artifact roots")
-    for entry in collected:
+    for root, archive in collected.items():
         path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
-        await runtime.write(path, entry.archive)
+        await runtime.write(path, archive)
         await _run(
             runtime,
             f"tar -xf {shlex.quote(path)} -C / && rm -f {shlex.quote(path)}",
-            f"restore artifact {entry.root!r}",
+            f"restore artifact {root!r}",
         )
 
 
