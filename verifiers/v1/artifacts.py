@@ -67,9 +67,13 @@ async def collect(
     One archive per source: BusyBox `tar` (every alpine-based image) implements only
     `c`/`x`/`t` with no `-r` to append, and each source carries its own excludes anyway.
     """
-    workdir = getattr(runtime.config, "workdir", "") or "/"
+    # Harbor permits a relative source, and the probe below resolves one against the
+    # runtime's workdir — so the tar, which runs `-C /`, has to agree or it archives a
+    # different file. Joining also normalises `/work/` to `/work`, so one tree cannot
+    # key two entries (the source is both the dict key and `restore`'s rm -rf target).
+    workdir = PurePosixPath(getattr(runtime.config, "workdir", "") or "/")
     declared = [
-        a.model_copy(update={"source": _resolve(a.source, workdir)})
+        a.model_copy(update={"source": str(workdir / a.source)})
         for a in artifacts or []
     ]
     convention = PurePosixPath(CONVENTION_DIR)
@@ -124,21 +128,6 @@ async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
             f"tar -xf {shlex.quote(path)} -C / && rm -f {shlex.quote(path)}",
             f"restore artifact {root!r}",
         )
-
-
-def _resolve(source: str, workdir: str) -> str:
-    """A declared source as an absolute path in the box.
-
-    Harbor permits a relative source for the main service, and the existence probe
-    resolves one against the runtime's workdir — so the tar, which runs `-C /`, has to
-    agree. Left unresolved, `solution.txt` probes `$workdir/solution.txt`, passes, then
-    archives `/solution.txt`: a different file, collected without an error.
-
-    The trailing slash goes so `/work` and `/work/` cannot key two entries for one tree;
-    the source doubles as the dict key and as `restore`'s `rm -rf` target.
-    """
-    absolute = source if source.startswith("/") else f"{workdir.rstrip('/')}/{source}"
-    return absolute.rstrip("/")
 
 
 async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
