@@ -296,8 +296,9 @@ class ACPHarnessSession(HarnessSession):
     async def close(self) -> None:
         if self._closed:
             return
-        try:
-            if self._started:
-                await self.acp._close(self.runtime, self.sidecar_path)
-        finally:
-            await super().close()
+        if self._started:
+            await self.acp._close(self.runtime, self.sidecar_path)
+        # A failed transport teardown remains retryable. RolloutRun deliberately
+        # calls close again from its final cleanup path; only a successful teardown
+        # may make that retry an idempotent no-op.
+        await super().close()
