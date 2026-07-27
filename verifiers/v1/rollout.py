@@ -54,6 +54,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
 from verifiers.v1.types import Messages
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
@@ -375,16 +376,20 @@ class RolloutRun:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        await run_shielded(self._abort_cleanup())
+
+    async def _abort_cleanup(self) -> None:
+        """Complete best-effort teardown even while the driver is being cancelled."""
         if self._harness_session is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._harness_session.close()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await self._stack.aclose()
         if self.runtime is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
         if self._owns_runtime and self.runtime is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self.runtime.stop()
 
     async def close(self) -> Trace:

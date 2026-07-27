@@ -217,30 +217,29 @@ class ACP:
     ) -> None:
         sidecar_dir = self._sidecar_dir(sidecar_path)
         exists = await runtime.run(["test", "-S", sidecar_path], {})
-        failure = ""
-        try:
-            if exists.exit_code == 0:
-                program = await runtime.prepare_uv_script(
-                    ACP_SOURCE, {"UV_FROZEN": "false"}
-                )
-                result = await runtime.run([*program, "shutdown", sidecar_path], {})
-                if result.exit_code != 0:
-                    log = await runtime.run(
-                        ["tail", "-c", "4000", f"{sidecar_dir}/acp.log"], {}
-                    )
-                    failure = (
-                        result.stderr.strip()
-                        or result.stdout.strip()
-                        or "ACP session shutdown failed"
-                    )
-                    if log.exit_code == 0 and log.stdout:
-                        failure = (
-                            f"{failure}\n\nACP session log:\n{log.stdout.rstrip()}"
-                        )
-        finally:
+        if exists.exit_code != 0:
             await run_shielded(runtime.run(["rm", "-rf", sidecar_dir], {}))
-        if failure:
+            return
+
+        program = await runtime.prepare_uv_script(ACP_SOURCE, {"UV_FROZEN": "false"})
+        result = await runtime.run([*program, "shutdown", sidecar_path], {})
+        if result.exit_code != 0:
+            log = await runtime.run(
+                ["tail", "-c", "4000", f"{sidecar_dir}/acp.log"], {}
+            )
+            failure = (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or "ACP session shutdown failed"
+            )
+            if log.exit_code == 0 and log.stdout:
+                failure = f"{failure}\n\nACP session log:\n{log.stdout.rstrip()}"
+            # Preserve the socket and its private directory so the rollout's
+            # final cleanup pass can retry shutdown instead of orphaning a live
+            # sidecar that is no longer addressable.
             raise RuntimeError(failure)
+
+        await run_shielded(runtime.run(["rm", "-rf", sidecar_dir], {}))
 
     @staticmethod
     def _sidecar_dir(sidecar_path: str) -> str:
