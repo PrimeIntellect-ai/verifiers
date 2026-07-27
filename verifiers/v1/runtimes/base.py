@@ -74,9 +74,6 @@ def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
 # none of this.
 _LIVE: "weakref.WeakSet[Runtime]" = weakref.WeakSet()
 _atexit_armed = False
-_PENDING: "set[asyncio.Task]" = set()
-"""Unawaited teardowns from `stop_nowait`, held so asyncio's weak task references cannot
-collect one mid-flight."""
 
 
 def register(runtime: "Runtime") -> None:
@@ -166,23 +163,6 @@ class Runtime(ABC):
         `teardown`, not this."""
         self.stopped = True  # before the await: no new borrows once teardown begins
         await run_shielded(self.teardown())
-
-    def stop_nowait(self) -> None:
-        """`stop`, without waiting for it. For an owner with nothing left to do in this
-        box: on a remote runtime teardown is an API round trip, and whatever comes next
-        should not sit behind it.
-
-        Only safe once nothing will read from the box again. A context manager that also
-        calls `stop` on exit gets a no-op second teardown, not a second deletion, but it
-        will still await one — detach it (`AsyncExitStack.pop_all`) to get the benefit."""
-        if self.stopped:
-            return
-        self.stopped = True  # synchronous, as in `stop`: a task only schedules
-        task = asyncio.create_task(run_shielded(self.teardown()))
-        # asyncio holds only a weak reference to a running task, so an unawaited teardown
-        # can be collected mid-flight. `_LIVE` tracks the runtime, not this task.
-        _PENDING.add(task)
-        task.add_done_callback(_PENDING.discard)
 
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown

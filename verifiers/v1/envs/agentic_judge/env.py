@@ -19,7 +19,6 @@ import json
 import math
 import re
 import tomllib
-from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Literal
 
@@ -359,16 +358,12 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 await agents.judge.run(judge_task, runtime=box)
             return
 
-        # The solver's box is detached rather than exited: `provision`'s own teardown
-        # would be awaited here, and the judge's box has no reason to wait behind it
-        # once collection has returned. If collection raises, `pop_all` is skipped and
-        # the context manager tears the box down as usual.
-        async with AsyncExitStack() as stack:
-            box = await stack.enter_async_context(agents.solver.provision(task))
+        # Collection is the barrier: once it returns, nothing downstream needs the
+        # solver's box. Letting the context manager tear it down normally keeps an
+        # episode at one box rather than two, which is what costs on a paid runtime.
+        async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
             collected = await vf.collect(box, task.data.artifacts)
-            stack.pop_all()
-        box.stop_nowait()
 
         async with agents.judge.provision(task) as judge_box:
             await vf.restore(judge_box, collected)

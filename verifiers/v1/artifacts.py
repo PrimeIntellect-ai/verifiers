@@ -9,8 +9,8 @@ transport, Harbor's in-sandbox convention, collected with no declaration and res
 the same path in the grading box ("no translation", as in Harbor).
 
 `collect` runs while the agent's box is alive, right after `Task.finalize` produced the
-files. It is the barrier: once it returns the box can be torn down (`Runtime.stop_nowait`
-puts that teardown behind the grading box rather than in front of it).
+files. It is the barrier: once it returns, nothing downstream needs the agent's box and
+it can be torn down.
 """
 
 from __future__ import annotations
