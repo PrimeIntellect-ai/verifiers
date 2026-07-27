@@ -293,4 +293,3 @@ async def test_anthropic_tool_call_round_trips_thinking_blocks():
         {"type": "thinking", "thinking": "hidden chain", "signature": "sig_1"},
         {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "x"}},
     ]
-
