@@ -393,22 +393,21 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 @pytest.mark.e2e
 async def test_env_id_agentic_judge(run_v1, tmp_path):
     """The agentic judge over the echo taskset (needs docker), on the default
-    `isolated` topology: the solver plays in a box provisioned from its runtime
-    policy, that box is torn down, and the judge gets its own from the same
-    policy with the graded trace uploaded and the task's declared artifacts
-    restored. Its parsed verdict lands on the solver's trace under the spec's
-    reward key. Wiring, not taste: the judge followed the verdict-file contract
-    — the grade itself is the model's call. Exercises the config surface too: an
-    unpinned judge runtime (inherits the solver's), a policy-only prompt override
-    (the verdict contract is appended regardless), and reward-composition
-    weights."""
+    `shared` topology: the box is provisioned once from the solver's runtime
+    policy, the solver plays the task in it, the judge lands in the SAME box with
+    the graded trace uploaded, investigates with real execution, and its parsed
+    verdict lands on the solver's trace under the spec's reward key. Wiring, not
+    taste: the judge followed the verdict-file contract — the grade itself is the
+    model's call. Exercises the config surface too: an unpinned judge runtime
+    (inherits the solver's), a policy-only prompt override (the verdict contract
+    is appended regardless), and reward-composition weights."""
     traces = await run_v1(
         "echo-v1",
         harness=None,  # seats pin their own harness; there is no run-level one
         env={
             "id": "agentic-judge",
-            # Pinned here only; the judge's runtime is left unset to exercise the
-            # inheritance that gives it the same image.
+            # The solver owns the shared box, so the container is pinned here; the
+            # judge's runtime is left unset to exercise the inheritance.
             "solver": {"harness": {"id": "bash"}, "runtime": {"type": "docker"}},
             # The judge reads the trace and reasons before it writes the
             # verdict file; the shared 2048-token run cap truncates it mid-audit.

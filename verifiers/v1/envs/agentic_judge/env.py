@@ -8,11 +8,12 @@ verdicts to `/tmp/verdict.json`, with the solver's full trace record uploaded at
 `judge/<name>` metrics plus a weighted-mean `judge` reward, composed with the
 taskset's own rewards via `[env.score]` (judge-only by default).
 
-`--env.topology` decides where the judge stands. Under `isolated` (the default) it
-gets its own box from the same image, holding only what the task declared as
-artifacts, so nothing the agent did to its environment can reach the grader. Under
-`shared` it plays in the box the agent worked in, seeing that environment directly
-and every seam in it.
+`--env.topology` decides where the judge stands. Under `shared` (the default) it
+plays in the box the agent worked in, seeing that environment directly and every
+seam in it. Under `isolated` it gets its own box from the same image, holding only
+what the task declared as artifacts, so nothing the agent did to its environment
+can reach the grader — worth opting into once a taskset publishes its evidence
+somewhere that travels.
 """
 
 import json
@@ -156,7 +157,7 @@ class JudgeTask(vf.Task):
         cls,
         solution: vf.Trace,
         config: "JudgeTaskConfig",
-        topology: str = "isolated",
+        topology: str = "shared",
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace.
 
@@ -290,14 +291,21 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge agent. Under `isolated` it provisions its own box from this policy;
     under `shared` it plays in the solver's box and this policy is ignored."""
-    topology: Literal["isolated", "shared"] = "isolated"
-    """Whether the judge grades in its own box or the solver's.
+    topology: Literal["shared", "isolated"] = "shared"
+    """Whether the judge grades in the solver's box or its own.
+
+    `shared` places the judge in the box the agent worked in, so it can inspect that
+    environment directly — at the cost of leaving every seam in it reachable. It is the
+    default because it is what has been measured, and because a judge only gains from
+    isolation once the task publishes what the judge needs.
 
     `isolated` boots a second box from the same image, carries the task's declared
-    artifacts across, and grades there — so nothing the agent did to its own
-    environment can reach the grader. `shared` places the judge in the box the agent
-    worked in, which lets it inspect that environment directly at the cost of leaving
-    every seam in it reachable."""
+    artifacts across, and grades there, so nothing the agent did to its environment can
+    reach the grader. Opt in per taskset, and only once that taskset puts its evidence
+    somewhere that travels: an artifact under `vf.CONVENTION_DIR` (see
+    `capture_patch(write_path=...)`), a declared `TaskData.artifacts` path, or the trace
+    record itself. A task whose judge hint says to run `git diff` in the box will find
+    a pristine checkout here and grade every attempt as untouched."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
 
