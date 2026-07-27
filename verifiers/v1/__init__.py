@@ -37,7 +37,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.configs.judge import JudgeConfig, JudgeSamplingConfig, Judges
+from verifiers.v1.configs.judge import JudgeConfig, Judges
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     ReferenceJudge,
@@ -267,7 +267,6 @@ __all__ = [
     "Judge",
     "JudgeConfig",
     "Judges",
-    "JudgeSamplingConfig",
     "JudgeResponse",
     "JudgeView",
     "ReferenceJudge",
