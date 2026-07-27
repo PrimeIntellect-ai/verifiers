@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 import httpx
 from pydantic import Field
 
+from verifiers.utils.serve_utils import get_free_port
 from verifiers.v1.decorators import reward
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
@@ -25,13 +26,13 @@ from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import AssistantMessage, ToolMessage
-from verifiers.utils.serve_utils import get_free_port
 
 NEMO_GYM_INSTALL_HINT = "uv sync --python 3.12 --extra nemo-gym"
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
-    from mcp.types import CallToolResult, Tool as MCPTool
+    from mcp.types import CallToolResult
+    from mcp.types import Tool as MCPTool
 
     from verifiers.v1.runtimes import Runtime
 

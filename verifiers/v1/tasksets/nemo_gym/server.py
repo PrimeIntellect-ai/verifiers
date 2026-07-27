@@ -4,10 +4,9 @@ import os
 from importlib import import_module
 
 import uvicorn
-from omegaconf import OmegaConf
-
 from nemo_gym.config_types import BaseServerConfig
 from nemo_gym.server_utils import ServerClient
+from omegaconf import OmegaConf
 
 HOST = os.environ.get("NEMO_GYM_HOST", "127.0.0.1")
 PORT = int(os.environ.get("NEMO_GYM_PORT", "8000"))
