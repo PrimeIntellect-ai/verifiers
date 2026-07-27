@@ -360,6 +360,11 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # episode at one box rather than two, which is what costs on a paid runtime.
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
+            if not solution.ok:
+                # The rollout errored, so its own scoring never ran either. Provisioning
+                # a second sandbox to grade it would spend a box to reproduce a failure
+                # already recorded on the trace.
+                return
             collected = await vf.collect(box, task.data.artifacts)
 
         async with agents.judge.provision(task) as judge_box:
@@ -369,6 +374,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent_name: t for t in episode.traces}
+        if "judge" not in by_agent:
+            return  # solver errored; `run` skipped grading and the trace says why
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):

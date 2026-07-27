@@ -237,7 +237,7 @@ An environment can grade in a second sandbox rather than the one the agent worke
 
 Two channels, and they do different jobs:
 
-- **`trace.info` is the record.** `capture_patch` puts the diff in `trace.info["patch"]`, a judge puts its verdict there, and both ride `traces.jsonl`. It never travels to another box.
+- **`trace.info` is the record.** `capture_patch` puts the diff in `trace.info["patch"]`, a judge puts its verdict there, and both ride `traces.jsonl`. It is not a transport channel — nothing you put there is placed in the grading sandbox as a file. An agentic judge is the exception: it receives the whole serialized trace, `info` included, at `/tmp/trace.json`, so treat anything you leave there as visible to the grader.
 - **`/logs/artifacts/` is transport.** Anything written there is collected with no declaration at all, carried to the host, and restored in the grading sandbox at the same path.
 
 Produce artifacts in `finalize`, while the runtime is live and before scoring mutates anything:

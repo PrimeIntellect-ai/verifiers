@@ -18,6 +18,8 @@ import uuid
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from verifiers.v1.errors import SandboxError
+
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.trace import Trace
@@ -84,17 +86,25 @@ async def capture_patch(
 ) -> None:
     """Snapshot the agent's cumulative diff into `trace.info["patch"]`.
 
-    Best-effort by design: a rollout whose sandbox died or whose repo state is
-    broken records `info["patch_error"]` instead of failing the rollout —
-    scoring still runs and the error stays visible in results.
+    Two failure modes, attributed differently, because they deserve different outcomes.
+
+    A non-zero exit means the box answered and git refused: a stale `index.lock` from a
+    killed agent command, a deleted `.git`, a `base_commit` the agent rewrote out of
+    existence, a disk it filled. That is the agent's own environment, so it records
+    `info["patch_error"]` and lets the rollout score — a run with no patch grades as a
+    run that changed nothing, which is the right reward.
+
+    An exception means the box never answered: the sandbox died, the exec timed out,
+    the transport dropped. Nothing there is the policy's doing, so it raises. Scoring
+    the rollout anyway would feed a zero to training that says only that our
+    infrastructure failed.
 
     `write_path` additionally writes the patch to that path inside the box, for tasks
-    graded in a second box: `trace.info` is the durable record and never travels, so
-    a grader that needs the diff as a file needs it collected as an artifact. Point it
-    at `vf.CONVENTION_DIR` (e.g. `/logs/artifacts/patch.diff`) and collection picks it
-    up with no declaration. Publishing is best-effort like the rest of this helper — a
-    task that must not grade without the patch should declare that path as an
-    `Artifact`, which makes collection strict about it.
+    graded in a second sandbox. Point it at `vf.CONVENTION_DIR` (e.g.
+    `/logs/artifacts/patch.diff`) and collection picks it up with no declaration. Leave
+    it on the convention sweep rather than declaring it as an `Artifact`: a declared
+    path is collected strictly, which would turn an agent-broken repo into a rollout
+    error instead of the low score it should earn.
     """
     nonce = uuid.uuid4().hex
     full, capped = f"{_FULL}_{nonce}", f"{_CAPPED}_{nonce}"
@@ -105,14 +115,21 @@ async def capture_patch(
             {**(env or {}), "VF_DIFF_BASE": base_commit or "HEAD"},
         )
         if result.exit_code != 0:
+            # Not every runtime raises when the box is gone — Docker returns `docker
+            # exec`'s own non-zero result, which is indistinguishable from git failing.
+            # One probe on the failure path tells the two apart before we blame anyone.
+            if (await runtime.run(["true"], {})).exit_code != 0:
+                raise SandboxError(
+                    f"patch capture failed and the box stopped answering: "
+                    f"{(result.stderr or '').strip()[-300:]}"
+                )
             trace.info["patch_error"] = (
                 f"exit={result.exit_code} {(result.stderr or '').strip()[-500:]}"
             )
             return
         raw = await runtime.read(capped)
-    except Exception as exc:  # noqa: BLE001 - capture must never fail the rollout
-        trace.info["patch_error"] = f"{type(exc).__name__}: {exc}"
-        return
+    except Exception as exc:
+        raise SandboxError(f"patch capture could not reach the box: {exc}") from exc
     finally:
         # Unique names don't overwrite each other, so leftovers would accumulate
         # on shared-filesystem runtimes; removal is best-effort by design.
@@ -129,5 +146,8 @@ async def capture_patch(
             parent = str(PurePosixPath(write_path).parent)
             await runtime.run(["mkdir", "-p", parent], env or {})
             await runtime.write(write_path, raw)
-        except Exception as exc:  # noqa: BLE001 - the write must never fail the rollout.
-            trace.info["patch_write_error"] = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:
+            # Transport again, not the policy: the patch exists, we could not place it.
+            raise SandboxError(
+                f"patch capture could not write {write_path!r}: {exc}"
+            ) from exc
