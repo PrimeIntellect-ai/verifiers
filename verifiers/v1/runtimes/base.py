@@ -4,7 +4,6 @@ import asyncio
 import atexit
 import contextlib
 import hashlib
-import logging
 import shlex
 import uuid
 import weakref
@@ -17,8 +16,6 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
-
-logger = logging.getLogger(__name__)
 
 # Ensure the latest `uv` is available for our PEP 723 scripts: prefer pip on Python images,
 # then fall back to the standalone installer (curl/wget), installing curl + CA certs when a

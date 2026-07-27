@@ -1,6 +1,5 @@
 """Client interfaces for model inference and relay."""
 
-import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -8,8 +7,6 @@ from dataclasses import dataclass, field
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
-
-logger = logging.getLogger(__name__)
 
 SESSION_ID_HEADER = "X-Session-ID"
 """Per-rollout routing header. Every turn of one rollout sends the same value (the trace id),

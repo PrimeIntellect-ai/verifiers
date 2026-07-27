@@ -58,7 +58,6 @@ class ACP:
         path = f"{directory}/config.json"
         try:
             await runtime.write(path, json.dumps(config).encode())
-            result = await runtime.run_program([*program, path], env)
-            return result
+            return await runtime.run_program([*program, path], env)
         finally:
             await run_shielded(runtime.run(["rm", "-rf", directory], {}))

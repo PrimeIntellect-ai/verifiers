@@ -471,7 +471,7 @@ class LegacyEnvServer(EnvServer):
 # --- in-process v0 eval (the `eval` CLI's `--id` path) -------------------------
 
 
-def _eval_client(client_config: ClientConfig, model: str):
+def _eval_client(client_config: ClientConfig):
     """A v0 chat-completions client built from the v1 eval `ClientConfig` (base url + api
     key var + headers). Eval needs no token ids, so this skips the renderer pool the
     training bridge (`_v0_client`) builds."""
@@ -517,7 +517,7 @@ async def run_legacy_eval(config) -> list[Episode]:
     dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
     idxs = sample(list(range(len(dataset))), config.shuffle, config.num_tasks)
 
-    client = _eval_client(config.client, config.model)
+    client = _eval_client(config.client)
     sampling_args = config.sampling.model_dump(exclude_none=True)
     taskset_id = env_name(config.id)  # the same identity the served bridge stamps
     out_dir = _legacy_output_dir(config)

@@ -10,7 +10,6 @@ env). Health is just another request (no dedicated probe thread).
 
 import asyncio
 import contextlib
-import logging
 import time
 import uuid
 from typing import TypeVar
@@ -35,8 +34,6 @@ from verifiers.v1.serve.types import (
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.trace import WireTrace
 from verifiers.v1.types import SamplingConfig
-
-logger = logging.getLogger(__name__)
 
 ResponseT = TypeVar("ResponseT", bound=BaseResponse)
 

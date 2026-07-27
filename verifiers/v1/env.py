@@ -227,8 +227,7 @@ class Env(ABC, Generic[ConfigT]):
                 warned_resources=self._warned_resources,
             )
 
-        agents = Agents(self.config, make)
-        return agents
+        return Agents(self.config, make)
 
     def _client_for(self, config: ClientConfig) -> Client:
         """Resolve (and cache by config) an agent-pinned endpoint's client."""
