@@ -111,6 +111,7 @@ class ACP:
         system_prompt: str | None = None,
         session_path: str | None = None,
         sidecar_path: str | None = None,
+        allow_sidecar_start: bool = False,
     ) -> ProgramResult:
         if prompt is None:
             raise ValueError("ACP requires a prompt")
@@ -136,6 +137,11 @@ class ACP:
             async with self._sidecar_lock(runtime, sidecar_path):
                 probe = await runtime.run([*program, "probe", sidecar_path], {})
                 if probe.exit_code == PROBE_UNAVAILABLE_EXIT_CODE:
+                    if not allow_sidecar_start:
+                        raise RuntimeError(
+                            "ACP session disappeared between turns; refusing to "
+                            "restart without its conversation and process state"
+                        )
                     removed = await runtime.run(["rm", "-f", sidecar_path], {})
                     if removed.exit_code != 0:
                         raise RuntimeError(
@@ -274,6 +280,7 @@ class ACPHarnessSession(HarnessSession):
         self._started = False
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
+        first_turn = not self._started
         self._started = True
         return await self.acp._run(
             self.runtime,
@@ -283,6 +290,7 @@ class ACPHarnessSession(HarnessSession):
             mcp_urls=self.mcp_urls,
             system_prompt=self.system_prompt,
             sidecar_path=self.sidecar_path,
+            allow_sidecar_start=first_turn,
         )
 
     async def close(self) -> None:

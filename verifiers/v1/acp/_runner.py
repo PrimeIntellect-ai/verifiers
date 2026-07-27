@@ -161,7 +161,7 @@ async def prompt(
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
-    if not client.visible_reply.strip():
+    if not client.visible_reply.strip() and response.stop_reason != "end_turn":
         raise RuntimeError(
             "ACP agent produced no visible reply "
             f"(stop_reason={response.stop_reason!r})"
@@ -326,12 +326,15 @@ async def serve_session(socket_path: str) -> None:
     shutdown = asyncio.Event()
     active_prompt: asyncio.Task[str] | None = None
 
-    async def run_prompt(config: dict) -> str:
+    async def run_prompt(config: dict, owns_session: asyncio.Event) -> str:
         nonlocal active_prompt
         async with lock:
             if shutdown.is_set():
                 raise RuntimeError("ACP session is shutting down")
             active_prompt = asyncio.create_task(session.run(config))
+            # Set before the first await while holding the lock: a disconnect
+            # handler can now distinguish this lock owner from a queued request.
+            owns_session.set()
             try:
                 return await active_prompt
             finally:
@@ -362,7 +365,10 @@ async def serve_session(socket_path: str) -> None:
                 await stop_session()
                 response = {"ok": True}
             elif operation == "prompt":
-                prompt_task = asyncio.create_task(run_prompt(request["config"]))
+                owns_session = asyncio.Event()
+                prompt_task = asyncio.create_task(
+                    run_prompt(request["config"], owns_session)
+                )
                 disconnect_task = asyncio.create_task(reader.read())
                 done, _ = await asyncio.wait(
                     (prompt_task, disconnect_task),
@@ -373,12 +379,19 @@ async def serve_session(socket_path: str) -> None:
                     await asyncio.gather(disconnect_task, return_exceptions=True)
                     response = {"ok": True, "reply": await prompt_task}
                 else:
-                    # The short-lived request was cancelled or timed out. Stop the
-                    # prompt and agent so neither keeps consuming tokens unattended.
-                    await stop_session()
-                    # `stop_session` cancels and awaits the tracked ACP prompt;
-                    # now let its lock-owning wrapper finish and clear bookkeeping.
-                    await asyncio.gather(prompt_task, return_exceptions=True)
+                    if owns_session.is_set():
+                        # The disconnected request owns the active ACP prompt. Stop
+                        # it and its agent so neither consumes tokens unattended.
+                        await stop_session()
+                        # `stop_session` awaits the tracked ACP prompt; now let its
+                        # lock-owning wrapper finish and clear bookkeeping.
+                        await asyncio.gather(prompt_task, return_exceptions=True)
+                    else:
+                        # This request was still queued behind another client. It
+                        # has no session state to tear down, so cancel only its
+                        # wrapper and leave the active owner untouched.
+                        prompt_task.cancel()
+                        await asyncio.gather(prompt_task, return_exceptions=True)
                     return
             else:
                 raise ValueError(f"unknown ACP session operation: {operation!r}")
@@ -491,6 +504,14 @@ async def main() -> None:
             if str(error) == "timed out waiting for ACP session":
                 raise SystemExit(PROBE_UNAVAILABLE_EXIT_CODE) from None
             raise
+        except TimeoutError as error:
+            # The socket accepted our connection but did not answer. It may still
+            # own a live agent, so unlinking it and starting another would orphan
+            # that process and violate single-session ownership.
+            raise RuntimeError(
+                "ACP session accepted the probe but did not respond; refusing "
+                "to restart a potentially live session"
+            ) from error
     else:
         raise ValueError(f"unknown ACP runner operation: {operation!r}")
 

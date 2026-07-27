@@ -131,7 +131,17 @@ class Harness(ABC, Generic[ConfigT]):
         try:
             await session.turn(messages)
         finally:
-            await session.close()
+            try:
+                await session.close()
+            except Exception:
+                # Generation already completed or raised. Teardown must neither
+                # turn a successful compatibility run into a failure nor replace
+                # the generation error the caller needs to see.
+                logger.warning(
+                    "harness session close failed (harness %s)",
+                    self.config.id,
+                    exc_info=True,
+                )
 
     async def open_session(
         self,
