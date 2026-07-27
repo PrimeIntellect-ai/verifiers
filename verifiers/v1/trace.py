@@ -83,7 +83,7 @@ class Error(StrictBaseModel):
     traceback: str | None = None
 
     @classmethod
-    def from_exception(cls, error: BaseException) -> "Error":
+    def from_exception(cls, error: BaseException) -> Error:
         """Capture one exception without depending on ambient ``except`` state."""
         return cls(
             type=type(error).__name__,

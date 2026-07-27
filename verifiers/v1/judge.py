@@ -52,8 +52,8 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
 from openai import ContentFilterFinishReasonError, OpenAIError
-from pydantic import BaseModel
 from openai.lib._parsing import type_to_response_format_param
+from pydantic import BaseModel
 from typing_extensions import TypeVar
 
 from verifiers.v1.clients.config import build_async_openai
