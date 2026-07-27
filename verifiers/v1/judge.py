@@ -191,6 +191,8 @@ class Judge(Generic[ParsedT, ConfigT]):
         response_format = (
             type_to_response_format_param(schema) if schema is not None else None
         )
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         dialect = ChatDialect()
         provider_call = ModelCall(
             model=self.config.model,
@@ -204,8 +206,6 @@ class Judge(Generic[ParsedT, ConfigT]):
         )
         if trace is not None:
             trace.judge_calls.append(call)
-        if response_format is not None:
-            kwargs["response_format"] = response_format
 
         try:
             async with build_async_openai(self.config) as client:
