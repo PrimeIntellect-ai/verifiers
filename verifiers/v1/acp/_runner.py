@@ -36,6 +36,22 @@ MAX_PACKET_BYTES = 128 * 1024 * 1024
 PROBE_UNAVAILABLE_EXIT_CODE = 75
 
 
+async def run_shielded(coro: Any) -> Any:
+    """Await cleanup to completion before propagating caller cancellation."""
+    task = asyncio.ensure_future(coro)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancelled = error
+        except BaseException:
+            pass
+    if cancelled is not None:
+        raise cancelled from (None if task.cancelled() else task.exception())
+    return task.result()
+
+
 class VerifiersClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
@@ -290,17 +306,29 @@ class LiveACPSession:
         return reply
 
     async def close(self) -> None:
-        try:
+        completed = False
+
+        async def close_owned_resources() -> None:
+            nonlocal completed
             if self.connection is not None and self.session_id is not None:
                 session_capabilities = (
                     self.capabilities and self.capabilities.session_capabilities
                 )
                 if session_capabilities and session_capabilities.close is not None:
-                    with suppress(Exception):
+                    # A protocol-level close is courteous, but losing it must not
+                    # prevent the process-owning exit stack from being closed.
+                    with suppress(asyncio.CancelledError, Exception):
                         await self.connection.close_session(session_id=self.session_id)
             await self.stack.aclose()
+            completed = True
+
+        try:
+            await run_shielded(close_owned_resources())
         finally:
-            self._reset()
+            # `run_shielded` delays caller cancellation until owned resources are
+            # closed. Only then is it safe to discard the stack that owns them.
+            if completed:
+                self._reset()
 
 
 async def read_packet(reader: asyncio.StreamReader) -> dict:
