@@ -117,6 +117,7 @@ class RolloutRun:
         runtime_config: RuntimeConfig,
         wire_data: TaskData | None = None,
         has_user: bool = False,
+        history: Messages | None = None,
         setup_timeout: float | None = None,
         harness_timeout: float | None = None,
         finalize_timeout: float | None = None,
@@ -132,6 +133,7 @@ class RolloutRun:
         self.ctx = ctx
         self.runtime_config = runtime_config
         self._has_user = has_user
+        self._history = history
         self._setup_timeout = setup_timeout
         self._harness_time_remaining = harness_timeout
         self._finalize_timeout = finalize_timeout
@@ -306,7 +308,9 @@ class RolloutRun:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
         for an exchange the user opens, this is also the first segment, on an
-        empty conversation); without, it launches on the task's own prompt.
+        empty conversation); without, it launches on the task's own prompt. On the
+        first segment only, an interaction's imported history is bootstrapped ahead
+        of that live turn.
         Returns whether the exchange can continue — a refused turn (limit, @stop),
         a timeout, a failure, or a segment that made no progress all end it."""
         if not self._opened or self._closed or not self.ok:
@@ -331,9 +335,11 @@ class RolloutRun:
                     self._endpoint,
                     self._secret,
                     self._urls,
-                    trace.task.data,
-                    messages,
+                    data=trace.task.data,
+                    messages=messages,
+                    history=self._history,
                 )
+                self._history = None
         except TimeoutError as e:
             # Only the rollout deadline reads as a clean truncation; a TimeoutError
             # from the harness's own I/O with no expired deadline is a failure —

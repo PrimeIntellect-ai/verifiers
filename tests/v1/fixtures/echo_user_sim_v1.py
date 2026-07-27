@@ -1,14 +1,15 @@
-"""Multi-turn echo driven by a scripted user — the single user-sim mechanism.
+"""Multi-turn echo driven by a scripted user with imported conversation history.
 
 The env's `run()` scripts the user through an interaction. The task is
-prompt-less, so the first `turn(phrase)` opens the conversation; each later turn
-resumes the harness onto the accreted conversation, and leaving the `async with`
-closes the interaction (the trace stops as `user_closed`).
+prompt-less, so a seeded assistant greeting precedes the first `turn(phrase)`;
+each later turn resumes the harness onto the accreted conversation, and leaving
+the `async with` closes the interaction (the trace stops as `user_closed`).
 """
 
 import verifiers.v1 as vf
 
 PHRASES = ["hello world", "goodbye world"]
+GREETING = "Hi! How can I help you today?"
 SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
 
 
@@ -27,6 +28,15 @@ class EchoUserSimData(vf.TaskData):
 class EchoUserSimTask(vf.Task[EchoUserSimData, vf.State, vf.TaskConfig]):
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
+        imported = [
+            node
+            for node in trace.nodes
+            if not node.sampled
+            and isinstance(node.message, vf.AssistantMessage)
+            and node.message.content == GREETING
+        ]
+        if len(imported) != 1:
+            return 0.0
         replies = [m.content for m in trace.assistant_messages]
         phrases = self.data.phrases
         if len(replies) < len(phrases):
@@ -39,9 +49,15 @@ class EchoUserSimEnv(vf.SingleAgentEnv):
     """Scripts the user side: opens with the first phrase, follows with the rest."""
 
     async def run(self, task, agents):
-        # An interaction scripting the user: the task carries no prompt, so the
-        # first turn opens the conversation.
-        async with agents.agent.interaction(task) as interaction:
+        # Imported history is native context, while the first phrase remains the
+        # caller's live opening turn.
+        async with agents.agent.interaction(
+            task,
+            history=[
+                vf.SystemMessage(content=SYSTEM),
+                vf.AssistantMessage(content=GREETING),
+            ],
+        ) as interaction:
             for phrase in task.data.phrases:
                 if (await interaction.turn(phrase)).terminated:
                     break

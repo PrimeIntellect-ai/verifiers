@@ -12,7 +12,7 @@ from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Messages, UserMessage
 
 if TYPE_CHECKING:
     # Annotation-only: `Trace` appears in signatures only, so this module stays
@@ -32,6 +32,9 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
+    SUPPORTS_HISTORY_IMPORT: ClassVar[bool] = False
+    """Whether the default `bootstrap()` can launch this harness from typed,
+    role-preserving Messages history."""
     EXECUTES_CODE: ClassVar[bool] = True
     """Whether the program hands the model local execution in the runtime — true for
     every real harness; the tool-less chat loops (`null`) override to False. Read
@@ -121,13 +124,27 @@ class Harness(ABC, Generic[ConfigT]):
         mcp_urls: dict[str, str],
         data: TaskData,
         messages: Messages | None = None,
+        history: Messages | None = None,
     ) -> None:
-        """Run ONE segment of the exchange: the program from launch (or, with
-        `messages`, the user's next turn(s) via `resume`) until it yields — a segment
-        ends when the program exits. The rollout loop owns the exchange across
-        segments (and stamps its end); a harness only ever sees one segment."""
+        """Run ONE segment of the exchange: launch on the task prompt, bootstrap a
+        new session from imported `history`, or resume with the user's next
+        `messages`. A segment ends when the program exits. The rollout loop owns the
+        exchange across segments (and stamps its end); a harness only ever sees one
+        segment."""
         async with boundary(HarnessError, f"harness {self.config.id!r}"):
-            if messages is None:
+            if history:
+                result = await self.bootstrap(
+                    ctx,
+                    trace,
+                    runtime,
+                    endpoint,
+                    secret,
+                    mcp_urls,
+                    data,
+                    history,
+                    messages,
+                )
+            elif messages is None:
                 result = await self.launch(
                     ctx, trace, runtime, endpoint, secret, mcp_urls, data
                 )
@@ -143,6 +160,60 @@ class Harness(ABC, Generic[ConfigT]):
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )
+
+    async def bootstrap(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+        history: Messages,
+        messages: Messages | None,
+    ) -> ProgramResult:
+        """Start a new exchange with role-preserving conversation `history`.
+
+        `history` is pre-existing context, not a sampled turn. The task prompt (for
+        a prompted interaction) or `messages` (when the caller opens it) is the live
+        user turn that follows. The default relaunches a stateless Messages-capable
+        harness on that conversation. A stateful harness overrides this hook to
+        import the history into its own new session before sending the live turn.
+        """
+        if not self.SUPPORTS_HISTORY_IMPORT:
+            raise HarnessError(
+                f"harness {self.config.id!r} cannot import conversation history: it "
+                "neither overrides bootstrap() nor declares role-preserving "
+                "Messages launch support."
+            )
+        if messages is not None:
+            live = messages
+        elif isinstance(data.prompt, str):
+            live = [UserMessage(content=data.prompt)]
+        elif data.prompt is not None:
+            live = data.prompt
+        else:
+            raise HarnessError(
+                "history import needs a live opening turn: set task.prompt or call "
+                "interaction.turn(message)"
+            )
+        # `resolve_prompt` re-emits `data.system_prompt`; mirror `resume()` so an
+        # imported transcript cannot duplicate that system context.
+        imported = [
+            message
+            for message in history
+            if message.role != "system" or data.system_prompt is None
+        ]
+        return await self.launch(
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            data.model_copy(update={"prompt": [*imported, *live]}),
+        )
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Run this harness's `@metric` methods over the finished trace, recording

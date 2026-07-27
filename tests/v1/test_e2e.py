@@ -122,11 +122,15 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
 @pytest.mark.parametrize("harness_runtime", USER_RUNTIMES, indirect=True)
 async def test_user(run_v1, harness_runtime, tmp_path):
     """Multi-turn, driven by a scripted user — an interaction loop in the env's
-    `run()` — across the harness runtime axis. The task is prompt-less, so one
-    run covers the whole exchange shape: the caller opens (the user speaks first),
-    each later turn resumes the harness onto the conversation, and leaving the loop
-    ends the exchange (`user_closed`). The user runs in the eval process itself, so
-    there is no placement axis."""
+    `run()` — across the harness runtime axis. Seeded system context and an
+    assistant greeting are imported before the caller's first live turn; each later
+    turn resumes the harness onto the conversation, and leaving the loop ends the
+    exchange (`user_closed`). The user runs in the eval process itself, so there is
+    no placement axis."""
+    from echo_user_sim_v1 import SYSTEM
+
+    import verifiers.v1 as vf
+
     (trace,) = await run_v1(
         "echo-user-sim-v1",
         harness="null",
@@ -138,6 +142,14 @@ async def test_user(run_v1, harness_runtime, tmp_path):
     assert trace.num_turns >= 2  # genuinely multi-turn
     assert trace.stop_condition == "user_closed"  # leaving the interaction ended it
     assert trace.reward == 1.0
+    imported_system = [
+        node
+        for node in trace.nodes
+        if not node.sampled
+        and isinstance(node.message, vf.SystemMessage)
+        and node.message.content == SYSTEM
+    ]
+    assert len(imported_system) == 1
 
 
 @pytest.mark.e2e

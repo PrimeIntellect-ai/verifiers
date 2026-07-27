@@ -340,7 +340,7 @@ class Agent:
             return self._server
         return None
 
-    def _check_resume_support(self) -> None:
+    def _check_interaction_support(self, history: Messages | None = None) -> None:
         # Multi-turn capability is a derived fact, not a flag: an exchange advances
         # by resuming the harness onto the conversation, so the harness needs either
         # the default relaunch (a Messages prompt) or its own native continuation.
@@ -351,6 +351,16 @@ class Agent:
                 "exchange takes transcript-backed resume (SUPPORTS_RESUME) for the "
                 "default relaunch-on-the-conversation, or a native resume() "
                 "override. Use a harness that has one (e.g. bash or null)."
+            )
+        if (
+            history
+            and type(harness).bootstrap is Harness.bootstrap
+            and not harness.SUPPORTS_HISTORY_IMPORT
+        ):
+            raise ValueError(
+                f"Harness {harness.config.id!r} cannot import conversation history: "
+                "it needs role-preserving Messages launch support or a native "
+                "bootstrap() override."
             )
 
     async def run(
@@ -431,6 +441,7 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         mask_prompt: bool = False,
+        history: Messages | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
@@ -452,6 +463,13 @@ class Agent:
         they do for `run()`; an env supplies its taskset's shared tools
         automatically for tasks loaded from that taskset.
 
+        `history` imports role-preserving conversation context into the new
+        interaction before its live opening turn. Imported messages are context,
+        not sampled turns: a prompted task still opens with bare `turn()`, while a
+        prompt-less task still opens with `turn(message)`. Stateless harnesses
+        relaunch from the typed transcript; stateful harnesses must implement a
+        native `bootstrap()`.
+
         Everything is a real rollout — the trace (live on `interaction.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
         exchange (`user_closed`) and finishes the rollout, hooks and scoring
@@ -461,7 +479,8 @@ class Agent:
         apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
-        self._check_resume_support()
+        history = _as_messages(history) if history else None
+        self._check_interaction_support(history)
         if mask_prompt and task.data.prompt is None:
             raise ValueError(
                 "mask_prompt hides a prompt the task doesn't have; a prompt-less "
@@ -474,6 +493,7 @@ class Agent:
                 task.data.model_copy(update={"prompt": None}) if mask_prompt else None
             ),
             has_user=True,
+            history=history,
             on_trace=on_trace,
             **params,
         )
@@ -659,6 +679,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         mask_prompt: bool = False,
+        history: Messages | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
@@ -680,6 +701,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 mask_prompt=mask_prompt,
+                history=history,
                 on_trace=self._watch(remember),
             ) as interaction:
                 yield interaction

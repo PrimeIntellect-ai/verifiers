@@ -42,6 +42,7 @@ class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_HISTORY_IMPORT = True
     NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
