@@ -428,7 +428,7 @@ def _read_mm_hashes(mm: object) -> dict[str, list[str]]:
         return {}
     return {
         modality: list(hs) for modality, hs in hashes.items() if isinstance(hs, list)
-    }
+    }  # ty:ignore[invalid-return-type]
 
 
 def _is_monotonic_extension(
@@ -505,7 +505,7 @@ def _diff_mm_data(mm: object, prior_hashes: dict[str, list[str]]) -> object:
         keep_idx: list[int] = []
         for i, h in enumerate(mod_hashes):
             if remaining.get(h, 0) > 0:
-                remaining[h] -= 1
+                remaining[h] -= 1  # ty:ignore[invalid-argument-type]
             else:
                 keep_idx.append(i)
         if len(keep_idx) != len(mod_hashes):

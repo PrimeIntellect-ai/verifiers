@@ -319,7 +319,7 @@ async def run_func_call(
                     )
                 try:
                     if isinstance(exec_outputs[0], tuple):
-                        exec_outputs = [list(x) for x in exec_outputs]
+                        exec_outputs = [list(x) for x in exec_outputs]  # ty:ignore[invalid-argument-type]
                         tmp_result = tmp_result or (
                             exec_outputs == test_case_outputs_parsed[0]
                         )

@@ -108,8 +108,8 @@ def _attach_trajectory_tokens_to_prompt(
             continue
         msg = prompt[i]
         if (prompt_ids := tokens.get("prompt_ids")) is not None:
-            msg.prompt_token_ids = list(prompt_ids)
+            msg.prompt_token_ids = list(prompt_ids)  # ty:ignore[invalid-assignment]
         if (completion_ids := tokens.get("completion_ids")) is not None:
-            msg.generation_token_ids = list(completion_ids)
+            msg.generation_token_ids = list(completion_ids)  # ty:ignore[invalid-assignment]
         if (completion_logprobs := tokens.get("completion_logprobs")) is not None:
-            msg.generation_log_probs = list(completion_logprobs)
+            msg.generation_log_probs = list(completion_logprobs)  # ty:ignore[invalid-assignment]

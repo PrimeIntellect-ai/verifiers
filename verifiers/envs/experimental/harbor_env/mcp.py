@@ -180,7 +180,7 @@ class HarborMCPMixin:
         for name in list(jobs):
             try:
                 pid_file = shlex.quote(self._mcp_pid_file(name))
-                await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
+                await self.sandbox_client.execute_command(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
                     sandbox_id,
                     f'kill -9 -"$(cat {pid_file} 2>/dev/null)" 2>/dev/null; rm -f {pid_file}',
                     working_dir=None,
@@ -203,7 +203,7 @@ class HarborMCPMixin:
                 f"MCP server {server.name!r} has no port in its URL {server.url!r}"
             )
 
-        job = await self.sandbox_client.start_background_job(  # type: ignore[attr-defined]
+        job = await self.sandbox_client.start_background_job(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
             sandbox_id=sandbox_id,
             command=(
                 f"setsid sh -c {shlex.quote(command)} & "
@@ -239,7 +239,7 @@ class HarborMCPMixin:
         consecutive_failures = 0
 
         while True:
-            status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]
+            status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
                 sandbox_id, job
             )
             if getattr(status, "completed", False):
@@ -251,7 +251,7 @@ class HarborMCPMixin:
                     f"Stderr:\n{stderr}"
                 )
 
-            result = await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
+            result = await self.sandbox_client.execute_command(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
                 sandbox_id, health_cmd, working_dir=None, timeout=probe_timeout
             )
             if getattr(result, "exit_code", 1) == 0:
@@ -280,7 +280,7 @@ class HarborMCPMixin:
             if consecutive_failures >= hc.retries:
                 log_tail = ""
                 try:
-                    status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]
+                    status = await self.sandbox_client.get_background_job(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
                         sandbox_id, job
                     )
                     log_tail = (getattr(status, "stderr", "") or "").strip()[-2000:]
@@ -313,7 +313,7 @@ class HarborMCPMixin:
             f"echo {shlex.quote(f'127.0.0.1 {h}')} >> /etc/hosts)"
             for h in sorted(hosts)
         )
-        result = await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
+        result = await self.sandbox_client.execute_command(  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
             sandbox_id, statements, working_dir=None
         )
         exit_code = getattr(result, "exit_code", 0)

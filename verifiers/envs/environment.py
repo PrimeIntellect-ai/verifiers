@@ -162,7 +162,7 @@ class Environment(ABC):
 
         if dataset is not None:
             if callable(dataset):
-                self.dataset_source: DatasetBuilder | None = cast(
+                self.dataset_source: DatasetBuilder | None = cast(  # ty:ignore[unsupported-operator]
                     DatasetBuilder, dataset
                 )
             else:
@@ -173,7 +173,7 @@ class Environment(ABC):
 
         if eval_dataset is not None:
             if callable(eval_dataset):
-                self.eval_dataset_source: DatasetBuilder | None = cast(
+                self.eval_dataset_source: DatasetBuilder | None = cast(  # ty:ignore[unsupported-operator]
                     DatasetBuilder, eval_dataset
                 )
             else:
@@ -294,7 +294,7 @@ class Environment(ABC):
                 if few_shot:
                     messages.extend(few_shot)
                 messages.append({"role": "user", "content": prompt_str})
-                return messages
+                return messages  # ty:ignore[invalid-return-type]
 
             if answer_key == "answer":
                 dataset = dataset.map(

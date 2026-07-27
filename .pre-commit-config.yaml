@@ -9,19 +9,19 @@ repos:
     hooks:
       - id: ruff-check
         name: ruff check
-        entry: uv run ruff check --fix
+        entry: uv run --locked ruff check --fix
         language: system
         types_or: [python, pyi]
         exclude: ^environments/.*/tasks/
       - id: ruff-format
         name: ruff format
-        entry: uv run ruff format
+        entry: uv run --locked ruff format
         language: system
         types_or: [python, pyi]
         exclude: ^environments/.*/tasks/
       - id: ty
         name: ty (ci parity)
-        entry: uv run --python 3.13 ty check verifiers
+        entry: uv run --locked --python 3.13 ty check verifiers
         language: system
         pass_filenames: false
         stages: [pre-push]
