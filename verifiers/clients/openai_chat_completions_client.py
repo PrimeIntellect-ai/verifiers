@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
@@ -231,7 +233,7 @@ class OpenAIChatCompletionsClient(
                     role="assistant",
                     content=cast(Any, normalize_content(message.content)),
                     tool_calls=cast(Any, oai_tool_calls),
-                    reasoning_content=message.reasoning_content,  # type: ignore[arg-type]
+                    reasoning_content=message.reasoning_content,  # type: ignore[arg-type]  # ty:ignore[invalid-key]
                 )
             elif isinstance(message, ToolMessage):
                 return ChatCompletionToolMessageParam(

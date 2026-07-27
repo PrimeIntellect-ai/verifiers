@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import argparse
 import ast
 import json

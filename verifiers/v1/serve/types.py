@@ -3,8 +3,8 @@ from typing import ClassVar
 from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from verifiers.v1.clients.config import ClientConfig
-from verifiers.v1.task import WireTaskData  # noqa: F401  (docstring reference)
 from verifiers.v1.episode import WireEpisode
+from verifiers.v1.task import WireTaskData  # noqa: F401  (docstring reference)
 from verifiers.v1.trace import WireTrace
 from verifiers.v1.types import SamplingConfig
 

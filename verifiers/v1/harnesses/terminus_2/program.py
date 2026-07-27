@@ -28,7 +28,8 @@ class LocalEnvironment:
         user: str | int | None = None,
     ) -> ExecResult:
         _ = user
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             command,
             shell=True,
             cwd=cwd,
@@ -36,6 +37,7 @@ class LocalEnvironment:
             capture_output=True,
             text=True,
             timeout=timeout_sec,
+            check=False,
         )
         return ExecResult(
             stdout=result.stdout,

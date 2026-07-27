@@ -22,7 +22,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 import verifiers.v1 as vf
 from verifiers.v1.artifacts import CONVENTION_DIR
@@ -51,7 +51,7 @@ class Criterion(StrictBaseModel):
     text: str
     weight: float = 1.0
     """The criterion's share of the reward."""
-    choices: list[str] = ["no", "yes"]
+    choices: list[str] = Field(default_factory=lambda: ["no", "yes"])
     """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
     evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
 
@@ -337,7 +337,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "(--env.taskset.task.judges), not an agent."
             )
         if isinstance(self.config.solver.runtime, vf.SubprocessConfig):
-            raise ValueError(
+            raise TypeError(
                 "agentic-judge runs a code-executing solver in a container, but the "
                 "solver resolves to the subprocess runtime; use "
                 "--env.solver.runtime.type docker or prime"
@@ -372,7 +372,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
-            raise ValueError(
+            raise TypeError(
                 f"no verdicts on the judge's trace (expected {VERDICT_FILE} with a "
                 '"verdicts" list)'
             )
@@ -381,7 +381,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         answers: dict[str, str] = {}
         for entry in data["verdicts"]:
             if not isinstance(entry, dict):
-                raise ValueError(f"verdict entry {entry!r} is not an object")
+                raise TypeError(f"verdict entry {entry!r} is not an object")
             name = str(entry.get("name"))
             if name in answers:
                 # Contradictory duplicates must not collapse to whichever came last.

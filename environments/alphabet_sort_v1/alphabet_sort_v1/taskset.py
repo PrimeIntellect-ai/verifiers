@@ -20,6 +20,7 @@ import difflib
 import random
 import re
 from collections.abc import Iterator
+from itertools import pairwise
 from typing import Literal
 
 from datasets import load_dataset
@@ -91,7 +92,7 @@ class AlphabetSortTask(vf.Task[AlphabetSortTaskData, vf.State, AlphabetSortTaskC
             elif len(attempts) == 1:
                 scores.append(attempts[0])
             else:
-                improved = all(b > a for a, b in zip(attempts, attempts[1:]))
+                improved = all(b > a for a, b in pairwise(attempts))
                 scores.append(attempts[-1] if improved else 0.0)
         avg = sum(scores) / num_turns if num_turns else 0.0
         return avg if self.config.power_per_turn else avg**self.config.similarity_power
@@ -136,7 +137,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
                 by_first = rng.choice([True, False])
                 label = "FIRST" if by_first else "LAST"
 
-                def sort_key(s: str) -> str:
+                def sort_key(s: str, by_first: bool = by_first) -> str:
                     # split at the first capital after index 0 -> first- vs last-name part
                     cut = next((i for i in range(1, len(s)) if s[i].isupper()), len(s))
                     return s[:cut] if by_first else s[cut:]

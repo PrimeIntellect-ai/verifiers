@@ -32,9 +32,18 @@ from datasets import Dataset
 import verifiers as vf
 
 # Create your dataset
-dataset = Dataset.from_list([
-    {"prompt": [{"role": "user", "content": "Navigate to example.com and find the main heading"}]},
-])
+dataset = Dataset.from_list(
+    [
+        {
+            "prompt": [
+                {
+                    "role": "user",
+                    "content": "Navigate to example.com and find the main heading",
+                }
+            ]
+        },
+    ]
+)
 
 # Create a rubric
 rubric = vf.Rubric(funcs=[my_reward_func])

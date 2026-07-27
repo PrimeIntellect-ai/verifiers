@@ -24,7 +24,7 @@ async def run_shielded(coro: Awaitable[T]) -> T:
             await asyncio.shield(task)
         except asyncio.CancelledError as e:
             cancelled = e
-        except BaseException:
+        except BaseException:  # noqa: BLE001, S110 - re-raised or chained below
             pass  # `coro` itself failed → task is done; re-raised (or chained) below
     if cancelled is not None:
         raise cancelled from (None if task.cancelled() else task.exception())

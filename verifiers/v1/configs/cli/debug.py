@@ -7,8 +7,8 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.validate import CheckTimeoutConfig
-from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 
 
 class DebugConfig(BaseConfig):

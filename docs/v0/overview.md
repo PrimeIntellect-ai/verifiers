@@ -84,11 +84,14 @@ Environment modules should expose a `load_environment` function which returns an
 # my_env.py
 import verifiers as vf
 
-def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
-    dataset = vf.load_example_dataset(dataset_name) # 'question'
+
+def load_environment(dataset_name: str = "gsm8k") -> vf.Environment:
+    dataset = vf.load_example_dataset(dataset_name)  # 'question'
+
     async def correct_answer(completion, answer) -> float:
-        completion_ans = completion[-1]['content']
+        completion_ans = completion[-1]["content"]
         return 1.0 if completion_ans == answer else 0.0
+
     rubric = vf.Rubric(funcs=[correct_answer])
     env = vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
     return env

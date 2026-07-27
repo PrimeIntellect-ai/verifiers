@@ -21,6 +21,8 @@ import uuid
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from pydantic import Field
+
 from verifiers.v1.errors import ArtifactError
 from verifiers.v1.types import StrictBaseModel
 
@@ -46,7 +48,7 @@ class Artifact(StrictBaseModel):
     """
 
     source: str
-    exclude: list[str] = []
+    exclude: list[str] = Field(default_factory=list)
     """`tar --exclude` patterns, applied when `source` is a directory."""
 
 
@@ -149,7 +151,7 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
         try:
             await runtime.run(["rm", "-f", path], {})
-        except Exception:  # noqa: BLE001 - cleanup must not mask a collection error.
+        except Exception:
             logger.debug("failed to remove %s", path, exc_info=True)
 
 

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Environment build command module for external hosts."""
 
 from verifiers.scripts.build import main

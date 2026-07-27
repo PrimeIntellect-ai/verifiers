@@ -49,7 +49,9 @@ from verifiers.v1.interception import InterceptionServer
 
 async with InterceptionServer() as server:
     solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"), interception=server)
-    judge = vf.make_agent(vf.AgentConfig(model="openai/gpt-5.4-mini"), interception=server)
+    judge = vf.make_agent(
+        vf.AgentConfig(model="openai/gpt-5.4-mini"), interception=server
+    )
     ...
 ```
 
@@ -80,14 +82,18 @@ Agents are chained via `vf.Task`. For example, a common pattern is one agent's t
 class ProposedData(vf.TaskData):
     answer: str
 
+
 class ProposedTask(vf.Task[ProposedData]):
     @classmethod
-    def from_trace(cls, proposed: vf.Trace) -> "ProposedTask":
-        ...  # parse the proposer's contract into ProposedData
+    def from_trace(
+        cls, proposed: vf.Trace
+    ) -> "ProposedTask": ...  # parse the proposer's contract into ProposedData
 
     @vf.reward
-    async def correct(self, trace: vf.Trace) -> float:
-        ...  # compare the trace's final answer against self.data.answer
+    async def correct(
+        self, trace: vf.Trace
+    ) -> float: ...  # compare the trace's final answer against self.data.answer
+
 
 proposed = await proposer.run(vf.Task(vf.TaskData(prompt=PROPOSE)))
 task = ProposedTask.from_trace(proposed)

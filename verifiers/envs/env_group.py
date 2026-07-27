@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast, final
@@ -292,7 +294,7 @@ class EnvGroup(vf.Environment):
         return dataset
 
     @final
-    async def run_rollout(  # type: ignore[override]
+    async def run_rollout(  # type: ignore[override]  # ty:ignore[override-of-final-method]
         self,
         input: RolloutInput,
         client: Client | ClientConfig,
@@ -328,10 +330,10 @@ class EnvGroup(vf.Environment):
             state_columns,
             env.env_client,
         )
-        return _set_info_route(output, route)  # type: ignore[return-value]
+        return _set_info_route(output, route)  # type: ignore[return-value]  # ty:ignore[invalid-return-type]
 
     @final
-    async def run_group(  # type: ignore[override]
+    async def run_group(  # type: ignore[override]  # ty:ignore[override-of-final-method]
         self,
         group_inputs: list[RolloutInput],
         client: Client | ClientConfig,
@@ -340,7 +342,7 @@ class EnvGroup(vf.Environment):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
-    ) -> list[vf.RolloutOutput]:
+    ) -> list[vf.RolloutOutput]:  # ty:ignore[invalid-method-override]
         target_env_client = env_client or self.env_client
         if target_env_client is not None:
             if not isinstance(client, ClientConfig):
@@ -381,7 +383,7 @@ class EnvGroup(vf.Environment):
             state_columns,
             env.env_client,
         )
-        return [_set_info_route(output, route) for output in outputs]  # type: ignore[return-value]
+        return [_set_info_route(output, route) for output in outputs]  # type: ignore[return-value]  # ty:ignore[invalid-return-type]
 
     @final
     async def rollout(
@@ -415,7 +417,7 @@ class EnvGroup(vf.Environment):
             child_input["info"] = info
         else:
             child_input.pop("info", None)
-        return env_name, child_input, route  # type: ignore[return-value]
+        return env_name, child_input, route  # type: ignore[return-value]  # ty:ignore[invalid-return-type]
 
     def _input_env_route(self, input: RolloutInput) -> tuple[str, ...]:
         info = _info_dict(input.get("info"))

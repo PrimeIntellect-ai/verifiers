@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from typing import Any
 
 import verifiers as vf

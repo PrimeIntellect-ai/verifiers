@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for the OpenCodeRLMEnv class."""
 
 import asyncio

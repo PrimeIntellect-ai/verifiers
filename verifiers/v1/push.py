@@ -272,7 +272,7 @@ def push_traces(
                 )
                 resp.raise_for_status()
             post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - push is best-effort across the full upload
         logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
         return finish(error=f"{type(e).__name__}: {e}")
 

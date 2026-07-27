@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Revert-agent-test-edits + re-apply-test_patch helper.
 
 Mirrors the canonical SWE-bench pattern used by upstream's harness before

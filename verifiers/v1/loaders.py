@@ -4,31 +4,30 @@ import contextvars
 import importlib
 import importlib.util
 import pkgutil
+from collections.abc import Callable
 from types import ModuleType
-from typing import Callable
 
 from pydantic import ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.env import Env
-from verifiers.v1.utils.generic import prefix_validation_error
-from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
 from verifiers.v1.configs.judge import JudgeConfig
-from verifiers.v1.judge import Judge, judge_config_cls
-from verifiers.v1.utils.install import ensure_installed
-from verifiers.v1.utils.generic import generic_type
-from verifiers.v1.task import Task
 from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.env import Env
+from verifiers.v1.envs.single_agent import SingleAgentEnv
+from verifiers.v1.harness import Harness
+from verifiers.v1.judge import Judge, judge_config_cls
+from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.utils.generic import generic_type, prefix_validation_error
+from verifiers.v1.utils.install import ensure_installed
 
 
 def builtin_harness_ids() -> list[str]:
     """The harness ids that ship with verifiers (the `verifiers.v1.harnesses`
     subpackages)."""
-    import verifiers.v1.harnesses as harnesses
+    from verifiers.v1 import harnesses
 
     return sorted(m.name for m in pkgutil.iter_modules(harnesses.__path__))
 
@@ -59,7 +58,7 @@ def narrow_plugin_field(
             if field == "harness"
             else ""
         )
-        raise ValueError(
+        raise ValueError(  # noqa: TRY004 - Pydantic validators must raise ValueError
             f"{field}.id needs an id, and none was given (got {ident!r}); "
             f"pass the id right after the flag{hint}"
         )

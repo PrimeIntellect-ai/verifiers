@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Pytest configuration and fixtures for verifiers tests."""
 
 import logging

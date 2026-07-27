@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for the env server and client.
 
 Covers:

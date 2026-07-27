@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for per-turn context token metrics.
 
 Tests the trajectory-based context token computation

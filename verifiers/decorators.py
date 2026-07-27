@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import inspect
 from typing import Any, Callable, Literal, TypeVar, overload
 

@@ -388,4 +388,5 @@ class DockerRuntime(Runtime):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=30,
+                check=False,
             )

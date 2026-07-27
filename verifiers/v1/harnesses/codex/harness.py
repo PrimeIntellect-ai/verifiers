@@ -4,17 +4,20 @@ The static musl binary runs in Linux containers without additional runtime depen
 """
 
 import base64
+import hashlib
+import json
 import logging
 import re
 import shlex
+from collections import Counter
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import TextContentPart
-from verifiers.v1.task import TaskData
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,7 @@ class CodexHarnessConfig(HarnessConfig):
 
 class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
-    SUPPORTS_MCP = False  # TODO
+    SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
@@ -128,7 +131,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         argv = [
             CODEX_BIN,
             "exec",
-            *self._config_args(ctx, endpoint),
+            *self._config_args(ctx, endpoint, mcp_urls),
             *image_args,
             "--",
             prompt,
@@ -176,7 +179,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             )
             for part in parts:
                 if not isinstance(part, TextContentPart):
-                    raise ValueError(
+                    raise TypeError(
                         "codex resume supports text user turns only (images go in "
                         "the opening prompt)"
                     )
@@ -196,7 +199,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "exec",
             "resume",
             "--last",
-            *self._config_args(ctx, endpoint),
+            *self._config_args(ctx, endpoint, mcp_urls),
             "--",
             "\n\n".join(texts),
         ]
@@ -228,7 +231,12 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "CODEX_HOME": home,
         }
 
-    def _config_args(self, ctx: ModelContext, endpoint: str) -> list[str]:
+    def _config_args(
+        self,
+        ctx: ModelContext,
+        endpoint: str,
+        mcp_urls: dict[str, str],
+    ) -> list[str]:
         # Values are Codex feature names such as `shell_tool`; Codex owns validation.
         # https://developers.openai.com/codex/config-reference#features
         tool_config = [
@@ -236,6 +244,49 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             for tool in self.config.disabled_tools or []
             for arg in ("--disable", tool)
         ]
+        # Set the whole table so dots in quoted server IDs are not interpreted as
+        # `-c` path separators.
+        mcp_config = (
+            [
+                "-c",
+                "mcp_servers={"
+                + ",".join(
+                    (
+                        f"{json.dumps(name, ensure_ascii=False)}="
+                        f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
+                        "startup_timeout_sec=60.0,tool_timeout_sec=600.0}"
+                    )
+                    for name, url in mcp_urls.items()
+                )
+                + "}",
+            ]
+            if mcp_urls
+            else []
+        )
+
+        # Codex keeps raw server IDs for MCP calls but normalizes the namespaces
+        # exposed to the model. Mirror rust-v0.144.5's per-character replacement,
+        # optional prefix, collision hash, and possible 49-character truncation.
+        namespace_bases: dict[str, str] = {}
+        for name in mcp_urls:
+            namespace = re.sub(r"[^a-zA-Z0-9_]", "_", name) or "_"
+            namespace_bases[name] = (
+                namespace if namespace.startswith("mcp__") else f"mcp__{namespace}"
+            )
+        namespace_counts = Counter(namespace_bases.values())
+        direct_mcp_namespaces: list[str] = []
+        for name, namespace in namespace_bases.items():
+            if namespace_counts[namespace] > 1:
+                suffix = hashlib.sha1(f"{name}\0{name}\0".encode()).hexdigest()[:12]
+                namespace = (
+                    f"{namespace[:-2]}_{suffix}__"
+                    if namespace.endswith("__")
+                    else f"{namespace}_{suffix}"
+                )
+            direct_mcp_namespaces.append(namespace)
+            if len(namespace) > 49:
+                direct_mcp_namespaces.append(namespace[:49])
+        direct_mcp_namespaces = list(dict.fromkeys(direct_mcp_namespaces))
         # `-c` values parse as TOML, falling back to a raw string (so the url / `responses`
         # come through literally); `requires_openai_auth=false` parses as a bool.
         return [
@@ -266,4 +317,16 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "-c",
             f"model_providers.{PROVIDER}.requires_openai_auth=false",
             *tool_config,
+            *mcp_config,
+            *(
+                [
+                    "-c",
+                    (
+                        "features.code_mode.direct_only_tool_namespaces="
+                        f"{json.dumps(direct_mcp_namespaces)}"
+                    ),
+                ]
+                if direct_mcp_namespaces
+                else []
+            ),
         ]

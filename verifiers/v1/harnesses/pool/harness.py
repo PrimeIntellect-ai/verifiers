@@ -86,11 +86,13 @@ class PoolHarness(Harness[PoolHarnessConfig]):
         command = [
             "sh",
             "-c",
-            f'export HOME="$PWD/{pool_home}/home" '
-            f'XDG_CONFIG_HOME="$PWD/{pool_home}/config" '
-            f'XDG_STATE_HOME="$PWD/{pool_home}/state"; '
-            f"exec {POOL_DIR.format(version=self.config.version)}/pool acp "
-            f"--sandbox disabled --settings {settings}",
+            (
+                f'export HOME="$PWD/{pool_home}/home" '
+                f'XDG_CONFIG_HOME="$PWD/{pool_home}/config" '
+                f'XDG_STATE_HOME="$PWD/{pool_home}/state"; '
+                f"exec {POOL_DIR.format(version=self.config.version)}/pool acp "
+                f"--sandbox disabled --settings {settings}"
+            ),
         ]
         return await POOL_ACP.run(
             runtime,

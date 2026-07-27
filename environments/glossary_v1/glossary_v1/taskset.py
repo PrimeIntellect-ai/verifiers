@@ -6,7 +6,6 @@ server and `wiki_search` for an expensive worker-shared server.
 """
 
 import verifiers.v1 as vf
-
 from glossary_v1.servers.facts import FACTS, GlossaryToolset
 
 

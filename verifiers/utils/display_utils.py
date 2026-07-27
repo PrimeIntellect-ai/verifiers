@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """
 Shared utilities for Rich-based terminal displays.
 

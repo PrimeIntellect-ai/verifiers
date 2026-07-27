@@ -6,13 +6,16 @@ verifiers offers built-in support for Harbor via the `HarborTaskset` class. Crea
 import verifiers.v1 as vf
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask, HarborTaskset
 
+
 # Set the dataset to the same name as registered in the Harbor registry
 class TerminalBench2Config(HarborConfig):
     dataset: str = "terminal-bench/terminal-bench-2"
 
 
 # The data will get loaded automatically
-class TerminalBench2Taskset(HarborTaskset, vf.Taskset[HarborTask, TerminalBench2Config]):
+class TerminalBench2Taskset(
+    HarborTaskset, vf.Taskset[HarborTask, TerminalBench2Config]
+):
     pass
 ```
 
@@ -29,19 +32,27 @@ IMAGE_TEMPLATE = "registry.example.com/openthoughts/{task}:latest"
 
 
 class OpenThoughtsTBLiteConfig(HarborConfig):
-    dataset: Literal["openthoughts/openthoughts-tblite"] = "openthoughts/openthoughts-tblite"
+    dataset: Literal["openthoughts/openthoughts-tblite"] = (
+        "openthoughts/openthoughts-tblite"
+    )
     # Tell verifiers to use the pre-built image
     ignore_dockerfile: bool = True
 
 
-class OpenThoughtsTBLiteTaskset(HarborTaskset, vf.Taskset[HarborTask, OpenThoughtsTBLiteConfig]):
+class OpenThoughtsTBLiteTaskset(
+    HarborTaskset, vf.Taskset[HarborTask, OpenThoughtsTBLiteConfig]
+):
     def load(self) -> list[HarborTask]:
         # Use the public image instead to avoid building the image at runtime; the row
         # data is frozen, so rebuild each task around an updated copy.
         return [
             HarborTask(
                 task.data.model_copy(
-                    update={"image": IMAGE_TEMPLATE.format(task=Path(task.data.task_dir).name)}
+                    update={
+                        "image": IMAGE_TEMPLATE.format(
+                            task=Path(task.data.task_dir).name
+                        )
+                    }
                 ),
                 task.config,
             )

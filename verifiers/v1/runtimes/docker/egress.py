@@ -163,7 +163,7 @@ class EgressProxy:
             client.receive_data(head)
             request = client.next_event()
             if not isinstance(request, h11.Request):
-                raise ValueError("expected an HTTP request")
+                raise TypeError("expected an HTTP request")
             authorization = next(
                 (
                     value
@@ -327,7 +327,7 @@ class EgressProxy:
                     response_started = True
                     writer.write(chunk)
                     await _drain(writer)
-        except Exception:
+        except Exception:  # noqa: BLE001 - proxy failures become a generic 502
             if not response_started:
                 with contextlib.suppress(Exception):
                     writer.write(

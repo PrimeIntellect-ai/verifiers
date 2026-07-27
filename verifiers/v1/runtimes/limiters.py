@@ -12,6 +12,7 @@ import fcntl
 import os
 import tempfile
 import time
+from typing import Self
 
 _LIMITER_DIR = os.path.join(tempfile.gettempdir(), "vf-rate-limiters")
 
@@ -44,7 +45,7 @@ class CreationLimiter:
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
-    async def __aenter__(self) -> "CreationLimiter":
+    async def __aenter__(self) -> Self:
         wait = await asyncio.to_thread(self._reserve)
         if wait > 0:
             await asyncio.sleep(wait)

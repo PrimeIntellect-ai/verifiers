@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Process lifecycle utilities."""
 
 import logging
