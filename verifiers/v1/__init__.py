@@ -94,7 +94,6 @@ from verifiers.v1.artifacts import (
     CONVENTION_DIR,
     Artifact,
     collect,
-    release,
     restore,
 )
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
@@ -292,7 +291,6 @@ __all__ = [
     "CONVENTION_DIR",
     "Artifact",
     "collect",
-    "release",
     "restore",
     # scoring
     "compare_stdout_results",

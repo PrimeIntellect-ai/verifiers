@@ -9,12 +9,12 @@ transport, Harbor's in-sandbox convention, collected with no declaration and res
 the same path in the grading box ("no translation", as in Harbor).
 
 `collect` runs while the agent's box is alive, right after `Task.finalize` produced the
-files. It is the barrier: once it returns the box can be torn down in the background.
+files. It is the barrier: once it returns the box can be torn down (`Runtime.stop_nowait`
+puts that teardown behind the grading box rather than in front of it).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import shlex
 import uuid
@@ -118,29 +118,6 @@ async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
             f"tar -xf {shlex.quote(path)} -C / && rm -f {shlex.quote(path)}",
             f"restore artifact {root!r}",
         )
-
-
-def release(runtime: Runtime) -> None:
-    """Begin `runtime`'s teardown and return without waiting for it.
-
-    Once `collect` has returned nothing needs the agent's box, and on a remote runtime
-    its teardown is an API round trip the grading box should not wait behind. Safe
-    inside a `provision()` block only if the caller detached it (`pop_all()`); otherwise
-    the context manager awaits a teardown anyway and nothing is gained.
-    """
-    if runtime.stopped:
-        return
-    # Mark it synchronously, as `Runtime.stop` does: `create_task` only schedules, so
-    # otherwise a second call would start a second teardown.
-    runtime.stopped = True
-    task = asyncio.create_task(runtime.stop())
-    # asyncio holds only a weak reference to a running task, so a fire-and-forget
-    # teardown can be collected mid-flight.
-    _PENDING.add(task)
-    task.add_done_callback(_PENDING.discard)
-
-
-_PENDING: set[asyncio.Task] = set()
 
 
 def _checked(artifact: Artifact) -> Artifact:

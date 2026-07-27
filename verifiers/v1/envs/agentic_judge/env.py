@@ -368,7 +368,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             solution = await agents.solver.run(task, runtime=box)
             collected = await vf.collect(box, task.data.artifacts)
             stack.pop_all()
-        vf.release(box)
+        box.stop_nowait()
 
         async with agents.judge.provision(task) as judge_box:
             await vf.restore(judge_box, collected)
