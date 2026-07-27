@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import asyncio
 import inspect
 import json

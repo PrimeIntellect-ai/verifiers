@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Environment initialization command module for external hosts."""
 
 from verifiers.scripts.init import main

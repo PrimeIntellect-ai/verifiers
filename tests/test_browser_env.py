@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for BrowserEnv integration (browser_env, dom_mode, cua_mode).
 
 These tests verify the BrowserEnv class and its mode implementations

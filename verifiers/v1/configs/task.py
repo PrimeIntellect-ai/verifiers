@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.judge import Judges, check_judges, resolve_judges
@@ -16,7 +16,7 @@ class TaskConfig(BaseConfig):
     Load-time dataset settings belong on `TasksetConfig` instead.
     """
 
-    judges: Judges = []
+    judges: Judges = Field(default_factory=list)
     """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
 
     @model_validator(mode="before")

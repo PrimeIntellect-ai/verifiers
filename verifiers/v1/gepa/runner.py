@@ -14,6 +14,7 @@ from gepa.core.result import GEPAResult
 from verifiers.v1.cli.output import append_episode, output_path, save_config
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.env import Env
+from verifiers.v1.episode import Episode
 from verifiers.v1.gepa.adapter import GEPAAdapter
 from verifiers.v1.gepa.config import GEPAConfig
 from verifiers.v1.gepa.dataset import (
@@ -21,7 +22,6 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
-from verifiers.v1.episode import Episode
 
 logger = logging.getLogger(__name__)
 
@@ -91,20 +91,20 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
                 on_complete=on_complete,
                 reflection_columns=config.reflection_columns,
             )
-            optimize_kwargs: dict = dict(
-                seed_candidate={"system_prompt": seed_prompt},
-                trainset=[task.data.idx for task in train_tasks],
-                valset=[task.data.idx for task in val_tasks],
-                adapter=adapter,
-                reflection_lm=reflection_lm,
-                max_metric_calls=config.max_total_rollouts,
-                reflection_minibatch_size=config.reflection_minibatch_size,
-                run_dir=str(run_dir) if run_dir is not None else None,
-                seed=config.seed,
-                display_progress_bar=False,
-                skip_perfect_score=False,
-                logger=_GEPALog(),
-            )
+            optimize_kwargs: dict = {
+                "seed_candidate": {"system_prompt": seed_prompt},
+                "trainset": [task.data.idx for task in train_tasks],
+                "valset": [task.data.idx for task in val_tasks],
+                "adapter": adapter,
+                "reflection_lm": reflection_lm,
+                "max_metric_calls": config.max_total_rollouts,
+                "reflection_minibatch_size": config.reflection_minibatch_size,
+                "run_dir": str(run_dir) if run_dir is not None else None,
+                "seed": config.seed,
+                "display_progress_bar": False,
+                "skip_perfect_score": False,
+                "logger": _GEPALog(),
+            }
             return optimize(**optimize_kwargs)
         finally:
             loop.run_until_complete(serving.__aexit__(None, None, None))

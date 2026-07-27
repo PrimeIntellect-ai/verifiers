@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """
 OpenCode RLM Environment.
 

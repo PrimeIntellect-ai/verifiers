@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
@@ -49,7 +49,7 @@ class PrimeConfig(NetworkPolicyConfig):
     """Request guaranteed (vs best-effort) capacity."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
-    labels: list[str] = []
+    labels: list[str] = Field(default_factory=list)
     """Labels attached to the sandbox."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = 1.0
@@ -332,7 +332,7 @@ class PrimeRuntime(Runtime):
         if self.info.id is not None:  # keep info.id available after teardown
             try:
                 await client.delete(self.info.id)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                 logger.warning(
                     "prime: failed to delete sandbox %s: %s", self.info.id, e
                 )

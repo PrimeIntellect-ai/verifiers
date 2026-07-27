@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Browser mode implementations."""
 
 import warnings

@@ -12,31 +12,29 @@ from typing import (
     TypeVar,
 )
 
-
 from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
+from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.env import (
     EnvConfig,
     _declared_agent_configs,
     default_agent_harness,
 )
+from verifiers.v1.episode import Episode
+from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
 from verifiers.v1.interception import (
     Interception,
     make_interception,
     requires_tunnel,
 )
+from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.retries import run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
-from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.task import Task, resolve_server_config
-from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.utils.memory import trim_memory_periodically
-from verifiers.v1.mcp import SharedToolServer, serve_shared
-
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +264,7 @@ class Env(ABC, Generic[ConfigT]):
                             f"{type(self).__name__}.run() ran no agent — every "
                             "episode must carry at least one run"
                         )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
             if isinstance(e, TimeoutError):
                 e = TimeoutError(
@@ -280,7 +278,7 @@ class Env(ABC, Generic[ConfigT]):
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
                     await self.finalize(task, episode)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
                 e = TimeoutError(

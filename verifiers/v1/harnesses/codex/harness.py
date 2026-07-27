@@ -12,9 +12,9 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import TextContentPart
-from verifiers.v1.task import TaskData
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             )
             for part in parts:
                 if not isinstance(part, TextContentPart):
-                    raise ValueError(
+                    raise TypeError(
                         "codex resume supports text user turns only (images go in "
                         "the opening prompt)"
                     )

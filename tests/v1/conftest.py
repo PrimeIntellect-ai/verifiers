@@ -37,9 +37,9 @@ from pathlib import Path
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.loaders import load_environment
-from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace
 
 # Fixture tasksets/envs (echo-v1, echo-agentic-v1, echo-v0, echo-multi-v0) live in

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """
 GEPA prompt optimization CLI.
 

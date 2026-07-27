@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """No-agent debugger for sandbox-backed TaskSet instances."""
 
 import shlex

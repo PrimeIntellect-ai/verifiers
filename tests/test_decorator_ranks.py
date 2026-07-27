@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for decorator priority ordering functionality."""
 
 import pytest

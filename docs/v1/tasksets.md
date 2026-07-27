@@ -97,11 +97,13 @@ Keep values on the narrowest object that needs them:
 class AdditionTaskConfig(vf.TaskConfig):
     tolerance: float = 0.0
 
+
 class AdditionTask(vf.Task[AdditionData, vf.State, AdditionTaskConfig]):
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
         error = abs(float(trace.last_reply) - self.data.answer)
         return float(error <= self.config.tolerance)
+
 
 class AdditionConfig(vf.TasksetConfig):
     num_tasks: int = 100
@@ -143,6 +145,7 @@ You can create them like this (remember the bootstrapping with `uv run init MY_E
 ```python
 DATABASE = None
 
+
 class SearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
     TOOL_PREFIX = "search"
 
@@ -151,9 +154,11 @@ class SearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
         """Search the task corpus."""
         return DATABASE.search(text)
 
+
 # User-configurable knobs
 class SearchConfig(vf.TasksetConfig):
     tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
+
 
 class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
     tools = (SearchToolset,)
@@ -169,8 +174,10 @@ If your reward is semantic, use an LLM judge.
 import verifiers.v1 as vf
 from functools import cached_property
 
+
 class Task(vf.Task):
     answer: str
+
 
 class CorrectnessJudge(vf.Judge[bool]):
     # The rubric for the judge

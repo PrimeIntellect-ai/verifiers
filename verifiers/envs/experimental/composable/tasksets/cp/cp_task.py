@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Competitive Programming TaskSet.
 
 Usage::

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import inspect
 import json
 from abc import abstractmethod

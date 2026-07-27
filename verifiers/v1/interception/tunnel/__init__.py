@@ -20,12 +20,12 @@ def make_tunnel(config: TunnelConfig) -> Tunnel:
 
 
 __all__ = [
-    "Tunnel",
     "BaseTunnelConfig",
-    "TunnelConfig",
-    "PrimeTunnel",
-    "PrimeTunnelConfig",
     "CustomTunnel",
     "CustomTunnelConfig",
+    "PrimeTunnel",
+    "PrimeTunnelConfig",
+    "Tunnel",
+    "TunnelConfig",
     "make_tunnel",
 ]

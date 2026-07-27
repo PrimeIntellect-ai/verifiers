@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -98,9 +99,9 @@ def cleanup_at_exit() -> None:
 class NetworkPolicyConfig(BaseConfig):
     """Shared execution-time policy surface for runtimes that support it."""
 
-    allow: list[str] = ["*"]
+    allow: list[str] = Field(default_factory=lambda: ["*"])
     """Destinations allowed during execution; `*` leaves egress unrestricted."""
-    block: list[str] = []
+    block: list[str] = Field(default_factory=list)
     """Destinations denied during execution."""
 
     @property

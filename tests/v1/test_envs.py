@@ -72,7 +72,9 @@ def test_eval(taskset: str):
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=EVAL_TIMEOUT)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=EVAL_TIMEOUT, check=False
+        )
     except subprocess.TimeoutExpired:
         pytest.fail(f"Timed out after {EVAL_TIMEOUT}s evaluating {taskset}")
     assert proc.returncode == 0, (

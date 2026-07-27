@@ -8,7 +8,8 @@ read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning
 
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
 
 from openai.types.chat import ChatCompletion

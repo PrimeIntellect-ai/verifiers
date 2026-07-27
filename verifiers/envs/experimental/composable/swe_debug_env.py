@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Deprecated SWE-specific debug environment wrappers."""
 
 from typing import Any

@@ -38,7 +38,7 @@ def resolve_runtime_config(
     if (
         task.data.workdir is not None
         and workdir_spec is not None
-        and getattr(config, "workdir") == workdir_spec.default
+        and config.workdir == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
     task_network_policy = "*" not in task.data.network_allow or bool(

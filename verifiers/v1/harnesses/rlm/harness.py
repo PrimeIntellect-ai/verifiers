@@ -6,16 +6,16 @@ import random
 import shlex
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
-from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.decorators import metric
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
-from verifiers.v1.trace import Trace
 from verifiers.v1.task import TaskData
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class RLMHarnessConfig(HarnessConfig):
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
-    builtin_skills: list[BuiltinSkill] = []
+    builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
     summarize_at_tokens: int | tuple[int, int] | None = None

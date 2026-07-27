@@ -47,12 +47,15 @@ The simplest single-turn environments need only a dataset of tasks and a reward 
 import verifiers as vf
 from datasets import Dataset
 
+
 def load_environment():
     # Your task data
-    dataset = Dataset.from_list([
-        {"prompt": [{"role": "user", "content": "What is 2+2?"}], "answer": "4"},
-        {"prompt": [{"role": "user", "content": "What is 3*5?"}], "answer": "15"},
-    ])
+    dataset = Dataset.from_list(
+        [
+            {"prompt": [{"role": "user", "content": "What is 2+2?"}], "answer": "4"},
+            {"prompt": [{"role": "user", "content": "What is 3*5?"}], "answer": "15"},
+        ]
+    )
 
     # Your reward function
     async def correct_answer(completion, answer) -> float:
@@ -84,10 +87,12 @@ Depending on what your environment needs, you can include `answer`, `info`, both
 When using `info`, prefer using JSON strings if rows may have different schemas, e.g. different fields or nested structures:
 
 ```python
-dataset = Dataset.from_list([
-    {"prompt": [...], "info": '{"type": "math", "difficulty": 3}'},
-    {"prompt": [...], "info": '{"type": "code", "language": "python"}'},
-])
+dataset = Dataset.from_list(
+    [
+        {"prompt": [...], "info": '{"type": "math", "difficulty": 3}'},
+        {"prompt": [...], "info": '{"type": "code", "language": "python"}'},
+    ]
+)
 ```
 
 These are parsed into a `dict` by the environment when running rollouts.
@@ -97,9 +102,11 @@ These are parsed into a `dict` by the environment when running rollouts.
 The examples above use `prompt` directly, providing a list of messages ready to send to the model. Alternatively, you can provide a `question` column containing a string, and the environment will wrap it in a user message:
 
 ```python
-dataset = Dataset.from_list([
-    {"question": "What is 2+2?", "answer": "4"},
-])
+dataset = Dataset.from_list(
+    [
+        {"question": "What is 2+2?", "answer": "4"},
+    ]
+)
 ```
 
 You can also pass a `system_prompt` to the environment, which prepends a system message:
@@ -117,7 +124,7 @@ Together, these construct the full prompt:
 ```python
 [
     {"role": "system", "content": "You are a helpful math tutor."},
-    {"role": "user", "content": "What is 2+2?"}
+    {"role": "user", "content": "What is 2+2?"},
 ]
 ```
 
@@ -144,19 +151,22 @@ For large datasets or when running multiple environment replicas, you can defer 
 ```python
 def get_dataset_builder(split: str = "train", seed: int = 42) -> vf.DatasetBuilder:
     """Returns a builder that lazily loads the dataset."""
+
     def build() -> Dataset:
         ds = load_dataset("my-dataset", split=split)
         ds = ds.shuffle(seed=seed)
         return ds
+
     return build
+
 
 def load_environment():
     dataset_builder = get_dataset_builder(split="train")
     eval_builder = get_dataset_builder(split="test")
 
     return vf.SingleTurnEnv(
-        dataset=dataset_builder,      # built on first access
-        eval_dataset=eval_builder,    # built on first access
+        dataset=dataset_builder,  # built on first access
+        eval_dataset=eval_builder,  # built on first access
         rubric=rubric,
     )
 ```
@@ -204,14 +214,13 @@ async def check_keywords(completion, info) -> float:
     found = sum(1 for kw in keywords if kw.lower() in response.lower())
     return found / len(keywords)
 
+
 async def length_reward(completion) -> float:
     response = completion[-1]["content"]
     return 1.0 if len(response) < 500 else 0.5
 
-rubric = vf.Rubric(
-    funcs=[check_keywords, length_reward],
-    weights=[1.0, 0.1]
-)
+
+rubric = vf.Rubric(funcs=[check_keywords, length_reward], weights=[1.0, 0.1])
 ```
 
 The final rollout reward is computed as the weighted sum of all reward function scores.
@@ -229,6 +238,8 @@ Beyond the final score, reward functions can be used to track metrics for observ
 ```python
 async def response_length(completion) -> float:
     return float(len(completion[-1]["content"]))
+
+
 rubric.add_metric(response_length)  # shorthand for weight=0
 ```
 
@@ -245,12 +256,14 @@ async def similarity_score(completion, answer, state) -> float:
     state["similarity"] = score
     return score
 
+
 async def similarity_threshold(state) -> float:
     return 1.0 if state["similarity"] > 0.8 else 0.0
 
+
 rubric = vf.Rubric(
     funcs=[similarity_score, similarity_threshold],
-    weights=[0.0, 1.0]  # log similarity, but only reward threshold
+    weights=[0.0, 1.0],  # log similarity, but only reward threshold
 )
 ```
 
@@ -270,6 +283,7 @@ async def diversity_bonus(completions) -> list[float]:
     # Higher reward if this response is unique
     return [0.2 if responses.count(r) == 1 else 0.0 for r in responses]
 
+
 rubric = vf.Rubric(funcs=[correct_answer, diversity_bonus])
 ```
 
@@ -280,6 +294,7 @@ In rubric environments, reward functions can request static helper objects that 
 ```python
 rubric = vf.Rubric(funcs=[my_reward_func])
 rubric.add_class_object("my_helper", some_helper_object)
+
 
 async def my_reward_func(completion, my_helper) -> float:
     # my_helper is now available by name
@@ -295,9 +310,11 @@ judge_rubric = vf.JudgeRubric(
     judge_model="gpt-4.1-mini",
 )
 
+
 async def judge_correctness(prompt, completion, answer, judge) -> float:
     verdict = await judge(prompt, completion, answer)
     return 1.0 if "yes" in verdict.lower() else 0.0
+
 
 judge_rubric.add_reward_func(judge_correctness)
 ```
@@ -311,10 +328,13 @@ judge_rubric = vf.JudgeRubric(
     judge_model="gpt-4.1-mini",
     judge_prompt="""Rate the writing quality of this response from 0-10.
 Response: {response}
-Score:"""
+Score:""",
 )
 
-async def quality_score(completion, judge_client, judge_model, judge_prompt, parser) -> float:
+
+async def quality_score(
+    completion, judge_client, judge_model, judge_prompt, parser
+) -> float:
     response = parser.parse_answer(completion)
     filled_prompt = judge_prompt.format(response=response)
     result = await judge_client.chat.completions.create(
@@ -374,6 +394,7 @@ class MyMonitorRubric(vf.Rubric):
     async def custom_metric(self, state: vf.State) -> float:
         return len(state["trajectory"])
 
+
 env = vf.ToolEnv(dataset=dataset, tools=tools, rubric=rubric)
 env.add_rubric(MyMonitorRubric())
 ```
@@ -401,6 +422,7 @@ async def calculate(expression: str) -> str:
         return str(result)
     except Exception as e:
         return f"Error: {e}"
+
 
 async def lookup(term: str) -> str:
     """Look up a term in the knowledge base.
@@ -583,6 +605,7 @@ async def answer_submitted(self, state: vf.State) -> bool:
         return False
     return "FINAL ANSWER:" in completion[-1].get("content", "")
 
+
 @vf.stop(priority=-10)  # expensive validation runs last
 async def answer_detected(self, state: vf.State) -> bool:
     # only runs if cheap checks didn't already stop
@@ -648,7 +671,12 @@ To end a rollout from within `env_response` (e.g., when the game ends), set `sta
 ```python
 async def env_response(self, messages: vf.Messages, state: vf.State) -> vf.Messages:
     if check_game_over(state):
-        final_message = [{"role": "user", "content": "Game over! Final score: " + str(state["score"])}]
+        final_message = [
+            {
+                "role": "user",
+                "content": "Game over! Final score: " + str(state["score"]),
+            }
+        ]
         state["final_env_response"] = final_message
         return final_message
     # ... normal response logic
@@ -731,6 +759,7 @@ Environments that require external API keys (e.g., for judge models or external 
 
 ```python
 import verifiers as vf
+
 
 def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
     vf.ensure_keys([api_key_var])
@@ -816,6 +845,7 @@ with open(file, "w") as f:
     f.write(data)
 # ✅ use the built-in helper
 from verifiers.utils.path_utils import write_temp_file
+
 tmp_path = await asyncio.to_thread(write_temp_file, data, ".txt")
 ```
 
@@ -825,6 +855,7 @@ Note that `asyncio.to_thread()` releases the event loop but still holds the GIL.
 from concurrent.futures import ProcessPoolExecutor
 
 executor = ProcessPoolExecutor(max_workers=4)
+
 
 async def heavy_reward(data):
     loop = asyncio.get_event_loop()

@@ -20,6 +20,7 @@ import zmq
 import zmq.asyncio
 
 from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.episode import WireEpisode
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
@@ -32,7 +33,6 @@ from verifiers.v1.serve.types import (
     RunRequest,
     RunResponse,
 )
-from verifiers.v1.episode import WireEpisode
 from verifiers.v1.trace import WireTrace
 from verifiers.v1.types import SamplingConfig
 
@@ -86,7 +86,7 @@ class EnvClient:
         )
         try:
             data = await asyncio.wait_for(future, timeout)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             self._pending.pop(request_id, None)
             raise
         if response_type in (HealthResponse, InfoResponse):
@@ -119,7 +119,7 @@ class EnvClient:
             return (
                 await self._request(HealthRequest(), HealthResponse, timeout=timeout)
             ).success
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
 
     async def wait_for_server_startup(

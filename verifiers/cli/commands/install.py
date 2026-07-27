@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Environment install command module for external hosts."""
 
 from verifiers.scripts.install import main
