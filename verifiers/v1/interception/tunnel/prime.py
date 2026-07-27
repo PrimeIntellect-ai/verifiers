@@ -36,7 +36,7 @@ class PrimeTunnelConfig(BaseTunnelConfig):
 class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
     def __init__(self, config: PrimeTunnelConfig | None = None) -> None:
         super().__init__(config)
-        self._client: "TunnelClient | None" = None  # held while expose() is active
+        self._client: TunnelClient | None = None  # held while expose() is active
 
     @contextlib.asynccontextmanager
     async def expose(self, port: int) -> AsyncIterator[str]:
@@ -77,6 +77,8 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         next drop. The status must be read explicitly: a terminal registration still exists
         (the SDK's `check_registered` existence probe stays True), and a transient check
         failure reports alive so a flaky control plane can't mass-retire healthy servers."""
+        from prime_tunnel.exceptions import TunnelError as SDKTunnelError
+
         client = self._client
         if client is None:
             return True  # not exposed — nothing to have died
@@ -84,7 +86,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
             return False
         try:
             info = await client._client.get_tunnel(client.tunnel_id)
-        except Exception:
+        except SDKTunnelError:  # timeouts and connection errors both subclass it
             return True
         if info is None:
             return False  # registration deleted
