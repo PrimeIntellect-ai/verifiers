@@ -240,7 +240,7 @@ class MySweTask(vf.Task[MyData]):
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         await vf.capture_patch(
             trace, runtime, self.data.base_commit,
-            publish=f"{vf.CONVENTION_DIR}/patch.diff",   # record + transport, one call
+            write_path=f"{vf.CONVENTION_DIR}/patch.diff",   # record + transport, one call
         )
 ```
 

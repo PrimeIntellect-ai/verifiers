@@ -80,7 +80,7 @@ async def capture_patch(
     runtime: Runtime,
     base_commit: str = "",
     env: dict | None = None,
-    publish: str | None = None,
+    write_path: str | None = None,
 ) -> None:
     """Snapshot the agent's cumulative diff into `trace.info["patch"]`.
 
@@ -88,7 +88,7 @@ async def capture_patch(
     broken records `info["patch_error"]` instead of failing the rollout —
     scoring still runs and the error stays visible in results.
 
-    `publish` additionally writes the patch to that path inside the box, for tasks
+    `write_path` additionally writes the patch to that path inside the box, for tasks
     graded in a second box: `trace.info` is the durable record and never travels, so
     a grader that needs the diff as a file needs it collected as an artifact. Point it
     at `vf.CONVENTION_DIR` (e.g. `/logs/artifacts/patch.diff`) and collection picks it
@@ -124,10 +124,10 @@ async def capture_patch(
         raw = raw[:PATCH_CAP_BYTES]
         trace.info["patch_truncated"] = True
     trace.info["patch"] = raw.decode("utf-8", errors="replace")
-    if publish is not None:
+    if write_path is not None:
         try:
-            parent = str(PurePosixPath(publish).parent)
+            parent = str(PurePosixPath(write_path).parent)
             await runtime.run(["mkdir", "-p", parent], env or {})
-            await runtime.write(publish, raw)
-        except Exception as exc:  # noqa: BLE001 - publishing must never fail the rollout.
-            trace.info["patch_publish_error"] = f"{type(exc).__name__}: {exc}"
+            await runtime.write(write_path, raw)
+        except Exception as exc:  # noqa: BLE001 - the write must never fail the rollout.
+            trace.info["patch_write_error"] = f"{type(exc).__name__}: {exc}"
