@@ -369,7 +369,7 @@ class TaskSet:
         try:
             from tqdm.auto import tqdm
         except ImportError:  # pragma: no cover
-            tqdm = None  # type: ignore[assignment]
+            tqdm = None  # type: ignore[assignment]  # ty:ignore[invalid-assignment]
 
         import verifiers as vf
 
@@ -521,7 +521,7 @@ class TaskSet:
                 state: State = {  # type: ignore[assignment]
                     "info": info,
                     "answer": row.get("answer", ""),
-                }
+                }  # ty:ignore[invalid-assignment]
                 try:
                     valid = await self.validate_instance(state)
                     return valid, None, state
@@ -543,7 +543,7 @@ class TaskSet:
                 state: State = {  # type: ignore[assignment]
                     "info": info,
                     "answer": row.get("answer", ""),
-                }
+                }  # ty:ignore[invalid-assignment]
                 spec = self.get_sandbox_spec(info)
                 # validate() runs without a SandboxMixin, so resolve
                 # spec.timeout_minutes=None (its "auto-derive at rollout

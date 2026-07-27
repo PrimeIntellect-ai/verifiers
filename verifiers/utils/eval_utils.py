@@ -424,10 +424,10 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
         for key, value in zip(keys, combo):
             if key.startswith("env_args."):
                 env_key = key[len("env_args.") :]
-                config["env_args"] = {**config.get("env_args", {}), env_key: value}
+                config["env_args"] = {**config.get("env_args", {}), env_key: value}  # ty:ignore[invalid-argument-type]
             elif key.startswith("args."):
                 env_key = key[len("args.") :]
-                config["args"] = {**config.get("args", {}), env_key: value}
+                config["args"] = {**config.get("args", {}), env_key: value}  # ty:ignore[invalid-argument-type]
             else:
                 config[key] = value
         expanded.append(config)
@@ -1168,7 +1168,7 @@ async def run_evaluations(config: EvalRunConfig) -> None:
         from verifiers.utils.heartbeat import Heartbeat
 
         heart = Heartbeat(config.heartbeat_url)
-        on_progress = [lambda *_a, **_kw: asyncio.create_task(heart.beat())]
+        on_progress = [lambda *_a, **_kw: asyncio.create_task(heart.beat())]  # ty:ignore[invalid-assignment]
 
     start_time = time.time()
     all_results = await asyncio.gather(
@@ -1307,7 +1307,7 @@ async def run_evaluations_tui(
 
         on_progress: list[ProgressCallback] = [on_display_progress]
         if heart is not None:
-            on_progress.append(lambda *_a, **_kw: asyncio.create_task(heart.beat()))
+            on_progress.append(lambda *_a, **_kw: asyncio.create_task(heart.beat()))  # ty:ignore[invalid-argument-type]
 
         def on_log(message: str) -> None:
             display.update_env_state(env_idx, log_message=message)

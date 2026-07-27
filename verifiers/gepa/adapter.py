@@ -184,7 +184,7 @@ def _inject_system_prompt(
         if isinstance(prompt, str):
             inp_copy["prompt"] = f"{system_prompt}\n\n{prompt}"
         else:
-            prompt = [dict(m) for m in prompt]
+            prompt = [dict(m) for m in prompt]  # ty:ignore[not-iterable]
             if not prompt:
                 # Empty prompt list - just add system message
                 prompt = [{"role": "system", "content": system_prompt}]
@@ -195,7 +195,7 @@ def _inject_system_prompt(
             inp_copy["prompt"] = prompt
 
         modified.append(inp_copy)
-    return modified
+    return modified  # ty:ignore[invalid-return-type]
 
 
 def _extract_user_query(prompt: Messages) -> str:

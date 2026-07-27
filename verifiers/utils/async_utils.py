@@ -184,7 +184,7 @@ def maybe_retry(
 
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""
-        caller = retry_state.fn.__name__ if retry_state.fn else "unknown function"
+        caller = retry_state.fn.__name__ if retry_state.fn else "unknown function"  # ty:ignore[unresolved-attribute]
         error_chain = (
             repr(
                 ErrorChain(
@@ -203,7 +203,7 @@ def maybe_retry(
 
     def return_last_result(retry_state: tc.RetryCallState):
         """Return the last result when retries are exhausted (instead of raising)."""
-        caller = retry_state.fn.__name__ if retry_state.fn else "unknown function"
+        caller = retry_state.fn.__name__ if retry_state.fn else "unknown function"  # ty:ignore[unresolved-attribute]
         error_chain = (
             repr(
                 ErrorChain(

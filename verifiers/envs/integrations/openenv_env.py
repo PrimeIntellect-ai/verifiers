@@ -807,7 +807,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if len(props) == 1:
             field_name, spec = next(iter(props.items()))
             if isinstance(spec, dict) and spec.get("type") == "string":
-                return field_name
+                return field_name  # ty:ignore[invalid-return-type]
         return None
 
     def _render_observation_messages(

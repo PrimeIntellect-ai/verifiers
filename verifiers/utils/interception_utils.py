@@ -129,7 +129,7 @@ class InterceptionServer:
             )
             app.router.add_get(
                 "/health",
-                lambda _: web.json_response({"status": "ok"}),
+                lambda _: web.json_response({"status": "ok"}),  # ty:ignore[invalid-argument-type]
             )
 
             runner = web.AppRunner(app)
