@@ -15,6 +15,7 @@ agent commits.
 from __future__ import annotations
 
 import uuid
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -75,13 +76,25 @@ async def resolve_head(runtime: Runtime, env: dict | None = None) -> str:
 
 
 async def capture_patch(
-    trace: Trace, runtime: Runtime, base_commit: str = "", env: dict | None = None
+    trace: Trace,
+    runtime: Runtime,
+    base_commit: str = "",
+    env: dict | None = None,
+    publish: str | None = None,
 ) -> None:
     """Snapshot the agent's cumulative diff into `trace.info["patch"]`.
 
     Best-effort by design: a rollout whose sandbox died or whose repo state is
     broken records `info["patch_error"]` instead of failing the rollout —
     scoring still runs and the error stays visible in results.
+
+    `publish` additionally writes the patch to that path inside the box, for tasks
+    graded in a second box: `trace.info` is the durable record and never travels, so
+    a grader that needs the diff as a file needs it collected as an artifact. Point it
+    at `vf.CONVENTION_DIR` (e.g. `/logs/artifacts/patch.diff`) and collection picks it
+    up with no declaration. Publishing is best-effort like the rest of this helper — a
+    task that must not grade without the patch should declare that path as an
+    `Artifact`, which makes collection strict about it.
     """
     nonce = uuid.uuid4().hex
     full, capped = f"{_FULL}_{nonce}", f"{_CAPPED}_{nonce}"
@@ -111,3 +124,10 @@ async def capture_patch(
         raw = raw[:PATCH_CAP_BYTES]
         trace.info["patch_truncated"] = True
     trace.info["patch"] = raw.decode("utf-8", errors="replace")
+    if publish is not None:
+        try:
+            parent = str(PurePosixPath(publish).parent)
+            await runtime.run(["mkdir", "-p", parent], env or {})
+            await runtime.write(publish, raw)
+        except Exception as exc:  # noqa: BLE001 - publishing must never fail the rollout.
+            trace.info["patch_publish_error"] = f"{type(exc).__name__}: {exc}"

@@ -1,7 +1,9 @@
 """Mutable state shared within one rollout.
 
 Tool servers synchronize it through the interception state channel. It is excluded
-from serialized traces; persist artifacts in `Trace.info` instead.
+from serialized traces; persist artifacts in `Trace.info` instead. `Trace.info` is the
+durable record and never leaves the host — files a grader needs in a second box travel
+separately, through `verifiers.v1.artifacts`.
 """
 
 from pydantic import ConfigDict

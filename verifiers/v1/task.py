@@ -33,6 +33,7 @@ from pydantic import ConfigDict
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
+from verifiers.v1.artifacts import Artifact
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.configs.task import TaskConfig
@@ -121,6 +122,12 @@ class TaskData(StrictBaseModel):
     network_block: list[str] = []
     """Execution-time destinations denied by this task and combined with runtime
     blocks. Prime runtimes cannot combine an allowlist and a blocklist."""
+    artifacts: list[Artifact] = []
+    """Paths carried out of the agent's box and into a grading box, on top of the
+    implicitly collected `/logs/artifacts/` convention dir. Declare only what a grader
+    needs: the grading box boots from this task's image, so the repo is already there
+    and only the agent's output has to travel. A declared path that is missing at
+    collection time fails the rollout."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 

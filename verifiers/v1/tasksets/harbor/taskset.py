@@ -10,6 +10,7 @@ deliberately uses the harness runtime image. Tasks without an environment also u
 image unless ``require_image`` is set.
 """
 
+import asyncio
 import hashlib
 import io
 import shutil
@@ -24,10 +25,12 @@ from pathlib import Path
 
 from pydantic import Field
 
+from verifiers.v1.artifacts import Artifact
 from verifiers.v1.decorators import reward
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
+from verifiers.v1.trace import Trace
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.types import StrictBaseModel
@@ -76,6 +79,13 @@ class Author(StrictBaseModel):
     email: str | None = None
 
 
+class CollectHook(StrictBaseModel):
+    """One `[[verifier.collect]]` command, run in the agent's box by `finalize`."""
+
+    command: str
+    timeout_sec: float = 60.0
+
+
 class HarborData(TaskData):
     """Parsed ``task.toml`` metadata plus the host-side verifier directory.
 
@@ -94,10 +104,41 @@ class HarborData(TaskData):
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
     verifier that needs judge API keys or configuration actually receives them."""
+    collect: list[CollectHook] = []
+    """`[[verifier.collect]]` blocks: commands that snapshot runtime state into files
+    after the agent stops, so the files can travel to a grading box as artifacts."""
 
 
 class HarborTask(Task[HarborData]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
+
+    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
+        """Run Harbor's collect hooks while the agent's box is still alive.
+
+        Harbor runs these after the agent phase and before artifact collection, which
+        is exactly what `finalize` means here, so the hook maps onto the existing
+        lifecycle rather than needing a stage of its own.
+
+        Strict, unlike `harbor run`, which logs a failed hook and carries on: there the
+        output is observability, here it is a grading input, and a silently absent file
+        makes the verifier score a stale state instead of failing loudly.
+        """
+        for hook in self.data.collect:
+            try:
+                result = await asyncio.wait_for(
+                    runtime.run(["sh", "-c", hook.command], verifier_env(self.data)),
+                    hook.timeout_sec,
+                )
+            except TimeoutError as exc:
+                raise TaskError(
+                    f"collect hook timed out after {hook.timeout_sec}s: {hook.command}"
+                ) from exc
+            if result.exit_code:
+                detail = (result.stderr or result.stdout).strip()[-500:]
+                raise TaskError(
+                    f"collect hook failed (exit {result.exit_code}): "
+                    f"{hook.command}\n{detail}"
+                )
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime) -> float:
@@ -279,6 +320,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
     config = tomllib.loads((task_dir / "task.toml").read_text())
     parsed = HarborTaskConfig.model_validate(config)
+    artifacts, collect = parse_verifier_extras(task_dir, parsed)
     network = (
         parsed.agent.explicit_phase_policy() or parsed.environment.resolve_baseline()
     )
@@ -326,7 +368,68 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         verifier_env=config.get("verifier", {}).get("env", {}),
+        artifacts=artifacts,
+        collect=collect,
     )
+
+
+def parse_verifier_extras(
+    task_dir: Path, parsed
+) -> tuple[list[Artifact], list[CollectHook]]:
+    """Harbor's `artifacts` and `[[verifier.collect]]` blocks, narrowed to what a
+    single-container runtime can honor.
+
+    The convention dir is deliberately not prepended here (Harbor's
+    `with_convention_entry` would): collection injects it itself, as an optional sweep.
+    Prepending it would make it an explicitly declared entry, and declared entries are
+    required — which would fail every task that never writes there.
+    """
+    from harbor.constants import MAIN_SERVICE_NAME
+    from harbor.models.task.artifacts import (
+        effective_artifact_service,
+        normalize_artifact_entries,
+    )
+
+    verifier = parsed.verifier
+    if verifier.environment is not None:
+        raise ValueError(
+            f"{task_dir.name}: [verifier.environment] declares a separate verifier "
+            "image. Grading runs in a fresh box built from the task's own image, so "
+            "only the agent's delta has to travel; a different verifier image needs "
+            "the full working tree copied over and isn't supported yet."
+        )
+    if verifier.user is not None:
+        raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
+
+    artifacts: list[Artifact] = []
+    for entry in normalize_artifact_entries(parsed.artifacts):
+        if effective_artifact_service(entry) != MAIN_SERVICE_NAME:
+            raise ValueError(
+                f"{task_dir.name}: artifact {entry.source!r} targets service "
+                f"{entry.service!r}; sidecars need a compose-capable runtime"
+            )
+        # `destination` positions a file in Harbor's host trial directory. Verifiers has
+        # no such directory (the trace is the record) and Harbor never lets destination
+        # affect verifier-side placement, so it cannot change any grading outcome.
+        artifacts.append(
+            Artifact(source=entry.source, exclude=list(entry.exclude or []))
+        )
+
+    hooks: list[CollectHook] = []
+    for hook in verifier.collect:
+        if hook.service != MAIN_SERVICE_NAME:
+            raise ValueError(
+                f"{task_dir.name}: collect hook targets service {hook.service!r}; "
+                "sidecars need a compose-capable runtime"
+            )
+        if hook.user is not None:
+            raise ValueError(
+                f"{task_dir.name}: collect hook `user` is not supported "
+                "(commands run as the runtime's default user)"
+            )
+        hooks.append(CollectHook(command=hook.command, timeout_sec=hook.timeout_sec))
+
+    return artifacts, hooks
 
 
 def verifier_env(task: HarborData) -> dict[str, str]:

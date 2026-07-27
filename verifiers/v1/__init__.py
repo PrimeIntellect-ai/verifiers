@@ -25,6 +25,7 @@ from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.errors import (
+    ArtifactError,
     EnvError,
     HarnessError,
     InterceptionError,
@@ -89,6 +90,14 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.configs.task import TaskConfig
+from verifiers.v1.artifacts import (
+    CONVENTION_DIR,
+    Artifact,
+    Collected,
+    collect,
+    release,
+    restore,
+)
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.taskset import Taskset
@@ -206,6 +215,7 @@ __all__ = [
     "ToolsetError",
     "SandboxError",
     "TaskError",
+    "ArtifactError",
     "InterceptionError",
     "TunnelError",
     # clients
@@ -279,6 +289,13 @@ __all__ = [
     "PATCH_CAP_BYTES",
     "capture_patch",
     "resolve_head",
+    # grading artifacts
+    "CONVENTION_DIR",
+    "Artifact",
+    "Collected",
+    "collect",
+    "release",
+    "restore",
     # scoring
     "compare_stdout_results",
     "extract_boxed_answer",

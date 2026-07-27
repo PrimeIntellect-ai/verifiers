@@ -74,6 +74,13 @@ class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
 
+class ArtifactError(RolloutError):
+    """A grading artifact could not be carried between boxes — a declared source was
+    missing, the collection exceeded its limits, or the archive was unsafe to extract.
+    Strict on purpose: an incompletely restored grading box scores the rollout wrong,
+    which is worse than failing it."""
+
+
 class InterceptionError(RolloutError):
     """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
 
