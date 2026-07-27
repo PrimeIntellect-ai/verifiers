@@ -5028,10 +5028,10 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym", specifier = ">=0.1.8" },
-    { name = "ruff", specifier = "==0.16.0" },
+    { name = "ruff", specifier = ">=0.16.0" },
     { name = "stagehand", specifier = ">=3.4.0" },
     { name = "textarena", specifier = "==0.7.4" },
-    { name = "ty", specifier = "==0.0.63" },
+    { name = "ty", specifier = ">=0.0.63" },
 ]
 examples = [
     { name = "alphabet-sort-v1", editable = "environments/alphabet_sort_v1" },
