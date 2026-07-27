@@ -304,11 +304,17 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        if config.topology == "shared":
-            # Sharing means the judge's effective runtime IS the solver's policy —
-            # aligning the config keeps the base env's subprocess warning and the
-            # runtime stamped on the judge's trace truthful. Under `isolated` the
-            # judge provisions its own box, so its policy is honored as written.
+        # The judge inherits the solver's runtime policy unless it pins a container of
+        # its own. Under `shared` that is definitional — its effective runtime IS the
+        # solver's box, and aligning the config keeps the base env's subprocess warning
+        # and the runtime stamped on its trace truthful. Under `isolated` it is the
+        # fallback every other unpinned `AgentConfig` field already gets (harness,
+        # model, sampling): `runtime` defaults to `SubprocessConfig` with no `None` to
+        # distinguish unset from chosen, and a code-executing judge can never run on the
+        # host anyway, so subprocess here always means "not specified".
+        if config.topology == "shared" or isinstance(
+            config.judge.runtime, vf.SubprocessConfig
+        ):
             config.judge = config.judge.model_copy(
                 update={"runtime": config.solver.runtime}
             )
@@ -335,15 +341,6 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "agentic-judge runs a code-executing solver in a container, but the "
                 "solver resolves to the subprocess runtime; use "
                 "--env.solver.runtime.type docker or prime"
-            )
-        if self.config.topology == "isolated" and isinstance(
-            self.config.judge.runtime, vf.SubprocessConfig
-        ):
-            raise ValueError(
-                "agentic-judge grades in the judge's own box under "
-                "--env.topology isolated, but the judge resolves to the subprocess "
-                "runtime (which would run the judge's code on the host); use "
-                "--env.judge.runtime.type docker or prime, or --env.topology shared"
             )
 
     async def setup(self, agents: vf.Agents) -> None:
