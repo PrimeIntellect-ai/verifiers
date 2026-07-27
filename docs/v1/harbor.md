@@ -107,8 +107,6 @@ Two deliberate differences from `harbor run`:
 - **A failing collect hook fails the rollout.** Harbor logs it and carries on, because there the output is observability; here it is a grading input, and a silently absent file makes the verifier score a stale state.
 - **`destination` has no effect.** It positions a file in Harbor's host trial directory; verifiers has no trial directory (the trace is the record), and Harbor never lets `destination` affect verifier-side placement.
 
-Sidecar `service` entries, `[verifier].user`, and an explicit `[verifier.environment]` image are rejected at load. The grading box is built from the task's own image, so only the agent's delta has to travel; a different verifier image would need the whole working tree copied across.
-
 ## Shortcomings
 
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:

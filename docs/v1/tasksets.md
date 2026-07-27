@@ -233,12 +233,12 @@ To override the judge model, set `env.taskset.task.judge.model` in your config (
 
 ## Grading artifacts
 
-An environment can grade in a second box rather than the one the agent worked in, so nothing the agent did to its environment can reach the grader. Only what the task declares crosses over.
+An environment can grade in a second sandbox rather than the one the agent worked in, so nothing the agent did to its environment can reach the grader. Only what the task declares crosses over.
 
 Two channels, and they do different jobs:
 
 - **`trace.info` is the record.** `capture_patch` puts the diff in `trace.info["patch"]`, a judge puts its verdict there, and both ride `traces.jsonl`. It never travels to another box.
-- **`/logs/artifacts/` is transport.** Anything written there is collected with no declaration at all, carried to the host, and restored in the grading box at the same path.
+- **`/logs/artifacts/` is transport.** Anything written there is collected with no declaration at all, carried to the host, and restored in the grading sandbox at the same path.
 
 Produce artifacts in `finalize`, while the runtime is live and before scoring mutates anything:
 
@@ -264,7 +264,7 @@ class MyData(vf.TaskData):
 
 A declared path that is missing at collection time fails the rollout: it was declared because grading needs it, and grading a partial state scores the rollout wrong rather than loudly failing it. The convention dir is exempt — it is collected for every task, and most never write to it.
 
-The grading box boots from the same image as the agent's, so the repo and its dependencies are already present. Only the agent's delta has to travel, which is why the collection cap (`vf.artifacts.MAX_ARTIFACT_BYTES`) is sized for a patch rather than a tree.
+The grading sandbox boots from the same image as the agent's, so the repo and its dependencies are already present. Only the agent's delta has to travel, which is why the collection cap (`vf.artifacts.MAX_ARTIFACT_BYTES`) is sized for a patch rather than a tree.
 
 ## Beyond one agent
 
