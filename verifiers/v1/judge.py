@@ -188,10 +188,6 @@ class Judge(Generic[ParsedT, ConfigT]):
             "model": self.config.model,
             "messages": wire,
         }
-        if sampling.get("max_tokens") is not None:
-            kwargs.pop("max_completion_tokens", None)
-        elif sampling.get("max_completion_tokens") is not None:
-            kwargs.pop("max_tokens", None)
         response_format = (
             type_to_response_format_param(schema) if schema is not None else None
         )
