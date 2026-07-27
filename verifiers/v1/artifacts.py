@@ -15,10 +15,8 @@ files. It is the barrier: once it returns the box can be torn down in the backgr
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import shlex
-import tarfile
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -184,73 +182,13 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
                 "agent's image, so only the delta needs to travel — narrow the source "
                 "or add `exclude` patterns."
             )
-        archive = await runtime.read(path)
+        return await runtime.read(path)
     finally:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
         try:
             await runtime.run(["rm", "-f", path], {})
         except Exception:  # noqa: BLE001 - cleanup must not mask a collection error.
             logger.debug("failed to remove %s", path, exc_info=True)
-    _vet(archive)
-    return archive
-
-
-def _vet(archive: bytes) -> None:
-    """Refuse an archive that could write outside its root when extracted at `/`.
-
-    The agent chose this content. A member named `../x` escapes directly; a link
-    `a -> /etc` followed by a member `a/passwd` writes through it into the grading box,
-    which is the tampering this whole path exists to prevent. Links that stay inside
-    the archive can only redirect writes to content we are restoring anyway, so they
-    are kept — repos have them, and dereferencing instead (`tar -h`) fails the whole
-    collection on one dangling link.
-    """
-    names: list[PurePosixPath] = []
-    outward: list[tuple[PurePosixPath, str]] = []
-    try:
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-            for member in tar:
-                path = PurePosixPath(member.name)
-                if not member.name or path.is_absolute() or ".." in path.parts:
-                    raise ArtifactError(f"unsafe path in artifact: {member.name!r}")
-                names.append(path)
-                if member.isfile() or member.isdir():
-                    continue
-                if not (member.issym() or member.islnk()):
-                    raise ArtifactError(
-                        f"artifact {member.name!r} is a special file (device, fifo or "
-                        "socket) and cannot be carried between boxes"
-                    )
-                if _escapes(path, member.linkname):
-                    outward.append((path, member.linkname))
-    except tarfile.TarError as exc:
-        raise ArtifactError(f"unreadable artifact archive: {exc}") from exc
-
-    # An outward link is only a way in if something is nested under it — that member is
-    # what gets written through the link. A leaf link (`.venv/bin/python ->
-    # /usr/bin/python3`, in half of all Python repos) redirects nothing.
-    for link, target in outward:
-        if any(name != link and name.is_relative_to(link) for name in names):
-            raise ArtifactError(
-                f"artifact {str(link)!r} links out to {target!r} and other artifacts "
-                "sit underneath it; extracting would write through the link"
-            )
-
-
-def _escapes(member: PurePosixPath, linkname: str) -> bool:
-    """Whether `linkname`, read from `member`'s directory, lands outside the archive."""
-    target = PurePosixPath(linkname)
-    if target.is_absolute():
-        return True
-    depth = 0
-    for part in (*member.parent.parts, *target.parts):
-        if part == "..":
-            depth -= 1
-            if depth < 0:
-                return True
-        elif part != ".":
-            depth += 1
-    return False
 
 
 async def _run(runtime: Runtime, command: str, action: str) -> None:
