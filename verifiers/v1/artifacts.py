@@ -65,7 +65,11 @@ async def collect(
     One archive per source: BusyBox `tar` (every alpine-based image) implements only
     `c`/`x`/`t` with no `-r` to append, and each source carries its own excludes anyway.
     """
-    declared = [_checked(a) for a in artifacts or []]
+    # Trailing slash stripped only so `/work` and `/work/` cannot key two entries for
+    # the same tree — the source doubles as the dict key and as `restore`'s rm -rf target.
+    declared = [
+        a.model_copy(update={"source": a.source.rstrip("/")}) for a in artifacts or []
+    ]
     convention = PurePosixPath(CONVENTION_DIR)
     sweep = not any(
         (p := PurePosixPath(a.source)) == convention
@@ -118,18 +122,6 @@ async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
             f"tar -xf {shlex.quote(path)} -C / && rm -f {shlex.quote(path)}",
             f"restore artifact {root!r}",
         )
-
-
-def _checked(artifact: Artifact) -> Artifact:
-    path = PurePosixPath(artifact.source)
-    if not path.is_absolute() or ".." in path.parts:
-        raise ArtifactError(
-            f"artifact source {artifact.source!r} must be an absolute path with no '..'"
-        )
-    resolved = path.as_posix().rstrip("/")
-    if not resolved:
-        raise ArtifactError("artifact source '/' would sweep the whole image")
-    return artifact.model_copy(update={"source": resolved})
 
 
 async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
