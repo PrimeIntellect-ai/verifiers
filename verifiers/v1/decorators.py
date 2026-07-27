@@ -2,7 +2,8 @@
 
 import asyncio
 import inspect
-from typing import Any, Callable, TypeVar, overload
+from collections.abc import Callable
+from typing import Any, TypeVar, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
 

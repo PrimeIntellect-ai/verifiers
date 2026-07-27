@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """ComposableEnv — a CliAgentEnv that delegates to a TaskSet + Harness.
 
 Subclasses ``CliAgentEnv`` and overrides its hooks to delegate to the

@@ -5,10 +5,10 @@ worker thread running `optimize()`, so each call drives the async `complete` on 
 """
 
 import asyncio
-from typing import Callable
+from collections.abc import Callable
 
-from verifiers.v1.gepa.config import GEPAConfig
 from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.gepa.config import GEPAConfig
 from verifiers.v1.judge import Judge
 
 

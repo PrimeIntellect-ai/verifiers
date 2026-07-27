@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Utilities for intercepting API calls from agents running in sandboxes."""
 
 import asyncio

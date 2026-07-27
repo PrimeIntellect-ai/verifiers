@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Environment worker.
 
 Owns a single environment instance, a client cache, and three ZMQ

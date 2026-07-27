@@ -120,7 +120,7 @@ class EnvServerConfig(BaseConfig):
     """The environment — the run's `[env]` block: which env, its seed taskset, each
     agent, its knobs, and the run limits. Narrowed to the selected env's config
     class by the env id, else the taskset id."""
-    pool: PoolConfig = ElasticPoolConfig()
+    pool: PoolConfig = Field(default_factory=ElasticPoolConfig)
     """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
     scales up on demand; `static` pre-spawns a fixed `num_workers`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
@@ -128,9 +128,9 @@ class EnvServerConfig(BaseConfig):
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
     hub on demand), loaded via `verifiers.load_environment` and run through the legacy
     bridge. Set this *instead of* `env.taskset` to run a v0 environment."""
-    args: dict = {}
+    args: dict = Field(default_factory=dict)
     """Construction kwargs forwarded to `load_environment(id, **args)`."""
-    extra_env_kwargs: dict = {}
+    extra_env_kwargs: dict = Field(default_factory=dict)
     """Post-load kwargs applied to the v0 env via `env.set_kwargs(**extra_env_kwargs)` (e.g.
     `max_total_completion_tokens`, `max_seq_len`, `timeout_seconds`) — typically
     auto-populated by the orchestrator, distinct from the `args` passed at construction."""

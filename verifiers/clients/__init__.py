@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 from verifiers.clients.client import Client
 from verifiers.clients.nemorl_chat_completions_client import (

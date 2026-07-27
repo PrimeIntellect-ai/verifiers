@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Terminal-Lego taskset built on the composable Harbor task layout."""
 
 import contextlib

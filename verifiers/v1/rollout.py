@@ -25,9 +25,8 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers import __version__
-from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.errors import (
@@ -37,19 +36,20 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import (
     Interception,
     InterceptionServer,
     Slot,
     requires_tunnel,
 )
-from verifiers.v1.session import RolloutLimits, RolloutSession
+from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     make_runtime,
 )
-from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
@@ -86,9 +86,8 @@ async def _serve_interception(
         shared_tools.values(),
     )
     server = InterceptionServer(requires_tunnel=tunneled)
-    async with server:
-        async with server.acquire(session) as slot:
-            yield slot
+    async with server, server.acquire(session) as slot:
+        yield slot
 
 
 class RolloutRun:
@@ -289,7 +288,7 @@ class RolloutRun:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
         except BaseException:
@@ -344,7 +343,7 @@ class RolloutRun:
             else:
                 self.fail(e)
             return False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
@@ -419,7 +418,7 @@ class RolloutRun:
                         self._scoring_timeout,
                     )
                 trace.timing.scoring.end = time.time()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
             trace.is_completed = True

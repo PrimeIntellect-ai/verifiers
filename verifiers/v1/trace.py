@@ -7,19 +7,18 @@ import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
-from typing_extensions import TypeVar
-
 import numpy as np
 from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
+from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
+from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData

@@ -263,26 +263,22 @@ prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 # my_environment.py
 import verifiers as vf
 
+
 def load_environment(**kwargs):
     """Load the environment."""
     dataset = vf.load_example_dataset("dataset_name")
     parser = vf.XMLParser(fields=["reasoning", "answer"])
-    
+
     def reward_func(parser, completion, answer, **kwargs):
         return 1.0 if parser.parse_answer(completion) == answer else 0.0
-    
+
     rubric = vf.Rubric(
         funcs=[reward_func, parser.get_format_reward_func()],
         weights=[1.0, 0.2],
-        parser=parser
-    )
-    
-    return vf.SingleTurnEnv(
-        dataset=dataset,
         parser=parser,
-        rubric=rubric,
-        **kwargs
     )
+
+    return vf.SingleTurnEnv(dataset=dataset, parser=parser, rubric=rubric, **kwargs)
 ```
 
 ## Quick Reference

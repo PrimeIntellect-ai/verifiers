@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 

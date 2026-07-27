@@ -30,10 +30,12 @@ ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [
     "sh",
     "-c",
-    f'export {HOME_VAR}="$HOME"; '
-    'PI_CODING_AGENT_DIR="$PWD/$PI_CODING_AGENT_DIR"; '
-    'export PI_CODING_AGENT_DIR HOME="$PI_CODING_AGENT_DIR"; '
-    f'export PATH="{PI_DIR}/node/bin:$PATH"; exec {ACP_BIN}',
+    (
+        f'export {HOME_VAR}="$HOME"; '
+        'PI_CODING_AGENT_DIR="$PWD/$PI_CODING_AGENT_DIR"; '
+        'export PI_CODING_AGENT_DIR HOME="$PI_CODING_AGENT_DIR"; '
+        f'export PATH="{PI_DIR}/node/bin:$PATH"; exec {ACP_BIN}'
+    ),
 ]
 
 INSTALL = r"""

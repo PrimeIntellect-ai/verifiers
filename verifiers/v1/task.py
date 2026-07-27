@@ -29,13 +29,13 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
+from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, StrictBaseModel, content_text
 from verifiers.v1.utils.generic import generic_type
@@ -114,11 +114,11 @@ class TaskData(StrictBaseModel):
     system_prompt: str | None = None
     image: str | None = None
     workdir: str | None = None
-    network_allow: list[str] = ["*"]
+    network_allow: list[str] = Field(default_factory=lambda: ["*"])
     """Execution-time destinations requested by this task. `*` leaves the runtime
     allowlist unchanged; a concrete list replaces a wildcard or combines with existing
     entries. Prime runtimes accept host-level entries and require `vm=true`."""
-    network_block: list[str] = []
+    network_block: list[str] = Field(default_factory=list)
     """Execution-time destinations denied by this task and combined with runtime
     blocks. Prime runtimes cannot combine an allowlist and a blocklist."""
     timeout: TaskTimeout = TaskTimeout()

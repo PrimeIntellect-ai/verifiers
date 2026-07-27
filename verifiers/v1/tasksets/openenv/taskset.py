@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from typing import Any, Self
 
 import httpx
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 import verifiers.v1 as vf
 
@@ -32,9 +32,9 @@ class OpenEnvConfig(vf.TasksetConfig):
     use_docker: bool = False
     """Use OpenEnv's Docker provider instead of the default UV provider. The engine
     runs host-side (in the eval process), so this needs Docker on the host."""
-    provider_kwargs: dict[str, Any] = {}
+    provider_kwargs: dict[str, Any] = Field(default_factory=dict)
     """Extra arguments for OpenEnv's provider (`GenericEnvClient.from_env`)."""
-    resets: list[dict[str, Any]] = [{}]
+    resets: list[dict[str, Any]] = Field(default_factory=lambda: [{}])
     """One finite task per set of arguments passed to OpenEnv's `reset`."""
 
     @model_validator(mode="after")

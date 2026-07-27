@@ -26,6 +26,6 @@ try:
         if verify(parse("\\boxed{" + gold + "}"), parse("\\boxed{" + prediction + "}"))
         else 0.0
     )
-except Exception:
+except Exception:  # noqa: BLE001 - malformed answers can fail anywhere in math-verify
     score = 0.0
 print(score)

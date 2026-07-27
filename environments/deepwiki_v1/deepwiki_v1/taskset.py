@@ -7,7 +7,6 @@ The harness runtime therefore needs outbound network access.
 """
 
 import verifiers.v1 as vf
-
 from deepwiki_v1.servers.deepwiki import DEEPWIKI_URL, DeepWikiToolset
 
 # (repository, expected primary language) pairs chosen for unambiguous answers.

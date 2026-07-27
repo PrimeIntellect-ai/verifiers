@@ -11,7 +11,7 @@ class RetryConfig(BaseConfig):
     max_retries: int = Field(0, ge=0)
     """Whole-rollout retries beyond the first attempt. Off by default — the SDKs
     already retry transient per-call faults; rerunning a whole trajectory is opt-in."""
-    include: list[str] = []
+    include: list[str] = Field(default_factory=list)
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
-    exclude: list[str] = []
+    exclude: list[str] = Field(default_factory=list)
     """Never retry errors whose type is listed (wins over `include`)."""

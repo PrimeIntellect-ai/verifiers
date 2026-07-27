@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Task, TaskSet, SandboxTaskSet, and SandboxSpec — WHAT to solve.
 
 A **Task** is a single, fully-bound problem instance.

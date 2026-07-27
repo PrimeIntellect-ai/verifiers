@@ -4,4 +4,4 @@ from proposer_solver_v1.taskset import (
     ProposerSolverTaskset,
 )
 
-__all__ = ["ProposerSolverTaskset", "ProposerSolverEnv", "ProposerSolverEnvConfig"]
+__all__ = ["ProposerSolverEnv", "ProposerSolverEnvConfig", "ProposerSolverTaskset"]

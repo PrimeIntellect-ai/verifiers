@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import asyncio
 
 from openai import AsyncOpenAI

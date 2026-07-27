@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for CliAgentEnv and HarborEnv."""
 
 import asyncio

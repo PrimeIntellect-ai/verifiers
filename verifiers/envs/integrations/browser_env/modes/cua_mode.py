@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """CUA-based browser mode supporting both local HTTP and sandbox execution."""
 
 import asyncio

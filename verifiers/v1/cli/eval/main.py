@@ -7,8 +7,8 @@ import sys
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.interrupt import install_interrupt
-from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
+from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
@@ -17,9 +17,9 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
-from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.utils.interrupt import install_interrupt
+from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
 

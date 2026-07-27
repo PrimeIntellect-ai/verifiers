@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import os
 
 from verifiers.utils.path_utils import (

@@ -6,6 +6,7 @@ import json
 import re
 
 import pytest
+from pydantic import Field
 
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
@@ -72,7 +73,9 @@ def fake_judge_model(monkeypatch):
                     "reason": "cites Paris" if "Paris" in text else "no Paris",
                     "verdict": "yes" if "Paris" in text else "no",
                 }
-                for name, text in re.findall(r"^- ([^:]+): (.+)$", messages, re.M)
+                for name, text in re.findall(
+                    r"^- ([^:]+): (.+)$", messages, re.MULTILINE
+                )
             ]
             response = JudgeResponse(
                 text=json.dumps({"verdicts": verdicts}),
@@ -167,7 +170,12 @@ def test_judges_reject_shared_reward_keys():
 
     # class-level DEFAULTS are held to the same rule (they bypass the before-hook)
     class TwoDefaults(vf.TaskConfig):
-        judges: vf.Judges = [vf.ReferenceJudgeConfig(), vf.ReferenceJudgeConfig()]
+        judges: vf.Judges = Field(
+            default_factory=lambda: [
+                vf.ReferenceJudgeConfig(),
+                vf.ReferenceJudgeConfig(),
+            ]
+        )
 
     with pytest.raises(ValueError, match="share a reward key"):
         TwoDefaults()
@@ -227,7 +235,8 @@ async def test_reference_score(fake_judge_model):
 
 async def test_reference_score_messages_prompt(fake_judge_model):
     # A Messages-form prompt still reaches the judge as text (via TaskData.prompt_text).
-    from verifiers.v1.types import TextContentPart, UserMessage as UM
+    from verifiers.v1.types import TextContentPart
+    from verifiers.v1.types import UserMessage as UM
 
     task = QAData(
         idx=0,
@@ -400,7 +409,7 @@ async def test_reference_empty_response_short_circuits(fake_judge_model):
 async def test_reference_list_answer(fake_judge_model):
     # A list-valued answer field is judged as multiple acceptable answers, one per line.
     class MultiTask(vf.TaskData):
-        aliases: list[str] = []
+        aliases: list[str] = Field(default_factory=list)
 
     task = MultiTask(idx=0, prompt="q?", aliases=["Paris", "Lutetia"])
     trace = make_trace()
@@ -569,11 +578,11 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
 
 def test_rubric_choices_validation(tmp_path):
     with pytest.raises(ValueError, match="at least two"):
-        rubric_judge(
+        _ = rubric_judge(
             tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["only"]\n'
         ).criteria
     with pytest.raises(ValueError, match="duplicate options"):
-        rubric_judge(
+        _ = rubric_judge(
             tmp_path,
             body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["a", "a"]\n',
         ).criteria

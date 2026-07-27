@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from asyncio import Future
 from enum import Enum
 from typing import Annotated, Literal, TypeAlias, TypeVar

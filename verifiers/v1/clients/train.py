@@ -13,9 +13,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
-from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RenderedTokens, RendererConfig
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools

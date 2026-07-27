@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """mini-SWE-agent harness configuration."""
 
 from pathlib import PurePosixPath

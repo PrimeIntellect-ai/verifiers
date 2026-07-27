@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import json
 from typing import Callable, cast
 

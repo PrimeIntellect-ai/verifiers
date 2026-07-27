@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import logging
 import re
 import tempfile

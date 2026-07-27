@@ -203,6 +203,6 @@ class ModalRuntime(Runtime):
             return
         try:
             await sandbox.terminate.aio()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
             logger.warning("modal: failed to terminate sandbox %s: %s", self.info.id, e)
         self._sandbox = None

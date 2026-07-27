@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from collections.abc import Mapping
 from typing import Any, Optional, cast
 

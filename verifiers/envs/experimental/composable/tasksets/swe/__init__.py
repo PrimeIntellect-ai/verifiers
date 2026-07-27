@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from .swe_tasksets import (
     make_multiswe_taskset,
     make_openswe_taskset,

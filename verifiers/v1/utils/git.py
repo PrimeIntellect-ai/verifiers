@@ -97,7 +97,7 @@ async def capture_patch(
             )
             return
         raw = await runtime.read(capped)
-    except Exception as exc:  # Capture must never fail the rollout.
+    except Exception as exc:  # noqa: BLE001 - capture must never fail the rollout
         trace.info["patch_error"] = f"{type(exc).__name__}: {exc}"
         return
     finally:
@@ -105,7 +105,7 @@ async def capture_patch(
         # on shared-filesystem runtimes; removal is best-effort by design.
         try:
             await runtime.run(["rm", "-f", full, capped], env or {})
-        except Exception:  # Cleanup must never fail the rollout.
+        except Exception:  # noqa: BLE001, S110 - cleanup must never fail the rollout
             pass
     if len(raw) > PATCH_CAP_BYTES:
         raw = raw[:PATCH_CAP_BYTES]

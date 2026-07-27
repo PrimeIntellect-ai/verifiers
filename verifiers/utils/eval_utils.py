@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import asyncio
 import itertools
 import json

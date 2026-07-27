@@ -25,6 +25,7 @@ per-agent knob.
 import asyncio
 import json
 import re
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -102,7 +103,7 @@ class SolveTask(vf.Task[SolveData]):
             )
         answer = proposed["answer"]
         if not isinstance(answer, int) or isinstance(answer, bool):
-            raise ValueError(
+            raise TypeError(
                 f"proposer's contract answer is not a JSON integer: {answer!r}"
             )
         return cls(
@@ -168,7 +169,7 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
 
 
 class ProposerSolverTaskset(vf.Taskset[ProposeTask, vf.TasksetConfig]):
-    TOPICS = [
+    TOPICS: ClassVar = [
         "rates and mixtures",
         "number theory",
         "combinatorics",

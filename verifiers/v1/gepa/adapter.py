@@ -9,17 +9,17 @@ thread, so a Ctrl-C unwinds straight through `optimize()` into the runner's tear
 """
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from gepa.core.adapter import EvaluationBatch
 from pydantic_core import to_jsonable_python
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import Env
-from verifiers.v1.task import Task
 from verifiers.v1.episode import Episode
+from verifiers.v1.task import Task
 
 Candidate = dict[str, str]
 
