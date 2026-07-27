@@ -60,7 +60,7 @@ Inherited from `EnvServerConfig`: [`env`](#envconfig--the-environment), [`pool`]
 
 ## Sampling config
 
-`verifiers/v1/types.py` — `SamplingConfig(BaseModel)` (alias `Sampling`). Used as `EvalConfig.sampling` and embedded in [`JudgeSamplingConfig`](#judge-config). `extra='allow'`, so provider-specific keys pass through.
+`verifiers/v1/types.py` — `SamplingConfig(BaseModel)` (alias `Sampling`). Used as `EvalConfig.sampling` and `JudgeConfig.sampling`. `extra='allow'`, so provider-specific keys pass through.
 
 | Field | Type | Default | Aliases | Notes |
 | --- | --- | --- | --- | --- |
@@ -500,13 +500,9 @@ Inherits `base_url`, `api_key_var`, and `headers` from [`BaseClientConfig`](#cli
 | `name` | `str` | `""` | Reward-key override for a plugged judge. When empty, the plugin id supplies the key. |
 | `weight` | `float` | `1.0` | Weight applied when the plugged judge records its verdict into aggregate `trace.reward`. |
 | `model` | `str` | `"openai/gpt-5.4-nano"` | Judge model id. |
-| `sampling` | `JudgeSamplingConfig` | `JudgeSamplingConfig()` | Per-call sampling defaults; individual calls may override them. |
+| `sampling` | `SamplingConfig` | `SamplingConfig()` | Per-call sampling defaults; individual calls may override them. |
 | `prompt` | `str \| None` | `None` | Inline prompt-template override for this configured judge instance. |
 | `prompt_file` | `Path \| None` | `None` | Load the prompt template from a UTF-8 text file. Mutually exclusive with `prompt`. |
-
-### `JudgeSamplingConfig(SamplingConfig)`
-
-The same extensible shape as the rollout's [`SamplingConfig`](#sampling-config): `temperature`, `top_p`, `reasoning_effort`, and `max_tokens`, plus provider-specific keys because `extra='allow'`. Values passed directly to `complete()` override these configured defaults.
 
 ### Judge class behavior
 

@@ -87,7 +87,7 @@ class GEPAAdapter:
 
     def make_reflective_dataset(
         self,
-        candidate: Candidate,  # noqa: ARG002 - required by GEPA's adapter protocol
+        candidate: Candidate,  # Required by GEPA's adapter protocol.
         eval_batch: EvaluationBatch[Episode, Episode],
         components_to_update: list[str],
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
