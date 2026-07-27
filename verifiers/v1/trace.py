@@ -443,6 +443,10 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         and on traces with no agent info (the legacy bridge)."""
         return self.agent.runtime if self.agent is not None else None
 
+    def _last_assistant(self) -> MessageNode | None:
+        """Most recent model-produced node, ignoring prompt-supplied assistant messages."""
+        return next((n for n in reversed(self.nodes) if n.sampled), None)
+
     @property
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once, summed across branches."""
