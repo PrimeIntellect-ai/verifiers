@@ -12,10 +12,6 @@ from verifiers.v1.types import ID, SamplingConfig
 from verifiers.v1.utils.install import env_name
 
 
-class JudgeSamplingConfig(SamplingConfig):
-    pass
-
-
 class JudgeConfig(BaseClientConfig):
     id: ID = ""
     """Plugin id; empty for a judge called directly by task code."""
@@ -23,7 +19,7 @@ class JudgeConfig(BaseClientConfig):
     """Reward key override for a plugged judge."""
     weight: float = 1.0
     model: str = "openai/gpt-5.4-nano"
-    sampling: JudgeSamplingConfig = JudgeSamplingConfig()
+    sampling: SamplingConfig = SamplingConfig()
     prompt: str | None = None
     prompt_file: Path | None = None
     """Prompt file override, mutually exclusive with `prompt`."""

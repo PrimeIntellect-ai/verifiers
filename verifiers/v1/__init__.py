@@ -22,7 +22,7 @@ from verifiers.v1.configs.cli.env import (
 )
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.configs.judge import JudgeConfig, Judges, JudgeSamplingConfig
+from verifiers.v1.configs.judge import JudgeConfig, Judges
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
@@ -281,7 +281,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Judge",
     "JudgeConfig",
     "Judges",
-    "JudgeSamplingConfig",
     "JudgeResponse",
     "JudgeView",
     "ReferenceJudge",
