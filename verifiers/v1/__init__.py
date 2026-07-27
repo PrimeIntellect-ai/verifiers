@@ -93,7 +93,7 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.artifacts import (
     CONVENTION_DIR,
     Artifact,
-    Collected,
+    CollectedArtifact,
     collect,
     release,
     restore,
@@ -292,7 +292,7 @@ __all__ = [
     # grading artifacts
     "CONVENTION_DIR",
     "Artifact",
-    "Collected",
+    "CollectedArtifact",
     "collect",
     "release",
     "restore",
