@@ -391,8 +391,10 @@ Before each rollout or validation check, `resolve_runtime_config` combines the s
 - Non-`None` `TaskData.resources` values similarly fill supported runtime fields only while those
   fields remain at their defaults. Any non-default runtime-config resource value wins.
 - Non-wildcard task network policy fields require Docker or Prime. `TaskData.network_allow=["*"]`
-  is neutral. Docker combines concrete task/runtime lists and retains every block rule.
-  Prime requires `vm=true`, host-level entries, and a single allowlist or blocklist mode.
+  is neutral. Concrete task/runtime allowlists combine, as do blocklists; framework-only access
+  on either side takes precedence, and neither runtime accepts a concrete allowlist together with
+  a blocklist. Docker framework routes take precedence over deny rules. Prime requires `vm=true`,
+  accepts host-level entries, and applies ordinary deny rules unchanged.
 - A resource field unsupported by the chosen runtime is ignored; evaluation warns once per
   runtime/field combination. Docker and Modal accept `disk` so portable task data validates, but neither enforces a disk limit.
 
