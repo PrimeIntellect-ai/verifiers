@@ -1,37 +1,52 @@
 """Harbor tasksets backed by Harbor Hub packages.
 
 The Harbor CLI downloads and caches each task directory. Its verifier runs in the
-same runtime the harness edited, then writes the score to
+runtime the harness edited — or, when the task asks for it with
+``[verifier].environment_mode = "separate"``, in a second box the agent never touched,
+carrying only what the task declared. Either way the score lands in
 ``/logs/verifier/reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
 not build Dockerfile-only environments, so those are rejected unless ``ignore_dockerfile``
 deliberately uses the harness runtime image. Tasks without an environment also use that
-image unless ``require_image`` is set.
+image unless ``require_image`` is set. The same rule applies to a declared
+``[verifier.environment]``: it needs a pullable ``docker_image``, since Harbor would
+otherwise build the verifier image from ``tests/Dockerfile``.
 """
 
 import asyncio
 import hashlib
 import io
+import logging
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-from verifiers.v1.artifacts import Artifact, collect
+from verifiers.v1.artifacts import Artifact, collect, restore
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.decorators import reward
-from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    PrimeConfig,
+    Runtime,
+    RuntimeConfig,
+    provision_runtime,
+)
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
+
+logger = logging.getLogger(__name__)
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
@@ -70,6 +85,11 @@ class HarborConfig(TasksetConfig):
     instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
     harness image rather than its declared environment — only correct when that image already
     has what the task needs (e.g. you've pointed the runtime at the right image)."""
+    ignore_separate_verifier: bool = False
+    """Grade every task in the agent's own box, even one whose `[verifier]` asks for a
+    separate one. Trades the isolation for a sandbox per task; useful when provisioning
+    is the bottleneck. Note what it gives up: the grader becomes reachable by the agent
+    that just ran."""
 
 
 class Author(BaseModel):
@@ -82,6 +102,27 @@ class CollectHook(BaseModel):
 
     command: str
     timeout_sec: float = 600.0
+
+
+class VerifierConfig(StrictBaseModel):
+    """The box this task's verifier wants, when it wants one of its own.
+
+    `None` on `HarborData` means shared — grade where the agent worked, which is still
+    Harbor's default and every task that says nothing."""
+
+    image: str | None = None
+    """Pullable ref from `[verifier.environment].docker_image`. None keeps the task's
+    own image, which is what Harbor's fresh copy of `[environment]` resolves to."""
+    resources: TaskResources = TaskResources()
+    workdir: str | None = None
+    fresh_copy: bool = False
+    """Whether this came from Harbor's fresh copy of `[environment]` rather than a
+    declared `[verifier.environment]`. A fresh copy inherits the agent box's resolved
+    resources; a declared environment states its own, and what it omits falls back to
+    the run's rather than to the agent's task-derived values."""
+    network_allow: list[str] = Field(default_factory=lambda: ["*"])
+    """Destinations the verifier may reach, from the verifier's network mode. `["*"]`
+    is unrestricted; `[]` is Harbor's `no-network` / `allow_internet = false`."""
 
 
 class HarborData(TaskData):
@@ -105,6 +146,9 @@ class HarborData(TaskData):
     collect: list[CollectHook] = Field(default_factory=list)
     """`[[verifier.collect]]` blocks: commands that snapshot runtime state into files
     after the agent stops, so the files can travel to a grading box as artifacts."""
+    verifier: VerifierConfig | None = None
+    """The verifier's own box, when `[verifier].environment_mode` asks for one. None
+    grades in the agent's box."""
 
 
 class HarborTask(Task[HarborData]):
@@ -139,19 +183,62 @@ class HarborTask(Task[HarborData]):
                 )
         trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
-    @reward(weight=1.0)
-    async def solved(self, runtime: Runtime) -> float:
+    def scoring_runtime(
+        self, runtime: Runtime, runtime_policy: RuntimeConfig
+    ) -> AbstractAsyncContextManager[Runtime] | None:
+        if self.data.verifier is None:
+            return None
+        config = verifier_runtime_config(runtime, runtime_policy, self.data.verifier)
+        return self._verifier_box(runtime, config)
+
+    @asynccontextmanager
+    async def _verifier_box(
+        self, runtime: Runtime, config: RuntimeConfig
+    ) -> AsyncIterator[Runtime]:
+        """Carry the declared evidence out of the agent's box, confirm that box is gone,
+        and stand up a clean one to grade in.
+
+        Nothing starts until `stop_confirmed` returns: a verifier sharing a network with
+        a box the agent left a process running in is not isolated from it.
+        """
+        collected = await collect(runtime, self.data.artifacts)
+        await runtime.stop_confirmed()
+        async with provision_runtime(config, name=f"{runtime.name}-verifier") as box:
+            await box.prepare_setup()
+            # Artifacts first, tests second: the task declares where its evidence lands,
+            # and an entry pointing into /tests would otherwise hand the agent the
+            # grader's own scripts.
+            await restore(box, collected)
+            await self._stage_tests(box, wipe=True)
+            await box.prepare_execution([])
+            yield box
+
+    async def _stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
+        """Put the task package's `tests/` in `/tests`, where `test.sh` expects it.
+
+        `wipe` for a box we did not watch being built: a fresh container of the task's
+        image can ship its own `/tests`, and a leftover file there would be graded as
+        though it came from the package.
+        """
         await runtime.write(
             "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
         )
-        await runtime.run(
-            [
-                "sh",
-                "-c",
-                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
-            ],
-            {},
+        stage = (
+            f"{'rm -rf /tests && ' if wipe else ''}"
+            "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests"
         )
+        result = await runtime.run(["sh", "-c", stage], {})
+        if result.exit_code:
+            raise TaskError(
+                f"staging tests failed (exit {result.exit_code}): "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
+            )
+
+    @reward(weight=1.0)
+    async def solved(self, runtime: Runtime) -> float:
+        # In separate mode the verifier box arrived staged; `runtime` is that box.
+        if self.data.verifier is None:
+            await self._stage_tests(runtime)
         await runtime.run(
             ["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self.data)
         )
@@ -160,6 +247,38 @@ class HarborTask(Task[HarborData]):
             return float(reward or 0)
         except (SandboxError, OSError, ValueError):
             return 0.0
+
+
+def verifier_runtime_config(
+    runtime: Runtime, runtime_policy: RuntimeConfig, verifier: VerifierConfig
+) -> RuntimeConfig:
+    """The verifier box's config, derived from the agent box's."""
+    config = runtime.config
+    if not isinstance(config, DockerConfig | PrimeConfig) or type(
+        runtime_policy
+    ) is not type(config):
+        raise TaskError(
+            "a separate verifier needs a container runtime matching the run's policy; "
+            f"got {type(config).__name__} against {type(runtime_policy).__name__}"
+        )
+    updates: dict[str, Any] = {
+        "allow": verifier.network_allow,
+        "block": runtime_policy.block,
+    }
+    if not verifier.fresh_copy:
+        # A declared [verifier.environment] replaces the task's environment rather than
+        # extending it, so what it omits falls back to the run's policy instead of
+        # inheriting the agent box's task-derived resources.
+        updates |= {
+            field: getattr(runtime_policy, field)
+            for field in ("workdir", "cpu", "memory", "gpu", "disk")
+        }
+    if verifier.image is not None:
+        updates["image"] = verifier.image
+    updates |= verifier.resources.model_dump(exclude_none=True)
+    if verifier.workdir is not None:
+        updates["workdir"] = verifier.workdir
+    return type(config).model_validate({**config.model_dump(), **updates})
 
 
 def harbor_cli() -> str:
@@ -289,7 +408,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
     harbor_task = HarborModelTask(task_dir)
     parsed = harbor_task.config
-    artifacts, collect = parse_verifier_extras(task_dir, parsed)
+    artifacts, hooks, verifier = parse_verifier_extras(
+        task_dir, parsed, harbor_config
+    )
     environment = parsed.environment
     network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
     task, meta = parsed.task, parsed.metadata
@@ -359,14 +480,22 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         task_dir=str(task_dir),
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
-        collect=collect,
+        collect=hooks,
+        verifier=verifier,
     )
 
 
 def parse_verifier_extras(
-    task_dir: Path, parsed
-) -> tuple[list[Artifact], list[CollectHook]]:
-    """Parse supported artifact and collect-hook settings."""
+    task_dir: Path, parsed, harbor_config: HarborConfig
+) -> tuple[list[Artifact], list[CollectHook], VerifierConfig | None]:
+    """Harbor's `artifacts`, `[[verifier.collect]]` blocks, and verifier environment,
+    narrowed to what verifiers' verifier-runtime integration can honor.
+
+    The convention dir is deliberately not prepended here (Harbor's
+    `with_convention_entry` would): collection injects it itself, as an optional sweep.
+    Prepending it would make it an explicitly declared entry, and declared entries are
+    required — which would fail every task that never writes there.
+    """
     from harbor.constants import MAIN_SERVICE_NAME
     from harbor.models.task.artifacts import (
         effective_artifact_service,
@@ -374,13 +503,6 @@ def parse_verifier_extras(
     )
 
     verifier = parsed.verifier
-    if verifier.environment is not None:
-        raise ValueError(
-            f"{task_dir.name}: [verifier.environment] declares a separate verifier "
-            "image. Grading runs in a fresh box built from the task's own image, so "
-            "only the agent's delta has to travel; a different verifier image needs "
-            "the full working tree copied over and isn't supported yet."
-        )
     if verifier.user is not None:
         raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
@@ -414,7 +536,101 @@ def parse_verifier_extras(
             )
         hooks.append(CollectHook(command=hook.command, timeout_sec=hook.timeout_sec))
 
-    return artifacts, hooks
+    return artifacts, hooks, parse_verifier_environment(task_dir, parsed, harbor_config)
+
+
+def parse_verifier_environment(
+    task_dir: Path, parsed, harbor_config: HarborConfig
+) -> VerifierConfig | None:
+    """The box Harbor wants this task's verifier in, or None to grade in the agent's.
+
+    Harbor resolves `[verifier.environment]` if declared, else a deep copy of
+    `[environment]` — so a mode-only `separate` lands on the task's own image and needs
+    nothing but a second box. A declared environment is the case that can name a
+    different image, and the case that can name none at all: there Harbor builds
+    `tests/Dockerfile`, which verifiers never does.
+    """
+    from harbor.models.task.config import NetworkMode, TaskOS
+    from harbor.models.task.verifier_mode import (
+        VerifierEnvironmentMode,
+        resolve_effective_verifier_env_config,
+        resolve_task_verifier_mode,
+    )
+
+    if resolve_task_verifier_mode(parsed) != VerifierEnvironmentMode.SEPARATE:
+        return None
+    if harbor_config.ignore_separate_verifier:
+        logger.warning(
+            "%s: asks for a separate verifier; grading in the agent's box anyway "
+            "(--taskset.ignore-separate-verifier)",
+            task_dir.name,
+        )
+        return None
+
+    environment = resolve_effective_verifier_env_config(parsed, None)
+    if environment is None:  # unreachable while the mode is SEPARATE
+        raise ValueError(f"{task_dir.name}: separate verifier resolved no environment")
+    declared = parsed.verifier.environment is not None
+
+    if declared and environment.docker_image is None:
+        if not harbor_config.ignore_dockerfile:
+            raise ValueError(
+                f"{task_dir.name}: [verifier.environment] names no docker_image, so "
+                "Harbor would build the verifier image from tests/Dockerfile. Verifiers "
+                "pulls images and never builds them: build and push it yourself (e.g. "
+                "`prime images push`) and set [verifier.environment].docker_image to the "
+                "resulting ref, or pass --taskset.ignore-dockerfile to grade in the "
+                "agent's image instead."
+            )
+        logger.warning(
+            "%s: [verifier.environment] names no docker_image — grading in the agent's "
+            "image rather than building tests/Dockerfile, so the verifier runs somewhere "
+            "the task never declared",
+            task_dir.name,
+        )
+    unsupported = [
+        field
+        for field in ("healthcheck", "mcp_servers", "skills_dir", "gpu_types", "tpu")
+        if getattr(environment, field, None)
+    ]
+    if environment.os != TaskOS.LINUX or unsupported:
+        raise ValueError(
+            f"{task_dir.name}: verifier environment declares "
+            f"{unsupported or environment.os}, which a single-container runtime "
+            "can't honor"
+        )
+
+    mode = parsed.verifier.network_mode or environment.network_mode
+    hosts = list(parsed.verifier.allowed_hosts or environment.allowed_hosts or [])
+    return VerifierConfig(
+        image=environment.docker_image if declared else None,
+        # A declared environment states its own resources; what it leaves out is the
+        # run's default, not the agent task's. A fresh copy is the task's environment,
+        # so it keeps whatever the agent box resolved to.
+        resources=(
+            TaskResources(
+                cpu=environment.cpus * harbor_config.resource_multiplier
+                if environment.cpus
+                else None,
+                memory=environment.memory_mb
+                / 1024
+                * harbor_config.resource_multiplier
+                if environment.memory_mb
+                else None,
+                gpu=str(environment.gpus) if environment.gpus else None,
+                disk=environment.storage_mb
+                / 1024
+                * harbor_config.resource_multiplier
+                if environment.storage_mb
+                else None,
+            )
+            if declared
+            else TaskResources()
+        ),
+        workdir=environment.workdir if declared else None,
+        fresh_copy=not declared,
+        network_allow=["*"] if mode == NetworkMode.PUBLIC else hosts,
+    )
 
 
 def verifier_env(task: HarborData) -> dict[str, str]:
