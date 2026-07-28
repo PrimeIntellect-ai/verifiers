@@ -41,48 +41,27 @@ _ENSURE_UV = (
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
 
-# A reused restricted box must stop processes and discard framework setup caches
-# left by the prior untrusted agent before trusted setup reopens egress.
-# PID + kernel start time survives PID reuse.
-_PROCESS_SNAPSHOT = r"""
-for proc in /proc/[0-9]*; do
-    pid=${proc##*/}
-    stat=$(cat "$proc/stat" 2>/dev/null) || continue
-    rest=${stat##*) }
-    set -- $rest
-    printf '%s:%s\n' "$pid" "${20}"
-done
-"""
-_KILL_AFTER_SNAPSHOT = r"""
-baseline="
-$VF_PROCESS_BASELINE
-"
-protected=" "
-pid=$$
-while [ "$pid" -gt 1 ] 2>/dev/null; do
-    protected="$protected$pid "
-    stat=$(cat "/proc/$pid/stat" 2>/dev/null) || break
-    rest=${stat##*) }
-    set -- $rest
-    pid=$2
-done
+# Shared restricted rollouts run agents as this unprivileged user. Trusted setup
+# can then reap every process that user left behind using executables it cannot replace.
+_REUSE_UID = "65534"
+_RESET_REUSE = r"""
 while :; do
     targeted=
     for proc in /proc/[0-9]*; do
         pid=${proc##*/}
-        case "$protected" in *" $pid "*) continue ;; esac
-        stat=$(cat "$proc/stat" 2>/dev/null) || continue
+        uid=
+        while read -r key value _; do
+            [ "$key" = "Uid:" ] && { uid=$value; break; }
+        done < "$proc/status" 2>/dev/null
+        [ "$uid" = "$VF_REUSE_UID" ] || continue
+        IFS= read -r stat < "$proc/stat" 2>/dev/null || continue
         rest=${stat##*) }
-        set -- $rest
-        case "$1" in Z|X) continue ;; esac
-        if [ "$1" = D ]; then
+        state=${rest%% *}
+        case "$state" in Z|X) continue ;; esac
+        if [ "$state" = D ]; then
             echo "process $pid is stuck in uninterruptible sleep" >&2
             exit 1
         fi
-        identity="$pid:${20}"
-        case "$baseline" in *"
-$identity
-"*) continue ;; esac
         if kill -STOP "$pid" 2>/dev/null; then
             kill -KILL "$pid" 2>/dev/null || true
             targeted=1
@@ -90,6 +69,7 @@ $identity
     done
     [ -z "$targeted" ] && break
 done
+"$VF_RM" -rf -- "$@" /tmp/vf-*
 """
 
 # The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
@@ -210,7 +190,8 @@ class Runtime(ABC):
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
-        self._process_baseline: str | None = None
+        self._rollout_used = False
+        self._reuse_tools: dict[str, str] | None = None
         self.execution_prepared = False
         """Whether a rollout successfully activated this runtime's execution policy."""
         self.stopped = False
@@ -268,7 +249,40 @@ class Runtime(ABC):
         provisioning) that go through `run`. No framework layer may replay this argv: doing so
         against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
         still retry individual safe transport operations underneath `run`."""
+        argv, env = await self._prepare_program(argv, env)
         return await self.run(argv, env)
+
+    async def _prepare_program(
+        self, argv: list[str], env: dict[str, str]
+    ) -> tuple[list[str], dict[str, str]]:
+        """Drop agent-facing programs to the isolated reuse user when configured."""
+        if self._reuse_tools is None:
+            return argv, env
+        tools = self._reuse_tools
+        ownership = await self.run(
+            [tools["chown"], "-R", f"{_REUSE_UID}:{_REUSE_UID}", tools["workdir"]],
+            {},
+        )
+        if ownership.exit_code != 0:
+            raise SandboxError(
+                f"failed to prepare {self.type} workdir for safe reuse: "
+                f"{ownership.stderr.strip()[-500:]}"
+            )
+        return (
+            [
+                tools["chroot"],
+                f"--userspec={_REUSE_UID}:{_REUSE_UID}",
+                f"--groups={_REUSE_UID}",
+                "/",
+                tools["sh"],
+                "-c",
+                'cd "$1" && shift && exec "$@"',
+                "run-program",
+                tools["workdir"],
+                *argv,
+            ],
+            {**env, "HOME": tools["workdir"]},
+        )
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
@@ -285,6 +299,22 @@ class Runtime(ABC):
         script: str | bytes,
         env: dict[str, str] | None = None,
     ) -> list[str]:
+        if self._reuse_tools is not None:
+            setup_home = self._reuse_tools["setup_home"]
+            prepared = await self.run(
+                [self._reuse_tools["mkdir"], "-p", setup_home], {}
+            )
+            if prepared.exit_code != 0:
+                raise SandboxError(
+                    f"failed to prepare {self.type} setup cache: "
+                    f"{prepared.stderr.strip()[-500:]}"
+                )
+        else:
+            setup_home = None
+        env = {
+            **(env or {}),
+            **({"HOME": setup_home} if setup_home is not None else {}),
+        }
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         path = f"/tmp/vf-scripts/{digest}.py"
@@ -299,7 +329,7 @@ class Runtime(ABC):
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
                     )
-                    result = await self.run(["sh", "-c", command], env or {})
+                    result = await self.run(["sh", "-c", command], env)
                     if result.exit_code != 0:
                         raise RuntimeError(
                             "failed to prepare uv script: "
@@ -352,6 +382,68 @@ class Runtime(ABC):
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
 
+    async def prepare_reuse(self) -> None:
+        """Protect a restricted box before its first sequential agent runs."""
+        if not self.network_restricted or self._reuse_tools is not None:
+            return
+        if self._rollout_used:
+            raise SandboxError(
+                f"restricted {self.type} runtime reuse must be prepared before its first rollout"
+            )
+        workdir = getattr(self.config, "workdir", None)
+        if not isinstance(workdir, str) or not PurePosixPath(workdir).is_absolute():
+            raise SandboxError("restricted runtime reuse requires an absolute workdir")
+        find = await self.run(
+            [
+                "sh",
+                "-c",
+                (
+                    "set -e; command -v chroot; command -v chown; command -v rm; "
+                    "command -v sh; command -v mkdir"
+                ),
+            ],
+            {},
+        )
+        paths = find.stdout.strip().splitlines()
+        if find.exit_code != 0 or len(paths) != 5:
+            raise SandboxError(
+                f"{self.type} image {getattr(self.config, 'image', '')!r} cannot safely "
+                "reuse a restricted runtime; install chroot, chown, rm, sh, and mkdir"
+            )
+        chroot, chown, rm, sh, mkdir = paths
+        probe = await self.run(
+            [
+                chroot,
+                f"--userspec={_REUSE_UID}:{_REUSE_UID}",
+                f"--groups={_REUSE_UID}",
+                "/",
+                sh,
+                "-c",
+                "id -u; id -g; id -G",
+            ],
+            {},
+        )
+        identity = probe.stdout.strip().splitlines()
+        if (
+            probe.exit_code != 0
+            or identity[:2] != [_REUSE_UID, _REUSE_UID]
+            or len(identity) != 3
+            or set(identity[2].split()) != {_REUSE_UID}
+        ):
+            raise SandboxError(
+                f"{self.type} image {getattr(self.config, 'image', '')!r} cannot drop "
+                f"agent programs to uid/gid {_REUSE_UID} for safe restricted reuse"
+            )
+        self._reuse_tools = {
+            "chroot": chroot,
+            "chown": chown,
+            "rm": rm,
+            "sh": sh,
+            "mkdir": mkdir,
+            "workdir": workdir,
+            "setup_home": f"/tmp/vf-setup-{self.name}",
+        }
+
     @contextlib.asynccontextmanager
     async def rollout(self) -> AsyncIterator[None]:
         """Claim one restricted rollout, reopening trusted setup only between runs."""
@@ -363,44 +455,41 @@ class Runtime(ABC):
                 f"network-filtered {self.type} runtime {self.name!r} is already in "
                 "use; wait for its rollout to finish before reusing it"
             )
+        if self._rollout_used and self._reuse_tools is None:
+            raise SandboxError(
+                f"network-filtered {self.type} runtimes are single-rollout; call "
+                "prepare_reuse() before the first rollout or provision a fresh runtime"
+            )
         self._setup_claimed = True
         try:
-            if self._process_baseline is not None:
-                result = await self.run(
-                    ["sh", "-c", _KILL_AFTER_SNAPSHOT],
-                    {"VF_PROCESS_BASELINE": self._process_baseline},
-                )
-                if result.exit_code != 0:
-                    raise SandboxError(
-                        f"failed to isolate reused {self.type} runtime processes: "
-                        f"{result.stderr.strip()[-500:]}"
-                    )
+            if self._rollout_used:
                 uv_envs = [
                     str(PurePosixPath(path).parent.parent)
                     for path in self._uv_interpreters.values()
                 ]
-                reset = await self.run(
-                    ["sh", "-c", 'rm -rf "$@" /tmp/vf-*', "reset", *uv_envs],
-                    {},
+                assert self._reuse_tools is not None
+                result = await self.run(
+                    [
+                        self._reuse_tools["sh"],
+                        "-c",
+                        _RESET_REUSE,
+                        "reset",
+                        *uv_envs,
+                    ],
+                    {"VF_REUSE_UID": _REUSE_UID, "VF_RM": self._reuse_tools["rm"]},
                 )
-                if reset.exit_code != 0:
+                if result.exit_code != 0:
                     raise SandboxError(
-                        f"failed to reset reused {self.type} runtime setup caches: "
-                        f"{reset.stderr.strip()[-500:]}"
+                        f"failed to isolate reused {self.type} runtime: "
+                        f"{result.stderr.strip()[-500:]}"
                     )
                 self._uv_interpreters.clear()
-            snapshot = await self.run(["sh", "-c", _PROCESS_SNAPSHOT], {})
-            if snapshot.exit_code != 0:
-                raise SandboxError(
-                    f"failed to snapshot {self.type} runtime processes: "
-                    f"{snapshot.stderr.strip()[-500:]}"
-                )
-            self._process_baseline = snapshot.stdout
             if self.execution_prepared:
                 await self._apply_network_policy(None)
                 self.execution_prepared = False
             yield
         finally:
+            self._rollout_used = True
             self._setup_claimed = False
 
     async def prepare_execution(self, routes: list[str]) -> None:
