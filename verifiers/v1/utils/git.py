@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from math import ceil
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -96,6 +97,26 @@ async def resolve_head(runtime: Runtime, env: dict | None = None) -> str:
     return (result.stdout or "").strip()
 
 
+async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[str]:
+    """The repo's untracked files, to hand `capture_patch` as `ignore`.
+
+    Call at the end of `setup`, before the agent runs, and keep the result in host
+    memory beside `resolve_head`'s SHA. Whatever it lists came with the image, so the
+    agent cannot be credited with it, and a patch that carries it fails `git apply` in
+    a fresh container of that same image — which is what an isolated grading box is.
+
+    Exact where `capture_patch`'s own mtime rule is a heuristic, and the only one of the
+    two that works on an image built minutes before the rollout, where every file looks
+    new. Prefer it; the mtime rule is what a taskset that never calls this still gets.
+    """
+    result = await runtime.run(
+        ["sh", "-c", "git ls-files --others --exclude-standard -z"], env or {}
+    )
+    if result.exit_code != 0:
+        return []
+    return [path for path in (result.stdout or "").split("\0") if path]
+
+
 async def capture_patch(
     trace: Trace,
     runtime: Runtime,
@@ -109,8 +130,11 @@ async def capture_patch(
     Untracked files whose mtime predates the agent's first turn are left out: they came
     with the image, not the policy. R2E-Gym boxes ship three (`datasets`, `install.sh`,
     `run_tests.sh`), and a patch carrying them fails `git apply` in a fresh container of
-    that very image — which is what an isolated grading box is. `ignore` unstages named
-    paths on top, for a taskset that knows its image better than the mtime rule does.
+    that very image — which is what an isolated grading box is.
+
+    `ignore` unstages named paths on top of that. Pass `snapshot_untracked`'s list from
+    setup and the guess becomes a fact; the mtime rule is the fallback for tasksets that
+    don't.
 
     Two failure modes, attributed differently, because they deserve different outcomes.
 
@@ -138,14 +162,17 @@ async def capture_patch(
     cmd = _DIFF.format(
         full=full, capped=capped, stale=stale, t0=t0, cap=PATCH_CAP_BYTES + 1
     )
-    # An mtime is a heuristic. The exact answer is the untracked set as it stood before
-    # the agent ran, and sandbox snapshotting — once runtimes can snapshot and diff a
-    # filesystem — gives that directly, with no setup-side bookkeeping in each taskset.
-    # Replace this when it lands. Until then, err a few seconds early: the cutoff wants
-    # to sit just before the agent's first write, and overshooting backwards only
-    # readmits files setup wrote moments earlier, while undershooting drops the agent's.
+    # An mtime is a heuristic — `snapshot_untracked` is the exact answer, and sandbox
+    # snapshotting will be a better one still: once runtimes can snapshot and diff a
+    # filesystem, the pre-agent untracked set comes for free, with no setup-side
+    # bookkeeping in any taskset. Replace this when that lands.
+    #
+    # Round the cutoff backwards, never forwards. Truncation and the round trip that
+    # carries this age into the box both push it later, and a cutoff that lands after
+    # the agent's first write drops real work; landing early only readmits whatever
+    # setup wrote in its last seconds.
     started = trace.timing.generation.start or trace.timing.setup.start
-    age = str(max(0, int(time.time() - started)) + 5) if started else ""
+    age = str(max(0, ceil(time.time() - started)) + 2) if started else ""
     try:
         result = await runtime.run(
             ["sh", "-c", cmd, "vf-capture-patch", *(ignore or [])],
