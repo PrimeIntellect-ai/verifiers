@@ -17,6 +17,7 @@ otherwise build the verifier image from ``tests/Dockerfile``.
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import shutil
 import subprocess
@@ -50,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
+REWARD_JSON = "/logs/verifier/reward.json"
+MAX_REWARD_BYTES = 1024 * 1024
 
 
 class HarborConfig(TasksetConfig):
@@ -235,18 +238,49 @@ class HarborTask(Task[HarborData]):
             )
 
     @reward(weight=1.0)
-    async def solved(self, runtime: Runtime) -> float:
+    async def solved(self, runtime: Runtime) -> float | dict[str, float]:
         # In separate mode the verifier box arrived staged; `runtime` is that box.
         if self.data.verifier is None:
             await self._stage_tests(runtime)
         await runtime.run(
             ["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self.data)
         )
+        scores = await self._reward_json(runtime)
+        if scores is not None:
+            return scores
         try:
             reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
             return float(reward or 0)
         except (SandboxError, OSError, ValueError):
             return 0.0
+
+    async def _reward_json(self, runtime: Runtime) -> float | dict[str, float] | None:
+        """Harbor's `reward.json`, or None to fall back to `reward.txt`.
+
+        A bare number, or its multi-metric object of numbers — where a `reward` key, if
+        present, is the scalar and the rest are extra metrics. Bounded: this is a
+        grading input, and nothing guarantees its size.
+        """
+        try:
+            raw = await runtime.read_bounded(REWARD_JSON, MAX_REWARD_BYTES)
+            data = json.loads(raw)
+        except (SandboxError, OSError, ValueError):
+            return None
+        if isinstance(data, bool):  # bool is an int; a boolean reward is malformed
+            return None
+        if isinstance(data, int | float):
+            return float(data)
+        if (
+            isinstance(data, dict)
+            and data
+            and all(
+                isinstance(value, int | float) and not isinstance(value, bool)
+                for value in data.values()
+            )
+        ):
+            scores = {key: float(value) for key, value in data.items()}
+            return scores.get("reward", scores)
+        return None
 
 
 def verifier_runtime_config(
