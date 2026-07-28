@@ -336,3 +336,38 @@ def test_prime_run_recovers_same_job_after_transient_gateway_errors(monkeypatch)
     assert result.stdout == "done"
     assert client.started == 1
     assert client.polls == 3
+
+
+class FakeRecoveringUploadClient:
+    def __init__(self):
+        self.mkdir_calls = 0
+        self.upload_calls = 0
+        self.payloads = []
+
+    async def execute_command(self, runtime_id, command):
+        self.mkdir_calls += 1
+
+    async def upload_bytes(self, runtime_id, target, data, filename=None):
+        self.upload_calls += 1
+        self.payloads.append((target, data, filename))
+        if self.upload_calls == 1:
+            raise TimeoutError("upload timed out after 300s")
+
+
+def test_prime_write_retries_same_upload_after_transient_timeout(monkeypatch):
+    runtime = PrimeRuntime(PrimeConfig())
+    runtime.info.id = "prime-runtime-id"
+    client = FakeRecoveringUploadClient()
+    runtime._client = client
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("verifiers.v1.runtimes.prime.asyncio.sleep", no_sleep)
+    asyncio.run(runtime.write("/tmp/chunk.part", b"payload"))
+    assert client.mkdir_calls == 2
+    assert client.upload_calls == 2
+    assert client.payloads == [
+        ("/tmp/chunk.part", b"payload", "chunk.part"),
+        ("/tmp/chunk.part", b"payload", "chunk.part"),
+    ]

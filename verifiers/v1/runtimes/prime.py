@@ -38,6 +38,25 @@ GATEWAY_RECOVERY_SECONDS = 15 * 60
 """Keep polling the same background job through transient gateway outages."""
 
 
+def _is_transient_gateway_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "connecterror",
+            "connection reset",
+            "connection refused",
+            "readtimeout",
+            "uploadtimeouterror",
+            "timed out",
+            "temporarily unavailable",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+    )
+
+
 class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
@@ -345,16 +364,39 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
-        try:
-            await self._client.execute_command(
-                self.info.id,
-                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
-            )
-            await self._client.upload_bytes(
-                self.info.id, target, data, filename=PurePosixPath(target).name
-            )
-        except Exception as e:
-            raise SandboxError(f"write {path!r}: {e}") from e
+        started = asyncio.get_running_loop().time()
+        delay = 1.0
+        while True:
+            try:
+                await self._client.execute_command(
+                    self.info.id,
+                    f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
+                )
+                await self._client.upload_bytes(
+                    self.info.id, target, data, filename=PurePosixPath(target).name
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                elapsed = asyncio.get_running_loop().time() - started
+                if (
+                    not _is_transient_gateway_error(exc)
+                    or elapsed >= GATEWAY_RECOVERY_SECONDS
+                ):
+                    raise SandboxError(f"write {path!r}: {exc}") from exc
+                logger.warning(
+                    "prime: transient gateway error writing %s to sandbox %s; "
+                    "retrying the same upload in %.1fs (elapsed %.1fs/%.1fs): %s",
+                    target,
+                    self.info.id,
+                    delay,
+                    elapsed,
+                    GATEWAY_RECOVERY_SECONDS,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 15.0)
 
     async def stop_confirmed(self) -> None:
         """Delete the Prime sandbox or preserve cleanup state and raise."""
