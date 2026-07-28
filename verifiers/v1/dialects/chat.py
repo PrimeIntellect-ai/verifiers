@@ -166,7 +166,7 @@ def message_to_wire(message: Message, *, include_internal: bool = False) -> dict
                 TOOL_ERROR_PREFIX + content
                 if isinstance(content, str)
                 else [
-                    {"type": "text", "text": TOOL_ERROR_PREFIX.rstrip()},
+                    {"type": "text", "text": TOOL_ERROR_PREFIX},
                     *content,
                 ]
             )
