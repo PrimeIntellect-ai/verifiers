@@ -4,7 +4,7 @@ SWE-style tasksets call `capture_patch` from `Task.finalize` — after the harne
 finishes, while the runtime is live, before scoring mutates the repo (restoring
 test files, switching commits) — so the diff is exactly what the agent produced,
 including edits to test files (intentional: they reveal reward hacking), and
-excluding untracked files the image shipped and the agent never touched.
+excluding whatever `snapshot_untracked` recorded before the agent started.
 
 The diff is taken against `base_commit` when the caller has one — a dataset row
 field, or a SHA recorded with `resolve_head` at setup time and kept in host
@@ -15,9 +15,7 @@ agent commits.
 
 from __future__ import annotations
 
-import time
 import uuid
-from math import ceil
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -37,8 +35,6 @@ PATCH_CAP_BYTES = 2_000_000
 # rollout forever.
 _FULL = "/tmp/vf_agent_patch_full"
 _CAPPED = "/tmp/vf_agent_patch"
-_STALE = "/tmp/vf_agent_stale"
-_T0 = "/tmp/vf_agent_t0"
 
 # `git reset -q` must run even when staging or diffing fails, or the error path
 # leaves the tree staged and can break scoring's later checkouts. Every step
@@ -50,23 +46,13 @@ _T0 = "/tmp/vf_agent_t0"
 # on; a failed head leaves an empty {capped} (the redirect truncates it before
 # head runs), which would read back as a silently empty patch.
 #
-# The two unstage steps run between `add` and `diff` and are deliberately not part of
-# that accounting: if either fails the patch is merely as wide as it used to be, which
-# is a worse patch, not a broken rollout. `xargs -r` matters — without it an empty
-# stale list would run `git reset -q --` with no pathspec and unstage everything.
+# The unstage step is deliberately outside that accounting: if it fails the patch is
+# merely as wide as it used to be, which is a worse patch, not a broken rollout. The
+# `$#` test is load-bearing — `git reset -q --` with no pathspec unstages everything.
 _DIFF = (
-    "rm -f {full} {capped} {t0}; : > {stale}; "
-    # Untracked files older than the agent's first write are the image's, not the
-    # agent's. Listing has to happen before `add -A`, after which nothing is "other"
-    # any more. Age rather than an absolute cutoff: a remote sandbox keeps its own
-    # clock, and only a duration survives the trip across the skew.
-    'if [ -n "$VF_AGENT_AGE" ] && touch -d "@$(($(date +%s) - $VF_AGENT_AGE))" {t0}; '
-    "then git ls-files --others --exclude-standard -z "
-    "| xargs -0 -r sh -c 'find \"$@\" -maxdepth 0 ! -newer {t0} -print0' _ > {stale}; "
-    "fi; "
+    "rm -f {full} {capped}; "
     "git add -A; "
     "add_rc=$?; "
-    "xargs -0 -r git reset -q -- < {stale}; "
     '[ "$#" -gt 0 ] && git reset -q -- "$@"; '
     'git -c core.quotepath=off diff --cached --binary "$VF_DIFF_BASE" > {full}; '
     "diff_rc=$?; "
@@ -74,7 +60,7 @@ _DIFF = (
     "reset_rc=$?; "
     "head -c {cap} {full} > {capped}; "
     "head_rc=$?; "
-    "rm -f {full} {stale} {t0}; "
+    "rm -f {full}; "
     "rc=$head_rc; "
     '[ "$diff_rc" -ne 0 ] && rc=$diff_rc; '
     '[ "$reset_rc" -ne 0 ] && rc=$reset_rc; '
@@ -105,9 +91,9 @@ async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[
     agent cannot be credited with it, and a patch that carries it fails `git apply` in
     a fresh container of that same image — which is what an isolated grading box is.
 
-    Exact where `capture_patch`'s own mtime rule is a heuristic, and the only one of the
-    two that works on an image built minutes before the rollout, where every file looks
-    new. Prefer it; the mtime rule is what a taskset that never calls this still gets.
+    Sandbox snapshotting will make this free: once runtimes can snapshot and diff a
+    filesystem, the pre-agent untracked set falls out of the diff with no setup-side
+    bookkeeping in any taskset. Drop this then.
     """
     result = await runtime.run(
         ["sh", "-c", "git ls-files --others --exclude-standard -z"], env or {}
@@ -127,14 +113,11 @@ async def capture_patch(
 ) -> None:
     """Snapshot the agent's cumulative diff into `trace.info["patch"]`.
 
-    Untracked files whose mtime predates the agent's first turn are left out: they came
-    with the image, not the policy. R2E-Gym boxes ship three (`datasets`, `install.sh`,
-    `run_tests.sh`), and a patch carrying them fails `git apply` in a fresh container of
-    that very image — which is what an isolated grading box is.
-
-    `ignore` unstages named paths on top of that. Pass `snapshot_untracked`'s list from
-    setup and the guess becomes a fact; the mtime rule is the fallback for tasksets that
-    don't.
+    `ignore` names paths to leave out — pass `snapshot_untracked`'s list from setup, or
+    `git add -A` credits the agent with untracked files the image shipped. R2E-Gym boxes
+    ship three (`datasets`, `install.sh`, `run_tests.sh`), and a patch carrying them
+    fails `git apply` in a fresh container of that very image — which is what an
+    isolated grading box is.
 
     Two failure modes, attributed differently, because they deserve different outcomes.
 
@@ -158,29 +141,11 @@ async def capture_patch(
     """
     nonce = uuid.uuid4().hex
     full, capped = f"{_FULL}_{nonce}", f"{_CAPPED}_{nonce}"
-    stale, t0 = f"{_STALE}_{nonce}", f"{_T0}_{nonce}"
-    cmd = _DIFF.format(
-        full=full, capped=capped, stale=stale, t0=t0, cap=PATCH_CAP_BYTES + 1
-    )
-    # An mtime is a heuristic — `snapshot_untracked` is the exact answer, and sandbox
-    # snapshotting will be a better one still: once runtimes can snapshot and diff a
-    # filesystem, the pre-agent untracked set comes for free, with no setup-side
-    # bookkeeping in any taskset. Replace this when that lands.
-    #
-    # Round the cutoff backwards, never forwards. Truncation and the round trip that
-    # carries this age into the box both push it later, and a cutoff that lands after
-    # the agent's first write drops real work; landing early only readmits whatever
-    # setup wrote in its last seconds.
-    started = trace.timing.generation.start or trace.timing.setup.start
-    age = str(max(0, ceil(time.time() - started)) + 2) if started else ""
+    cmd = _DIFF.format(full=full, capped=capped, cap=PATCH_CAP_BYTES + 1)
     try:
         result = await runtime.run(
             ["sh", "-c", cmd, "vf-capture-patch", *(ignore or [])],
-            {
-                **(env or {}),
-                "VF_DIFF_BASE": base_commit or "HEAD",
-                "VF_AGENT_AGE": age,
-            },
+            {**(env or {}), "VF_DIFF_BASE": base_commit or "HEAD"},
         )
         if result.exit_code != 0:
             # Not every runtime raises when the box is gone — Docker returns `docker
@@ -202,7 +167,7 @@ async def capture_patch(
         # Unique names don't overwrite each other, so leftovers would accumulate
         # on shared-filesystem runtimes; removal is best-effort by design.
         try:
-            await runtime.run(["rm", "-f", full, capped, stale, t0], env or {})
+            await runtime.run(["rm", "-f", full, capped], env or {})
         except Exception:  # noqa: BLE001, S110 - cleanup must never fail the rollout
             pass
     if len(raw) > PATCH_CAP_BYTES:
