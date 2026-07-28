@@ -300,3 +300,39 @@ def test_modal_start_forwards_egress_block_and_hard_lifetime(monkeypatch):
     assert kwargs["block_network"] is True
     assert kwargs["timeout"] == 121
     assert kwargs["encrypted_ports"]
+
+
+class FakeRecoveringPrimeClient:
+    def __init__(self):
+        self.started = 0
+        self.polls = 0
+
+    async def start_background_job(
+        self, runtime_id, command, working_dir=None, env=None
+    ):
+        self.started += 1
+        return "original-job"
+
+    async def get_background_job(self, runtime_id, job):
+        assert job == "original-job"
+        self.polls += 1
+        if self.polls <= 2:
+            raise ConnectionError("temporary gateway outage")
+        return SimpleNamespace(completed=True, exit_code=0, stdout="done", stderr="")
+
+
+def test_prime_run_recovers_same_job_after_transient_gateway_errors(monkeypatch):
+    runtime = PrimeRuntime(PrimeConfig())
+    runtime.info.id = "prime-runtime-id"
+    client = FakeRecoveringPrimeClient()
+    runtime._client = client
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("verifiers.v1.runtimes.prime.asyncio.sleep", no_sleep)
+    result = asyncio.run(runtime.run(["echo", "ok"], {}))
+    assert result.exit_code == 0
+    assert result.stdout == "done"
+    assert client.started == 1
+    assert client.polls == 3
