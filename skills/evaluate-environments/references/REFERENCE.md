@@ -363,7 +363,7 @@ Remote Prime sandbox; reached via native port exposure.
 | `memory` | `float` | `2.0` | Memory in GB. |
 | `gpu` | `str \| None` | `None` | GPU spec, e.g. `"A100"` or `"A100:2"` (bare count = provider-chosen type). |
 | `disk` | `float` | `5.0` | Disk in GB. |
-| `idle_timeout` | `float \| None` | `3600` | Seconds of inactivity before the sandbox is deleted; `None` disables it. Must be positive and ≤ `timeout` when set. |
+| `idle_timeout` | `float \| None` | `3600` | Seconds of inactivity before the sandbox is deleted; `None` disables it. The default is capped to a shorter `timeout`; an explicit value must be positive and ≤ `timeout`. |
 | `timeout` | `float` | `86400` | Hard maximum sandbox lifetime in seconds (60–86400). |
 | `creates_per_min` | `int \| None` | `None` | Pace sandbox creation to this many per minute, host-wide across every env-server worker (None/≤0 disables). Tunnel creation is limited separately and globally. |
 

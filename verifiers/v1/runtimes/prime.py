@@ -115,10 +115,13 @@ class PrimeConfig(NetworkPolicyConfig):
             if self.idle_timeout <= 0:
                 raise ValueError("idle_timeout must be positive or None")
             if self.idle_timeout > self.timeout:
-                raise ValueError(
-                    f"idle_timeout ({self.idle_timeout}s) must not exceed the "
-                    f"hard sandbox timeout ({self.timeout}s)"
-                )
+                if "idle_timeout" not in self.model_fields_set:
+                    self.idle_timeout = self.timeout
+                else:
+                    raise ValueError(
+                        f"idle_timeout ({self.idle_timeout}s) must not exceed the "
+                        f"hard sandbox timeout ({self.timeout}s)"
+                    )
         return self
 
 
