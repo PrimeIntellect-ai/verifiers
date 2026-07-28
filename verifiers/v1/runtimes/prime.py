@@ -272,6 +272,8 @@ class PrimeRuntime(Runtime):
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    if not _is_transient_gateway_error(exc):
+                        raise
                     # Never start a replacement job after an ambiguous gateway
                     # failure.  Keep polling the exact original job so a transient
                     # control-plane outage cannot orphan a still-running six-hour

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from prime_sandboxes.core.client import APIError
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
 
@@ -358,6 +359,23 @@ def test_prime_run_recovers_same_job_after_transient_gateway_errors(monkeypatch)
     assert result.stdout == "done"
     assert client.started == 1
     assert client.polls == 3
+
+
+def test_prime_run_fails_immediately_on_non_transient_poll_error():
+    runtime = PrimeRuntime(PrimeConfig())
+    runtime.info.id = "prime-runtime-id"
+    client = FakeRecoveringPrimeClient()
+
+    async def permanent_error(runtime_id, job):
+        client.polls += 1
+        raise RuntimeError("authentication denied")
+
+    client.get_background_job = permanent_error
+    runtime._client = client
+    with pytest.raises(SandboxError, match="authentication denied"):
+        asyncio.run(runtime.run(["echo", "ok"], {}))
+    assert client.started == 1
+    assert client.polls == 1
 
 
 class FakeRecoveringUploadClient:
