@@ -17,7 +17,6 @@ from unittest.mock import patch
 import verifiers.cli.plugins.prime as prime_plugin
 from verifiers.cli.commands import eval_v1_prime
 
-
 # ---------------------------------------------------------------------------
 # Workspace helpers (shared with existing tests)
 # ---------------------------------------------------------------------------
