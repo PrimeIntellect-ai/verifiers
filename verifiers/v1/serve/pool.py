@@ -203,10 +203,10 @@ class EnvServerPool:
             return
         if self.max_workers is not None and len(self.workers) >= self.max_workers:
             return
-        if (
-            self.in_flight >= 0.9 * len(self.workers) * self.multiplex
-            and self._try_spawn_worker()
-        ):
+        if self.in_flight >= 0.9 * len(self.workers) * self.multiplex:
+            if not self._try_spawn_worker():
+                self._restarts += 1
+                return
             logger.info(
                 "EnvServerPool scaled up to %d/%s workers (in_flight=%d)",
                 len(self.workers),
@@ -356,7 +356,9 @@ class EnvServerPool:
                 client_id, request_id, "env server has no live workers"
             )
             return
-        ready_workers = [w for w in self.workers if w["ready"]]
+        ready_workers = [
+            w for w in self.workers if w["ready"] and w["process"].exitcode is None
+        ]
         if not ready_workers:
             await self._reply_error(
                 client_id, request_id, "env server has no ready workers"
