@@ -13,4 +13,4 @@ You can now run tasksets directly, e.g. `uv run eval <taskset-id>`, and scaffold
 
 ## Skills
 
-To equip your agent with the necessary knowledge, we highly recommend the skills in this repository's [`skills/`](../../skills/) directory (alongside [`AGENTS.md`](../../AGENTS.md)). They are more comprehensive than these docs, which are meant for human consumption.
+To equip your agent with the necessary knowledge, we highly recommend the skills in this repository's [`skills/`](https://github.com/PrimeIntellect-ai/verifiers/tree/main/skills) directory (alongside [`AGENTS.md`](https://github.com/PrimeIntellect-ai/verifiers/blob/main/AGENTS.md)). They are more comprehensive than these docs, which are meant for human consumption.
