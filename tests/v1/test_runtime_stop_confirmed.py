@@ -361,7 +361,8 @@ def test_prime_run_recovers_same_job_after_transient_gateway_errors(monkeypatch)
 
 
 class FakeRecoveringUploadClient:
-    def __init__(self):
+    def __init__(self, error):
+        self.error = error
         self.mkdir_calls = 0
         self.upload_calls = 0
         self.payloads = []
@@ -373,13 +374,17 @@ class FakeRecoveringUploadClient:
         self.upload_calls += 1
         self.payloads.append((target, data, filename))
         if self.upload_calls == 1:
-            raise TimeoutError("upload timed out after 300s")
+            raise self.error
 
 
-def test_prime_write_retries_same_upload_after_transient_timeout(monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [TimeoutError("upload timed out after 300s"), ConnectionError("gateway dropped")],
+)
+def test_prime_write_retries_same_upload_after_transient_error(monkeypatch, error):
     runtime = PrimeRuntime(PrimeConfig())
     runtime.info.id = "prime-runtime-id"
-    client = FakeRecoveringUploadClient()
+    client = FakeRecoveringUploadClient(error)
     runtime._client = client
 
     async def no_sleep(_seconds):

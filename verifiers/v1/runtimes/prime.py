@@ -44,6 +44,7 @@ def _is_transient_gateway_error(exc: BaseException) -> bool:
         marker in text
         for marker in (
             "connecterror",
+            "connectionerror",
             "connection reset",
             "connection refused",
             "readtimeout",
