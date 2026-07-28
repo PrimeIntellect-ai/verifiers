@@ -53,10 +53,14 @@ class StaticInterceptionPool(Interception):
     a slot on the least-loaded one. No capacity cap — sizing the set to the load is the
     operator's call (it's the shape for pre-provisioned/bring-your-own endpoints)."""
 
-    def __init__(self, config: StaticInterceptionPoolConfig, requires_tunnel: bool = False) -> None:
+    def __init__(
+        self, config: StaticInterceptionPoolConfig, requires_tunnel: bool = False
+    ) -> None:
         super().__init__()
         self.config = config
-        self.servers = [InterceptionServer(server, requires_tunnel) for server in config.servers]
+        self.servers = [
+            InterceptionServer(server, requires_tunnel) for server in config.servers
+        ]
 
     async def start(self) -> None:
         for server in self.servers:
@@ -167,7 +171,9 @@ class ElasticInterceptionPool(Interception):
             if server.load < self.config.multiplex:
                 return server
         # Pin prime explicitly — the only tunnel kind that can be minted on demand.
-        server = InterceptionServer(InterceptionServerConfig(tunnel=PrimeTunnelConfig()), self.requires_tunnel)
+        server = InterceptionServer(
+            InterceptionServerConfig(tunnel=PrimeTunnelConfig()), self.requires_tunnel
+        )
         await self.stack.enter_async_context(server)
         self.servers.append(server)
         logger.info(
