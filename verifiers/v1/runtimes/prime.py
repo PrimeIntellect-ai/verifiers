@@ -66,6 +66,9 @@ class PrimeConfig(NetworkPolicyConfig):
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
+    wait_for_creation_max_attempts: int = Field(default=60, ge=1)
+    """Maximum Prime SDK polling attempts while waiting for a sandbox to become
+    running and reachable."""
 
     @model_validator(mode="after")
     def _validate_egress(self) -> "PrimeConfig":
@@ -168,7 +171,10 @@ class PrimeRuntime(Runtime):
                     self.config.image,
                     self.info.id,
                 )
-            await self._client.wait_for_creation(self.info.id)
+            await self._client.wait_for_creation(
+                self.info.id,
+                max_attempts=self.config.wait_for_creation_max_attempts,
+            )
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
