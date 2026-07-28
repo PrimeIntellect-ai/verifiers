@@ -18,7 +18,7 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
 
     uv run pytest tests/v1 -n auto                                # everything (needs modal setup)
     uv run pytest tests/v1 -n auto -m "not e2e"                   # deterministic CI matrix
-    uv run pytest tests/v1 -n 2 -m "e2e and not prime and not modal"  # live CI job
+    uv run pytest tests/v1 -n auto -m "e2e and not prime and not modal"  # live CI job
     uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
     uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
