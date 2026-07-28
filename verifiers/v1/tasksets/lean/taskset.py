@@ -14,12 +14,12 @@ from collections.abc import Iterator
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.task import TaskConfig
+from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.state import State
-from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.task import Task, TaskData, TaskResources
-from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.tasksets.lean.scoring import (
     build_starter_file,
@@ -222,4 +222,4 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         return block
 
 
-__all__ = ["LeanTask", "LeanConfig", "LeanTaskset"]
+__all__ = ["LeanConfig", "LeanTask", "LeanTaskset"]

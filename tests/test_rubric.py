@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for the Rubric class."""
 
 from typing import cast

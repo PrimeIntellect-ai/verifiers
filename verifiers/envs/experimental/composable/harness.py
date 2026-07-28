@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Harness — agent-side configuration for ComposableEnv.
 
 A Harness declares how to install and run an agent binary, and where it

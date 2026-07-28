@@ -16,7 +16,8 @@ from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from prime_sandboxes.models import validate_egress_lists
+from pydantic import Field, model_validator
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
@@ -49,7 +50,7 @@ class PrimeConfig(NetworkPolicyConfig):
     """Request guaranteed (vs best-effort) capacity."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
-    labels: list[str] = []
+    labels: list[str] = Field(default_factory=list)
     """Labels attached to the sandbox."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = 1.0
@@ -75,12 +76,12 @@ class PrimeConfig(NetworkPolicyConfig):
             raise ValueError(
                 "Prime allow/block egress lists require a VM sandbox (vm=true)"
             )
-        from prime_sandboxes.models import validate_egress_lists
-
-        allow = None if self.allow == ["*"] else self.allow
-        block = self.block or None
-        if allow is not None or block != ["*"]:
-            validate_egress_lists(allow, block)
+        if not self.allow:
+            return self
+        validate_egress_lists(
+            None if self.allow == ["*"] else self.allow,
+            self.block or None,
+        )
         return self
 
     @model_validator(mode="after")
@@ -185,13 +186,15 @@ class PrimeRuntime(Runtime):
         if not self.network_restricted:
             return
         try:
+            hosts = list(
+                dict.fromkeys(
+                    h for h in (urlsplit(route).hostname for route in routes) if h
+                )
+            )
             if self.config.allow == ["*"]:
                 policy = {"deny": self.config.block}
             else:
-                hosts = [h for h in (urlsplit(route).hostname for route in routes) if h]
                 entries = list(dict.fromkeys([*hosts, *self.config.allow]))
-                from prime_sandboxes.models import validate_egress_lists
-
                 validate_egress_lists(entries, None)
                 policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
@@ -332,7 +335,7 @@ class PrimeRuntime(Runtime):
         if self.info.id is not None:  # keep info.id available after teardown
             try:
                 await client.delete(self.info.id)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                 logger.warning(
                     "prime: failed to delete sandbox %s: %s", self.info.id, e
                 )

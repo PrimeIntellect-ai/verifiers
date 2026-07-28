@@ -24,11 +24,11 @@ from verifiers.v1.cli.resolve import (
 )
 from verifiers.v1.configs.cli.debug import DebugConfig
 from verifiers.v1.decorators import invoke
-from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
+from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
@@ -165,7 +165,7 @@ async def run_timed(
     start = time.time()
     try:
         result = await asyncio.wait_for(action, config.timeout.total)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - report any debug action failure
         return error_info(e, start, config.timeout.total, "debug action")
     return result_info(result, start)
 
@@ -250,7 +250,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     except asyncio.CancelledError as e:
         cancelled = True
         record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - persist any framework failure on the trace
         record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
     finally:
         trace.split_generation()

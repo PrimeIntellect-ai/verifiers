@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """
 Rich-based display for live multi-environment evaluation.
 

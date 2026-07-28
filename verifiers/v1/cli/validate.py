@@ -20,11 +20,11 @@ from verifiers.v1.cli.resolve import (
 )
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.decorators import invoke
-from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
+from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
@@ -103,7 +103,7 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
             setup_timeout,
         )
         valid = await asyncio.wait_for(task.validate(runtime), config.timeout.total)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - validation reports plugin failures per task
         exc = e
     finally:
         try:
@@ -138,7 +138,7 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
             setup_timeout,
         )
         valid = True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - validation reports plugin failures per task
         exc = e
     finally:
         try:

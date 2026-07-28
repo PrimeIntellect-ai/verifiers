@@ -6,8 +6,9 @@ per rollout. The tools are read-only; grading comes from the plugged `reference`
 whose prompt also rejects incoherent answers.
 """
 
-import verifiers.v1 as vf
+from pydantic import Field
 
+import verifiers.v1 as vf
 from wiki_search_v1.servers.wiki import WikiSearchToolset
 
 SYSTEM = (
@@ -45,9 +46,11 @@ NUM_QUESTIONS = 20
 
 class WikiSearchTaskConfig(vf.TaskConfig):
     # Users can replace or reconfigure this judge through --taskset.task.judges.
-    judges: vf.Judges = [
-        vf.ReferenceJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
-    ]
+    judges: vf.Judges = Field(
+        default_factory=lambda: [
+            vf.ReferenceJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
+        ]
+    )
 
 
 class TriviaTaskData(vf.TaskData):

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Protocol defining the interface for browser mode implementations."""
 
 from typing import Protocol, Any, TYPE_CHECKING

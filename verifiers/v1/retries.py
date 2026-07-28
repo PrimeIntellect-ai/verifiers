@@ -18,7 +18,6 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from verifiers.v1.configs.retries import RetryConfig
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -27,6 +26,8 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential_jitter,
 )
+
+from verifiers.v1.configs.retries import RetryConfig
 
 if TYPE_CHECKING:
     from verifiers.v1.episode import Episode

@@ -24,11 +24,11 @@ from pathlib import Path
 
 from pydantic import Field
 
+from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
-from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.types import StrictBaseModel
 
@@ -83,14 +83,14 @@ class HarborData(TaskData):
     name, and description. The remaining fields mirror Harbor metadata.
     """
 
-    keywords: list[str] = []
-    authors: list[Author] = []
+    keywords: list[str] = Field(default_factory=list)
+    authors: list[Author] = Field(default_factory=list)
     difficulty: str | None = None
     category: str | None = None
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     task_dir: str = ""
     """Host path to the task dir; used to stage tests/ to verify."""
-    verifier_env: dict[str, str] = {}
+    verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
     verifier that needs judge API keys or configuration actually receives them."""
@@ -243,7 +243,7 @@ def resolve_image(
     return None
 
 
-def size_to_mb(size: str | int | float) -> float:
+def size_to_mb(size: str | float) -> float:
     """A Harbor size in MB, from either schema: current integer-MB fields or the
     legacy schema-1.0 size strings ("8G", "512M", "64K")."""
     if not isinstance(size, str):
@@ -275,7 +275,8 @@ def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
 
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
     # Harbor is optional, so importing its schema is deferred until a Harbor task loads.
-    from harbor.models.task.config import NetworkMode, TaskConfig as HarborTaskConfig
+    from harbor.models.task.config import NetworkMode
+    from harbor.models.task.config import TaskConfig as HarborTaskConfig
 
     config = tomllib.loads((task_dir / "task.toml").read_text())
     parsed = HarborTaskConfig.model_validate(config)

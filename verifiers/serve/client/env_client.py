@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import logging
 from abc import ABC, abstractmethod
 

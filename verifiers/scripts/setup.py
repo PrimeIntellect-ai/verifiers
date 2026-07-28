@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import sys
 from collections.abc import Sequence
 

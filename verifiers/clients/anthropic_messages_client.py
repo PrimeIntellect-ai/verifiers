@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import functools
 import json
 import time

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import asyncio
 
 from openai import AsyncOpenAI
@@ -127,7 +129,7 @@ class HybridMathRubric(vf.JudgeRubric):
         self.add_reward_func(self.correct_answer, weight=1)
 
         self.judge_model = judge_model if use_judge_fallback else None
-        self.class_objects["judge_model"] = self.judge_model
+        self.class_objects["judge_model"] = self.judge_model  # ty:ignore[invalid-assignment]
 
         # Delegate math verification to default MathRubric
         # We clear its auto-registered reward func since we manage scoring ourselves

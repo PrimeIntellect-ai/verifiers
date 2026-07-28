@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Renderer-based client.
 
 All tokenization happens client-side via a Renderer from the renderers package.

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for RLM harness integration with ComposableEnv.
 
 Validates that rlm_harness() produces a Harness with the correct metrics

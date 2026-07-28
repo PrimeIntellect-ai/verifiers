@@ -198,6 +198,8 @@ class EnvServerPool:
         A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
         it as it comes online (a few seconds to load the env) — fine, since we only scale
         up once already saturated. `max_workers=None` scales without a cap."""
+        if self._restarts >= MAX_WORKER_RESTARTS:
+            return
         if self.max_workers is not None and len(self.workers) >= self.max_workers:
             return
         if (
@@ -281,7 +283,8 @@ class EnvServerPool:
         if now - self._last_reap < _REAP_INTERVAL_S:
             return
         self._last_reap = now
-        for w in [w for w in self.workers if w["process"].exitcode is not None]:
+        dead_workers = [w for w in self.workers if w["process"].exitcode is not None]
+        for w in dead_workers:
             exitcode = w["process"].exitcode
             # Relay what it already answered before closing its socket: a worker can queue
             # several replies and then exit, and retiring it first would discard them —
@@ -305,6 +308,7 @@ class EnvServerPool:
                     request_id,
                     f"env server worker died (exit code {exitcode})",
                 )
+        for _ in dead_workers:
             self._replace_worker()
         # A replacement that failed to spawn leaves the pool empty, and an empty pool has no
         # dead worker left to drive another attempt — so retry here while budget remains,
@@ -312,7 +316,7 @@ class EnvServerPool:
         # this method's own interval and by MAX_WORKER_RESTARTS; once that is spent the pool
         # stays empty and fails requests fast, which is the honest end state (a host that
         # cannot fork is not something the broker should paper over).
-        if not self.workers:
+        if not dead_workers and not self.workers:
             self._replace_worker()
 
     async def _on_request(
@@ -549,8 +553,13 @@ async def wait_for_address(
     crash — so poll the exit code alongside it and raise as soon as the process is gone."""
     deadline = time.monotonic() + timeout
     while True:
-        with contextlib.suppress(queue.Empty):
-            return await asyncio.to_thread(address_queue.get, timeout=1.0)
+        try:
+            address = await asyncio.to_thread(address_queue.get, timeout=1.0)
+        except queue.Empty:
+            pass
+        else:
+            if process.exitcode is None:
+                return address
         if process.exitcode is not None:
             raise RuntimeError(
                 f"{name} died on startup with exit code {process.exitcode}"

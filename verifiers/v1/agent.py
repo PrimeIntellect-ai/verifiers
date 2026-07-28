@@ -9,19 +9,18 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import Self
 
-
-from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
 from verifiers.v1.clients import (
     Client,
     EvalClientConfig,
     ModelContext,
     resolve_client,
 )
+from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
@@ -96,7 +95,7 @@ def _check_borrowed_placement(
     if task.data.image is None:
         return
     if isinstance(runtime.config, SubprocessConfig):
-        raise ValueError(
+        raise TypeError(
             f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
             "borrowed runtime is subprocess-backed (no container); borrow a container "
             "box (e.g. agent.provision(task)) or drop the task's image"
@@ -170,9 +169,8 @@ class Interaction:
         prompted task speaks FIRST: take its opening reply with a bare `turn()`
         before answering. A `terminated` segment means the run ended instead of
         answering (the message went unconsumed)."""
-        async with self._lock:
-            async with self._gate or nullcontext():
-                return await self._turn(message)
+        async with self._lock, self._gate or nullcontext():
+            return await self._turn(message)
 
     async def _turn(self, message: str | Messages | None) -> Segment:
         if self._run.closed:
@@ -220,11 +218,10 @@ class Interaction:
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
         run, then the finished trace returns (also on `interaction.trace`)."""
-        async with self._lock:
-            async with self._gate or nullcontext():
-                if not self._run.closed and self._run.ok:
-                    self.trace.stop("user_closed")
-                return await self._run.close()
+        async with self._lock, self._gate or nullcontext():
+            if not self._run.closed and self._run.ok:
+                self.trace.stop("user_closed")
+            return await self._run.close()
 
 
 class Agent:
@@ -290,7 +287,7 @@ class Agent:
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
 
-    async def __aenter__(self) -> "Agent":
+    async def __aenter__(self) -> Self:
         if self._entered:
             raise RuntimeError("Agent is already entered; enter it once and share it")
         if self._closed:
@@ -528,34 +525,34 @@ class Agent:
             if self.timeout.rollout is not None
             else task.data.timeout.harness
         )
-        return dict(
-            agent_config=self.config,
-            harness=self.harness,
-            ctx=self.ctx,
-            runtime_config=runtime_config,
-            setup_timeout=(
+        return {
+            "agent_config": self.config,
+            "harness": self.harness,
+            "ctx": self.ctx,
+            "runtime_config": runtime_config,
+            "setup_timeout": (
                 self.timeout.setup
                 if self.timeout.setup is not None
                 else task.data.timeout.setup
             ),
-            harness_timeout=cap_remote_harness_timeout(
+            "harness_timeout": cap_remote_harness_timeout(
                 harness_timeout, runtime_config, task
             ),
-            finalize_timeout=(
+            "finalize_timeout": (
                 self.timeout.finalize
                 if self.timeout.finalize is not None
                 else task.data.timeout.finalize
             ),
-            scoring_timeout=(
+            "scoring_timeout": (
                 self.timeout.scoring
                 if self.timeout.scoring is not None
                 else task.data.timeout.scoring
             ),
-            limits=self.limits,
-            shared_tools=shared_tools,
-            interception=self._interception_for(run_is_local, task, shared_tools),
-            runtime=runtime,
-        )
+            "limits": self.limits,
+            "shared_tools": shared_tools,
+            "interception": self._interception_for(run_is_local, task, shared_tools),
+            "runtime": runtime,
+        }
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
@@ -719,10 +716,8 @@ class Agents:
     field becomes an `Agent` under the field's name (`agents.solver`)."""
 
     def __init__(self, config, make: MakeAgent | None = None) -> None:
-        if make is None:
-            make = lambda _, spec: make_agent(spec)  # noqa: E731
         self._agents: dict[str, Agent] = {
-            name: make(name, value)
+            name: make_agent(value) if make is None else make(name, value)
             for name, value in agent_config_fields(config).items()
         }
 

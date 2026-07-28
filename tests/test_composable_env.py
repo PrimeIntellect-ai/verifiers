@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for the composable architecture: Task, TaskSet, SandboxTaskSet, SandboxSpec."""
 
 import importlib

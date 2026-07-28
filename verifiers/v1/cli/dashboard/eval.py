@@ -12,10 +12,9 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from verifiers.utils.pricing_utils import format_cost_usd
 from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
-from verifiers.v1.utils.install import env_name
-from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
@@ -26,7 +25,8 @@ from verifiers.v1.utils.format import (
     format_override,
     format_time,
 )
-from verifiers.utils.pricing_utils import format_cost_usd
+from verifiers.v1.utils.install import env_name
+from verifiers.v1.utils.interrupt import cleaning_up
 
 if TYPE_CHECKING:
     from verifiers.v1.push import PushState

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import re
 from types import SimpleNamespace
 from typing import Any, Callable

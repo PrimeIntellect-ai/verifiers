@@ -9,9 +9,9 @@ should land one record carrying two role-stamped traces.
 
 import asyncio
 
-import verifiers.v1 as vf
-
 from echo_v1 import EchoTaskset, lenient_match
+
+import verifiers.v1 as vf
 
 
 class DuetEnvConfig(vf.EnvConfig):
@@ -42,4 +42,4 @@ class DuetTaskset(EchoTaskset):
     pass
 
 
-__all__ = ["DuetTaskset", "DuetEnv"]
+__all__ = ["DuetEnv", "DuetTaskset"]

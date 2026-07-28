@@ -137,7 +137,8 @@ def load(
                     episode = parse(row)
                     if not verdict(episode):
                         continue
-                except Exception:  # malformed row: redo it
+                # A malformed row from any task/episode plugin is owed again.
+                except Exception:  # noqa: BLE001, S112
                     continue
                 good[key].append(
                     (line if line.endswith(b"\n") else line + b"\n", episode)

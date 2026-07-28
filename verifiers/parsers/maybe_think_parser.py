@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from typing import Callable
 
 from verifiers.parsers.parser import Parser

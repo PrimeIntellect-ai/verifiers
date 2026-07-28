@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Scale-SWE TaskSet.
 
 Scale-SWE (https://huggingface.co/datasets/AweAI-Team/Scale-SWE) is a

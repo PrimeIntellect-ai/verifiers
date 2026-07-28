@@ -9,7 +9,6 @@ every rollout handled by that worker shares its server process.
 """
 
 import verifiers.v1 as vf
-
 from scratchpad_v1.servers.scratchpad import (
     ScratchpadState,
     ScratchpadToolset,

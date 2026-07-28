@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for verifiers.utils.save_utils serialization behavior.
 
 Covers:

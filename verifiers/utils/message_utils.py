@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import json
 import logging
 import re
@@ -142,31 +144,31 @@ def normalize_messages(
 
 
 @overload
-def get_messages(
+def get_messages(  # ty:ignore[invalid-overload]
     messages: Sequence[MessageLike], role: Literal["assistant"]
 ) -> list[AssistantMessage]: ...
 
 
 @overload
-def get_messages(
+def get_messages(  # ty:ignore[invalid-overload]
     messages: Sequence[MessageLike], role: Literal["system"]
 ) -> list[SystemMessage]: ...
 
 
 @overload
-def get_messages(
+def get_messages(  # ty:ignore[invalid-overload]
     messages: Sequence[MessageLike], role: Literal["user"]
 ) -> list[UserMessage]: ...
 
 
 @overload
-def get_messages(
+def get_messages(  # ty:ignore[invalid-overload]
     messages: Sequence[MessageLike], role: Literal["tool"]
 ) -> list[ToolMessage]: ...
 
 
 @overload
-def get_messages(
+def get_messages(  # ty:ignore[invalid-overload]
     messages: Sequence[MessageLike], role: Literal["text"]
 ) -> list[TextMessage]: ...
 

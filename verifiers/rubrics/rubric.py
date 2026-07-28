@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import asyncio
 import inspect
 import logging
@@ -166,7 +168,7 @@ class Rubric:
             **self.class_objects,
         )
         for provider in self.group_score_object_providers:
-            objects.update(provider(states))
+            objects.update(provider(states))  # ty:ignore[no-matching-overload]
         return objects
 
     def task_for_state(self, state: State, resources: object | None) -> object:
@@ -201,7 +203,7 @@ class Rubric:
                 ans = float(await maybe_await(func, **merged))
             except Exception as e:
                 self.logger.error(
-                    f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
+                    f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]  # ty:ignore[unresolved-attribute]
                 )
                 ans = 0.0
         else:
@@ -210,7 +212,7 @@ class Rubric:
                 ans = float(await maybe_await(func, **allowed))
             except Exception as e:
                 self.logger.error(
-                    f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
+                    f"Error calling reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]  # ty:ignore[unresolved-attribute]
                 )
                 ans = 0.0
         return ans
@@ -246,7 +248,7 @@ class Rubric:
                 ans = await maybe_await(func, **merged)
             except Exception as e:
                 self.logger.error(
-                    f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
+                    f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]  # ty:ignore[unresolved-attribute]
                 )
                 ans = [0.0] * len(states)
         else:
@@ -255,7 +257,7 @@ class Rubric:
                 ans = await maybe_await(func, **allowed)
             except Exception as e:
                 self.logger.error(
-                    f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]
+                    f"Error calling group reward function {func.__name__}: {e}"  # type: ignore[unresolved-attribute]  # ty:ignore[unresolved-attribute]
                 )
                 ans = [0.0] * len(states)
         return ans
@@ -333,7 +335,7 @@ class Rubric:
             )
         rewards = RolloutScore(
             metrics={
-                func.__name__: reward
+                func.__name__: reward  # ty:ignore[unresolved-attribute]
                 for func, reward in zip(reward_funcs, reward_scores)
             },
             reward=sum(
@@ -378,7 +380,7 @@ class Rubric:
                 # GroupRewardFunc: score all states together
                 group_func = cast(GroupRewardFunc, func)
                 scores = await self._call_group_reward_func(group_func, states)
-                func_name = func.__name__
+                func_name = func.__name__  # ty:ignore[unresolved-attribute]
                 if func_name not in aggregated_metrics:
                     aggregated_metrics[func_name] = [0.0] * num_states
                 for i in range(num_states):
@@ -393,7 +395,7 @@ class Rubric:
                 ]
                 scores = await asyncio.gather(*score_tasks)
 
-                func_name = func.__name__
+                func_name = func.__name__  # ty:ignore[unresolved-attribute]
                 if func_name not in aggregated_metrics:
                     aggregated_metrics[func_name] = [0.0] * num_states
                 for i in range(num_states):

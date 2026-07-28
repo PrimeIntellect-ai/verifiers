@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from typing import Callable, TypeGuard, cast
 
 import verifiers as vf

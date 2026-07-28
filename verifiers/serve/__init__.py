@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from verifiers.serve.client.env_client import EnvClient
 from verifiers.serve.client.zmq_env_client import ZMQEnvClient
 from verifiers.serve.server import EnvRouter, EnvServer, EnvWorker, ZMQEnvServer

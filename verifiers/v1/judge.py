@@ -49,8 +49,8 @@ pre-plug them as class defaults) — and `Task.score` builds and runs it after t
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, cast
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
 from pydantic import BaseModel
 from typing_extensions import TypeVar
@@ -62,8 +62,8 @@ from verifiers.v1.configs.judge import (
 )
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.scoring import parse_judge_choice
-from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.types import Messages, StrictBaseModel, Usage
+from verifiers.v1.utils.generic import generic_type
 
 if TYPE_CHECKING:
     from verifiers.v1.task import TaskData
@@ -81,7 +81,7 @@ class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
 JudgeView = Literal["last_reply", "full_trace"]
 
 
-def judge_question(task: "TaskData", question_field: str) -> str:
+def judge_question(task: TaskData, question_field: str) -> str:
     if not question_field:
         return task.prompt_text
     question = getattr(task, question_field, None)
@@ -94,7 +94,7 @@ def judge_question(task: "TaskData", question_field: str) -> str:
     return str(question)
 
 
-def judge_response(trace: "Trace", view: JudgeView) -> str:
+def judge_response(trace: Trace, view: JudgeView) -> str:
     return trace.transcript if view == "full_trace" else trace.last_reply
 
 
@@ -147,9 +147,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         pattern = re.compile(r"\{(" + "|".join(map(re.escape, fields)) + r")\}")
         return pattern.sub(lambda m: str(fields[m.group(1)]), template)
 
-    async def score(
-        self, task: "TaskData", trace: "Trace"
-    ) -> float | Mapping[str, float]:
+    async def score(self, task: TaskData, trace: Trace) -> float | Mapping[str, float]:
         raise NotImplementedError(
             f"{type(self).__name__} implements no `score`, so it can't be plugged via "
             "`taskset.task.judges`; implement `score` (see verifiers.v1.judges for examples) or "
@@ -165,7 +163,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         self,
         messages: str | Messages,
         *,
-        trace: "Trace | None" = None,
+        trace: Trace | None = None,
         schema: type[BaseModel] | None = None,
         parse: Callable[[JudgeResponse[Any]], Any] | None = None,
         **sampling: Any,
@@ -216,7 +214,7 @@ class Judge(Generic[ParsedT, ConfigT]):
                 trace.record_judge(response)
 
     async def evaluate(
-        self, *, trace: "Trace | None" = None, **fields: Any
+        self, *, trace: Trace | None = None, **fields: Any
     ) -> JudgeResponse[ParsedT]:
         messages = self.build_messages(**fields)
         return await self.complete(

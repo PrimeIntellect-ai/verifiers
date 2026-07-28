@@ -22,6 +22,7 @@ all-failed group pays nobody.
 import asyncio
 import re
 import time
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -99,7 +100,7 @@ class CodeGolfEnv(vf.Env[CodeGolfEnvConfig]):
 
 class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
     # (name, description, expected stdout)
-    SPECS = [
+    SPECS: ClassVar = [
         ("simple-sum", "the sum of the integers 1 to 100", "5050"),
         (
             "fibonacci",
