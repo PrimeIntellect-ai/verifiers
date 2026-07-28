@@ -28,6 +28,7 @@ from verifiers.v1.interception.server import (
 )
 from verifiers.v1.interception.tunnel import PrimeTunnelConfig
 from verifiers.v1.session import RolloutSession
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -155,13 +156,16 @@ class ElasticInterceptionPool(Interception):
         # then its interception server keeps serving whatever still reaches it. The pool's
         # exit stack still holds every retired server, so this early stop is an optimization
         # (frees the frpc process and registration) and the double-stop at pool shutdown is
-        # a no-op.
+        # a no-op — but only if it runs to completion. `stop` unwinds an `AsyncExitStack`,
+        # which pops each callback before awaiting it, so a cancellation landing mid-teardown
+        # (pool shutdown cancels this task) would drop the popped callback for good and the
+        # later stop would find it already gone. Shield it so the unwind always finishes.
         for server in list(self._draining):
             if server.load > 0:
                 continue
             self._draining.remove(server)
             with contextlib.suppress(Exception):
-                await server.stop()
+                await run_shielded(server.stop())
 
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
