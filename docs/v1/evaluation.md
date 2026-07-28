@@ -27,6 +27,16 @@ type = "docker"
 
 Validate the config by using `uv run eval @ config.toml --dry-run`. To run the evaluation, use `uv run eval @ config.toml`.
 
+The Prime CLI plugin accepts the same v1 TOML through its normal evaluation command:
+
+```bash
+prime --plain eval run config.toml --skip-upload \
+  --model nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B \
+  --provider local --output-dir outputs/my-eval
+```
+
+Prime-injected legacy transport flags are removed by the plugin bridge before it dispatches to the canonical v1 evaluator. Unknown flags fail closed. Add `--dry-run` to validate without model calls or sandbox creation.
+
 Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0.5`. CLI arguments overwrite toml arguments when both are present.
 
 The output from evaluations are written into `outputs/<env>--<model>--<harness>/<uuid>/` by default, where `<env>` is the taskset, prefixed by the paired env id when `--env.id` sets one (use `output_dir` to overwrite the folder). The folder contains the used `config.toml`, all the episodes in `traces.jsonl`, as well as logs of the run and workers in `eval.log`.
