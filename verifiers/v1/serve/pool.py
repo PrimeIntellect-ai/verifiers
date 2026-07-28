@@ -54,9 +54,9 @@ logger = logging.getLogger(__name__)
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 
 MAX_WORKER_RESTARTS = 3
-"""Replacements the broker spawns over its lifetime: enough to ride out a one-off crash
-(an OOM, a segfaulting sandbox), few enough that an env dying on every load fails loudly
-instead of respawning forever."""
+"""Consecutive recovery attempts before the broker stops spawning workers. The budget
+resets when a worker becomes ready: transient crashes do not permanently reduce capacity,
+while an env that repeatedly dies during startup still fails loudly."""
 
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
 """Default deadline for a spawned server to report its address. Generous: it reports only
@@ -175,6 +175,8 @@ class EnvServerPool:
                 "pipe": parent_conn,
                 "active": 0,
                 "index": i,
+                "ready": False,
+                "probe_sent": False,
             }
         )
         if self._poller is not None:
@@ -195,9 +197,8 @@ class EnvServerPool:
     def _maybe_scale_up(self) -> None:
         """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
 
-        A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
-        it as it comes online (a few seconds to load the env) — fine, since we only scale
-        up once already saturated. `max_workers=None` scales without a cap."""
+        A new worker receives traffic only after its health probe succeeds.
+        `max_workers=None` scales without a cap."""
         if self._restarts >= MAX_WORKER_RESTARTS:
             return
         if self.max_workers is not None and len(self.workers) >= self.max_workers:
@@ -225,7 +226,7 @@ class EnvServerPool:
         dataset pull) is the spawner's deadline to enforce, not ours. We only insist that
         the process is still alive."""
         dealer = w["dealer"]
-        await dealer.send_multipart([_STARTUP_PROBE, b"health", _EMPTY_PAYLOAD])
+        await self._probe_worker(w)
         while not await dealer.poll(timeout=_REAP_INTERVAL_MS):
             if w["process"].exitcode is not None:
                 raise RuntimeError(
@@ -233,6 +234,30 @@ class EnvServerPool:
                     f"(exit code {w['process'].exitcode})"
                 )
         await dealer.recv_multipart()
+        if w["process"].exitcode is not None:
+            raise RuntimeError(
+                f"env server worker {w['index']} died while loading the env "
+                f"(exit code {w['process'].exitcode})"
+            )
+        self._mark_worker_ready(w)
+
+    async def _probe_worker(self, w: dict) -> None:
+        if w["probe_sent"]:
+            return
+        await w["dealer"].send_multipart([_STARTUP_PROBE, b"health", _EMPTY_PAYLOAD])
+        w["probe_sent"] = True
+
+    async def _probe_new_workers(self) -> None:
+        for w in self.workers:
+            if not w["ready"]:
+                await self._probe_worker(w)
+
+    def _mark_worker_ready(self, w: dict) -> None:
+        if w["ready"]:
+            return
+        w["ready"] = True
+        self._restarts = 0
+        logger.info("EnvServerPool worker %d ready", w["index"])
 
     async def _reply_error(
         self, client_id: bytes, request_id: bytes, error: str
@@ -331,6 +356,12 @@ class EnvServerPool:
                 client_id, request_id, "env server has no live workers"
             )
             return
+        ready_workers = [w for w in self.workers if w["ready"]]
+        if not ready_workers:
+            await self._reply_error(
+                client_id, request_id, "env server has no ready workers"
+            )
+            return
         # Pool capacity is measured in rollouts; one group request carries n.
         rollout_slots = 1
         if method == b"run_group":
@@ -339,7 +370,7 @@ class EnvServerPool:
                     msgpack.unpackb(payload, raw=False)
                 )
                 rollout_slots = max(1, request.n)
-        worker = min(self.workers, key=lambda w: w["active"])
+        worker = min(ready_workers, key=lambda w: w["active"])
         worker["active"] += rollout_slots
         self.pending[request_id] = {
             "client_id": client_id,
@@ -363,6 +394,10 @@ class EnvServerPool:
     async def _on_reply(self, w: dict) -> None:
         """Relay one worker reply back to the client that asked for it."""
         request_id, data = await w["dealer"].recv_multipart(copy=False)
+        if request_id.bytes == _STARTUP_PROBE:
+            if w["process"].exitcode is None:
+                self._mark_worker_ready(w)
+            return
         # Copy only the routing key; relay the response Frames unchanged.
         entry = self.pending.pop(request_id.bytes, None)
         if entry is None:
@@ -398,6 +433,7 @@ class EnvServerPool:
                 self.elastic,
             )
             while True:
+                await self._probe_new_workers()
                 events = dict(await self._poller.poll(timeout=_REAP_INTERVAL_MS))
                 # Drain replies before reaping, so a worker that answered and then died
                 # still has its reply relayed instead of failed.
