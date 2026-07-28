@@ -182,25 +182,22 @@ async def mcp_session(server: str, spec: dict, operation: str, replay_safe: bool
                 (e for e in nested if not isinstance(e, asyncio.CancelledError)),
                 nested[0],
             )
-        connection_closed = (
+        session_lost = (
             isinstance(failure_leaf, McpError)
             and failure_leaf.error.code == CONNECTION_CLOSED
             and failure_leaf.error.message == "Connection closed"
+        ) or isinstance(
+            failure_leaf,
+            (
+                BrokenResourceError,
+                ClosedResourceError,
+                EndOfStream,
+                httpx.TransportError,
+                OSError,
+                TimeoutError,
+            ),
         )
-        if transport_failure is None and (
-            connection_closed
-            or isinstance(
-                failure_leaf,
-                (
-                    BrokenResourceError,
-                    ClosedResourceError,
-                    EndOfStream,
-                    httpx.TransportError,
-                    OSError,
-                    TimeoutError,
-                ),
-            )
-        ):
+        if session_lost:
             transport_failure = failure
 
     if failure is None:
@@ -210,7 +207,7 @@ async def mcp_session(server: str, spec: dict, operation: str, replay_safe: bool
         task is None or task.cancelling() or transport_failure is None
     ):
         raise failure
-    if transport_failure is None:
+    if transport_failure is not failure:
         raise failure
     raise MCPTransportFailure(
         server, operation, initialized, replay_safe, transport_failure

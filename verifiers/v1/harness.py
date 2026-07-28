@@ -156,14 +156,23 @@ class Harness(ABC, Generic[ConfigT]):
             marker = "VF_MCP_ERROR="
             if marker in detail:
                 diagnostic = detail.rsplit(marker, 1)[1].splitlines()[0]
-                payload = json.loads(diagnostic)
-                error_cls = (
-                    MCPDeliveryUnknownError
-                    if payload["delivery"] == "response_unknown"
-                    and not payload["replay_safe"]
-                    else MCPTransportError
-                )
-                raise error_cls(diagnostic)
+                try:
+                    payload = json.loads(diagnostic)
+                except json.JSONDecodeError:
+                    payload = None
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("delivery")
+                    in {"operation_not_started", "response_unknown"}
+                    and isinstance(payload.get("replay_safe"), bool)
+                ):
+                    error_cls = (
+                        MCPDeliveryUnknownError
+                        if payload["delivery"] == "response_unknown"
+                        and not payload["replay_safe"]
+                        else MCPTransportError
+                    )
+                    raise error_cls(diagnostic)
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )
