@@ -39,4 +39,4 @@ class ExternalJudge(vf.Judge[float, ExternalJudgeConfig]):
         return float(self.config.custom_judge_flag)
 
 
-__all__ = ["SuperSecretHarness", "ExternalJudge", "ExternalTaskset"]
+__all__ = ["ExternalJudge", "ExternalTaskset", "SuperSecretHarness"]

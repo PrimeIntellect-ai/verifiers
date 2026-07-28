@@ -1,9 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
-from prime_sandboxes.core.client import APIError
-
 import pytest
+from prime_sandboxes.core.client import APIError
 
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime

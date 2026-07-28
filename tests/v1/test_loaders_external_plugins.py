@@ -7,7 +7,6 @@ import pytest
 
 from verifiers.v1.loaders import harness_class, import_harness
 
-
 FIXTURE_PACKAGE = Path(__file__).parent / "fixtures" / "external_plugin_package"
 
 
@@ -25,6 +24,7 @@ def test_installed_external_package_constructs_full_environment(tmp_path):
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert install.returncode == 0, install.stderr
 
@@ -77,6 +77,7 @@ assert judges[0].config is config.taskset.task.judges[0]
         [sys.executable, "-I", "-c", script, str(site_packages)],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert construct.returncode == 0, construct.stderr
 
