@@ -100,6 +100,20 @@ def test_modal_stop_confirmed_sets_stopped_flag():
     assert runtime.stopped is True
 
 
+def test_modal_stop_confirmed_terminates_live_handle_without_provider_id():
+    runtime = ModalRuntime(ModalConfig())
+    terminate = FakeTerminate()
+    runtime._sandbox = SimpleNamespace(terminate=terminate)
+
+    asyncio.run(runtime.stop_confirmed())
+
+    assert terminate.calls == 1
+    assert runtime._sandbox is None
+    assert runtime.stopped is True
+    asyncio.run(runtime.stop_confirmed())
+    assert terminate.calls == 1
+
+
 def test_prime_stop_confirmed_closes_client_when_provider_id_missing():
     """When start failed before setting info.id, stop_confirmed must close the
     live client before raising, so the client does not leak."""
@@ -241,9 +255,11 @@ def test_prime_start_forwards_idle_timeout_and_hard_lifetime(monkeypatch):
         )
     )
     runtime._confirmed_stop_id = "prior-runtime-id"
+    runtime.stopped = True
     asyncio.run(runtime.start())
     assert runtime.info.id == "prime-provider-id"
     assert runtime._confirmed_stop_id is None
+    assert runtime.stopped is False
     assert len(requests) == 1
     request = requests[0]
     assert "network_access" not in request
@@ -292,9 +308,11 @@ def test_modal_start_forwards_egress_block_and_hard_lifetime(monkeypatch):
         )
     )
     runtime._confirmed_stop_id = "prior-runtime-id"
+    runtime.stopped = True
     asyncio.run(runtime.start())
     assert runtime.info.id == "modal-provider-id"
     assert runtime._confirmed_stop_id is None
+    assert runtime.stopped is False
     create = next(row for row in calls if row[0] == "create")
     kwargs = create[2]
     assert kwargs["block_network"] is True

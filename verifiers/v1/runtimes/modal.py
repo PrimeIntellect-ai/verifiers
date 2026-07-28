@@ -108,6 +108,7 @@ class ModalRuntime(Runtime):
                     encrypted_ports=[SERVICE_PORT],
                 )
             self._confirmed_stop_id = None
+            self.stopped = False
             self.info.id = self._sandbox.object_id
             logger.info(
                 "modal: sandbox %s up (image=%s)", self.info.id, self.config.image
@@ -199,12 +200,9 @@ class ModalRuntime(Runtime):
             raise RuntimeError(
                 "modal sandbox termination cannot be confirmed without its live handle"
             )
-        if runtime_id is None:
-            raise RuntimeError(
-                "modal sandbox termination cannot be confirmed without a provider ID"
-            )
         await sandbox.terminate.aio()
-        self._confirmed_stop_id = runtime_id
+        if runtime_id is not None:
+            self._confirmed_stop_id = runtime_id
         self.stopped = True
         self._sandbox = None
 

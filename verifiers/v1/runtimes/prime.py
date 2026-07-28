@@ -185,6 +185,7 @@ class PrimeRuntime(Runtime):
                     )
                 )
             self._confirmed_stop_id = None
+            self.stopped = False
             self.info.id = sandbox.id
             # The create response says whether the platform already has the image:
             # `pending_image_build_id` set means a first-use auto-build is running and the
