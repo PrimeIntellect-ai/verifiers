@@ -307,7 +307,7 @@ class TestLegacyFlagStripping:
         )
         assert "--env-dir-path" not in result
 
-    def test_skip_upload_stripped(self, tmp_path: Path):
+    def test_skip_upload_translates_to_no_push(self, tmp_path: Path):
         toml = _write_v1_toml(tmp_path / "v1.toml")
         result = eval_v1_prime._translated_v1_args(
             [
@@ -318,6 +318,12 @@ class TestLegacyFlagStripping:
             ]
         )
         assert "--skip-upload" not in result
+        assert "--no-push" in result
+
+    def test_no_push_is_preserved(self, tmp_path: Path):
+        toml = _write_v1_toml(tmp_path / "v1.toml")
+        result = eval_v1_prime._translated_v1_args([str(toml), "--no-push"])
+        assert "--no-push" in result
 
     def test_save_results_stripped(self, tmp_path: Path):
         toml = _write_v1_toml(tmp_path / "v1.toml")
@@ -373,6 +379,7 @@ class TestLegacyFlagStripping:
         assert "/tmp/out" in result
         assert "--dry-run" in result
         assert "--verbose" in result
+        assert "--no-push" in result
         # All v0-only content stripped
         for stripped in [
             "--provider",

@@ -44,11 +44,12 @@ _DROP_VALUE = {
     "--header-from-state",
     "--env-dir-path",
 }
-_DROP_FLAG = {"--save-results", "-s", "--disable-tui", "--no-push", "--skip-upload"}
+_DROP_FLAG = {"--save-results", "-s", "--disable-tui"}
 
 # Options that are safe to forward to v1.
 _KEEP_VALUE = {"--model", "-m", "--output-dir", "-o"}
-_KEEP_FLAG = {"--dry-run", "--verbose"}
+_KEEP_FLAG = {"--dry-run", "--verbose", "--no-push"}
+_TRANSLATE_FLAG = {"--skip-upload": "--no-push"}
 
 _SHORT_TO_LONG = {"-m": "--model", "-o": "--output-dir"}
 
@@ -85,9 +86,15 @@ def _translated_v1_args(argv: list[str]) -> list[str]:
             result.append(token)
             index += 1
             continue
-        # Keep bare flags
+        # Keep bare flags and translate equivalent v0 safety flags.
         if token in _KEEP_FLAG:
             result.append(token)
+            index += 1
+            continue
+        if token in _TRANSLATE_FLAG:
+            translated = _TRANSLATE_FLAG[token]
+            if translated not in result:
+                result.append(translated)
             index += 1
             continue
         # Drop v0-only bare flags
