@@ -197,6 +197,16 @@ class Runtime(ABC):
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         pass
 
+    async def alive(self) -> bool:
+        """Whether the box still executes anything. Not every runtime raises when
+        the box is gone — some surface it as `exec`'s own non-zero result,
+        indistinguishable from the command failing. One probe on the failure path
+        tells the two apart before we blame anyone."""
+        try:
+            return (await self.run(["true"], {})).exit_code == 0
+        except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
+            return False
+
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
