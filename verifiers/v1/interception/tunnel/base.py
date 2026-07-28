@@ -33,10 +33,14 @@ class Endpoint(Protocol):
         re-established."""
         ...
 
-    async def healthy(self) -> bool:
-        """Probe liveness without healing — the failure-attribution hook: `False` means
-        the endpoint was down, so a consumer's concurrent failure was the tunnel's fault,
-        not its own. Must not raise; an inconclusive probe reads as healthy."""
+    async def healthy(self, url: str) -> bool:
+        """Whether the endpoint a consumer reached at `url` is still the live one — the
+        failure-attribution hook: `False` means that tunnel died, so the consumer's
+        concurrent failure was the tunnel's fault, not its own. `url` anchors the answer
+        to the consumer's tunnel, not the current one: a heal re-mints at a NEW URL, so a
+        stale `url` proves its tunnel died even when a replacement is already up (probing
+        bare liveness would race the heal and mask the death). Must not raise; an
+        inconclusive probe reads as healthy."""
         ...
 
 
@@ -50,7 +54,7 @@ class FixedEndpoint:
     async def url(self) -> str:
         return self._url
 
-    async def healthy(self) -> bool:
+    async def healthy(self, url: str) -> bool:
         return True
 
 

@@ -169,11 +169,12 @@ class InterceptionServer(Interception):
         assert self.endpoint is not None, "server not started"
         return await self.endpoint.url()
 
-    async def healthy(self) -> bool:
-        """Whether the server is reachable at its published URL — i.e. its endpoint is up
-        (trivially yes without a tunnel). A fresh probe: the failure-attribution hook for
-        a rollout whose harness just failed."""
-        return self.endpoint is None or await self.endpoint.healthy()
+    async def healthy(self, url: str) -> bool:
+        """Whether the server is still reachable at `url` — the base URL a rollout's slot
+        handed out (trivially yes without a tunnel). A fresh probe, anchored to that
+        rollout's tunnel rather than the current one so a concurrent heal can't mask its
+        death: the failure-attribution hook for a rollout whose harness just failed."""
+        return self.endpoint is None or await self.endpoint.healthy(url)
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:

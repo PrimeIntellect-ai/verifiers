@@ -163,6 +163,7 @@ class RolloutRun:
         self._opened = False
         self._closed = False
         self._endpoint: str | None = None
+        self._base_url: str | None = None
         self._urls: dict[str, str] = {}
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
@@ -275,6 +276,7 @@ class RolloutRun:
                     self._shared_tools,
                 )
             )
+            self._base_url = base_url
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
             self._secret = secret
             self._urls = await self._stack.enter_async_context(
@@ -372,12 +374,14 @@ class RolloutRun:
         """The real cause behind a harness exit when the interception tunnel was down:
         the harness's model calls hit a dead tunnel (e.g. the gateway's 404 page) and the
         program died on them — infra, not the agent. Probe the server this rollout is
-        registered on and type it `TunnelError`; an inconclusive probe blames nothing."""
+        registered on, anchored to THIS rollout's slot URL (a concurrent acquire may
+        already have healed the tunnel — at a new URL — and a bare liveness probe would
+        mask the death); an inconclusive probe blames nothing."""
         server = self._session.server
-        if server is None:
+        if server is None or self._base_url is None:
             return None
         with contextlib.suppress(Exception):
-            if not await server.healthy():
+            if not await server.healthy(self._base_url):
                 return TunnelError("interception tunnel was down while the harness ran")
         return None
 

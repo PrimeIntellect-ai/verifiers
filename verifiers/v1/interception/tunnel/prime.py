@@ -59,8 +59,13 @@ class PrimeEndpoint:
                 await self._mint()
             return self._url
 
-    async def healthy(self) -> bool:
+    async def healthy(self, url: str) -> bool:
         async with self._lock:
+            # A re-mint changes the URL, so a stale `url` proves the consumer's tunnel
+            # died — even when a concurrent acquire already healed past it. (Without the
+            # anchor, probing the replacement would mask the death.)
+            if url != self._url:
+                return False
             # Torn down (or a heal already failed): it was dead.
             if self._client is None:
                 return False
