@@ -334,3 +334,20 @@ class PrimeRuntime(Runtime):
                 )
         with contextlib.suppress(Exception):
             await client.aclose()
+
+    async def teardown_confirmed(self) -> None:
+        client, self._client = (
+            self._client,
+            None,
+        )  # same idempotency guard as `teardown`
+        if client is None or self.info.id is None:
+            return
+        try:
+            await client.delete(self.info.id)
+        except Exception as e:
+            raise SandboxError(
+                f"prime: failed to delete sandbox {self.info.id}: {e}"
+            ) from e
+        finally:
+            with contextlib.suppress(Exception):
+                await client.aclose()

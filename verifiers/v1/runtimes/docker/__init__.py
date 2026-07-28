@@ -306,6 +306,23 @@ class DockerRuntime(Runtime):
             await self._proxy.stop()
         await super().teardown()
 
+    async def teardown_confirmed(self) -> None:
+        await self.teardown()
+        if self._container is None:
+            return
+        # `docker rm --force` is suppressed in `cleanup`, so ask the daemon rather than
+        # trusting it: an empty listing is the only proof the container is really gone.
+        check = await docker(
+            "ps", "--all", "--quiet", "--filter", f"name=^{self._container}$"
+        )
+        if check.exit_code:
+            raise SandboxError(
+                f"docker: could not confirm {self._container} was removed: "
+                f"{check.stderr.strip()[-500:]}"
+            )
+        if check.stdout.strip():
+            raise SandboxError(f"docker: container {self._container} is still present")
+
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         env = {**env, **(self._proxy_env() if self._cut else {})}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]

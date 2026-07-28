@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import base64
 import contextlib
 import hashlib
 import logging
@@ -180,6 +181,25 @@ class Runtime(ABC):
         self.stopped = True  # before the await: no new borrows once teardown begins
         await run_shielded(self.teardown())
 
+    async def stop_confirmed(self) -> None:
+        """Free the provisioned resource, raising unless its removal is confirmed.
+
+        `teardown` is best-effort: a resource that outlives us is a billing problem, and
+        failing the rollout over one would be worse than leaking it. This is the variant
+        for a caller that needs the box *gone* before it does the next thing — an agent
+        can leave a background process running past its final turn, so a grading box
+        provisioned while the agent's box is still up is not isolated from it."""
+        self.stopped = True  # before the await: no new borrows once teardown begins
+        await run_shielded(self.teardown_confirmed())
+
+    async def teardown_confirmed(self) -> None:
+        """Free the provisioned resource and verify it is gone, or raise. Unlike
+        `teardown` this is neither best-effort nor optional to implement: a runtime that
+        cannot prove removal cannot host the agent side of an isolated grading run."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support confirmed teardown"
+        )
+
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
         that must be async (e.g. a remote API call); `stop` shields it from cancellation.
@@ -288,6 +308,30 @@ class Runtime(ABC):
     @abstractmethod
     async def read(self, path: str) -> bytes:
         pass
+
+    async def read_bounded(self, path: str, max_bytes: int) -> bytes:
+        """Read at most `max_bytes` from `path`, raising past the cap.
+
+        Truncating inside the box rather than after the transfer: `read` pulls the whole
+        file into host memory, and a scoring input written by something we don't control
+        has no size we can assume. Base64 because `run` returns decoded text."""
+        result = await self.run(
+            [
+                "sh",
+                "-c",
+                'head -c "$1" -- "$2" | base64',
+                "sh",
+                str(max_bytes + 1),
+                path,
+            ],
+            {},
+        )
+        if result.exit_code:
+            raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+        data = base64.b64decode(result.stdout)
+        if len(data) > max_bytes:
+            raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
+        return data
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:

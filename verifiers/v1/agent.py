@@ -31,7 +31,7 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
-    make_runtime,
+    provision_runtime,
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
@@ -563,14 +563,8 @@ class Agent:
             if task is not None
             else self.runtime_config
         )
-        runtime = make_runtime(config)
-        try:
-            # start() inside the try: a failed start may already hold a remote
-            # sandbox, so it must reach stop() (safe on a partially-started runtime).
-            await runtime.start()
+        async with provision_runtime(config) as runtime:
             yield runtime
-        finally:
-            await runtime.stop()
 
 
 class _EpisodeAgent(Agent):
