@@ -22,9 +22,9 @@ A worker that dies is reaped: `EnvClient` awaits rollout replies untimed, so an
 unanswered request is an unbounded hang, and a dead worker's `active` count never drains
 — least-busy dispatch would elect the corpse for every subsequent request. The broker
 therefore polls its workers' exit codes, answers their in-flight requests with an error,
-and replaces them (up to `MAX_WORKER_RESTARTS`). Readiness is a worker handshake, not a
-socket bind: the broker reports its address only once a worker answers `health`, so a
-spawner is never told "ready" about a pool whose env failed to load.
+and replaces each failed worker up to `MAX_WORKER_RESTARTS` times. Readiness is a worker
+handshake, not a socket bind: the broker reports its address only once a worker answers
+`health`, so a spawner is never told "ready" about a pool whose env failed to load.
 """
 
 import asyncio
@@ -54,9 +54,8 @@ logger = logging.getLogger(__name__)
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 
 MAX_WORKER_RESTARTS = 3
-"""Consecutive recovery attempts before the broker stops spawning workers. The budget
-resets when a worker becomes ready: transient crashes do not permanently reduce capacity,
-while an env that repeatedly dies during startup still fails loudly."""
+"""Consecutive replacement attempts per worker slot. A ready worker resets its slot's
+budget; repeated startup failures exhaust only that slot, not the rest of the pool."""
 
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
 """Default deadline for a spawned server to report its address. Generous: it reports only
@@ -65,6 +64,7 @@ once its env is loaded, which for a legacy bridge includes pulling a dataset."""
 # Broker loop wake-up, so exited workers are reaped even while no socket is readable.
 _REAP_INTERVAL_S = 0.25
 _REAP_INTERVAL_MS = int(_REAP_INTERVAL_S * 1000)
+_MAX_SCALE_UP_BACKOFF_S = 30.0
 # Startup handshake: a `health` request whose reply proves a worker loaded its env.
 _STARTUP_PROBE = b"startup"
 _EMPTY_PAYLOAD = msgpack.packb({}, use_bin_type=True)
@@ -131,7 +131,9 @@ class EnvServerPool:
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
         self._next_index = 0
-        self._restarts = 0
+        self._replacement_queue: list[int] = []
+        self._scale_up_failures = 0
+        self._scale_up_retry_at = 0.0
         self._last_reap = 0.0
 
         self.ctx = zmq.asyncio.Context()
@@ -146,7 +148,7 @@ class EnvServerPool:
     def _worker_path(self, i: int) -> str:
         return f"/tmp/vf-pool-{self.session}-{i}"
 
-    def _spawn_worker(self) -> None:
+    def _spawn_worker(self, restarts: int = 0) -> None:
         i = self._next_index  # monotonic: a retired worker's path is never reused
         self._next_index += 1
         address = f"ipc://{self._worker_path(i)}"
@@ -177,18 +179,19 @@ class EnvServerPool:
                 "index": i,
                 "ready": False,
                 "probe_sent": False,
+                "restarts": restarts,
             }
         )
         if self._poller is not None:
             self._poller.register(dealer, zmq.POLLIN)
 
-    def _try_spawn_worker(self) -> bool:
+    def _try_spawn_worker(self, restarts: int = 0) -> bool:
         """Spawn a worker mid-serve, where failing to spawn must not be fatal: this process
         holds every client's in-flight requests, so dying here strands all of them. A pool
         one worker short still serves. (At startup the opposite holds — a pool with no
         workers has nothing to serve — so `run` lets that failure propagate.)"""
         try:
-            self._spawn_worker()
+            self._spawn_worker(restarts)
             return True
         except Exception:
             logger.exception("EnvServerPool failed to spawn a worker")
@@ -199,14 +202,22 @@ class EnvServerPool:
 
         A new worker receives traffic only after its health probe succeeds.
         `max_workers=None` scales without a cap."""
-        if self._restarts >= MAX_WORKER_RESTARTS:
+        now = time.monotonic()
+        if now < self._scale_up_retry_at:
             return
-        if self.max_workers is not None and len(self.workers) >= self.max_workers:
+        slots = len(self.workers) + len(self._replacement_queue)
+        if self.max_workers is not None and slots >= self.max_workers:
             return
-        if self.in_flight >= 0.9 * len(self.workers) * self.multiplex:
+        if self.in_flight >= 0.9 * slots * self.multiplex:
             if not self._try_spawn_worker():
-                self._restarts += 1
+                self._scale_up_failures += 1
+                self._scale_up_retry_at = now + min(
+                    2 ** min(self._scale_up_failures - 1, 5),
+                    _MAX_SCALE_UP_BACKOFF_S,
+                )
                 return
+            self._scale_up_failures = 0
+            self._scale_up_retry_at = 0.0
             logger.info(
                 "EnvServerPool scaled up to %d/%s workers (in_flight=%d)",
                 len(self.workers),
@@ -256,7 +267,7 @@ class EnvServerPool:
         if w["ready"]:
             return
         w["ready"] = True
-        self._restarts = 0
+        w["restarts"] = 0
         logger.info("EnvServerPool worker %d ready", w["index"])
 
     async def _reply_error(
@@ -283,21 +294,28 @@ class EnvServerPool:
         with contextlib.suppress(OSError):
             os.unlink(self._worker_path(w["index"]))
 
-    def _replace_worker(self) -> None:
-        """Spawn a replacement for a dead worker, within the restart budget."""
-        if self._restarts >= MAX_WORKER_RESTARTS:
-            logger.error(
-                "EnvServerPool exhausted its %d worker restart(s) — not replacing",
-                MAX_WORKER_RESTARTS,
-            )
-            return
-        self._restarts += 1  # counts attempts, so a failing spawn can't loop hot
-        if self._try_spawn_worker():
-            logger.warning(
-                "EnvServerPool replaced a dead worker (restart %d/%d)",
-                self._restarts,
-                MAX_WORKER_RESTARTS,
-            )
+    def _retry_replacements(self) -> None:
+        """Try each missing worker slot once, preserving independent restart budgets."""
+        missing = self._replacement_queue
+        self._replacement_queue = []
+        for restarts in missing:
+            if restarts >= MAX_WORKER_RESTARTS:
+                self._replacement_queue.append(restarts)
+                continue
+            attempt = restarts + 1
+            if self._try_spawn_worker(attempt):
+                logger.warning(
+                    "EnvServerPool replaced a dead worker (restart %d/%d)",
+                    attempt,
+                    MAX_WORKER_RESTARTS,
+                )
+            else:
+                self._replacement_queue.append(attempt)
+                if attempt == MAX_WORKER_RESTARTS:
+                    logger.error(
+                        "EnvServerPool exhausted a worker slot's %d restart(s)",
+                        MAX_WORKER_RESTARTS,
+                    )
 
     async def _reap_dead_workers(self) -> None:
         """Retire exited workers, fail their in-flight requests, and replace them.
@@ -333,16 +351,14 @@ class EnvServerPool:
                     request_id,
                     f"env server worker died (exit code {exitcode})",
                 )
-        for _ in dead_workers:
-            self._replace_worker()
-        # A replacement that failed to spawn leaves the pool empty, and an empty pool has no
-        # dead worker left to drive another attempt — so retry here while budget remains,
-        # rather than refusing every request forever over one transient failure. Bounded by
-        # this method's own interval and by MAX_WORKER_RESTARTS; once that is spent the pool
-        # stays empty and fails requests fast, which is the honest end state (a host that
-        # cannot fork is not something the broker should paper over).
-        if not dead_workers and not self.workers:
-            self._replace_worker()
+            self._replacement_queue.append(w["restarts"])
+            if w["restarts"] >= MAX_WORKER_RESTARTS:
+                logger.error(
+                    "EnvServerPool exhausted worker %d's %d restart(s) — not replacing",
+                    w["index"],
+                    MAX_WORKER_RESTARTS,
+                )
+        self._retry_replacements()
 
     async def _on_request(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
