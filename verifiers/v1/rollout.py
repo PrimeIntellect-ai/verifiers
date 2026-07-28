@@ -34,6 +34,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TaskError,
     ToolsetError,
+    TunnelError,
     boundary,
 )
 from verifiers.v1.harness import Harness
@@ -345,6 +346,8 @@ class RolloutRun:
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             real = self._session.error
+            if real is None and isinstance(e, HarnessError):
+                real = await self._tunnel_failure()
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
                 self.fail(real)
@@ -364,6 +367,19 @@ class RolloutRun:
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
         return self.ok and trace.num_turns > turns_before
+
+    async def _tunnel_failure(self) -> RolloutError | None:
+        """The real cause behind a harness exit when the interception tunnel was down:
+        the harness's model calls hit a dead tunnel (e.g. the gateway's 404 page) and the
+        program died on them — infra, not the agent. Probe the server this rollout is
+        registered on and type it `TunnelError`; an inconclusive probe blames nothing."""
+        server = self._session.server
+        if server is None:
+            return None
+        with contextlib.suppress(Exception):
+            if not await server.healthy():
+                return TunnelError("interception tunnel was down while the harness ran")
+        return None
 
     async def abort(self) -> None:
         """Free everything this run holds — the entered servers and an owned

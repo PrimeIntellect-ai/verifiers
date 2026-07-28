@@ -2,7 +2,12 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
+from verifiers.v1.interception.tunnel.base import (
+    BaseTunnelConfig,
+    Endpoint,
+    FixedEndpoint,
+    Tunnel,
+)
 from verifiers.v1.interception.tunnel.custom import CustomTunnel, CustomTunnelConfig
 from verifiers.v1.interception.tunnel.prime import PrimeTunnel, PrimeTunnelConfig
 
@@ -23,6 +28,8 @@ __all__ = [
     "BaseTunnelConfig",
     "CustomTunnel",
     "CustomTunnelConfig",
+    "Endpoint",
+    "FixedEndpoint",
     "PrimeTunnel",
     "PrimeTunnelConfig",
     "Tunnel",

@@ -236,8 +236,8 @@ async def reachable_url(
     elif consumer_is_local:  # local consumer → localhost, no public tunnel
         yield f"http://127.0.0.1:{port}"
     else:  # remote consumer → a host tunnel publishes the port outward
-        async with PrimeTunnel().expose(port) as url:
-            yield url
+        async with PrimeTunnel().expose(port) as endpoint:
+            yield await endpoint.url()
 
 
 @contextlib.asynccontextmanager

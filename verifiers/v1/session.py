@@ -18,6 +18,7 @@ from verifiers.v1.trace import Trace
 
 if TYPE_CHECKING:
     from verifiers.v1.errors import RolloutError
+    from verifiers.v1.interception.server import InterceptionServer
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,10 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+    server: "InterceptionServer | None" = None
+    """The interception server this session is registered on (set by `register`). How the
+    rollout, after a harness failure, asks whether the server's tunnel was down
+    (`healthy()`) — attributing the failure to the tunnel rather than the harness."""
     last_request: bytes | None = None
     """Digest of the most recently served request body; with `last_response`, the replay cache
     that keeps the message graph atomic under harness-SDK retries. A retry re-sends the
