@@ -1,15 +1,13 @@
 import json
-from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.minimal import PROGRAM_SOURCE
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-
-PROGRAM_SOURCE = (Path(__file__).resolve().parents[1] / "shared_program.py").read_text()
 
 
 class NullHarnessConfig(HarnessConfig):

@@ -29,7 +29,12 @@ def builtin_harness_ids() -> list[str]:
     subpackages)."""
     from verifiers.v1 import harnesses
 
-    return sorted(m.name for m in pkgutil.iter_modules(harnesses.__path__) if m.ispkg)
+    return sorted(
+        m.name
+        for m in pkgutil.iter_modules(harnesses.__path__)
+        if m.ispkg
+        and importlib.util.find_spec(f"{harnesses.__name__}.{m.name}.harness")
+    )
 
 
 skip_plugin_install: contextvars.ContextVar[bool] = contextvars.ContextVar(

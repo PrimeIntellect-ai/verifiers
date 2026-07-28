@@ -2,7 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
 # ///
-"""Secrets arrive through argv so local tool subprocesses do not inherit them."""
+"""Shared null/bash program; secrets use argv so tool subprocesses do not inherit them."""
 
 import argparse
 import asyncio
