@@ -270,6 +270,7 @@ class PrimeRuntime(Runtime):
     ) -> None:
         # `&` backgrounds inside the sandbox; the job returns immediately, the process
         # lives until the sandbox is deleted in stop().
+        argv, env = await self._prepare_program(argv, env)
         inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
         result = await self.run(["sh", "-c", inner], env)
         if result.exit_code != 0:

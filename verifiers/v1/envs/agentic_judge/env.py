@@ -301,6 +301,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with agents.solver.provision(task) as box:
+            await box.prepare_reuse()
             solution = await agents.solver.run(task, runtime=box)
             if box.network_restricted and not box.execution_prepared:
                 raise RuntimeError(
