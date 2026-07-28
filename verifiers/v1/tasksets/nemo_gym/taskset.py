@@ -14,7 +14,6 @@ from urllib.parse import urljoin
 import httpx
 from pydantic import Field
 
-from verifiers.utils.serve_utils import get_free_port
 from verifiers.v1.decorators import reward
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
@@ -323,23 +322,20 @@ class NeMoGymEnv(SingleAgentEnv):
 
         runtime = self._nemo_runtime = make_runtime(SubprocessConfig())
         await runtime.start()
-        port = get_free_port()
         await runtime.run_background(
             [sys.executable, "-m", "verifiers.v1.tasksets.nemo_gym.server"],
-            {
-                "NEMO_GYM_PORT": str(port),
-                "NEMO_GYM_RESOURCE_SERVER": entrypoint,
-            },
+            {"NEMO_GYM_RESOURCE_SERVER": entrypoint},
             "nemo_gym.log",
         )
-        config.resources_url = f"http://127.0.0.1:{port}"
 
         async with httpx.AsyncClient(timeout=1) as client:
             for _ in range(60):
                 try:
+                    port = int((await runtime.read("nemo_gym.port")).decode())
+                    config.resources_url = f"http://127.0.0.1:{port}"
                     if (await client.get(config.resources_url)).is_success:
                         return
-                except httpx.HTTPError:
+                except (FileNotFoundError, ValueError, httpx.HTTPError):
                     pass
                 await asyncio.sleep(0.5)
         log = (await runtime.read("nemo_gym.log")).decode(errors="replace")[-2000:]
