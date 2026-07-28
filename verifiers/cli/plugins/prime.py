@@ -139,7 +139,7 @@ class PrimeCLIPlugin:
     """Declarative command surface consumed by prime-cli."""
 
     api_version: int = PRIME_PLUGIN_API_VERSION
-    eval_module: str = "verifiers.cli.commands.eval"
+    eval_module: str = "verifiers.cli.commands.eval_v1_prime"
     gepa_module: str = "verifiers.cli.commands.gepa"
     install_module: str = "verifiers.cli.commands.install"
     init_module: str = "verifiers.cli.commands.init"
