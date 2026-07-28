@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
+GATEWAY_RECOVERY_SECONDS = 15 * 60
+"""Keep polling the same background job through transient gateway outages."""
+
 
 class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
@@ -238,8 +241,40 @@ class PrimeRuntime(Runtime):
                 env=env,
             )
             delay = 0.1
+            outage_started: float | None = None
             while True:
-                result = await self._client.get_background_job(self.info.id, job)
+                try:
+                    result = await self._client.get_background_job(self.info.id, job)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Never start a replacement job after an ambiguous gateway
+                    # failure.  Keep polling the exact original job so a transient
+                    # control-plane outage cannot orphan a still-running six-hour
+                    # evaluation or create a duplicate candidate execution.
+                    now = asyncio.get_running_loop().time()
+                    outage_started = now if outage_started is None else outage_started
+                    outage_seconds = now - outage_started
+                    if outage_seconds >= GATEWAY_RECOVERY_SECONDS:
+                        raise SandboxError(
+                            "prime background-job polling did not recover within "
+                            f"{GATEWAY_RECOVERY_SECONDS}s: {exc}"
+                        ) from exc
+                    retry_delay = min(max(delay, 1.0), 15.0)
+                    logger.warning(
+                        "prime: transient gateway error polling job %s in sandbox %s; "
+                        "retrying the same job in %.1fs (outage %.1fs/%.1fs): %s",
+                        job,
+                        self.info.id,
+                        retry_delay,
+                        outage_seconds,
+                        GATEWAY_RECOVERY_SECONDS,
+                        exc,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    delay = min(retry_delay * 2, 15.0)
+                    continue
+                outage_started = None
                 if result.completed:
                     break
                 await asyncio.sleep(delay)
