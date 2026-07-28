@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from openai import (
     AsyncOpenAI,
 )

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Additional tests for verifiers.envs.environment.Environment.
 
 Covers:

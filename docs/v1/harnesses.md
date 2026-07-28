@@ -6,14 +6,17 @@ verifiers supports a range of harnesses out of the box, including Claude Code, C
 
 ```python
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
+
 class MyHarnessConfig(HarnessConfig):
     # These are the values that the users are allowed to set and change.
     version: str = "0.0.1"
+
 
 class MyHarness(Harness[MyHarnessConfig]):
     # Set the system prompt of the task as the harness system message; else add it to the first user message

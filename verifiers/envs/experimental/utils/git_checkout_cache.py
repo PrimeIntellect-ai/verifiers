@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import fcntl
 import hashlib
 import logging

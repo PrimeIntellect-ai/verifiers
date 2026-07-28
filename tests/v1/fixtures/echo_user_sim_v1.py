@@ -62,4 +62,4 @@ class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
         ]
 
 
-__all__ = ["EchoUserSimTaskset", "EchoUserSimEnv"]
+__all__ = ["EchoUserSimEnv", "EchoUserSimTaskset"]

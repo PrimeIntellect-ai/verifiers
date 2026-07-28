@@ -11,7 +11,7 @@ from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
-from verifiers.v1.env import EnvConfig
+from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.loaders import load_environment
 from verifiers.v1.serve.types import (
     BaseResponse,

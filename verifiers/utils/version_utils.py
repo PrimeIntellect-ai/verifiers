@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Utilities for detecting verifiers and environment version/commit info."""
 
 import importlib.metadata

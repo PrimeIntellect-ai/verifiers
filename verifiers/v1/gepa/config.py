@@ -15,8 +15,8 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import EvalClientConfig
-from verifiers.v1.configs.env import narrowed_env_annotation, resolve_env_field
-from verifiers.v1.env import EnvConfig
+from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
+from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 

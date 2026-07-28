@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic_config import cli
 
-from verifiers.v1.configs.init import InitConfig
+from verifiers.v1.configs.cli.init import InitConfig
 
 USAGE = (
     "usage: uv run init <name> [--path ./environments] [-T/--add-tool] "
@@ -17,7 +17,7 @@ USAGE = (
 def _names(name: str) -> tuple[str, str, str, str]:
     dash = name.strip().strip("/").replace("_", "-").lower()
     pkg = dash.replace("-", "_")
-    stem = pkg[:-3] if pkg.endswith("_v1") else pkg
+    stem = pkg.removesuffix("_v1")
     prefix = "".join(part[:1].upper() + part[1:] for part in stem.split("_") if part)
     if not prefix or not prefix[0].isalpha():
         prefix = f"Env{prefix}"
@@ -171,8 +171,10 @@ class {prefix}Harness(vf.Harness[{prefix}HarnessConfig]):
 
 def _readme(dash: str, pkg: str, *, add_tool: bool, add_harness: bool) -> str:
     layout = [
-        f"- `{pkg}/taskset.py` — the task (`@reward` scoring + behavior) and the taskset: "
-        "`load` (data + prompts)."
+        (
+            f"- `{pkg}/taskset.py` — the task (`@reward` scoring + behavior) and the taskset: "
+            "`load` (data + prompts)."
+        )
     ]
     if add_tool:
         layout.append(

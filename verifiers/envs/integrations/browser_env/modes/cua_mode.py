@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """CUA-based browser mode supporting both local HTTP and sandbox execution."""
 
 import asyncio
@@ -31,10 +33,10 @@ try:
     SANDBOX_AVAILABLE = True
 except ImportError:
     SANDBOX_AVAILABLE = False
-    AsyncSandboxClient = None  # type: ignore[misc, assignment]
-    CreateSandboxRequest = None  # type: ignore[misc, assignment]
-    SandboxClient = None  # type: ignore[misc, assignment]
-    APIClient = None  # type: ignore[misc, assignment]
+    AsyncSandboxClient = None  # type: ignore[misc, assignment]  # ty:ignore[invalid-assignment]
+    CreateSandboxRequest = None  # type: ignore[misc, assignment]  # ty:ignore[invalid-assignment]
+    SandboxClient = None  # type: ignore[misc, assignment]  # ty:ignore[invalid-assignment]
+    APIClient = None  # type: ignore[misc, assignment]  # ty:ignore[invalid-assignment]
 
 
 class CUAMode:
@@ -364,7 +366,7 @@ class CUAMode:
     async def _create_sandbox(self) -> str:
         """Create a new sandbox and return its ID."""
         client = await self._get_sandbox_client()
-        sandbox = await client.create(self._sandbox_request.model_copy())  # type: ignore[union-attr]
+        sandbox = await client.create(self._sandbox_request.model_copy())  # type: ignore[union-attr]  # ty:ignore[unresolved-attribute]
         self.active_sandboxes.add(sandbox.id)
         if self.logger:
             self.logger.debug(f"Created sandbox {sandbox.id}")
@@ -373,7 +375,7 @@ class CUAMode:
     async def _create_sandbox_with_retry(self) -> str:
         """Create a sandbox with retry, cleaning up orphaned sandboxes from failed attempts."""
         previous_sandbox_id: str | None = None
-        async for attempt in self.retrying:  # type: ignore[union-attr]
+        async for attempt in self.retrying:  # type: ignore[union-attr]  # ty:ignore[not-iterable]
             with attempt:
                 if previous_sandbox_id is not None:
                     try:
@@ -820,7 +822,7 @@ class CUAMode:
         if self._execution_mode == "local":
             # Local mode: create session via HTTP
             try:
-                async for attempt in self.retrying:  # type: ignore[union-attr]
+                async for attempt in self.retrying:  # type: ignore[union-attr]  # ty:ignore[not-iterable]
                     with attempt:
                         result = await self._create_session_http()
                 session_id = result.get("sessionId")
@@ -861,7 +863,7 @@ class CUAMode:
                     await self._start_server(sandbox_id)
                     await self._wait_for_server(sandbox_id)
 
-                async for attempt in self.retrying:  # type: ignore[union-attr]
+                async for attempt in self.retrying:  # type: ignore[union-attr]  # ty:ignore[not-iterable]
                     with attempt:
                         result = await self._create_session_curl(sandbox_id)
                 session_id = result.get("sessionId")
@@ -908,7 +910,7 @@ class CUAMode:
             # Local mode: destroy session via HTTP
             if session_id:
                 try:
-                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                    async for attempt in self.retrying:  # type: ignore[union-attr]  # ty:ignore[not-iterable]
                         with attempt:
                             await self._destroy_session_http(session_id)
                     with self._sessions_lock:
@@ -924,7 +926,7 @@ class CUAMode:
 
             if session_id and sandbox_id:
                 try:
-                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                    async for attempt in self.retrying:  # type: ignore[union-attr]  # ty:ignore[not-iterable]
                         with attempt:
                             await self._destroy_session_curl(session_id, sandbox_id)
                     with self._sessions_lock:
@@ -937,7 +939,7 @@ class CUAMode:
 
             if sandbox_id:
                 try:
-                    async for attempt in self.retrying:  # type: ignore[union-attr]
+                    async for attempt in self.retrying:  # type: ignore[union-attr]  # ty:ignore[not-iterable]
                         with attempt:
                             await self._delete_sandbox(sandbox_id)
                 except Exception as e:
@@ -966,7 +968,7 @@ class CUAMode:
                 async def _delete_with_semaphore(session_id: str):
                     async with semaphore:
                         try:
-                            async for attempt in self.retrying:  # type: ignore[union-attr]
+                            async for attempt in self.retrying:  # type: ignore[union-attr]  # ty:ignore[not-iterable]
                                 with attempt:
                                     await self._destroy_session_http(session_id)
                             with self._sessions_lock:

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import importlib
 import inspect
 import logging

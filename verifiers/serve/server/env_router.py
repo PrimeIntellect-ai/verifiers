@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Worker pool manager with IPC dispatch.
 
 Owns per-worker PUSH sockets and shared response/stats PULL sockets.

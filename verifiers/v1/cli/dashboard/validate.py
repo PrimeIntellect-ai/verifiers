@@ -13,7 +13,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
-from verifiers.v1.configs.validate import ValidateConfig
+from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.utils.format import format_time
 
 _STYLE = {

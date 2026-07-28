@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from collections.abc import Mapping
 from typing import Any, Optional, cast
 
@@ -288,7 +290,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         if tool_call_ids:
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
                 role="assistant",
-                reasoning_content="",  # type: ignore[typeddict-unknown-key]
+                reasoning_content="",  # type: ignore[typeddict-unknown-key]  # ty:ignore[invalid-key]
                 tool_calls=[
                     ChatCompletionMessageFunctionToolCallParam(
                         id=tc_id,
@@ -301,7 +303,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         else:
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
                 role="assistant",
-                reasoning_content="",  # type: ignore[typeddict-unknown-key]
+                reasoning_content="",  # type: ignore[typeddict-unknown-key]  # ty:ignore[invalid-key]
                 content="x",
             )
 

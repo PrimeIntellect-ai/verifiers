@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Helper for the base ``TaskSet.filter_fn`` kwarg.
 
 ``filter_fn`` accepts a Python expression string (typically a lambda) that

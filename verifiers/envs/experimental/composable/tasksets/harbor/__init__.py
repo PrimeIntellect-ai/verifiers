@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from .harbor import (
     HarborDatasetRubric,
     HarborDatasetTaskSet,

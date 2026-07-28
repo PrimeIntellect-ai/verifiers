@@ -9,15 +9,10 @@ from functools import cached_property
 from pathlib import Path
 from typing import cast
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
-from verifiers.v1.judge import (
-    Judge,
-    JudgeConfig,
-    JudgeView,
-    judge_question,
-    judge_response,
-)
+from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, StrictBaseModel
@@ -67,7 +62,7 @@ class Criterion(StrictBaseModel):
     text: str
     weight: float = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
-    choices: list[str] = ["no", "yes"]
+    choices: list[str] = Field(default_factory=lambda: ["no", "yes"])
     """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
     evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
 
@@ -87,7 +82,7 @@ class RubricJudgeConfig(JudgeConfig):
     path: Path
     """A `.toml` or `.json` file containing a `criteria` list. Relative paths resolve
     against the evaluation's working directory."""
-    weights: dict[str, float] = {}
+    weights: dict[str, float] = Field(default_factory=dict)
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
     question_field: str = ""
     """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
@@ -192,12 +187,12 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 f"{fence}\n{answer}\n{fence}\n"
             )
 
-        fields = dict(
-            question=judge_question(task, self.config.question_field),
-            response=judge_response(trace, self.config.view),
-            criteria="\n".join(render(c) for c in batch),
-            reference=reference,
-        )
+        fields = {
+            "question": judge_question(task, self.config.question_field),
+            "response": judge_response(trace, self.config.view),
+            "criteria": "\n".join(render(c) for c in batch),
+            "reference": reference,
+        }
         if self.config.structured_output:
             result = await self.evaluate(trace=trace, **fields)
             verdicts = cast(RubricVerdicts, result.parsed).verdicts

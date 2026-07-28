@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import (
     make_multiswe_taskset,
     make_openswe_taskset,

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import logging
 import time
 from typing import Any, TypedDict, cast

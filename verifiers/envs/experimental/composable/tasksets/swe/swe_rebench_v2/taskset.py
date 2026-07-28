@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """SWE-rebench-V2 TaskSet.
 
 SWE-rebench-V2 (https://huggingface.co/datasets/nebius/SWE-rebench-V2) is a

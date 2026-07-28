@@ -9,9 +9,9 @@ from typing import cast
 
 from pydantic import model_validator
 
+from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import (
     Judge,
-    JudgeConfig,
     JudgeResponse,
     JudgeView,
     judge_question,

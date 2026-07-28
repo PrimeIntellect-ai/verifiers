@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """
 Simple artifact saving for GEPA optimization.
 

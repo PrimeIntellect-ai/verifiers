@@ -3,8 +3,8 @@
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
-from verifiers.v1.taskset import TasksetConfig
 
 
 class CheckTimeoutConfig(BaseConfig):

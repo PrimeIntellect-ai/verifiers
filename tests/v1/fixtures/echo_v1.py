@@ -6,6 +6,8 @@ the model's reply. It's a fixture taskset for the v1 e2e suite (in tests/v1/fixt
 by id `echo-v1` via pytest's `pythonpath`).
 """
 
+from pydantic import Field
+
 import verifiers.v1 as vf
 
 SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
@@ -39,7 +41,9 @@ class EchoTask(vf.Task[EchoData]):
 
 
 class EchoConfig(vf.TasksetConfig):
-    phrases: list[str] = ["hello world", "ping", "verifiers"]
+    phrases: list[str] = Field(
+        default_factory=lambda: ["hello world", "ping", "verifiers"]
+    )
 
 
 class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):

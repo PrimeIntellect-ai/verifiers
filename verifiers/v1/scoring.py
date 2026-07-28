@@ -101,7 +101,7 @@ def verify_boxed_math_answer(
                 timeout_seconds=timeout_seconds,
             )
         )
-    except (Exception, MathVerifyTimeout):
+    except (Exception, MathVerifyTimeout):  # noqa: BLE001 - malformed answers score zero
         return 0.0
 
 

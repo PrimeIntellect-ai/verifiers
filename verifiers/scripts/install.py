@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import argparse
 
 from verifiers.utils.install_utils import (

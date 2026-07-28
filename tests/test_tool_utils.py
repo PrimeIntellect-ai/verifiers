@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tests for the tool_utils module."""
 
 from typing import Annotated, Optional

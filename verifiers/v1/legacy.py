@@ -23,7 +23,9 @@ import zmq
 import zmq.asyncio
 from pydantic import ValidationError
 
+from verifiers.v1 import graph
 from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
+from verifiers.v1.episode import Episode
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
     RunGroupRequest,
@@ -32,12 +34,11 @@ from verifiers.v1.serve.types import (
     RunResponse,
 )
 from verifiers.v1.task import WireTaskData
-from verifiers.v1 import graph
-from verifiers.v1.episode import Episode
 from verifiers.v1.trace import (
     Error,
     GenerationSpan,
     ModelCall,
+    Reward,
     TimeSpan,
     TimeSplit,
     Timing,
@@ -272,7 +273,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
         ),
         tools=_to_v1_tools(out.get("tool_defs")),
-        rewards={"reward": float(out.get("reward") or 0.0)},
+        rewards={"reward": Reward(score=float(out.get("reward") or 0.0))},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         info=dict(out.get("info") or {}),
         is_completed=bool(out.get("is_completed", True)),
@@ -521,7 +522,6 @@ async def run_legacy_eval(config) -> list[Episode]:
     import asyncio
 
     from verifiers import load_environment
-
     from verifiers.v1.cli.output import append_trace, save_config
     from verifiers.v1.utils.install import ensure_installed, env_name
     from verifiers.v1.utils.sampling import sample

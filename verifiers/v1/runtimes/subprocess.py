@@ -6,7 +6,7 @@ import os
 import shutil
 import signal
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
@@ -30,8 +30,8 @@ class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):
 
 class SubprocessRuntime(Runtime):
     # Share prepared script environments across the worker's per-rollout runtimes.
-    _interpreters: dict[str, str] = {}
-    _locks: dict[str, asyncio.Lock] = {}
+    _interpreters: ClassVar[dict[str, str]] = {}
+    _locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
     def __init__(self, config: SubprocessConfig, name: str | None = None) -> None:
         super().__init__(name)

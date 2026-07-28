@@ -67,16 +67,16 @@ def make_interception(
 
 
 __all__ = [
+    "BaseInterceptionConfig",
+    "ElasticInterceptionPool",
+    "ElasticInterceptionPoolConfig",
     "Interception",
+    "InterceptionConfig",
+    "InterceptionServer",
+    "InterceptionServerConfig",
     "Slot",
+    "StaticInterceptionPool",
+    "StaticInterceptionPoolConfig",
     "make_interception",
     "requires_tunnel",
-    "InterceptionServer",
-    "StaticInterceptionPool",
-    "ElasticInterceptionPool",
-    "BaseInterceptionConfig",
-    "InterceptionConfig",
-    "InterceptionServerConfig",
-    "StaticInterceptionPoolConfig",
-    "ElasticInterceptionPoolConfig",
 ]

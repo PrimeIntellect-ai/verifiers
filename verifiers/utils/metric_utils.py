@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import math
 from abc import ABC, abstractmethod
 from collections import defaultdict

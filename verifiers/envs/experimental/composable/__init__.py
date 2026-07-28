@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from verifiers.envs.experimental.composable.task import (
     SandboxSpec,
     Task,

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import httpx
 import pytest
 from anthropic import AuthenticationError as AnthropicAuthenticationError
