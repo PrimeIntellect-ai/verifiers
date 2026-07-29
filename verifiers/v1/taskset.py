@@ -95,10 +95,7 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
         override = self.config.resolve_system_prompt()
         if override is None:
             return tasks
-        return [
-            type(t)(t.data.model_copy(update={"system_prompt": override}), t.config)
-            for t in tasks
-        ]
+        return [t.with_system_prompt(override) for t in tasks]
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a `tools` entry is built with, resolved off `self.config` (the

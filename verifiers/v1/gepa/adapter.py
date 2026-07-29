@@ -68,14 +68,10 @@ class GEPAAdapter:
         )
 
     async def _run_batch(self, batch: list[int], system_prompt: str) -> list[Episode]:
-        # Inject the candidate by rebuilding each Task around a data row with the new
-        # system_prompt (TaskData is frozen; behavior/config carry over unchanged).
-        tasks = [
-            type(t)(
-                t.data.model_copy(update={"system_prompt": system_prompt}), t.config
-            )
-            for t in (self.tasks[idx] for idx in batch)
-        ]
+        # Inject the candidate as a copy of each base task with its system_prompt overridden
+        # (`with_system_prompt` copies rather than reconstructs, so subclass state survives and
+        # the shared base task in `self.tasks` is left untouched for the next candidate).
+        tasks = [self.tasks[idx].with_system_prompt(system_prompt) for idx in batch]
         slots = [slot for task in tasks for slot in self.env.slots(task)]
         results = await asyncio.gather(
             *(
