@@ -112,5 +112,4 @@ Two deliberate differences from `harbor run`:
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
 - Switching to a different verifier-phase network policy ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
-- Sidecar services, and the sidecar artifacts and collect hooks that go with them ([Harbor Docs](https://www.harborframework.com/docs/tasks#sidecar-artifacts-and-collect-hooks))
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
