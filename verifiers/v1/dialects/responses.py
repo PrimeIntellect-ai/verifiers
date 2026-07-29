@@ -45,6 +45,20 @@ _TERMINAL_MARKERS = tuple(
 )
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
+_TOOL_OUTPUT_TYPES = frozenset(
+    {
+        "function_call_output",
+        "custom_tool_call_output",
+        "local_shell_call_output",
+        "shell_call_output",
+        "computer_call_output",
+        "apply_patch_call_output",
+    }
+)
+_BLANK_SCREENSHOT = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class ProviderUsageInputTokensDetails(BaseModel):
@@ -279,20 +293,29 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 run = []
             if assistant:
                 run.append(item)
-            elif item.get("type") in (
-                "function_call_output",
-                "custom_tool_call_output",
-            ):
+            elif item.get("type") in _TOOL_OUTPUT_TYPES:
+                kind = item["type"]
                 output = item.get("output")
                 content = (
                     parse_content(output)
                     if isinstance(output, (str, list))
                     else json.dumps(output)
                 )
+                if isinstance(output, list) and not content and output:
+                    content = json.dumps(output)
                 prompt.append(
                     ToolMessage(
-                        tool_call_id=item.get("call_id", ""),
+                        tool_call_id=item.get("call_id") or item.get("id", ""),
                         content=content,
+                        name=(
+                            kind.removesuffix("_call_output")
+                            if kind
+                            not in (
+                                "function_call_output",
+                                "custom_tool_call_output",
+                            )
+                            else None
+                        ),
                     )
                 )
             elif item.get("role") in ("system", "developer"):
@@ -346,11 +369,24 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         for item in body.get("input") or []:
             if (
                 isinstance(item, dict)
-                and item.get("type")
-                in ("function_call_output", "custom_tool_call_output")
-                and item.get("call_id") == tool_call_id
+                and (kind := item.get("type")) in _TOOL_OUTPUT_TYPES
+                and (item.get("call_id") or item.get("id")) == tool_call_id
             ):
-                item["output"] = text
+                if kind == "shell_call_output":
+                    item["output"] = [
+                        {
+                            "stdout": text,
+                            "stderr": "",
+                            "outcome": {"type": "exit", "exit_code": 0},
+                        }
+                    ]
+                elif kind == "computer_call_output":
+                    item["output"] = {
+                        "type": "computer_screenshot",
+                        "image_url": _BLANK_SCREENSHOT,
+                    }
+                else:
+                    item["output"] = text
 
     def stream_events(self, raw: dict) -> list[bytes]:
         sequence = 0

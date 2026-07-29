@@ -59,6 +59,7 @@ _SHELL_WRAPPER_OPTIONS = {
     "if": set(),
     "then": set(),
     "elif": set(),
+    "else": set(),
     "while": set(),
     "until": set(),
     "do": set(),
@@ -130,7 +131,9 @@ def _tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
     return [call for call in calls if not patterns or match_tool(call.name, *patterns)]
 
 
-def _shell_text(call: ToolCall, *, commands_only: bool = False) -> str:
+def _shell_text(
+    call: ToolCall, *, commands_only: bool = False, raw_fallback: bool = False
+) -> str:
     """Extract shell text, optionally reduced to normalized invocation lines."""
     try:
         arguments = json.loads(call.arguments)
@@ -141,6 +144,11 @@ def _shell_text(call: ToolCall, *, commands_only: bool = False) -> str:
     elif isinstance(arguments, dict):
         action = arguments.get("action")
         sources = [arguments, action] if isinstance(action, dict) else [arguments]
+        has_command = any(
+            key in source
+            for source in sources
+            for key in ("command", "commands", "cmd")
+        )
         values = (
             source.get(key)
             for source in sources
@@ -158,6 +166,8 @@ def _shell_text(call: ToolCall, *, commands_only: bool = False) -> str:
             )
             if isinstance(item, str)
         )
+        if not has_command and raw_fallback:
+            return call.arguments
     else:
         text = ""
     if not commands_only or not text:
@@ -232,11 +242,14 @@ def _shell_text(call: ToolCall, *, commands_only: bool = False) -> str:
                 option_arguments = _SHELL_WRAPPER_OPTIONS[name]
                 while index < len(segment) and segment[index].startswith("-"):
                     option = segment[index]
+                    option_name, separator, option_value = option.partition("=")
+                    if name == "env" and option_name in ("-S", "--split-string"):
+                        if separator:
+                            pending.append(option_value)
+                        elif index + 1 < len(segment):
+                            pending.append(segment[index + 1])
                     index += (
-                        2
-                        if option.split("=", 1)[0] in option_arguments
-                        and "=" not in option
-                        else 1
+                        2 if option_name in option_arguments and not separator else 1
                     )
 
     return "\n".join(invocations)
@@ -283,7 +296,7 @@ def intercept_tool_calls(
         else:
             texts = [
                 (
-                    _shell_text(call)
+                    _shell_text(call, raw_fallback=True)
                     if match_tool(call.name, "bash")
                     else call.arguments
                 ).casefold()

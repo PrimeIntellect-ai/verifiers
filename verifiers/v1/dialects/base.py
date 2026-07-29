@@ -199,7 +199,8 @@ class Dialect(ABC, Generic[ReqT, RespT]):
             kind = tool.get("type")
             return bool(
                 {"function", "custom", "input_schema"} & tool.keys()
-                or kind in ("function", "custom", "local_shell")
+                or kind
+                in ("function", "custom", "local_shell", "apply_patch", "computer")
                 or isinstance(kind, str)
                 and kind.startswith(("bash_", "computer_", "text_editor_"))
                 or kind == "shell"
