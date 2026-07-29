@@ -1,4 +1,4 @@
-"""Task-authored interception types and ready-made policies."""
+"""Task-authored interception types and ready-made guards."""
 
 from verifiers.v1.intercepts.core import InterceptResult, Terminate
 from verifiers.v1.intercepts.tools import (

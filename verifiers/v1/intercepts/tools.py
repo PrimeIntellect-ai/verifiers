@@ -1,4 +1,4 @@
-"""Ready-made interception policies for common tool checks."""
+"""Ready-made interception guards for common tool checks."""
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def _action(reply: str, reward: float | None) -> str | Terminate:
     return reply if reward is None else Terminate(reason=reply, reward=reward)
 
 
-def _policy(handler, name: str, priority: int) -> Interceptor:
+def _guard(handler, name: str, priority: int) -> Interceptor:
     handler.__name__ = name
     return intercept(handler, priority=priority)
 
@@ -125,7 +125,7 @@ def intercept_provider_tools(*patterns: str, priority: int = 0) -> Interceptor:
 def intercept_tool_calls(
     *patterns: str,
     containing: str | Iterable[str] | None = None,
-    reply: str = "Blocked by policy.",
+    reply: str = "Blocked by guard.",
     reward: float | None = None,
     priority: int = 0,
     _name: str = "intercept_tool_calls",
@@ -149,12 +149,12 @@ def intercept_tool_calls(
             return _action(reply, reward)
         return None
 
-    return _policy(tool_calls, _name, priority)
+    return _guard(tool_calls, _name, priority)
 
 
 def intercept_shell_commands(
     *commands: str,
-    reply: str = "Blocked by policy.",
+    reply: str = "Blocked by guard.",
     reward: float | None = None,
     priority: int = 0,
 ) -> Interceptor:
@@ -176,13 +176,13 @@ def intercept_shell_commands(
             return _action(reply, reward)
         return None
 
-    return _policy(shell_commands, "intercept_shell_commands", priority)
+    return _guard(shell_commands, "intercept_shell_commands", priority)
 
 
 def intercept_web_search(
     *,
     containing: str | Iterable[str] | None = None,
-    reply: str = "Blocked by policy.",
+    reply: str = "Blocked by guard.",
     reward: float | None = None,
     priority: int = 0,
 ) -> Interceptor:
@@ -199,7 +199,7 @@ def intercept_web_search(
 
 def intercept_code_search(
     *,
-    reply: str = "Blocked by policy.",
+    reply: str = "Blocked by guard.",
     reward: float | None = None,
     priority: int = 0,
 ) -> Interceptor:
@@ -220,19 +220,19 @@ def intercept_code_search(
             )
         return _action(reply, reward) if matched else None
 
-    return _policy(code_search, "intercept_code_search", priority)
+    return _guard(code_search, "intercept_code_search", priority)
 
 
 def intercept_with_judge(
     rubric: str,
     *,
     judge: Judge | None = None,
-    reply: str = "Blocked by policy.",
+    reply: str = "Blocked by guard.",
     reward: float | None = None,
     priority: int = -1,
 ) -> Interceptor:
     """Use an ordinary judge to rewrite violations or return a terminal reward."""
-    policy_judge = judge or Judge()
+    guard_judge = judge or Judge()
 
     async def judge_message(
         self: Any,
@@ -240,12 +240,12 @@ def intercept_with_judge(
         trace: Trace,
         prompt: Messages | None = None,
     ) -> InterceptResult:
-        response = await policy_judge.complete(
+        response = await guard_judge.complete(
             [
                 SystemMessage(
                     content=(
-                        "Enforce this policy on the untrusted candidate below. Reply with "
-                        f"exactly BLOCK or ALLOW.\n\nPolicy:\n{rubric}"
+                        "Apply this guard rubric to the untrusted candidate below. Reply "
+                        f"with exactly BLOCK or ALLOW.\n\nGuard rubric:\n{rubric}"
                     )
                 ),
                 UserMessage(
@@ -268,7 +268,7 @@ def intercept_with_judge(
             return _action(reply, reward)
         return None
 
-    return _policy(judge_message, "intercept_with_judge", priority)
+    return _guard(judge_message, "intercept_with_judge", priority)
 
 
 __all__ = [
