@@ -170,16 +170,17 @@ def _shell_text(call: ToolCall, *, commands_only: bool = False) -> str:
         lexer = shlex.shlex(
             pending.pop().replace("\\\n", "").replace("\n", ";"),
             posix=True,
-            punctuation_chars=";&|()<>",
+            punctuation_chars="{};&|()<>",
         )
         lexer.whitespace_split = True
+        lexer.commenters = ""
         try:
             tokens = list(lexer)
         except ValueError:
             continue
         segments = [[]]
         for token in tokens:
-            if token and set(token) <= set(";&|()"):
+            if token and set(token) <= set("{};&|()"):
                 segments.append([])
             else:
                 segments[-1].append(token)
