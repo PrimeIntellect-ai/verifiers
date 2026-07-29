@@ -522,17 +522,67 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     @classmethod
     def migrate(cls, data: Any) -> Any:
         """Upgrade older records step by step to the current schema. Every schema
-        bump owns its step: bump `TRACE_VERSION`, add a `_to_v<n>` util, chain it
+        bump owns its step: bump `TRACE_VERSION`, add a `to_v<n>` util, chain it
         here. Current-version records validate strictly."""
         if not isinstance(data, dict):
             return data
-        if data.get("version", TRACE_VERSION) < 5:
-            data = _to_v5(dict(data))
+        if data.get("version", TRACE_VERSION) >= TRACE_VERSION:
+            return data
+        data = dict(data)
+        for version, step in ((2, to_v2), (3, to_v3), (4, to_v4), (5, to_v5)):
+            if data["version"] < version:
+                data = step(data)
         return data
 
 
-def _to_v5(record: dict) -> dict:
-    """<v5 -> v5: drop the explicit nulls whose fields v5 defaults now fill, seat
+def to_v2(record: dict) -> dict:
+    """v1 -> v2 (#2061): per-call metadata moved off the nodes onto `ModelCall`s —
+    lift each node's `usage`/`finish_reason` into a synthesized call linked by
+    node index."""
+    calls = list(record.get("calls") or [])
+    nodes = []
+    for idx, node in enumerate(record.get("nodes") or []):
+        node = dict(node)
+        usage = node.pop("usage", None)
+        finish_reason = node.pop("finish_reason", None)
+        if usage is not None or finish_reason is not None:
+            calls.append({"node": idx, "usage": usage, "finish_reason": finish_reason})
+        nodes.append(node)
+    record["nodes"] = nodes
+    record["calls"] = calls
+    record["version"] = 2
+    return record
+
+
+def to_v3(record: dict) -> dict:
+    """v2 -> v3 (#2106): the top-level runtime and the agent's flat identity fields
+    (model/sampling/harness) moved into `AgentInfo.config` / `AgentInfo.runtime`."""
+    agent = record.pop("agent", None) or {}
+    config = {
+        key: agent[key]
+        for key in ("model", "sampling", "harness")
+        if agent.get(key) is not None
+    }
+    record["agent"] = {"config": config}
+    if (runtime := record.pop("runtime", None)) is not None:
+        record["agent"]["runtime"] = runtime
+    record["version"] = 3
+    return record
+
+
+def to_v4(record: dict) -> dict:
+    """v3 -> v4 (#2119): rewards went from weighted floats to `Reward(score,
+    weight)` — an old float is its weighted contribution, so it maps to weight 1."""
+    record["rewards"] = {
+        name: {"score": value, "weight": 1.0}
+        for name, value in (record.get("rewards") or {}).items()
+    }
+    record["version"] = 4
+    return record
+
+
+def to_v5(record: dict) -> dict:
+    """v4 -> v5: drop the explicit nulls whose fields v5 defaults now fill, seat
     records that predate the required `agent`, and drop a run stamp with no id."""
     for field in ("tools", "verifiers", "agent"):
         if field in record and record[field] is None:
