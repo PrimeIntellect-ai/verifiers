@@ -499,7 +499,7 @@ def _legacy_output_dir(config) -> Path:
 
     if config.output_dir is not None:
         return config.output_dir
-    name = f"{env_name(config.id)}--{config.model.replace('/', '--')}--legacy"
+    name = f"{env_name(config.legacy.id)}--{config.model.replace('/', '--')}--legacy"
     return Path("outputs") / name / config.uuid
 
 
@@ -514,15 +514,21 @@ async def run_legacy_eval(config) -> list[Episode]:
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
     # already importable), then load by module name.
-    env = load_environment(ensure_installed(config.id), **(config.args or {}))
-    if config.extra_env_kwargs:  # post-load knobs (max_total_completion_tokens, …)
-        env.set_kwargs(**config.extra_env_kwargs)
+    env = load_environment(
+        ensure_installed(config.legacy.id), **(config.legacy.args or {})
+    )
+    if (
+        config.legacy.extra_env_kwargs
+    ):  # post-load knobs (max_total_completion_tokens, …)
+        env.set_kwargs(**config.legacy.extra_env_kwargs)
     dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
     idxs = sample(list(range(len(dataset))), config.shuffle, config.num_tasks)
 
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)
-    taskset_id = env_name(config.id)  # the same identity the served bridge stamps
+    taskset_id = env_name(
+        config.legacy.id
+    )  # the same identity the served bridge stamps
     out_dir = _legacy_output_dir(config)
     save_config(config, out_dir)
     logger.info("results: %s", out_dir)
@@ -531,7 +537,7 @@ async def run_legacy_eval(config) -> list[Episode]:
         len(idxs),
         config.num_rollouts,
         config.model,
-        config.id,
+        config.legacy.id,
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None

@@ -186,7 +186,7 @@ def push_traces(
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
     traces = [trace for episode in episodes for trace in episode.traces]
-    env_name = (config.env.taskset.id) or config.id
+    env_name = (config.env.taskset.id) or config.legacy.id
     metrics = _run_metrics(episodes, traces)
     samples = _build_samples(episodes)
     num_examples = len({t.task.data.idx for t in traces})

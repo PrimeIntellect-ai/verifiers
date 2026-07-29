@@ -40,7 +40,9 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — rollouts per task
-- `max_concurrent` — caps how many rollouts are in flight at once
+- `max_concurrent` — caps how many episodes are in flight at once; `env.max_concurrent_agents` caps the agent runs inside one episode (1 by default — see [The Env § Concurrency](env.md#concurrency))
+- `[serve]` — how the env is hosted under `--server`: `serve.pool` (worker pool), `serve.address`, and `serve.max_concurrent` (a per-worker episode bound; unset takes `max_concurrent`)
+- `[legacy]` — run a classic (v0) environment through the bridge instead of `[env]`: `legacy.id`, `legacy.args`
 - `verbose` — log at debug instead of info
 - `shuffle` — randomizes the order of tasks (fixed seed); a no-op on an infinite taskset
 

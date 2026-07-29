@@ -204,7 +204,7 @@ Do not average these categories together without reporting failure rate.
 For a real v0 package only:
 
 ```bash
-prime eval run --id legacy-env --args.split test -n 5
+prime eval run --legacy.id legacy-env --legacy.args.split test -n 5
 ```
 
-Label the result as bridged v0. Do not present `args` as the v1 config contract.
+Label the result as bridged v0. Do not present `legacy.args` as the v1 config contract.

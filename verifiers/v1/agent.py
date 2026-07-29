@@ -276,9 +276,9 @@ class Agent:
             max_total_tokens=config.max_total_tokens,
         )
         self.timeout = config.timeout
-        # Env episode agents replace this with the eval concurrency semaphore.
-        # Interactions acquire it only around active lifecycle work, never while
-        # awaiting the caller between segments.
+        # Env episode agents replace this with the episode's agent semaphore
+        # (`--env.max-concurrent-agents`). Interactions acquire it only around active
+        # lifecycle work, never while awaiting the caller between segments.
         self._gate: asyncio.Semaphore | None = None
         # Env-owned standing, not config: `Env.setup` marks fixed agents
         # untrainable and traces are stamped from here; inert outside an env.
@@ -578,9 +578,9 @@ class _EpisodeAgent(Agent):
     bundle of references — expensive resources are env-owned and borrowed, so no
     state spans concurrent episodes): traces get their agent standing the moment
     they're created, finished ones land in `completed` (the episode's traces),
-    each run takes the eval's gate. The taskset's shared tool servers ride only
-    its own tasks — on an env-minted task they'd wrongly put MCP in play
-    (`tools=` overrides)."""
+    each run takes one of the episode's agent permits. The taskset's shared tool
+    servers ride only its own tasks — on an env-minted task they'd wrongly put MCP
+    in play (`tools=` overrides)."""
 
     def __init__(
         self,
@@ -664,8 +664,9 @@ class _EpisodeAgent(Agent):
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
         `Env.run` stays crash-safe. Setup, each active segment, and close acquire
-        the eval gate independently; the interaction holds no permit while awaiting
-        its caller, so peer interactions can interleave even at concurrency one."""
+        an agent permit independently; the interaction holds no permit while awaiting
+        its caller, so peer interactions still interleave where an episode plays one
+        agent at a time."""
         trace: Trace | None = None
 
         def remember(current: Trace) -> None:
