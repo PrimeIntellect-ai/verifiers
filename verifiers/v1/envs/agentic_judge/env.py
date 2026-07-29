@@ -315,14 +315,6 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        # The judge inherits the solver's runtime policy unless it pins a container of
-        # its own. Under `shared` that is definitional — its effective runtime IS the
-        # solver's box, and aligning the config keeps the base env's subprocess warning
-        # and the runtime stamped on its trace truthful. Under `isolated` it is the
-        # fallback every other unpinned `AgentConfig` field already gets (harness,
-        # model, sampling): `runtime` defaults to `SubprocessConfig` with no `None` to
-        # distinguish unset from chosen, and a code-executing judge can never run on the
-        # host anyway, so subprocess here always means "not specified".
         if config.sandbox_mode == "shared" or isinstance(
             config.judge.runtime, vf.SubprocessConfig
         ):
