@@ -65,6 +65,7 @@ _SHELL_WRAPPER_OPTIONS = {
     },
     "command": set(),
     "exec": set(),
+    "eval": set(),
     "nohup": set(),
     "if": set(),
     "then": set(),
@@ -188,8 +189,46 @@ def _shell_text(
     pending = [text]
     invocations = []
     while pending:
+        source = pending.pop().replace("\\\n", "")
+        # Strip real shell comments before newlines become command separators.
+        cleaned = []
+        quote = None
+        word_start = True
+        index = 0
+        while index < len(source):
+            char = source[index]
+            if quote:
+                cleaned.append(char)
+                if char == quote:
+                    quote = None
+                elif char == "\\" and quote == '"' and index + 1 < len(source):
+                    index += 1
+                    cleaned.append(source[index])
+                index += 1
+                continue
+            if char in "'\"":
+                quote = char
+                word_start = False
+            elif char == "\\" and index + 1 < len(source):
+                cleaned.extend(source[index : index + 2])
+                word_start = False
+                index += 2
+                continue
+            elif char == "#" and word_start:
+                newline = source.find("\n", index)
+                if newline < 0:
+                    break
+                cleaned.append("\n")
+                index = newline + 1
+                word_start = True
+                continue
+            else:
+                word_start = char.isspace() or char in "{};&|()<>"
+            cleaned.append(char)
+            index += 1
+
         lexer = shlex.shlex(
-            pending.pop().replace("\\\n", "").replace("\n", ";"),
+            "".join(cleaned).replace("\n", ";"),
             posix=True,
             punctuation_chars="{};&|()<>",
         )
@@ -256,6 +295,11 @@ def _shell_text(
                             and not separator
                             else 1
                         )
+                    break
+
+                if name == "eval":
+                    if index < len(segment):
+                        pending.append(" ".join(segment[index:]))
                     break
 
                 if name not in _SHELL_WRAPPER_OPTIONS:
