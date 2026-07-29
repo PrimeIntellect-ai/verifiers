@@ -400,7 +400,7 @@ def parse_verifier_extras(
         if effective_artifact_service(entry) != MAIN_SERVICE_NAME:
             raise ValueError(
                 f"{task_dir.name}: artifact {entry.source!r} targets service "
-                f"{entry.service!r}; sidecars need a compose-capable runtime"
+                f"{entry.service!r}; only the main task service is supported"
             )
         # `destination` positions a file in Harbor's host trial directory. Verifiers has
         # no such directory (the trace is the record) and Harbor never lets destination
@@ -414,7 +414,7 @@ def parse_verifier_extras(
         if hook.service != MAIN_SERVICE_NAME:
             raise ValueError(
                 f"{task_dir.name}: collect hook targets service {hook.service!r}; "
-                "sidecars need a compose-capable runtime"
+                "only the main task service is supported"
             )
         if hook.user is not None:
             raise ValueError(
