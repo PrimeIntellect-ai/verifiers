@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 _TOOL_GROUPS = {
-    "bash": "bash shell local_shell shell_command run_command terminal exec exec_command code_interpreter".split(),  # noqa: SIM905
+    "bash": "bash shell local_shell shell_command run_command terminal exec exec_command code_interpreter code_execution".split(),  # noqa: SIM905
     "web_search": "search web_search search_web web_search_preview google_search bing_search brave_search tavily_search".split(),  # noqa: SIM905
     "code_search": "rg grep find fd glob code_search search_code file_search".split(),  # noqa: SIM905
 }

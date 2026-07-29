@@ -196,10 +196,13 @@ class Dialect(ABC, Generic[ReqT, RespT]):
 
         def is_client(tool: dict) -> bool:
             environment = tool.get("environment")
+            kind = tool.get("type")
             return bool(
                 {"function", "custom", "input_schema"} & tool.keys()
-                or tool.get("type") in ("function", "custom", "local_shell")
-                or tool.get("type") == "shell"
+                or kind in ("function", "custom", "local_shell")
+                or isinstance(kind, str)
+                and kind.startswith(("bash_", "computer_", "text_editor_"))
+                or kind == "shell"
                 and isinstance(environment, dict)
                 and environment.get("type") == "local"
             )
