@@ -71,7 +71,9 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
-_REPLAY_CACHE_MAXSIZE = 16
+# Built-in harnesses use the OpenAI SDK's short default retry backoff. Keep a generous window
+# for transport-failure detection without retaining every completed turn for the whole rollout.
+_REPLAY_TTL_SECONDS = 30
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -105,6 +107,24 @@ def _completion_response(completion: ReplayResponse) -> web.Response:
     except PydanticSerializationError:
         return web.json_response(completion)
     return web.Response(body=body, content_type="application/json", charset="utf-8")
+
+
+def _expire_replay(session: RolloutSession, request_key: RequestKey) -> None:
+    session.replay_expirations.pop(request_key, None)
+    completion = session.replays.pop(request_key, None)
+    if isinstance(completion, StreamReplay):
+        completion.path.unlink(missing_ok=True)
+
+
+def _retain_replay(
+    session: RolloutSession, request_key: RequestKey, completion: ReplayResponse
+) -> None:
+    if expiration := session.replay_expirations.pop(request_key, None):
+        expiration.cancel()
+    session.replays[request_key] = completion
+    session.replay_expirations[request_key] = asyncio.get_running_loop().call_later(
+        _REPLAY_TTL_SECONDS, _expire_replay, session, request_key
+    )
 
 
 async def _queue_chunks(
@@ -344,7 +364,7 @@ class InterceptionServer(Interception):
             request_key is not None
             and (completion := session.replays.get(request_key)) is not None
         ):
-            session.replays.move_to_end(request_key)
+            _retain_replay(session, request_key, completion)
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(completion)
 
@@ -380,11 +400,7 @@ class InterceptionServer(Interception):
             # completion) that the server serializes back to the program.
             if replay is not None:
                 request_key, fut = replay
-                session.replays[request_key] = response.raw
-                if len(session.replays) > _REPLAY_CACHE_MAXSIZE:
-                    _, evicted = session.replays.popitem(last=False)
-                    if isinstance(evicted, StreamReplay):
-                        evicted.path.unlink(missing_ok=True)
+                _retain_replay(session, request_key, response.raw)
                 if not fut.done():
                     fut.set_result(response.raw)
             return _completion_response(response.raw)
@@ -716,11 +732,7 @@ class InterceptionServer(Interception):
                 if replay is not None:
                     request_key, fut = replay
                     assert stream_replay is not None
-                    session.replays[request_key] = stream_replay
-                    if len(session.replays) > _REPLAY_CACHE_MAXSIZE:
-                        _, evicted = session.replays.popitem(last=False)
-                        if isinstance(evicted, StreamReplay):
-                            evicted.path.unlink(missing_ok=True)
+                    _retain_replay(session, request_key, stream_replay)
                     published = True
                     if not fut.done():
                         fut.set_result(stream_replay)

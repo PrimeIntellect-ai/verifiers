@@ -9,7 +9,6 @@ budget (turns / tokens), checked between turns.
 
 import asyncio
 import logging
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,11 +81,13 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
-    replays: OrderedDict[RequestKey, ReplayResponse] = field(
-        default_factory=OrderedDict
-    )
+    replays: dict[RequestKey, ReplayResponse] = field(default_factory=dict)
     """Completed responses keyed by route, body digest, and Idempotency-Key. Explicitly keyed
-    retries replay the matching response; unkeyed requests never enter this bounded LRU cache."""
+    retries replay the matching response; unkeyed requests never enter this time-bounded cache."""
+    replay_expirations: dict[RequestKey, asyncio.TimerHandle] = field(
+        default_factory=dict
+    )
+    """Expiry timers for completed replay responses."""
     inflight: dict[RequestKey, "asyncio.Future[ReplayResponse | None]"] = field(
         default_factory=dict
     )
@@ -121,6 +122,9 @@ class RolloutSession:
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""
         self.released = True
+        for expiration in self.replay_expirations.values():
+            expiration.cancel()
+        self.replay_expirations.clear()
         for response in self.replays.values():
             if isinstance(response, StreamReplay):
                 response.path.unlink(missing_ok=True)
