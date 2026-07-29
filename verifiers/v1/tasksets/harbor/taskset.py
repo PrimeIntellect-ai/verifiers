@@ -83,7 +83,7 @@ class CollectHook(StrictBaseModel):
     """One `[[verifier.collect]]` command, run in the agent's box by `finalize`."""
 
     command: str
-    timeout_sec: float = 60.0
+    timeout_sec: float = 600.0
 
 
 class HarborData(TaskData):
