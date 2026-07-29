@@ -533,7 +533,7 @@ async def run_legacy_eval(config) -> list[Episode]:
         len(idxs),
         config.num_rollouts,
         config.model,
-        config.id,
+        config.legacy.id,
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None

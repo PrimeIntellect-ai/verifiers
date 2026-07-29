@@ -36,12 +36,20 @@ def run_env_id(env: EnvConfig, legacy: LegacyEnvConfig) -> str:
 
 
 def refuse_mixed_run(env: EnvConfig, legacy: LegacyEnvConfig) -> None:
-    """Refuse a v0 id next to a v1 taskset: `is_legacy` would be False and the v0 env
-    would never load, so the id would sit there silently inert."""
-    if legacy.id is not None and env.taskset.id:
+    """Refuse a v0 id next to any v1 env identity — one of the two would go nowhere,
+    and which one depends on `is_legacy`: a taskset makes it False, so the v0 env never
+    loads; a bare `--env.id` leaves it True, so the v0 env runs under the v1 env's name."""
+    if legacy.id is None or not env.env_id:
+        return
+    if env.taskset.id:
         raise ValueError(
             f"--legacy.id {legacy.id!r} is a classic (v0) env and can't combine with "
             f"the v1 taskset {env.taskset.id!r}. Pairing a reusable env with a taskset "
             f"is --env.id {legacy.id!r} (TOML: id under [env]); to run the v0 env "
             "instead, drop the taskset."
         )
+    raise ValueError(
+        f"--legacy.id {legacy.id!r} is a classic (v0) env and can't combine with the "
+        f"v1 env --env.id {env.id!r}: the v0 env is what would run, stamped with the "
+        "v1 env's name. Keep whichever one you meant to run."
+    )
