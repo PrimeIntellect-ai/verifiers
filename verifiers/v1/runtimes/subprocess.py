@@ -103,7 +103,6 @@ class SubprocessRuntime(Runtime):
         target = self.workdir / path
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_bytes, data)
-        self._workdir_written(path)
 
     @staticmethod
     def _signal(proc: asyncio.subprocess.Process, sig: signal.Signals) -> None:
