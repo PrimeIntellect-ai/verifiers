@@ -57,6 +57,7 @@ ACP_RESUME_PLACEMENTS = [
     _pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
     _pair("pi", "docker", "pi-acp-in-docker"),
     _pair("pool", "docker", "pool-acp-in-docker"),
+    _pair("openclaw", "docker", "openclaw-acp-in-docker"),
     _pair("pool", "prime", "pool-acp-in-prime"),
 ]
 
