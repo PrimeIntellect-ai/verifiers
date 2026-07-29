@@ -231,20 +231,6 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
 
 To override the judge model, set `env.taskset.task.judge.model` in your config (it is a string).
 
-## Grading artifacts
-
-Use artifacts to carry files between runtimes. Files written to
-`/logs/artifacts/` are collected implicitly; declare other paths on the task data:
-
-```python
-class MyData(vf.TaskData):
-    artifacts: list[vf.Artifact] = [
-        vf.Artifact(source="/work/report", exclude=[".git"])
-    ]
-```
-
-Declared paths must exist when collected. The implicit directory is optional.
-
 ## Beyond one agent
 
 One episode doesn't have to be one agent run: agents, the control flow between agents, and cross-agent rewards are the environment's job — see [The Env](env.md).
