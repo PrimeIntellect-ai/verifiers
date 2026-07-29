@@ -313,6 +313,12 @@ def _shell_text(
                         pending.append(" ".join(segment[index:]))
                     break
 
+                if name == "find":
+                    for position in range(index, len(segment)):
+                        if segment[position] in ("-exec", "-execdir", "-ok", "-okdir"):
+                            pending.append(shlex.join(segment[position + 1 :]))
+                    break
+
                 if name not in _SHELL_WRAPPER_OPTIONS:
                     break
                 option_arguments = _SHELL_WRAPPER_OPTIONS[name]
