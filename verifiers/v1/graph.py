@@ -71,10 +71,12 @@ class MessageNode(StrictBaseModel):
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
+    rewritten: bool = False
+    """Whether interception replaced the provider's assistant message before commit.
+    Rewritten nodes are canonical for consumers and carry no sampled token attribution."""
     sampled: bool = False
-    """True iff a model call produced this message (the response passed to `commit`); False for
-    every prompt-supplied message — including assistant/tool messages fabricated as context
-    the model never generated, which role alone can't tell apart from real turns."""
+    """True iff this node closes a successful model call; False for every prompt-supplied
+    message. A rewritten node carries the canonical replacement rather than sampled content."""
     timestamp: float = Field(default_factory=time.time)
     """Wall-clock epoch seconds when this node was created. Nodes materialize at turn commit,
     so a turn's new input nodes and its assistant node carry (near-)identical stamps and the
@@ -364,9 +366,15 @@ class PendingTurn:
             for span in tail_spans
         ]
 
-    def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
+    def commit(
+        self,
+        response: Response,
+        tools: list[Tool] | None = None,
+        rewritten: bool = False,
+    ) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
+        self.trace.nodes[assistant_id].rewritten = rewritten
         if tools:
             self.trace.tools = tools
         return assistant_id

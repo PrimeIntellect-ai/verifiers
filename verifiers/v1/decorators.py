@@ -5,6 +5,8 @@ import inspect
 from collections.abc import Callable
 from typing import Any, TypeVar, overload
 
+from verifiers.v1.intercepts.core import Direction
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -66,6 +68,44 @@ def stop(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """Mark a stop condition `(self, trace) -> bool`."""
     decorator = mark("stop", stop_priority=priority)
+    return decorator if func is None else decorator(func)
+
+
+@overload
+def intercept(
+    func: F,
+    *,
+    priority: int = 0,
+    direction: Direction | None = None,
+    raw: bool = False,
+) -> F: ...
+@overload
+def intercept(
+    func: None = None,
+    *,
+    priority: int = 0,
+    direction: Direction | None = None,
+    raw: bool = False,
+) -> Callable[[F], F]: ...
+def intercept(
+    func: F | None = None,
+    *,
+    priority: int = 0,
+    direction: Direction | None = None,
+    raw: bool = False,
+) -> F | Callable[[F], F]:
+    """Mark an interceptor returning replacement text or `None`.
+
+    Annotate `message` as `ToolMessage` or `AssistantMessage` for typed request or
+    response interception. Set `raw=True` to mutate the provider-native dictionary at
+    either boundary, selecting one explicitly with `direction`."""
+    extra: dict[str, Any] = {
+        "intercept_priority": priority,
+        "intercept_raw": raw,
+    }
+    if direction is not None:
+        extra["intercept_directions"] = (direction,)
+    decorator = mark("intercept", **extra)
     return decorator if func is None else decorator(func)
 
 

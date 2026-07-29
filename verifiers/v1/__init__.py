@@ -26,7 +26,7 @@ from verifiers.v1.configs.judge import JudgeConfig, Judges
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.decorators import metric, reward, stop, tool
+from verifiers.v1.decorators import intercept, metric, reward, stop, tool
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import Episode, WireEpisode
@@ -43,6 +43,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness
+from verifiers.v1.intercepts import InterceptResult
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     Criterion,
@@ -212,6 +213,9 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "tool",
     "metric",
     "reward",
+    "intercept",
+    # interception
+    "InterceptResult",
     # errors
     "RolloutError",
     "EnvError",

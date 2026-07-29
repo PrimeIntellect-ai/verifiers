@@ -154,7 +154,11 @@ class RolloutRun:
         if on_trace is not None:
             on_trace(self.trace)
         self._session = RolloutSession(
-            ctx, self.trace, discover_decorated(task, "stop"), limits or RolloutLimits()
+            ctx=ctx,
+            trace=self.trace,
+            stops=discover_decorated(task, "stop"),
+            limits=limits or RolloutLimits(),
+            intercepts=discover_decorated(task, "intercept"),
         )
         self._stack = AsyncExitStack()
         self._failed = False

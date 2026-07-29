@@ -1,27 +1,43 @@
 """The per-rollout unit the interception layer serves.
 
 One `RolloutSession` per rollout, registered on an interception server under the rollout's
-secret. The rollout constructs it (model ctx, trace, task `@stop`s, limits) and the server
-drives it: routes each intercepted model call to it, runs `refused()` before each turn,
-and stashes the real failure on `error`. `RolloutLimits` is the framework's per-rollout
-budget (turns / tokens), checked between turns.
+secret. The rollout constructs it (model ctx, trace, task `@stop`s and `@intercept`s,
+limits) and the server drives it: routes each intercepted model call to it, runs
+`refused()` before each turn, and stashes the real failure on `error`. `RolloutLimits`
+is the framework's per-rollout budget (turns / tokens), checked between turns.
 """
 
 import asyncio
+import copy
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, get_args, get_type_hints
 
+from verifiers.v1 import graph
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.decorators import invoke
+from verifiers.v1.errors import RolloutError, TaskError
+from verifiers.v1.intercepts.core import (
+    Direction,
+    Interceptor,
+    InterceptRecord,
+)
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import (
+    AssistantMessage,
+    Messages,
+    ToolMessage,
+)
 
 if TYPE_CHECKING:
-    from verifiers.v1.errors import RolloutError
+    from verifiers.v1.dialects import Dialect
 
 logger = logging.getLogger(__name__)
 
+MESSAGE_TYPES = (AssistantMessage, ToolMessage)
 RequestKey = tuple[str, bytes, str]
 
 
@@ -32,6 +48,30 @@ class StreamReplay:
 
 
 ReplayResponse = dict | StreamReplay
+
+
+def _message_types(handler: Callable[..., Any]) -> tuple[type, ...]:
+    """Concrete message classes accepted by a handler's optional annotation."""
+    hint = get_type_hints(handler, localns={"Trace": Trace}).get("message")
+    accepted = tuple(
+        kind for kind in (get_args(hint) or (hint,)) if kind in MESSAGE_TYPES
+    )
+    return accepted or MESSAGE_TYPES
+
+
+def _directions(handler: Callable[..., Any]) -> tuple[Direction, ...]:
+    if marked := getattr(handler, "intercept_directions", None):
+        return marked
+    accepted = _message_types(handler)
+    if accepted == (AssistantMessage,):
+        return ("response",)
+    if accepted == (ToolMessage,):
+        return ("request",)
+    return ("request", "response")
+
+
+def _handler_name(handler: Callable[..., Any]) -> str:
+    return getattr(handler, "__name__", type(handler).__name__)
 
 
 @dataclass(frozen=True)
@@ -76,6 +116,8 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    intercepts: list[Interceptor] = field(default_factory=list)
+    rewritten_response_ids: set[str] = field(default_factory=set)
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
@@ -132,6 +174,11 @@ class RolloutSession:
         for task in list(self.tasks):
             task.cancel()
 
+    @property
+    def has_response_intercepts(self) -> bool:
+        """Whether a complete provider response must be classified before delivery."""
+        return any("response" in _directions(handler) for handler in self.intercepts)
+
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
@@ -144,7 +191,101 @@ class RolloutSession:
             return limit
         for stop in self.stops:
             if await stop(self.trace):
-                self.trace.stop(stop.__name__)
-                logger.debug("stop %r fired: id=%s", stop.__name__, self.trace.id)
-                return stop.__name__
+                name = _handler_name(stop)
+                self.trace.stop(name)
+                logger.debug("stop %r fired: id=%s", name, self.trace.id)
+                return name
         return None
+
+    async def run_intercepts(
+        self,
+        direction: Direction,
+        raw: dict,
+        dialect: "Dialect",
+        prompt: Messages | None = None,
+    ) -> bool:
+        """Run matching handlers in priority order against the native wire object."""
+        rewritten = False
+        try:
+            for handler in self.intercepts:
+                if direction not in _directions(handler):
+                    continue
+                name = _handler_name(handler)
+                raw_handler = getattr(handler, "intercept_raw", False)
+                messages = prompt or []
+                if raw_handler:
+                    candidates = [None]
+                elif direction == "request":
+                    messages = dialect.parse_request(raw)[0]
+                    tool_names = {
+                        call.id: call.name
+                        for item in [*self.trace.assistant_messages, *messages]
+                        if isinstance(item, AssistantMessage)
+                        for call in item.tool_calls or []
+                    }
+                    candidates = [
+                        item.model_copy(
+                            update={"name": tool_names.get(item.tool_call_id)}
+                        )
+                        if item.name is None and item.tool_call_id in tool_names
+                        else item
+                        for item in graph.prepare_turn(self.trace, messages).tail
+                        if isinstance(item, ToolMessage)
+                    ]
+                else:
+                    candidates = [
+                        dialect.parse_response(dialect.validate_response(raw)).message
+                    ]
+
+                for message in candidates:
+                    if message is not None and not isinstance(
+                        message, _message_types(handler)
+                    ):
+                        continue
+                    before = copy.deepcopy(raw) if raw_handler else None
+                    action = invoke(
+                        handler,
+                        {
+                            "task": self.trace.task.data,
+                            "trace": self.trace,
+                            "raw": raw,
+                            "dialect": dialect,
+                            "message": message.model_copy(deep=True)
+                            if message is not None
+                            else None,
+                            "prompt": messages,
+                        },
+                    )
+                    if inspect.isawaitable(action):
+                        action = await action
+                    if action is not None and not isinstance(action, str):
+                        raise TypeError(type(action).__name__)
+                    if raw_handler and raw != before:
+                        self.trace.interceptions.append(
+                            InterceptRecord(
+                                direction=direction, handler=name, action="rewrite"
+                            )
+                        )
+                        rewritten = True
+                    if isinstance(action, str):
+                        if message is None:
+                            raise TypeError(
+                                "a string result requires a message parameter"
+                            )
+                        if isinstance(message, AssistantMessage):
+                            dialect.rewrite_response(raw, action)
+                        else:
+                            dialect.rewrite_tool_result(
+                                raw, message.tool_call_id, action
+                            )
+                        self.trace.interceptions.append(
+                            InterceptRecord(
+                                direction=direction, handler=name, action="rewrite"
+                            )
+                        )
+                        rewritten = True
+        except RolloutError:
+            raise
+        except Exception as e:
+            raise TaskError(f"@intercept failed: {type(e).__name__}: {e}") from e
+        return rewritten

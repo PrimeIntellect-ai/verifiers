@@ -19,6 +19,7 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.intercepts.core import InterceptRecord
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -105,8 +106,9 @@ class ModelCall(StrictBaseModel):
     """The provider endpoint path the request went to (e.g. `/chat/completions`) — says
     which wire dialect the exchange spoke."""
     finish_reason: FinishReason = None
-    """Why the model stopped, normalized (`stop` / `length` / `tool_calls`); None for a
-    failed call or an unrecognized provider reason."""
+    """Why the effective response ended, normalized (`stop` / `length` / `tool_calls`).
+    Response interception replaces this together with the canonical message; None means the
+    call failed or its terminal reason was unrecognized."""
     usage: Usage | None = None
     """Provider-reported token usage for this exchange, cache reads included; None for
     a failed call."""
@@ -382,6 +384,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every provider exchange behind the sampled turns, in order: raw wire request/response
     plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
+    interceptions: list[InterceptRecord] = Field(default_factory=list)
+    """Every rewrite produced by a task's `@intercept` handlers."""
 
     rewards: dict[str, Reward] = Field(default_factory=dict)
     """Named rewards from tasks, judges, and the env's `score()` — each keeps its
@@ -499,7 +503,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def is_truncated(self) -> bool:
-        """True for framework limits or a length-finished final response."""
+        """True for framework limits or a length-finished effective response."""
         if self.stop_condition in (
             "max_turns",
             "max_input_tokens",

@@ -22,7 +22,7 @@ from pydantic_core import from_json
 
 from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
-ReqT = TypeVar("ReqT")
+ReqT = TypeVar("ReqT", bound=dict)
 RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
@@ -166,6 +166,18 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def validate_response(self, raw: dict) -> RespT:
         """Validate a native response, normalizing provider-compatible extensions if needed."""
         return self.response_type.model_validate(raw)
+
+    @abstractmethod
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        """Replace a native assistant response with inert text."""
+
+    @abstractmethod
+    def rewrite_tool_result(self, body: ReqT, tool_call_id: str, text: str) -> None:
+        """Replace one native tool result in a request."""
+
+    @abstractmethod
+    def stream_events(self, raw: dict) -> list[bytes]:
+        """Serialize a complete native response as a valid SSE stream."""
 
     @abstractmethod
     def stream_parser(self) -> StreamParser:
