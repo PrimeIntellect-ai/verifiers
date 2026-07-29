@@ -84,28 +84,63 @@ class Error(StrictBaseModel):
     traceback: str | None = None
 
 
-class EvalRunInfo(StrictBaseModel):
-    """An eval run, stamped by the consumer (the eval CLI / a trainer's inline eval)."""
+class VersionInfo(StrictBaseModel):
+    version: str
+    commit: str | None = None
 
+
+def _current_build() -> VersionInfo:
+    # Lazy: `verifiers/__init__` (and its v0 surface) must not load with this module.
+    from verifiers import __version__
+    from verifiers.v1.utils.version import verifiers_commit
+
+    return VersionInfo(version=__version__, commit=verifiers_commit())
+
+
+AgentConfigT = TypeVar("AgentConfigT", bound=AgentConfig, default=AgentConfig)
+
+
+class AgentInfo(StrictBaseModel, Generic[AgentConfigT]):
+    config: AgentConfigT
+    """The resolved config that rebuilds the agent (`Agent(trace.agent.config)`)."""
+    runtime: RuntimeInfo | None = None
+    """The box the rollout ran in; None until provisioning."""
+    name: str = "agent"
+    """The env agent that produced this trace (the config field name, e.g. `solver`)."""
+    trainable: bool = True
+    """Whether this trace's tokens train the run's policy."""
+
+
+class TraceTask(StrictBaseModel, Generic[DataT]):
+    """The task as recorded on the trace, self-describing without the run's config."""
+
+    type: str
+    """The Task class name (`type(task).__name__`)."""
+    data: DataT
+    """The (immutable) row being solved."""
+
+
+class Reward(StrictBaseModel):
+    score: float
+    weight: float = 1.0
+
+    @property
+    def value(self) -> float:
+        return self.score * self.weight
+
+
+class EvalRunInfo(StrictBaseModel):
     type: Literal["eval"] = "eval"
 
-    id: str | None = None
-    """The producing run: the eval CLI stamps its run uuid (a resumed eval counts as
-    a new run; kept traces keep their original id), trainers stamp their own."""
+    id: str
     step: int | None = None
-    """The training step an inline eval was triggered at, stamped by the trainer;
-    None for a standalone eval (the eval CLI doesn't set it)."""
 
 
 class TrainRunInfo(StrictBaseModel):
-    """A training run, stamped by the trainer."""
-
     type: Literal["train"] = "train"
 
-    id: str | None = None
-    """The trainer's run identifier."""
+    id: str
     step: int | None = None
-    """The training step this rollout belongs to."""
 
 
 RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
@@ -212,10 +247,8 @@ class Branch(StrictBaseModel):
 
     @property
     def kept_tokens(self) -> KeptTokens | None:
-        """The branch's kept-set sampling masks: `counts` is int32 aligned 1:1 with
-        `token_ids` (0 = no mask, safe under partial coverage — unlike `routed_experts`
-        this is not all-or-nothing), `ids` the flat int32 concatenation of the kept
-        sets in position order. None when no node carries kept-set data."""
+        """int32 kept-set `counts` aligned 1:1 with `token_ids` plus flat `ids` in
+        position order; partial data scatters as 0 counts, no data returns None."""
         if all(n.kept_tokens is None for n in self.nodes):
             return None
         # `_attribute_kept_tokens` validates counts/ids against the node's sampled
@@ -242,94 +275,23 @@ class Branch(StrictBaseModel):
 
     @property
     def last_usage(self) -> Usage | None:
-        """Provider usage from the final model call on this branch — the full context it saw."""
         return next(
             (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
 
     @property
     def num_total_tokens(self) -> int:
-        """Final sequence length: the last call's prompt + completion. Earlier turns' context
-        is already contained in that prompt, so re-sent tokens are counted once rather than
-        summed per turn."""
         last = self.last_usage
         return last.total_tokens if last is not None else 0
 
     @property
     def num_output_tokens(self) -> int:
-        """Every model-generated token across all turns (completions, reasoning included)."""
         usage = self.usage
         return usage.completion_tokens if usage is not None else 0
 
     @property
     def num_input_tokens(self) -> int:
-        """Tokens fed to the model, counted once: the final sequence minus everything the model
-        generated (i.e. system + user + tool inputs). Not the last prompt — re-sent context is
-        not double-counted."""
         return self.num_total_tokens - self.num_output_tokens
-
-
-class VersionInfo(StrictBaseModel):
-    """The verifiers build that produced this trace."""
-
-    version: str
-    """The installed verifiers package version."""
-    commit: str | None = None
-    """The verifiers git commit, when resolvable (a git-pinned install or a source
-    checkout); None otherwise (e.g. a PyPI wheel)."""
-
-
-def _current_build() -> VersionInfo:
-    # Lazy: `verifiers/__init__` (and its v0 surface) must not load with this module.
-    from verifiers import __version__
-    from verifiers.v1.utils.version import verifiers_commit
-
-    return VersionInfo(version=__version__, commit=verifiers_commit())
-
-
-AgentConfigT = TypeVar("AgentConfigT", bound=AgentConfig, default=AgentConfig)
-"""`default=AgentConfig`: an unparameterized record is the strict, fully-typed
-read (the config is exactly `AgentConfig` at write time, so nothing is lost);
-`WireTrace` parameterizes with `WireAgentConfig` for the plugin-free read."""
-
-
-class AgentInfo(StrictBaseModel, Generic[AgentConfigT]):
-    config: AgentConfigT
-    """The agent's resolved config — the exact value that rebuilds it
-    (`Agent(trace.agent.config)`). Validating a record narrows the harness by
-    its id (the plugin must be importable); consumers without the packages
-    (e.g. a trainer) read through `WireTrace`, which keeps it loose."""
-    runtime: RuntimeInfo | None = None
-    """The box the rollout ran in — the agent's runtime policy resolved for the
-    task, plus the provisioned resource ID; None until provisioning."""
-    name: str = "agent"
-    """The env agent that produced this trace — the config field name (`solver`,
-    `judge`); the default outside an env and for `SingleAgentEnv`'s sole agent.
-    First-class so training can filter and baseline per agent."""
-    trainable: bool = True
-    """Whether this trace's tokens are training data for the run's policy. An env's
-    `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
-
-
-class TraceTask(StrictBaseModel, Generic[DataT]):
-    """The task as recorded on the trace: the row (`data`, fully typed, flows into
-    scoring) plus the Task class name that produced the rollout (`type`) — so a bare
-    trace is self-describing without the run's config. Only data and a name ride
-    the wire; behavior re-attaches by construction."""
-
-    type: str
-    """The Task class name (`type(task).__name__`)."""
-    data: DataT
-    """The (immutable) row being solved."""
-
-
-class Reward(StrictBaseModel):
-    score: float
-    weight: float = 1.0
-
-    @property
-    def value(self) -> float:
-        return self.score * self.weight
 
 
 class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
