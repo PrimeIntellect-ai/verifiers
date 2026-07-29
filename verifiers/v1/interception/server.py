@@ -272,7 +272,7 @@ class InterceptionServer(Interception):
         )
         return web.json_response(
             dialect.error_body(str(error)),
-            status=getattr(error, "status_code", 502),
+            status=getattr(error, "status_code", 400),
         )
 
     def record_call(
@@ -422,6 +422,8 @@ class InterceptionServer(Interception):
                 return web.json_response(
                     dialect.error_body("rollout concluded"), status=409
                 )
+            if isinstance(session.error, TaskError):
+                return self._fail(session, dialect, session.error)
             try:
                 refused = await session.refused()
             except RolloutError as e:
@@ -586,7 +588,7 @@ class InterceptionServer(Interception):
                     )
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
-                    # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
+                    # Provider errors carry their status; deterministic task errors are 400s.
                     error = e
                     session.error = e
                     logger.warning(
@@ -597,7 +599,7 @@ class InterceptionServer(Interception):
                     )
                     return web.json_response(
                         dialect.error_body(str(e)),
-                        status=getattr(e, "status_code", 502),
+                        status=getattr(e, "status_code", 400),
                     )
                 except Exception as e:  # noqa: BLE001 - API boundary
                     error = e
