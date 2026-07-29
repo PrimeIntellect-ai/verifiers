@@ -180,7 +180,7 @@ def _eval_config(
         },
         rich=False,
         output_dir=output_dir,
-        **({"pool": pool} if pool else {}),
+        **({"serve": {"pool": pool}} if pool else {}),
         **({"model": model} if model else {}),
     )
 
@@ -237,7 +237,7 @@ async def live_ctx():
 
 @pytest.fixture
 def run_v0():
-    """Run a legacy v0 env through the v1 bridge (the eval CLI's `--id` path)."""
+    """Run a legacy v0 env through the v1 bridge (the eval CLI's `--legacy.id` path)."""
     from verifiers.v1.legacy import run_legacy_eval
 
     async def _run(
@@ -249,8 +249,7 @@ def run_v0():
         args: dict | None = None,
     ) -> list[Trace]:
         config = EvalConfig(
-            id=env_id,
-            args=args or {},
+            legacy={"id": env_id, "args": args or {}},
             num_tasks=1,
             num_rollouts=n,
             sampling={"max_tokens": max_tokens, "temperature": 0},
