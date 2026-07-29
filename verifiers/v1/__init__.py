@@ -5,7 +5,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACP
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
 from verifiers.v1.artifacts import (
-    CONVENTION_DIR,
+    ARTIFACTS_DIR,
     Artifact,
     collect,
     restore,
@@ -305,7 +305,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "resolve_head",
     "snapshot_untracked",
     # grading artifacts
-    "CONVENTION_DIR",
+    "ARTIFACTS_DIR",
     "Artifact",
     "collect",
     "restore",

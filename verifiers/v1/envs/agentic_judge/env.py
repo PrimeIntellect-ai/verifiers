@@ -296,7 +296,7 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     `isolated` boots a second box from the same image, carries the task's declared
     artifacts across, and grades there, so nothing the agent did to its environment can
     reach the grader. Opt in per taskset, and only once that taskset puts its evidence
-    somewhere that travels: an artifact under `vf.CONVENTION_DIR` (see
+    somewhere that travels: an artifact under `vf.ARTIFACTS_DIR` (see
     `capture_patch(write_path=...)`), a declared `TaskData.artifacts` path, or the trace
     record itself. A task whose judge hint says to run `git diff` in the box will find
     a pristine checkout here and grade every attempt as untouched."""

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CONVENTION_DIR = "/logs/artifacts"
+ARTIFACTS_DIR = "/logs/artifacts"
 """Harbor's in-sandbox publish directory, swept implicitly so a task that writes here
 needs no declaration."""
 
@@ -62,21 +62,21 @@ async def collect(
         a.model_copy(update={"source": str(workdir / a.source)})
         for a in artifacts or []
     ]
-    convention = PurePosixPath(CONVENTION_DIR)
+    convention = PurePosixPath(ARTIFACTS_DIR)
     sweep = not any(
         (p := PurePosixPath(a.source)) == convention
         or p.is_relative_to(convention)
         or convention.is_relative_to(p)
         for a in declared
     )
-    entries = ([Artifact(source=CONVENTION_DIR)] if sweep else []) + declared
+    entries = ([Artifact(source=ARTIFACTS_DIR)] if sweep else []) + declared
 
     collected: dict[str, bytes] = {}
     budget = MAX_ARTIFACT_BYTES
     for artifact in entries:
         source = artifact.source
         if (await runtime.run(["test", "-e", source], {})).exit_code != 0:
-            if sweep and source == CONVENTION_DIR:
+            if sweep and source == ARTIFACTS_DIR:
                 continue
             raise ArtifactError(
                 f"declared artifact {source!r} does not exist in the box; the task must "
