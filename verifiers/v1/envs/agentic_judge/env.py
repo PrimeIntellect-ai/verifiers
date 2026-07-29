@@ -31,6 +31,7 @@ from verifiers.v1.types import StrictBaseModel
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
+SandboxMode = Literal["shared", "isolated"]
 
 GRADE_PROMPT = """\
 You are grading another agent's attempt at a task. Verify the work EMPIRICALLY:
@@ -157,11 +158,11 @@ class JudgeTask(vf.Task):
         cls,
         solution: vf.Trace,
         config: "JudgeTaskConfig",
-        topology: str = "shared",
+        sandbox_mode: SandboxMode = "shared",
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace.
 
-        `topology` selects the workspace note. It has to match how the judge is
+        `sandbox_mode` selects the workspace note. It has to match how the judge is
         actually placed: the note is the judge's only account of what its box
         contains, and a judge told it is standing in the agent's workspace when it
         is standing in a fresh one will read an unmodified tree as a failed attempt.
@@ -173,7 +174,9 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
-        note = SHARED_SANDBOX_NOTE if topology == "shared" else ISOLATED_SANDBOX_NOTE
+        note = (
+            SHARED_SANDBOX_NOTE if sandbox_mode == "shared" else ISOLATED_SANDBOX_NOTE
+        )
         sections = [body, _verdict_section(config.criteria()), note]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
