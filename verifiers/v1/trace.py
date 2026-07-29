@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import time
 import traceback
 import uuid
@@ -34,8 +33,6 @@ from verifiers.v1.types import (
     Usage,
     content_text,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class TimeSpan(StrictBaseModel):
@@ -558,46 +555,35 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         return [m for m in messages if isinstance(m, ToolMessage)]
 
     def record_metric(self, name: str, value: float) -> None:
-        if name in self.metrics:
-            logger.warning(
-                "metric %r overridden: %s -> %s", name, self.metrics[name], value
-            )
         self.metrics[name] = float(value)
 
     def record_metrics(self, values: Mapping[str, float]) -> None:
         for name, value in values.items():
             self.record_metric(name, value)
 
+    def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
+        reward = Reward(score=float(value), weight=float(weight))
+        self.rewards[name] = reward
+
     def record_judge(self, response: JudgeResponse) -> None:
         self.info.setdefault("judge", []).append(response.model_dump())
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
-    def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
-        reward = Reward(score=float(value), weight=float(weight))
-        if name in self.rewards:
-            logger.warning(
-                "reward %r overridden: %s -> %s", name, self.rewards[name], reward
-            )
-        self.rewards[name] = reward
-
-    def stamp(self, run: RunInfo | None = None, **info: Any) -> None:
-        """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the
-        trace; anything beyond `run` lands in `info`."""
+    def record_run(self, run: RunInfo | None = None, **info: Any) -> None:
+        """Record the run identity (eval / train), and optional extra info."""
         if run is not None:
             self.run = run
         self.info.update(info)
 
     def stop(self, condition: str = "done") -> None:
+        """Stop the trace, optionally with a stop condition."""
         self.is_completed = True
         if self.stop_condition is None:
             self.stop_condition = condition
 
     def split_generation(self) -> None:
-        """Stamp the closed generation span's model/harness split: model time is the
-        sum of the recorded calls' spans (clamped to the span), harness the complement.
-        Every path that closes the span calls this — a span without model calls (e.g.
-        a debug action) is all harness time."""
+        """Split the generation span into model and harness time."""
         gen = self.timing.generation
         if not gen.end:
             return
@@ -605,7 +591,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         gen.model.duration = min(model, gen.duration)
         gen.harness.duration = gen.duration - gen.model.duration
 
-    def capture_error(self, error: Exception) -> None:
+    def record_error(self, error: Exception) -> None:
+        """Record an error, and stop the trace as failed."""
         self.errors.append(
             Error(
                 type=type(error).__name__,

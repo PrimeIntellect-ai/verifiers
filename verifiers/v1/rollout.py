@@ -201,7 +201,7 @@ class RolloutRun:
             logger.exception("unexpected error in rollout %s", self.trace.id)
         self._failed = True
         self._failure = error
-        self.trace.capture_error(error)
+        self.trace.record_error(error)
 
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
