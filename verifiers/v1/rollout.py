@@ -24,7 +24,6 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 
-from verifiers import __version__
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -52,9 +51,8 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData
-from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
+from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages
-from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +145,6 @@ class RolloutRun:
                 data=task.data if wire_data is None else wire_data,
             ),
             state=state_cls(type(task))(),
-            verifiers=VersionInfo(version=__version__, commit=verifiers_commit()),
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),

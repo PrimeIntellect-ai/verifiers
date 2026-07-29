@@ -302,9 +302,7 @@ def Progress(
     # run, a modeled user) are `trainable=False` and carry no rewards, so counting
     # them dilutes every mean with structural zeros. An all-untrainable run (every
     # role frozen) falls back to all traces rather than showing nothing.
-    scored = [
-        t for t in done_traces if t.agent is None or t.agent.trainable
-    ] or done_traces
+    scored = [t for t in done_traces if t.agent.trainable] or done_traces
     total = len(slots)
     # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
     # the global avg (errored count as 0) in parens. `err` is the share of episodes that
@@ -369,13 +367,13 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     # show); usage/time below still cover errored rollouts (their resources were spent regardless).
     has_clean = any(not t.has_error for t in done)
     score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
-    by_agent: dict[str | None, list[Trace]] = {}
+    by_agent: dict[str, list[Trace]] = {}
     for trace in done:
-        by_agent.setdefault(trace.agent.name if trace.agent else None, []).append(trace)
+        by_agent.setdefault(trace.agent.name, []).append(trace)
     for label, source in score_rows:
         if len(by_agent) > 1:
             segments = [
-                f"[dim]{name or '—'}:[/dim] {means}"
+                f"[dim]{name}:[/dim] {means}"
                 for name, traces in by_agent.items()
                 if (means := _score_segments(traces, source)) is not None
             ]
@@ -566,7 +564,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
                 continue
             for t in slot.traces:
-                label = f"{base} agent={t.agent.name}" if t.agent else base
+                label = f"{base} agent={t.agent.name}"
                 if slot.done:  # fully scored — reward is final
                     state = "error" if t.has_error else "success"
                     # A trace that recorded nothing shows no reward: a judge or
@@ -594,7 +592,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                 # The trace's own stamp, not the run-level runtime: a role's harness
                 # may resolve elsewhere (the judge env's sandboxed judge on a
                 # subprocess run).
-                if t.agent is not None and t.agent.runtime is not None:
+                if t.agent.runtime is not None:
                     rt = t.agent.runtime
                     runtime = f"{rt.type}({rt.id})" if rt.id else rt.type
                 else:

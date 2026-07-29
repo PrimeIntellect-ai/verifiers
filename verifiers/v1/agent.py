@@ -419,7 +419,7 @@ class Agent:
             # close() never runs — free the run's servers and owned runtime first.
             await run.abort()
             raise
-        if trace.agent is not None and trace.agent.runtime is not None:
+        if trace.agent.runtime is not None:
             trace.agent.runtime.borrowed = runtime is not None
         return trace
 

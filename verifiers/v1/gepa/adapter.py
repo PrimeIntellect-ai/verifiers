@@ -104,8 +104,7 @@ class GEPAAdapter:
                     "completion": trace.last_reply,
                     "reward": trace.reward,
                 }
-                if trace.agent is not None:
-                    record["agent"] = trace.agent.name
+                record["agent"] = trace.agent.name
                 if trace.has_error:
                     record["error"] = str(trace.last_error)
                 if trace.stop_condition:

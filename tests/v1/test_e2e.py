@@ -229,7 +229,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     assert trace.reward == 1.0
     # The interception server captured the advertised tools onto the trace (for tool-use SFT):
     # the null harness offered the task's MCP tool as `echo_back`, schema included.
-    assert trace.tools is not None
+    assert trace.tools
     (echo_tool,) = [t for t in trace.tools if t.name == "echo_back"]
     assert "message" in echo_tool.parameters.get("properties", {})
 
@@ -495,7 +495,7 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
     assert user.num_turns >= 1  # the modeled user actually drove the exchange
     assert assistant.rewards["echoed"].score == 1.0  # the tool ran, mid-conversation
     # The tool was advertised to the masked chat exactly as to any run.
-    assert assistant.tools is not None
+    assert assistant.tools
     assert any(tool.name == "echo_back" for tool in assistant.tools)
 
 

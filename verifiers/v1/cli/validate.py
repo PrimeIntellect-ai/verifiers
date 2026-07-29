@@ -96,6 +96,12 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
         trace = Trace(
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
+            # No agent plays here: the seat records the runtime policy only.
+            agent=vf.AgentInfo(
+                config=vf.AgentConfig(runtime=config.runtime),
+                name="validate",
+                trainable=False,
+            ),
         )
         await runtime.start()
         await asyncio.wait_for(
@@ -131,6 +137,12 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
         trace = Trace(
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
+            # No agent plays here: the seat records the runtime policy only.
+            agent=vf.AgentInfo(
+                config=vf.AgentConfig(runtime=config.runtime),
+                name="validate",
+                trainable=False,
+            ),
         )
         await runtime.start()
         await asyncio.wait_for(

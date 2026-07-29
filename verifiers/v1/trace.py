@@ -34,10 +34,19 @@ from verifiers.v1.types import (
     content_text,
 )
 
+EXCLUDE_FIELDS: dict = {
+    "nodes": {
+        "__all__": {
+            "multi_modal_data",
+            "routed_experts",
+            "kept_tokens",
+        }
+    }
+}
+"""Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
+
 
 class TimeSpan(StrictBaseModel):
-    """Wall-clock timestamps with a derived, non-serialized duration in seconds."""
-
     start: float = 0.0
     end: float = 0.0
 
@@ -47,20 +56,10 @@ class TimeSpan(StrictBaseModel):
 
 
 class TimeSplit(StrictBaseModel):
-    """A span's share attributed to one side of a split: disjoint sub-intervals summed
-    into a duration, so there is no single start/end. Serialized, unlike a span's
-    derived `duration`, since it cannot be recomputed from two timestamps."""
-
     duration: float = 0.0
 
 
 class GenerationSpan(TimeSpan):
-    """The generation span plus its split into time inside model calls (`model`) vs.
-    outside them (`harness`: harness logic, tools, user simulation). Stamped from the
-    recorded model calls' spans by `Trace.split_generation` when the span closes, with
-    `model.duration + harness.duration == duration` — concurrent calls (subagent forks)
-    are clamped to the span, saturating the model share."""
-
     model: TimeSplit = Field(default_factory=TimeSplit)
     harness: TimeSplit = Field(default_factory=TimeSplit)
 
@@ -78,40 +77,28 @@ class Error(StrictBaseModel):
     type: str
     message: str
     status_code: int | None = None
-    """The upstream HTTP status a provider failure surfaced (the provider's own, or one
-    chosen for a transport fault); None when the failure carried no HTTP exchange."""
     traceback: str | None = None
 
 
 class ModelCall(StrictBaseModel):
-    """One provider exchange behind a sampled turn; its conversation is the linked
-    node's root-to-self path, never repeated here."""
+    """A model call, automatically recorded at intercept time."""
 
     node: int | None = None
-    """Index into `Trace.nodes` of the assistant node this call committed — the link into
-    the message graph (the call's conversation is that node's root-to-self path). None for
-    a call that committed no turn (see `error`)."""
+    """Index into `Trace.nodes` of the assistant node this call committed."""
     model: str | None = None
-    """The model requested from the provider. The rollout's model override makes this
-    `agent.config.model` on every call; recorded per call because it is cheap and provable."""
+    """The model requested from the provider."""
     sampling: Sampling | None = None
-    """The call's effective settings, scraped off the wire request by the dialect's
-    `sampling_fields` whitelist — the eval-imposed knobs plus whatever the harness set
-    that the eval left alone (`seed`, `tool_choice`, `response_format`, ... as extras)."""
+    """The call's effective sampling settings (may differ from trace-level sampling)."""
     endpoint: str | None = None
-    """The provider endpoint path the request went to (e.g. `/chat/completions`) — says
-    which wire dialect the exchange spoke."""
+    """The provider endpoint path the request went to (e.g. `/chat/completions`)."""
     finish_reason: FinishReason = None
-    """Why the model stopped, normalized (`stop` / `length` / `tool_calls`); None for a
-    failed call or an unrecognized provider reason."""
+    """Why the model stopped, normalized (`stop` / `length` / `tool_calls`)."""
     usage: Usage | None = None
-    """Provider-reported token usage for this exchange, cache reads included; None for
-    a failed call."""
+    """Provider-reported token usage for this exchange, cache reads included."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """Wall-clock span from sending the request to the fully received response."""
     error: Error | None = None
-    """The failure that ended this call, coupled to the exchange that caused it; None on
-    success. A failed call still records the settings it was sent with."""
+    """The failure that ended this call, coupled to the exchange that caused it."""
 
 
 class Branch(StrictBaseModel):
@@ -250,19 +237,7 @@ class Branch(StrictBaseModel):
         return self.num_total_tokens - self.num_output_tokens
 
 
-EXCLUDE_FIELDS: dict = {
-    "nodes": {
-        "__all__": {
-            "multi_modal_data",
-            "routed_experts",
-            "kept_tokens",
-        }
-    }
-}
-"""Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
-
-
-TRACE_VERSION = 4
+TRACE_VERSION = 5
 """Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
 breaking shape changes; optional-with-default fields are additive and don't bump it."""
 
@@ -303,6 +278,14 @@ class VersionInfo(StrictBaseModel):
     checkout); None otherwise (e.g. a PyPI wheel)."""
 
 
+def _current_build() -> VersionInfo:
+    # Lazy: `verifiers/__init__` (and its v0 surface) must not load with this module.
+    from verifiers import __version__
+    from verifiers.v1.utils.version import verifiers_commit
+
+    return VersionInfo(version=__version__, commit=verifiers_commit())
+
+
 AgentConfigT = TypeVar("AgentConfigT", bound=AgentConfig, default=AgentConfig)
 """`default=AgentConfig`: an unparameterized record is the strict, fully-typed
 read (the config is exactly `AgentConfig` at write time, so nothing is lost);
@@ -340,17 +323,11 @@ class TraceTask(StrictBaseModel, Generic[DataT]):
 
 
 class Reward(StrictBaseModel):
-    """One named reward as recorded on the trace: the raw score next to its weight,
-    so records keep both readable and the weighted sum stays a derived view."""
-
     score: float
-    """The raw value the reward function returned, unweighted."""
     weight: float = 1.0
-    """The multiplier `score` carries in the trace-level `reward` sum."""
 
     @property
     def value(self) -> float:
-        """This reward's weighted contribution to the trace-level `reward`."""
         return self.score * self.weight
 
 
@@ -359,16 +336,16 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The trace schema this trace serializes as."""
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique ID for this trace, auto-generated."""
-    verifiers: VersionInfo | None = None
+    verifiers: VersionInfo = Field(default_factory=_current_build)
     """The verifiers version that produced this trace."""
     run: RunInfo | None = None
     """The run this trace belongs to (eval or train), consumer-stamped."""
 
     task: TraceTask[DataT]
     """The task data that seeded this trace."""
-    agent: AgentInfo[AgentConfigT] | None = None
+    agent: AgentInfo[AgentConfigT]
     """The agent (harness x model x runtime) that produced this trace."""
-    tools: list[Tool] | None = None
+    tools: list[Tool] = Field(default_factory=list)
     """The tools advertised to the agent, automatically recorded from last intercepted turn."""
 
     nodes: list[MessageNode] = Field(default_factory=list)
@@ -377,14 +354,13 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
 
     rewards: dict[str, Reward] = Field(default_factory=dict)
-    """Named rewards from tasks, judges, and the env's `score()` — each keeps its
-    raw `score` and `weight`; the trace-level `reward` is their weighted sum."""
+    """Named, weighted rewards"""
     metrics: dict[str, float] = Field(default_factory=dict)
-    """Unweighted metrics from tasks, harnesses, and judges."""
+    """Unweighted, named metrics"""
     info: dict[str, Any] = Field(default_factory=dict)
-    """Persistent JSON scratch space for task metadata that is not a reward or metric."""
+    """Scratch space for task-specific metadata."""
     state: StateT = Field(default_factory=State, exclude=True)
-    """Transient state shared with servers and scoring; excluded from every dump."""
+    """Runtime (possibly, non-serializable) state shared across runtimes; excluded from serialization."""
 
     extra_usage: list[Usage] = Field(default_factory=list)
     """Usage from judges and other calls outside the agent's message graph."""
@@ -394,24 +370,17 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     ok: bool = False
     """Whether the trace completed successfully."""
     stop_condition: str | None = None
-    """What ended the trace — `agent_completed` / `user_closed` for a normal finish,
-    a limit or `@stop` name for a refused turn, `error` for a failure; None while
-    running."""
+    """What stopped the trace."""
     errors: list[Error] = Field(default_factory=list)
-    """Every error captured across attempts, oldest to newest first."""
+    """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
-    """`(parent, msg_hash) -> node_id` for the graph builder (`graph.prepare_turn` / `commit`);
-    rebuilt lazily from `nodes` after deserialization."""
+    """`(parent, msg_hash) -> node_id` for the graph builder."""
 
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values())
-
-    @property
-    def last_error(self) -> Error | None:
-        return self.errors[-1] if self.errors else None
 
     @property
     def has_error(self) -> bool:
@@ -500,6 +469,11 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         """The last recorded model response, in text format."""
         msgs = self.assistant_messages
         return (msgs[-1].content or "").strip() if msgs else ""
+
+    @property
+    def last_error(self) -> Error | None:
+        """The last error captured across attempts."""
+        return self.errors[-1] if self.errors else None
 
     @property
     def transcript(self) -> str:
