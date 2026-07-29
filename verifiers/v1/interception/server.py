@@ -451,6 +451,8 @@ class InterceptionServer(Interception):
             except RolloutError as e:
                 return self._fail(session, dialect, e)
             if request_outcome.termination is not None:
+                prompt, _ = dialect.parse_request(body)
+                graph.prepare_turn(session.trace, prompt).commit(None)
                 session.signal_termination(request_outcome.termination)
                 return web.json_response(
                     dialect.error_body(
@@ -556,6 +558,10 @@ class InterceptionServer(Interception):
                         session.trace.id,
                         len(call_response.message.tool_calls or []),
                     )
+                    if session.terminated.is_set():
+                        return web.json_response(
+                            dialect.error_body("rollout terminated"), status=400
+                        )
                     if session.released:  # concluded while sampling — seal holds
                         return web.json_response(
                             dialect.error_body("rollout concluded"), status=409
@@ -567,20 +573,13 @@ class InterceptionServer(Interception):
                         dialect,
                         prompt,
                     )
+                    if session.terminated.is_set():
+                        return web.json_response(
+                            dialect.error_body("rollout terminated"), status=400
+                        )
                     if session.released:
                         return web.json_response(
                             dialect.error_body("rollout concluded"), status=409
-                        )
-                    if response_outcome.termination is not None:
-                        # Commit the sampled terminal action, but never serve it.
-                        node = turn.commit(call_response, tools)
-                        session.signal_termination(response_outcome.termination)
-                        return web.json_response(
-                            dialect.error_body(
-                                "rollout terminated: "
-                                f"{response_outcome.termination[1].reason}"
-                            ),
-                            status=400,
                         )
                     if response_outcome.rewritten:
                         try:
@@ -597,6 +596,19 @@ class InterceptionServer(Interception):
                         if rewritten_response.id:
                             session.rewritten_response_ids.add(rewritten_response.id)
                         call_response = rewritten_response
+                    if response_outcome.termination is not None:
+                        # Commit the canonical terminal action, but never serve it.
+                        node = turn.commit(
+                            call_response, tools, response_outcome.rewritten
+                        )
+                        session.signal_termination(response_outcome.termination)
+                        return web.json_response(
+                            dialect.error_body(
+                                "rollout terminated: "
+                                f"{response_outcome.termination[1].reason}"
+                            ),
+                            status=400,
+                        )
                     # The harness-visible message is canonical for transcripts and
                     # scorers; the node records that interception replaced it.
                     node = turn.commit(call_response, tools, response_outcome.rewritten)
@@ -876,11 +888,7 @@ class InterceptionServer(Interception):
                     if not interception.done():
                         interception.cancel()
                     await asyncio.gather(interception, return_exceptions=True)
-
-                if outcome.termination is not None:
-                    await keepalive()
-                    node = turn.commit(response, tools)
-                    session.signal_termination(outcome.termination)
+                if session.terminated.is_set():
                     if request.transport is not None:
                         request.transport.abort()
                     return resp
@@ -916,6 +924,24 @@ class InterceptionServer(Interception):
                     response = rewritten_response
 
                 await keepalive()
+                if session.terminated.is_set():
+                    if request.transport is not None:
+                        request.transport.abort()
+                    return resp
+                if session.released:
+                    if request.transport is not None:
+                        request.transport.abort()
+                    return resp
+                if outcome.termination is not None:
+                    node = turn.commit(response, tools, rewritten=outcome.rewritten)
+                    session.signal_termination(outcome.termination)
+                    if request.transport is not None:
+                        request.transport.abort()
+                    return resp
+            if session.terminated.is_set():
+                if request.transport is not None:
+                    request.transport.abort()
+                return resp
             if session.released:
                 if intercept_response:
                     if request.transport is not None:
