@@ -105,7 +105,7 @@ accepts host-level entries and rejects combinations that need both policy modes.
 Two deliberate differences from `harbor run`:
 
 - **A failing collect hook fails the rollout.** Harbor logs it and carries on, because there the output is observability; here it is a grading input, and a silently absent file makes the verifier score a stale state.
-- **`destination` has no effect.** It positions a file in Harbor's host trial directory; verifiers has no trial directory (the trace is the record), and Harbor never lets `destination` affect verifier-side placement.
+- **`destination` is ignored.** Artifacts are restored to their source paths.
 
 ## Shortcomings
 
