@@ -400,8 +400,9 @@ def parse_verifier_extras(
     for entry in normalize_artifact_entries(parsed.artifacts):
         if effective_artifact_service(entry) != MAIN_SERVICE_NAME:
             raise ValueError(
-                f"{task_dir.name}: artifact {entry.source!r} targets service "
-                f"{entry.service!r}; only the main task service is supported"
+                f"{task_dir.name}: artifact {entry.source!r} targets additional "
+                f"service {entry.service!r}; verifiers currently supports artifacts "
+                "from the main service only"
             )
         # `destination` positions a file in Harbor's host trial directory. Verifiers has
         # no such directory (the trace is the record) and Harbor never lets destination
@@ -414,8 +415,9 @@ def parse_verifier_extras(
     for hook in verifier.collect:
         if hook.service != MAIN_SERVICE_NAME:
             raise ValueError(
-                f"{task_dir.name}: collect hook targets service {hook.service!r}; "
-                "only the main task service is supported"
+                f"{task_dir.name}: collect hook targets additional service "
+                f"{hook.service!r}; verifiers currently supports collect hooks for "
+                "the main service only"
             )
         if hook.user is not None:
             raise ValueError(
