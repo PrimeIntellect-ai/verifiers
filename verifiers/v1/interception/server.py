@@ -436,14 +436,35 @@ class InterceptionServer(Interception):
                     dialect.error_body(f"rollout stopped: {refused}"), status=400
                 )
             try:
-                await session.run_intercepts("request", body, dialect)
+                request_rewritten = await session.run_intercepts(
+                    "request", body, dialect
+                )
             except RolloutError as e:
                 return self._fail(session, dialect, e)
+
+            if dialect.streaming(body) != streaming:
+                return self._fail(
+                    session,
+                    dialect,
+                    TaskError("@intercept cannot change request streaming mode"),
+                )
 
             # The typed prompt and tools are derived after request rewrites, so both
             # the model and trace see the same tool result.
             prompt: Messages
-            prompt, tools = dialect.parse_request(body)
+            try:
+                prompt, tools = dialect.parse_request(body)
+            except Exception as e:
+                if not request_rewritten:
+                    raise
+                return self._fail(
+                    session,
+                    dialect,
+                    TaskError(
+                        "@intercept produced an invalid request: "
+                        f"{type(e).__name__}: {e}"
+                    ),
+                )
             response_intercepts = session.has_response_intercepts
             if response_intercepts:
                 previous = body.get("previous_response_id")
@@ -751,6 +772,8 @@ class InterceptionServer(Interception):
                         # Some clients JSON-decode comment-only events as empty payloads.
                         await keepalive()
                         continue
+                    # Retain model events for keyed replay, and delay them when response
+                    # interception must classify the complete turn before delivery.
                     if buffer is not None:
                         buffer.write(chunk)
                     if not intercept_response and (

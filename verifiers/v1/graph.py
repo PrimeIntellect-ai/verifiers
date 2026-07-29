@@ -374,7 +374,16 @@ class PendingTurn:
     ) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
-        self.trace.nodes[assistant_id].rewritten = rewritten
+        node = self.trace.nodes[assistant_id]
+        node.rewritten = rewritten
+        if rewritten:
+            sampled_start = len(node.token_ids) - sum(node.mask)
+            node.token_ids = node.token_ids[:sampled_start]
+            node.mask = node.mask[:sampled_start]
+            node.is_content = node.is_content[:sampled_start]
+            node.logprobs = []
+            node.routed_experts = None
+            node.kept_tokens = None
         if tools:
             self.trace.tools = tools
         return assistant_id

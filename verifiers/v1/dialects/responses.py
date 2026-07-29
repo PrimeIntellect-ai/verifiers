@@ -346,7 +346,8 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         for item in body.get("input") or []:
             if (
                 isinstance(item, dict)
-                and item.get("type") == "function_call_output"
+                and item.get("type")
+                in ("function_call_output", "custom_tool_call_output")
                 and item.get("call_id") == tool_call_id
             ):
                 item["output"] = text

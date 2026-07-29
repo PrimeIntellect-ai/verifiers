@@ -212,11 +212,14 @@ class RolloutSession:
                     continue
                 name = _handler_name(handler)
                 raw_handler = getattr(handler, "intercept_raw", False)
-                messages = prompt or []
+                messages = (
+                    dialect.parse_request(raw)[0]
+                    if direction == "request"
+                    else prompt or []
+                )
                 if raw_handler:
                     candidates = [None]
                 elif direction == "request":
-                    messages = dialect.parse_request(raw)[0]
                     tool_names = {
                         call.id: call.name
                         for item in [*self.trace.assistant_messages, *messages]
