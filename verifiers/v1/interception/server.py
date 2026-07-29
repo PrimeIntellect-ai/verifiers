@@ -341,11 +341,10 @@ class InterceptionServer(Interception):
         # A failed attempt caches nothing and re-runs normally.
         if (
             request_key is not None
-            and session.last_request == request_key
-            and session.last_response is not None
+            and (completion := session.replays.get(request_key)) is not None
         ):
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
-            return _completion_response(session.last_response)
+            return _completion_response(completion)
 
         async def coalesced(
             inflight: "asyncio.Future[ReplayResponse | None]",
@@ -379,10 +378,7 @@ class InterceptionServer(Interception):
             # completion) that the server serializes back to the program.
             if replay is not None:
                 request_key, fut = replay
-                if isinstance(session.last_response, StreamReplay):
-                    session.last_response.path.unlink(missing_ok=True)
-                session.last_request = request_key
-                session.last_response = response.raw
+                session.replays[request_key] = response.raw
                 if not fut.done():
                     fut.set_result(response.raw)
             return _completion_response(response.raw)
@@ -703,23 +699,26 @@ class InterceptionServer(Interception):
                 await finish_live()
                 return resp
 
-            node = turn.commit(response, tools)
-            if replay is not None:
-                request_key, fut = replay
-                assert buffer is not None and replay_path is not None
-                buffer.flush()
-                buffer.close()
-                stream_replay = StreamReplay(replay_path, resp.content_type)
-                if isinstance(session.last_response, StreamReplay):
-                    session.last_response.path.unlink(missing_ok=True)
-                session.last_request = request_key
-                session.last_response = stream_replay
-                published = True
-                if not fut.done():
-                    fut.set_result(stream_replay)
-            logger.debug("intercept stream turn: id=%s", session.trace.id)
-            # Release turn-ending events only after the graph commit and replay cache update.
-            await finish_live()
+            try:
+                stream_replay = None
+                if replay is not None:
+                    assert buffer is not None and replay_path is not None
+                    buffer.flush()
+                    buffer.close()
+                    stream_replay = StreamReplay(replay_path, resp.content_type)
+                node = turn.commit(response, tools)
+                if replay is not None:
+                    request_key, fut = replay
+                    assert stream_replay is not None
+                    session.replays[request_key] = stream_replay
+                    published = True
+                    if not fut.done():
+                        fut.set_result(stream_replay)
+                logger.debug("intercept stream turn: id=%s", session.trace.id)
+            finally:
+                # Never strand a live client on withheld terminal events, even if replay
+                # finalization, graph commit, or cache publication fails.
+                await finish_live()
             return resp
         except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit

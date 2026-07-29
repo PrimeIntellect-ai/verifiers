@@ -81,21 +81,17 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
-    last_request: RequestKey | None = None
-    """Route, body digest, and Idempotency-Key of the most recently served replayable request;
-    with `last_response`, the cache that keeps the message graph atomic under explicitly keyed
-    harness-SDK retries. Unkeyed requests never enter replay state. Only a fully completed model
-    response is cached, so a genuinely failed attempt still re-runs. Keeping only the last
-    response is sufficient and bounded."""
-    last_response: ReplayResponse | None = None
-    """The completed response for `last_request`, replayed verbatim on a retry."""
+    replays: dict[RequestKey, ReplayResponse] = field(default_factory=dict)
+    """Completed responses keyed by route, body digest, and Idempotency-Key. Explicitly keyed
+    retries replay the matching response; unkeyed requests never enter this cache. Entries live
+    until session release so overlapping logical requests cannot evict each other's response."""
     inflight: dict[RequestKey, "asyncio.Future[ReplayResponse | None]"] = field(
         default_factory=dict
     )
     """Request key -> the future of the attempt currently computing it. A retry that arrives
     while the first attempt is still in flight (a slow turn) awaits this future instead of
-    starting a second inference — the other half of retry atomicity (with `last_response`, which
-    covers a retry after the attempt finished). Because a slow turn is coalesced rather than
+    starting a second inference — the other half of retry atomicity (with `replays`, which covers
+    a retry after the attempt finished). Because a slow turn is coalesced rather than
     re-sampled, retries stay safe without an inflated client timeout. The future resolves to the
     served response, or to None if the attempt produced no servable response (error/refuse)."""
     released: bool = False
@@ -123,8 +119,9 @@ class RolloutSession:
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""
         self.released = True
-        if isinstance(self.last_response, StreamReplay):
-            self.last_response.path.unlink(missing_ok=True)
+        for response in self.replays.values():
+            if isinstance(response, StreamReplay):
+                response.path.unlink(missing_ok=True)
         for task in list(self.tasks):
             task.cancel()
 

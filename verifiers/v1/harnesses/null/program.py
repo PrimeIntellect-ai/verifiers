@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import json
+import uuid
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -22,7 +23,10 @@ async def chat(
     client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
 ):
     completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
+        model=model,
+        messages=messages,
+        tools=tools or None,
+        extra_headers={"Idempotency-Key": uuid.uuid4().hex},
     )
     return completion.choices[0].message
 
