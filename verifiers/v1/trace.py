@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
@@ -340,6 +340,26 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_v4(cls, data: Any) -> Any:
+        """Upgrade pre-v5 records to the v5 shape: drop the explicit nulls whose
+        fields v5 defaults now fill, seat records that predate the required
+        `agent`, and drop a run stamp with no id. Current-version records
+        validate strictly; delete this when v4 support is dropped."""
+        if not isinstance(data, dict) or data.get("version", TRACE_VERSION) >= 5:
+            return data
+        data = dict(data)
+        for field in ("tools", "verifiers", "agent"):
+            if field in data and data[field] is None:
+                del data[field]
+        data.setdefault("agent", {"config": {}})
+        run = data.get("run")
+        if isinstance(run, dict) and run.get("id") is None:
+            data["run"] = None
+        data["version"] = 5
+        return data
 
     @property
     def reward(self) -> float:
