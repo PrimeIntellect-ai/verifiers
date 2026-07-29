@@ -505,7 +505,7 @@ def _stage(trace: Trace) -> str:
         stage = "boot"  # trace minted, first span not yet opened (an instant)
     # A boot stuck on a first-use platform image build reads differently from a
     # normal boot — it can sit there for ~10 minutes (prime runtime only).
-    if stage == "boot" and getattr(trace.runtime, "image_cached", None) is False:
+    if stage == "boot" and getattr(trace.agent.runtime, "image_cached", None) is False:
         return "build"
     return stage
 

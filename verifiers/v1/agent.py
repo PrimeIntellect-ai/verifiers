@@ -482,8 +482,8 @@ class Agent:
             opened = await run.open()
             if not opened:
                 trace = await run.close()
-                if trace.runtime is not None:
-                    trace.runtime.borrowed = runtime is not None
+                if trace.agent.runtime is not None:
+                    trace.agent.runtime.borrowed = runtime is not None
         if not opened:
             failure = run.failure
             if failure is None:  # `open()` returning False always captures one.
@@ -499,8 +499,8 @@ class Agent:
             raise
         finally:
             trace = run.trace if run.closed else await interaction.close()
-            if trace.runtime is not None:
-                trace.runtime.borrowed = runtime is not None
+            if trace.agent.runtime is not None:
+                trace.agent.runtime.borrowed = runtime is not None
 
     def _rollout_params(
         self, task: Task, runtime: Runtime | None, shared_tools: dict
