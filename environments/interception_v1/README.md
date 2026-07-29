@@ -5,11 +5,21 @@ with `@vf.intercept`.
 
 The task class installs two response handlers in priority order:
 
-1. `deterministic_guard` uses a typed `vf.AssistantMessage` to select the response
-   boundary and returns replacement text when an exact rule matches.
-2. `judge_guard` receives the candidate, request prompt, and trace, then calls
-   `vf.Judge.complete()` for semantic classification. Passing `trace` records the judge
-   call and its usage.
+1. `deterministic_guard` checks `exchange.message` with an exact rule.
+2. `judge_guard` calls `exchange.judge()` only when the deterministic rule did not
+   rewrite the candidate.
+
+Both handlers receive one `vf.ModelExchange`: the current prompt, typed candidate, trace,
+and direction. `exchange.replace()` returns an inert message of the same kind, while
+`exchange.judge()` builds and parses the guard prompt and records the ordinary judge call
+and its usage on the trace.
+
+```python
+@vf.intercept()
+async def judge_guard(self, exchange: vf.ModelExchange[vf.AssistantMessage]):
+    if await exchange.judge(JUDGE_RUBRIC) == "BLOCK":
+        return exchange.replace("Blocked by the judge guard.")
+```
 
 The higher-priority deterministic handler always runs first. The lower-priority judge
 sees any replacement it produced, so it classifies the cleaned result rather than the
@@ -30,4 +40,5 @@ by constructing the judge with a config:
 
 ```python
 judge = vf.Judge(vf.JudgeConfig(model="openai/gpt-5.4-nano"))
+verdict = await exchange.judge(JUDGE_RUBRIC, judge=judge)
 ```
