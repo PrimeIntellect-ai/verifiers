@@ -1,6 +1,6 @@
 """Task-authored interception types and ready-made guards."""
 
-from verifiers.v1.intercepts.core import InterceptResult, Terminate
+from verifiers.v1.intercepts.core import InterceptResult, ModelExchange, Terminate
 from verifiers.v1.intercepts.tools import (
     intercept_code_search,
     intercept_provider_tools,
@@ -13,6 +13,7 @@ from verifiers.v1.intercepts.tools import (
 
 __all__ = [
     "InterceptResult",
+    "ModelExchange",
     "Terminate",
     "intercept_code_search",
     "intercept_provider_tools",

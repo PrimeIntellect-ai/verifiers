@@ -13,7 +13,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_type_hints
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import ModelContext
@@ -24,6 +24,7 @@ from verifiers.v1.intercepts.core import (
     Interceptor,
     InterceptOutcome,
     InterceptRecord,
+    ModelExchange,
     Terminate,
 )
 from verifiers.v1.trace import Trace
@@ -53,7 +54,13 @@ ReplayResponse = dict | StreamReplay
 
 def _message_types(handler: Callable[..., Any]) -> tuple[type, ...]:
     """Concrete message classes accepted by a handler's optional annotation."""
-    hint = get_type_hints(handler, localns={"Trace": Trace}).get("message")
+    hints = get_type_hints(
+        handler, localns={"ModelExchange": ModelExchange, "Trace": Trace}
+    )
+    hint = hints.get("message")
+    exchange = hints.get("exchange")
+    if hint is None and get_origin(exchange) is ModelExchange:
+        hint = get_args(exchange)[0]
     accepted = tuple(
         kind for kind in (get_args(hint) or (hint,)) if kind in MESSAGE_TYPES
     )
@@ -262,6 +269,9 @@ class RolloutSession:
                         message, _message_types(handler)
                     ):
                         continue
+                    candidate = (
+                        message.model_copy(deep=True) if message is not None else None
+                    )
                     action = invoke(
                         handler,
                         {
@@ -269,10 +279,16 @@ class RolloutSession:
                             "trace": self.trace,
                             "raw": raw,
                             "dialect": dialect,
-                            "message": message.model_copy(deep=True)
-                            if message is not None
-                            else None,
+                            "message": candidate,
                             "prompt": messages,
+                            "exchange": ModelExchange(
+                                direction=direction,
+                                trace=self.trace,
+                                prompt=messages,
+                                message=candidate,
+                            )
+                            if candidate is not None
+                            else None,
                         },
                     )
                     if inspect.isawaitable(action):
@@ -302,19 +318,41 @@ class RolloutSession:
                             )
                             rewritten = True
                         continue
-                    if action is not None and not isinstance(action, str):
+                    if action is not None and not isinstance(
+                        action, (AssistantMessage, ToolMessage)
+                    ):
                         raise TypeError(type(action).__name__)
-                    if isinstance(action, str):
+                    if isinstance(action, (AssistantMessage, ToolMessage)):
                         if message is None:
                             raise TypeError(
-                                "a string result requires a message parameter"
+                                "a rewrite result requires a message candidate"
                             )
-                        if isinstance(message, AssistantMessage):
-                            dialect.rewrite_response(raw, action)
+                        if type(action) is not type(message):
+                            raise TypeError(
+                                "a rewrite must return the same message type as its candidate"
+                            )
+                        elif isinstance(action, AssistantMessage):
+                            if (
+                                action.reasoning_content is not None
+                                or action.tool_calls
+                                or action.provider_state
+                            ):
+                                raise ValueError(
+                                    "an assistant rewrite must contain only inert text"
+                                )
+                            text = action.content or ""
                         else:
-                            dialect.rewrite_tool_result(
-                                raw, message.tool_call_id, action
-                            )
+                            if action.tool_call_id != message.tool_call_id:
+                                raise ValueError(
+                                    "a tool rewrite cannot change its tool_call_id"
+                                )
+                            if not isinstance(action.content, str):
+                                raise TypeError("a tool rewrite must contain text")
+                            text = action.content
+                        if isinstance(message, AssistantMessage):
+                            dialect.rewrite_response(raw, text)
+                        else:
+                            dialect.rewrite_tool_result(raw, message.tool_call_id, text)
                         self.trace.interceptions.append(
                             InterceptRecord(
                                 direction=direction, handler=name, action="rewrite"

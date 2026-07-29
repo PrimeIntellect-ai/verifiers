@@ -97,10 +97,11 @@ def intercept(
     direction: "Direction | None" = None,
     raw: bool = False,
 ) -> F | Callable[[F], F]:
-    """Mark an interceptor returning replacement text, `Terminate`, or `None`.
+    """Mark an interceptor returning a replacement message, `Terminate`, or `None`.
 
-    Annotate `message` as `ToolMessage` or `AssistantMessage` for typed request or
-    response interception. Set `raw=True` to mutate the provider-native dictionary at
+    Accept `ModelExchange[ToolMessage]` or `ModelExchange[AssistantMessage]` as
+    `exchange` to receive the prompt, candidate, and trace in one object and select the
+    corresponding boundary. Set `raw=True` to mutate the provider-native dictionary at
     either boundary and return that dictionary to mark it rewritten (or `None` when
     unchanged), selecting one boundary explicitly with `direction`."""
     extra: dict[str, Any] = {

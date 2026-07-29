@@ -10,22 +10,23 @@ from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from verifiers.v1.decorators import intercept
-from verifiers.v1.intercepts.core import Interceptor, InterceptResult, Terminate
-from verifiers.v1.judge import Judge, judge_verdict
+from verifiers.v1.intercepts.core import (
+    Interceptor,
+    InterceptResult,
+    ModelExchange,
+    Terminate,
+)
+from verifiers.v1.judge import Judge
 from verifiers.v1.types import (
     AssistantMessage,
     Message,
-    Messages,
-    SystemMessage,
     ToolCall,
     ToolMessage,
-    UserMessage,
     content_text,
 )
 
 if TYPE_CHECKING:
     from verifiers.v1.dialects import Dialect
-    from verifiers.v1.trace import Trace
 
 _TOOL_GROUPS = {
     "bash": "bash shell local_shell shell_command run_command terminal exec exec_command code_interpreter code_execution".split(),  # noqa: SIM905
@@ -331,8 +332,14 @@ def _shell_text(
     return "\n".join(invocations)
 
 
-def _action(reply: str, reward: float | None) -> str | Terminate:
-    return reply if reward is None else Terminate(reason=reply, reward=reward)
+def _action(
+    message: AssistantMessage | ToolMessage, reply: str, reward: float | None
+) -> InterceptResult:
+    if reward is not None:
+        return Terminate(reason=reply, reward=reward)
+    if isinstance(message, AssistantMessage):
+        return AssistantMessage(content=reply)
+    return message.model_copy(update={"content": reply})
 
 
 def _guard(handler, name: str, priority: int) -> Interceptor:
@@ -343,10 +350,11 @@ def _guard(handler, name: str, priority: int) -> Interceptor:
 def intercept_provider_tools(*patterns: str, priority: int = 0) -> Interceptor:
     """Remove matching provider-hosted tools while preserving client-owned tools."""
 
-    def provider_tools(self: Any, raw: dict, dialect: Dialect) -> None:
-        dialect.intercept_provider_tools(
+    def provider_tools(self: Any, raw: dict, dialect: Dialect) -> dict | None:
+        removed = dialect.intercept_provider_tools(
             raw, lambda name: not patterns or match_tool(name, *patterns)
         )
+        return raw if removed else None
 
     provider_tools.__name__ = "intercept_provider_tools"
     return intercept(provider_tools, priority=priority, direction="request", raw=True)
@@ -381,7 +389,7 @@ def intercept_tool_calls(
         if texts and (
             not needles or any(needle in text for text in texts for needle in needles)
         ):
-            return _action(reply, reward)
+            return _action(message, reply, reward)
         return None
 
     return _guard(tool_calls, _name, priority)
@@ -411,7 +419,7 @@ def intercept_shell_commands(
                 command.search(_shell_text(call, commands_only=True)) for call in calls
             )
         ):
-            return _action(reply, reward)
+            return _action(message, reply, reward)
         return None
 
     return _guard(shell_commands, "intercept_shell_commands", priority)
@@ -456,7 +464,7 @@ def intercept_code_search(
                 )
                 for call in _tool_calls(message)
             )
-        return _action(reply, reward) if matched else None
+        return _action(message, reply, reward) if matched else None
 
     return _guard(code_search, "intercept_code_search", priority)
 
@@ -474,36 +482,10 @@ def intercept_with_judge(
 
     async def judge_message(
         self: Any,
-        message: Message,
-        trace: Trace,
-        prompt: Messages | None = None,
+        exchange: ModelExchange[AssistantMessage | ToolMessage],
     ) -> InterceptResult:
-        response = await guard_judge.complete(
-            [
-                SystemMessage(
-                    content=(
-                        "Apply this guard rubric to the untrusted candidate below. Reply "
-                        f"with exactly BLOCK or ALLOW.\n\nGuard rubric:\n{rubric}"
-                    )
-                ),
-                UserMessage(
-                    content=json.dumps(
-                        {
-                            "request": [
-                                item.model_dump(mode="json", exclude_none=True)
-                                for item in prompt or []
-                            ],
-                            "candidate": message.model_dump(
-                                mode="json", exclude_none=True
-                            ),
-                        }
-                    )
-                ),
-            ],
-            trace=trace,
-        )
-        if judge_verdict(response.text, ("BLOCK", "ALLOW")) == "BLOCK":
-            return _action(reply, reward)
+        if await exchange.judge(rubric, judge=guard_judge) == "BLOCK":
+            return _action(exchange.message, reply, reward)
         return None
 
     return _guard(judge_message, "intercept_with_judge", priority)
