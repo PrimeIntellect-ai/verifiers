@@ -8,12 +8,9 @@ verdicts to `/tmp/verdict.json`, with the solver's full trace record uploaded at
 `judge/<name>` metrics plus a weighted-mean `judge` reward, composed with the
 taskset's own rewards via `[env.score]` (judge-only by default).
 
-`--env.sandbox-mode` decides where the judge stands. Under `shared` (the default) it
-plays in the box the agent worked in, seeing that environment directly and every
-seam in it. Under `isolated` it gets its own box from the same image, holding only
-what the task declared as artifacts, so nothing the agent did to its environment
-can reach the grader — worth opting into once a taskset publishes its evidence
-somewhere that travels.
+`--env.share-runtime` controls whether the judge uses the solver's runtime. It is
+enabled by default. When disabled, the judge gets a fresh runtime containing the
+task's collected artifacts.
 """
 
 import json
@@ -21,7 +18,6 @@ import math
 import re
 import tomllib
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field, field_validator
 
@@ -30,7 +26,6 @@ from verifiers.v1.types import StrictBaseModel
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
-SandboxMode = Literal["shared", "isolated"]
 
 GRADE_PROMPT = """\
 You are grading another agent's attempt at a task. Verify the work EMPIRICALLY:
@@ -149,11 +144,11 @@ class JudgeTask(vf.Task):
         cls,
         solution: vf.Trace,
         config: "JudgeTaskConfig",
-        sandbox_mode: SandboxMode = "shared",
+        share_runtime: bool = True,
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace.
 
-        `sandbox_mode` selects the workspace note. It has to match how the judge is
+        `share_runtime` selects the workspace note. It has to match how the judge is
         actually placed: the note is the judge's only account of what its box
         contains, and a judge told it is standing in the agent's workspace when it
         is standing in a fresh one will read an unmodified tree as a failed attempt.
@@ -165,9 +160,7 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
-        note = (
-            SHARED_SANDBOX_NOTE if sandbox_mode == "shared" else ISOLATED_SANDBOX_NOTE
-        )
+        note = SHARED_SANDBOX_NOTE if share_runtime else ISOLATED_SANDBOX_NOTE
         sections = [body, _verdict_section(config.criteria()), note]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
@@ -283,30 +276,16 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     """The solver agent. Its runtime must be a container:
     `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. Under `isolated` it provisions its own box from this policy;
-    under `shared` it plays in the solver's box and this policy is ignored."""
-    sandbox_mode: SandboxMode = "shared"
-    """Whether the judge grades in the solver's box or its own.
-
-    `shared` places the judge in the box the agent worked in, so it can inspect that
-    environment directly — at the cost of leaving every seam in it reachable. It is the
-    default because it is what has been measured, and because a judge only gains from
-    isolation once the task publishes what the judge needs.
-
-    `isolated` boots a second box from the same image, carries the task's declared
-    artifacts across, and grades there, so nothing the agent did to its environment can
-    reach the grader. Opt in per taskset, and only once that taskset puts its evidence
-    somewhere that travels: an artifact under `vf.ARTIFACTS_DIR` (see
-    `capture_patch(write_path=...)`), a declared `TaskData.artifacts` path, or the trace
-    record itself. A task whose judge hint says to run `git diff` in the box will find
-    a pristine checkout here and grade every attempt as untouched."""
+    """The judge agent. Its runtime is ignored when `share_runtime` is enabled."""
+    share_runtime: bool = True
+    """Whether the judge grades in the solver's runtime."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        if config.sandbox_mode == "shared" or isinstance(
+        if config.share_runtime or isinstance(
             config.judge.runtime, vf.SubprocessConfig
         ):
             config.judge = config.judge.model_copy(
@@ -342,10 +321,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        if self.config.sandbox_mode == "shared":
+        if self.config.share_runtime:
             async with agents.solver.provision(task) as box:
                 solution = await agents.solver.run(task, runtime=box)
-                judge_task = JudgeTask.from_trace(solution, self.config.task, "shared")
+                judge_task = JudgeTask.from_trace(solution, self.config.task)
                 await agents.judge.run(judge_task, runtime=box)
             return
 
@@ -362,7 +341,9 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
 
         async with agents.judge.provision(task) as judge_box:
             await vf.restore(judge_box, collected)
-            judge_task = JudgeTask.from_trace(solution, self.config.task, "isolated")
+            judge_task = JudgeTask.from_trace(
+                solution, self.config.task, share_runtime=False
+            )
             await agents.judge.run(judge_task, runtime=judge_box)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
