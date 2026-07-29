@@ -26,13 +26,18 @@ class TasksetConfig(BaseConfig):
 
     @model_validator(mode="after")
     def check_system_prompt_source(self) -> "TasksetConfig":
-        if self.system_prompt is not None and self.system_prompt_file is not None:
+        # Reject only when the run explicitly sets *both* — a taskset subclass that defaults
+        # `system_prompt` to a non-None value (e.g. lean) must still accept `system_prompt_file`,
+        # which overrides it (see `resolve_system_prompt`).
+        set_fields = self.model_fields_set
+        if "system_prompt" in set_fields and "system_prompt_file" in set_fields:
             raise ValueError("set `system_prompt` or `system_prompt_file`, not both")
         return self
 
     def resolve_system_prompt(self) -> str | None:
         """The effective config-layer system prompt: the file's text if `system_prompt_file`
-        is set, else `system_prompt` (None when neither is)."""
+        is set (it wins over a taskset's default `system_prompt`), else `system_prompt` (None
+        when neither is)."""
         if self.system_prompt_file is not None:
             return self.system_prompt_file.read_text(encoding="utf-8")
         return self.system_prompt
