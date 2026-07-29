@@ -322,7 +322,6 @@ class DockerRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # Detached servers survive the cut, so they need the initially permissive proxy.
-        argv, env = await self._prepare_program(argv, env)
         env = {**env, **self._proxy_env()}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         inner = f"{' '.join(shlex.quote(a) for a in argv)} > {shlex.quote(log)} 2>&1"
@@ -380,7 +379,6 @@ class DockerRuntime(Runtime):
             raise SandboxError(
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
-        self._workdir_written(path)
 
     def cleanup(self) -> None:
         if self._container is None or self._stopped:
