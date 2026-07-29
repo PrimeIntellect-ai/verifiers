@@ -79,8 +79,8 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
                     "taking the first %d generated tasks",
                     num_tasks,
                 )
-            tasks = list(itertools.islice(self.load(), num_tasks))
-        elif shuffle:
+            shuffle = False  # can't materialize the whole taskset to sample from
+        if shuffle:
             tasks = sample(self.load(), shuffle=True, limit=num_tasks)
         else:
             tasks = list(itertools.islice(self.load(), num_tasks))
