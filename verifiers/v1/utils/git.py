@@ -161,8 +161,6 @@ async def capture_patch(
             )
             return
         raw = await runtime.read(capped)
-    except Exception as exc:
-        raise SandboxError(f"patch capture could not reach the box: {exc}") from exc
     finally:
         # Unique names don't overwrite each other, so leftovers would accumulate
         # on shared-filesystem runtimes; removal is best-effort by design.
