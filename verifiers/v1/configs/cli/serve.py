@@ -1,14 +1,14 @@
 """Environment-server CLI configuration."""
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.env import (
-    EnvField,
     env_field,
     narrowed_env_annotation,
     resolve_env_field,
 )
+from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.legacy import (
     LegacyEnvConfig,
     is_legacy,
@@ -22,7 +22,7 @@ class ServeConfig(BaseConfig):
     """`uv run serve`: what to serve (`[env]`, or `[legacy]` for a classic v0 env) and
     how it's hosted (`[serve]`)."""
 
-    env: EnvField = env_field()
+    env: SerializeAsAny[EnvConfig] = env_field()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
     the selected env's config class by the env id, else the taskset id."""
     serve: ServingConfig = ServingConfig()

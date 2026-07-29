@@ -6,7 +6,7 @@ A run composes the blocks it needs — `[env]` (what runs, `configs/env.py`),
 `configs/legacy.py`) — plus its own fields. Nothing here is a base class: the eval
 CLI, the `serve` CLI, GEPA and a trainer each declare their blocks and call these."""
 
-from pydantic import Field, SerializeAsAny, ValidationError
+from pydantic import Field, ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.env import EnvConfig
@@ -33,9 +33,10 @@ would otherwise fail as a bare `extra_forbidden`, saying nothing about where it 
 
 
 def env_field() -> Field:  # type: ignore[valid-type]
-    """The `env` field every run config declares: the single-agent shape by default,
-    `SerializeAsAny` so a narrowed subclass's agents and knobs survive `model_dump()`
-    (see `EnvConfig.taskset`)."""
+    """The default for the `env` field every run config declares: the single-agent
+    shape. Annotate the field `SerializeAsAny[EnvConfig]` — pydantic serializes by
+    declared type, so a plain `EnvConfig` silently drops a narrowed subclass's agents
+    and knobs from `model_dump()`, which is the env-server wire's payload."""
     return Field(default_factory=_single_agent_env_config)
 
 
@@ -90,7 +91,3 @@ def _single_agent_env_config() -> EnvConfig:
     from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 
     return SingleAgentEnvConfig()
-
-
-EnvField = SerializeAsAny[EnvConfig]
-"""Annotation for a run config's `env` field: `env: EnvField = env_field()`."""
