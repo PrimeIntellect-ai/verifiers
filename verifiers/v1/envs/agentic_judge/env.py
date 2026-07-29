@@ -8,7 +8,7 @@ verdicts to `/tmp/verdict.json`, with the solver's full trace record uploaded at
 `judge/<name>` metrics plus a weighted-mean `judge` reward, composed with the
 taskset's own rewards via `[env.score]` (judge-only by default).
 
-`--env.topology` decides where the judge stands. Under `shared` (the default) it
+`--env.sandbox-mode` decides where the judge stands. Under `shared` (the default) it
 plays in the box the agent worked in, seeing that environment directly and every
 seam in it. Under `isolated` it gets its own box from the same image, holding only
 what the task declared as artifacts, so nothing the agent did to its environment
@@ -291,7 +291,7 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge agent. Under `isolated` it provisions its own box from this policy;
     under `shared` it plays in the solver's box and this policy is ignored."""
-    topology: Literal["shared", "isolated"] = "shared"
+    sandbox_mode: Literal["shared", "isolated"] = "shared"
     """Whether the judge grades in the solver's box or its own.
 
     `shared` places the judge in the box the agent worked in, so it can inspect that
@@ -320,7 +320,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # model, sampling): `runtime` defaults to `SubprocessConfig` with no `None` to
         # distinguish unset from chosen, and a code-executing judge can never run on the
         # host anyway, so subprocess here always means "not specified".
-        if config.topology == "shared" or isinstance(
+        if config.sandbox_mode == "shared" or isinstance(
             config.judge.runtime, vf.SubprocessConfig
         ):
             config.judge = config.judge.model_copy(
@@ -356,7 +356,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        if self.config.topology == "shared":
+        if self.config.sandbox_mode == "shared":
             async with agents.solver.provision(task) as box:
                 solution = await agents.solver.run(task, runtime=box)
                 judge_task = JudgeTask.from_trace(solution, self.config.task, "shared")
