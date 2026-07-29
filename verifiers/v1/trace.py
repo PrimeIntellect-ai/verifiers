@@ -34,6 +34,10 @@ from verifiers.v1.types import (
     content_text,
 )
 
+TRACE_VERSION = 5
+"""Current version of the trace schema."""
+
+
 EXCLUDE_FIELDS: dict = {
     "nodes": {
         "__all__": {
@@ -78,6 +82,34 @@ class Error(StrictBaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+
+
+class EvalRunInfo(StrictBaseModel):
+    """An eval run, stamped by the consumer (the eval CLI / a trainer's inline eval)."""
+
+    type: Literal["eval"] = "eval"
+
+    id: str | None = None
+    """The producing run: the eval CLI stamps its run uuid (a resumed eval counts as
+    a new run; kept traces keep their original id), trainers stamp their own."""
+    step: int | None = None
+    """The training step an inline eval was triggered at, stamped by the trainer;
+    None for a standalone eval (the eval CLI doesn't set it)."""
+
+
+class TrainRunInfo(StrictBaseModel):
+    """A training run, stamped by the trainer."""
+
+    type: Literal["train"] = "train"
+
+    id: str | None = None
+    """The trainer's run identifier."""
+    step: int | None = None
+    """The training step this rollout belongs to."""
+
+
+RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
+"""The run a trace belongs to, discriminated on `type`."""
 
 
 class ModelCall(StrictBaseModel):
@@ -235,37 +267,6 @@ class Branch(StrictBaseModel):
         generated (i.e. system + user + tool inputs). Not the last prompt — re-sent context is
         not double-counted."""
         return self.num_total_tokens - self.num_output_tokens
-
-
-TRACE_VERSION = 5
-"""Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
-breaking shape changes; optional-with-default fields are additive and don't bump it."""
-
-
-class EvalRunInfo(StrictBaseModel):
-    """An eval run, stamped by the consumer (the eval CLI / a trainer's inline eval)."""
-
-    type: Literal["eval"] = "eval"
-    id: str | None = None
-    """The producing run: the eval CLI stamps its run uuid (a resumed eval counts as
-    a new run; kept traces keep their original id), trainers stamp their own."""
-    step: int | None = None
-    """The training step an inline eval was triggered at, stamped by the trainer;
-    None for a standalone eval (the eval CLI doesn't set it)."""
-
-
-class TrainRunInfo(StrictBaseModel):
-    """A training run, stamped by the trainer."""
-
-    type: Literal["train"] = "train"
-    id: str | None = None
-    """The trainer's run identifier."""
-    step: int | None = None
-    """The training step this rollout belongs to."""
-
-
-RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
-"""The run a trace belongs to, discriminated on `type`."""
 
 
 class VersionInfo(StrictBaseModel):
