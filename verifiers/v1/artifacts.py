@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
-from verifiers.v1.errors import ArtifactError
 from verifiers.v1.types import StrictBaseModel
 
 if TYPE_CHECKING:
@@ -78,7 +77,7 @@ async def collect(
         if (await runtime.run(["test", "-e", source], {})).exit_code != 0:
             if sweep and source == ARTIFACTS_DIR:
                 continue
-            raise ArtifactError(
+            raise RuntimeError(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
         archive = await _tar_out(runtime, artifact, budget)
@@ -96,7 +95,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
     # Extraction writes to absolute paths. In a container that is the point; under the
     # subprocess runtime it is the developer's own filesystem.
     if getattr(runtime.config, "type", None) == "subprocess":
-        raise ArtifactError(
+        raise RuntimeError(
             "refusing to restore artifacts into the subprocess runtime: extraction "
             "writes to absolute paths on the host. Grade in a container."
         )
@@ -129,7 +128,7 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         # memory, not after.
         sized = await runtime.run(["sh", "-c", f"wc -c < {shlex.quote(path)}"], {})
         if (raw := sized.stdout.strip()).isdigit() and int(raw) > budget:
-            raise ArtifactError(
+            raise RuntimeError(
                 f"artifact {artifact.source!r} takes the collection over the "
                 f"{MAX_ARTIFACT_BYTES} byte limit. The grading box boots from the "
                 "agent's image, so only the delta needs to travel — narrow the source "
@@ -148,4 +147,4 @@ async def _run(runtime: Runtime, command: str, action: str) -> None:
     result = await runtime.run(["sh", "-c", command], {})
     if result.exit_code:
         detail = (result.stderr or result.stdout).strip()[-500:]
-        raise ArtifactError(f"failed to {action}: {detail}")
+        raise RuntimeError(f"failed to {action}: {detail}")
