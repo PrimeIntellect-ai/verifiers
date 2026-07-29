@@ -63,6 +63,11 @@ class MyData(vf.TaskData):
     artifacts: list[vf.Artifact] = [
         vf.Artifact(source="/work/report", exclude=[".git"])
     ]
+
+
+class MyTask(vf.Task[MyData]):
+    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        trace.state.artifacts = await vf.collect(runtime, self.data.artifacts)
 ```
 
 Declared paths must exist when collected. The implicit directory is optional.

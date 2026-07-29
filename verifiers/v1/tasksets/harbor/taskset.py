@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pydantic import Field
 
-from verifiers.v1.artifacts import Artifact
+from verifiers.v1.artifacts import Artifact, collect
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError, TaskError
@@ -139,6 +139,7 @@ class HarborTask(Task[HarborData]):
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
+        trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime) -> float:

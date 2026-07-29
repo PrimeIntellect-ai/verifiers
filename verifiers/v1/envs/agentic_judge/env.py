@@ -135,9 +135,15 @@ class JudgeTask(vf.Task):
 
     NEEDS_CONTAINER = True
 
-    def __init__(self, data: vf.TaskData, files: dict[str, bytes]) -> None:
+    def __init__(
+        self,
+        data: vf.TaskData,
+        files: dict[str, bytes],
+        artifacts: dict[str, bytes],
+    ) -> None:
         super().__init__(data)
         self.files = files
+        self.artifacts = artifacts
 
     @classmethod
     def from_trace(
@@ -174,9 +180,11 @@ class JudgeTask(vf.Task):
                 resources=solved.resources,
             ),
             files=files,
+            artifacts={} if share_runtime else solution.state.artifacts,
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        await vf.restore(runtime, self.artifacts)
         # The solver had this box first: a pre-seeded verdict must never read as
         # the judge's own, and a file (or planted symlink) at an upload path must
         # never survive it — a symlinked TRACE_FILE would redirect the write onto
@@ -328,28 +336,13 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 await agents.judge.run(judge_task, runtime=box)
             return
 
-        async with agents.solver.provision(task) as box:
-            solution = await agents.solver.run(task, runtime=box)
-            if not solution.ok:
-                # The rollout errored, so its own scoring never ran either; grading it
-                # would spend a second sandbox to reproduce a failure the trace already
-                # records. Return rather than raise: `episode.ok` follows the failed
-                # trace, and `episode_should_retry` classifies off that trace's own
-                # error — an exception raised here would bury the real type.
-                return
-            collected = await vf.collect(box, task.data.artifacts)
-
-        async with agents.judge.provision(task) as judge_box:
-            await vf.restore(judge_box, collected)
-            judge_task = JudgeTask.from_trace(
-                solution, self.config.task, share_runtime=False
-            )
-            await agents.judge.run(judge_task, runtime=judge_box)
+        solution = await agents.solver.run(task)
+        await agents.judge.run(
+            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
+        )
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent_name: t for t in episode.traces}
-        if "judge" not in by_agent:
-            return  # solver errored; `run` skipped grading and the trace says why
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
