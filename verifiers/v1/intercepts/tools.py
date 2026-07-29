@@ -57,11 +57,7 @@ def match_tool(name: str, *patterns: str) -> bool:
                 return True
             continue
         pattern = pattern.casefold()
-        normalized_pattern = re.sub(r"[^a-z0-9*?]+", "", pattern)
-        stripped_normalized = re.sub(r"[^a-z0-9]+", "", normalized)
-        if fnmatchcase(name.casefold(), pattern) or fnmatchcase(
-            stripped_normalized, normalized_pattern
-        ):
+        if fnmatchcase(name.casefold(), pattern) or fnmatchcase(normalized, pattern):
             return True
     return False
 

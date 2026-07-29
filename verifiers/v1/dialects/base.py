@@ -195,9 +195,13 @@ class Dialect(ABC, Generic[ReqT, RespT]):
             return label if isinstance(label, str) else None
 
         def is_client(tool: dict) -> bool:
+            environment = tool.get("environment")
             return bool(
                 {"function", "custom", "input_schema"} & tool.keys()
-                or tool.get("type") in ("function", "custom")
+                or tool.get("type") in ("function", "custom", "local_shell")
+                or tool.get("type") == "shell"
+                and isinstance(environment, dict)
+                and environment.get("type") == "local"
             )
 
         kept = []
@@ -230,8 +234,8 @@ class Dialect(ABC, Generic[ReqT, RespT]):
                     for tool in container["tools"]
                     if not (
                         (label := name(tool))
-                        and label in removed
                         and label not in clients
+                        and matcher(label)
                     )
                 ]
                 if not container["tools"]:
@@ -239,7 +243,12 @@ class Dialect(ABC, Generic[ReqT, RespT]):
                 return removed
 
         selected = name(choice)
-        if selected in removed and selected not in clients:
+        if (
+            isinstance(choice, dict)
+            and selected not in (None, "auto", "none", "required", "any")
+            and selected not in clients
+            and matcher(selected)
+        ):
             body.pop("tool_choice", None)
         return removed
 
