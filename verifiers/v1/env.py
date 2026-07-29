@@ -274,6 +274,10 @@ class Env(ABC, Generic[ConfigT]):
             episode.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode; ok stays False.
             return episode
+        if any(trace.terminated_by_intercept for trace in episode.traces):
+            # Terminal interception owns the episode's final reward.
+            episode.ok = all(trace.ok for trace in episode.traces)
+            return episode
         try:
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):

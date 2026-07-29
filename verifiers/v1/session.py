@@ -22,7 +22,9 @@ from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.intercepts.core import (
     Direction,
     Interceptor,
+    InterceptOutcome,
     InterceptRecord,
+    Terminate,
 )
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import (
@@ -118,6 +120,8 @@ class RolloutSession:
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     intercepts: list[Interceptor] = field(default_factory=list)
+    terminated: asyncio.Event = field(default_factory=asyncio.Event)
+    termination_complete: asyncio.Event = field(default_factory=asyncio.Event)
     rewritten_response_ids: set[str] = field(default_factory=set)
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
@@ -180,12 +184,24 @@ class RolloutSession:
         """Whether a complete provider response must be classified before delivery."""
         return any("response" in _directions(handler) for handler in self.intercepts)
 
+    def signal_termination(self, pending: tuple[str, Terminate]) -> None:
+        """Record a terminal result and wake the rollout lifecycle."""
+        if self.terminated.is_set():
+            return
+        handler, result = pending
+        self.error = None
+        self.trace.record_reward(f"intercept/{handler}", result.reward)
+        self.trace.stop(result.reason)
+        self.terminated.set()
+
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
         call halts the harness (its model call errors out); Harness.run treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
+        if self.terminated.is_set():
+            return self.trace.stop_condition or "intercepted"
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
@@ -204,7 +220,7 @@ class RolloutSession:
         raw: dict,
         dialect: "Dialect",
         prompt: Messages | None = None,
-    ) -> bool:
+    ) -> InterceptOutcome:
         """Run matching handlers in priority order against the native wire object."""
         rewritten = False
         try:
@@ -261,6 +277,18 @@ class RolloutSession:
                     )
                     if inspect.isawaitable(action):
                         action = await action
+                    if isinstance(action, Terminate):
+                        self.trace.interceptions.append(
+                            InterceptRecord(
+                                direction=direction,
+                                handler=name,
+                                action="terminate",
+                            )
+                        )
+                        return InterceptOutcome(
+                            rewritten=rewritten,
+                            termination=(name, action),
+                        )
                     if raw_handler:
                         if action is not None and action is not raw:
                             raise TypeError(type(action).__name__)
@@ -297,4 +325,4 @@ class RolloutSession:
             raise
         except Exception as e:
             raise TaskError(f"@intercept failed: {type(e).__name__}: {e}") from e
-        return rewritten
+        return InterceptOutcome(rewritten=rewritten)

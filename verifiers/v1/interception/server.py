@@ -342,6 +342,10 @@ class InterceptionServer(Interception):
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         session.adopt(asyncio.current_task())
+        if session.terminated.is_set():
+            return web.json_response(
+                dialect.error_body("rollout terminated"), status=400
+            )
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -389,6 +393,10 @@ class InterceptionServer(Interception):
             )
             completion = await asyncio.shield(inflight)
             if completion is None:
+                if session.terminated.is_set():
+                    return web.json_response(
+                        dialect.error_body("rollout terminated"), status=400
+                    )
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
@@ -439,11 +447,17 @@ class InterceptionServer(Interception):
                     dialect.error_body(f"rollout stopped: {refused}"), status=400
                 )
             try:
-                request_rewritten = await session.run_intercepts(
-                    "request", body, dialect
-                )
+                request_outcome = await session.run_intercepts("request", body, dialect)
             except RolloutError as e:
                 return self._fail(session, dialect, e)
+            if request_outcome.termination is not None:
+                session.signal_termination(request_outcome.termination)
+                return web.json_response(
+                    dialect.error_body(
+                        f"rollout terminated: {request_outcome.termination[1].reason}"
+                    ),
+                    status=400,
+                )
 
             if dialect.streaming(body) != streaming:
                 return self._fail(
@@ -458,7 +472,7 @@ class InterceptionServer(Interception):
             try:
                 prompt, tools = dialect.parse_request(body)
             except Exception as e:
-                if not request_rewritten:
+                if not request_outcome.rewritten:
                     raise
                 return self._fail(
                     session,
@@ -547,7 +561,7 @@ class InterceptionServer(Interception):
                             dialect.error_body("rollout concluded"), status=409
                         )
                     assert call_response.raw is not None
-                    response_rewritten = await session.run_intercepts(
+                    response_outcome = await session.run_intercepts(
                         "response",
                         call_response.raw,
                         dialect,
@@ -557,7 +571,18 @@ class InterceptionServer(Interception):
                         return web.json_response(
                             dialect.error_body("rollout concluded"), status=409
                         )
-                    if response_rewritten:
+                    if response_outcome.termination is not None:
+                        # Commit the sampled terminal action, but never serve it.
+                        node = turn.commit(call_response, tools)
+                        session.signal_termination(response_outcome.termination)
+                        return web.json_response(
+                            dialect.error_body(
+                                "rollout terminated: "
+                                f"{response_outcome.termination[1].reason}"
+                            ),
+                            status=400,
+                        )
+                    if response_outcome.rewritten:
                         try:
                             rewritten_response = dialect.parse_response(
                                 dialect.validate_response(call_response.raw)
@@ -574,7 +599,7 @@ class InterceptionServer(Interception):
                         call_response = rewritten_response
                     # The harness-visible message is canonical for transcripts and
                     # scorers; the node records that interception replaced it.
-                    node = turn.commit(call_response, tools, response_rewritten)
+                    node = turn.commit(call_response, tools, response_outcome.rewritten)
                 except OverlongPromptError as e:
                     # An overlong prompt is a budget limit, not a crash: end the rollout
                     # cleanly as a truncation — refuse the call to halt the harness (same
@@ -642,6 +667,8 @@ class InterceptionServer(Interception):
                     session.inflight.pop(request_key, None)
                 if not fut.done():
                     fut.set_result(None)
+            if session.terminated.is_set():
+                session.termination_complete.set()
 
     async def _stream(
         self,
@@ -836,7 +863,7 @@ class InterceptionServer(Interception):
                         )
                         if not interception.done():
                             await keepalive()
-                    rewritten = await interception
+                    outcome = await interception
                 except RolloutError as e:
                     error = session.error = e
                     logger.warning(
@@ -850,7 +877,15 @@ class InterceptionServer(Interception):
                         interception.cancel()
                     await asyncio.gather(interception, return_exceptions=True)
 
-                if rewritten:
+                if outcome.termination is not None:
+                    await keepalive()
+                    node = turn.commit(response, tools)
+                    session.signal_termination(outcome.termination)
+                    if request.transport is not None:
+                        request.transport.abort()
+                    return resp
+
+                if outcome.rewritten:
                     try:
                         assert buffer is not None
                         rewritten_response = dialect.parse_response(
@@ -900,7 +935,7 @@ class InterceptionServer(Interception):
                 node = turn.commit(
                     response,
                     tools,
-                    rewritten=intercept_response and rewritten,
+                    rewritten=intercept_response and outcome.rewritten,
                 )
                 if replay is not None:
                     request_key, fut = replay

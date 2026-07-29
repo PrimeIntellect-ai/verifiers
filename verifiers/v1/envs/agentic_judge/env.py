@@ -300,6 +300,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
+            if solution.terminated_by_intercept:
+                return
             judge_task = JudgeTask.from_trace(solution, self.config.task)
             await agents.judge.run(judge_task, runtime=box)
 

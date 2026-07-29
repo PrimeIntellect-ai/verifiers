@@ -188,6 +188,10 @@ class RolloutRun:
         """The original exception most recently captured onto the trace."""
         return self._failure
 
+    @property
+    def terminated_by_intercept(self) -> bool:
+        return self._session.terminated.is_set()
+
     def fail(self, error: Exception) -> None:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
@@ -328,16 +332,38 @@ class RolloutRun:
         # A timeout still scores the partial trajectory.
         try:
             async with asyncio.timeout_at(self.deadline_at):
-                await self.harness.run(
-                    self.ctx,
-                    trace,
-                    self.runtime,
-                    self._endpoint,
-                    self._secret,
-                    self._urls,
-                    trace.task.data,
-                    messages,
+                harness_task = asyncio.create_task(
+                    self.harness.run(
+                        self.ctx,
+                        trace,
+                        self.runtime,
+                        self._endpoint,
+                        self._secret,
+                        self._urls,
+                        trace.task.data,
+                        messages,
+                    )
                 )
+                termination_task = asyncio.create_task(self._session.terminated.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        {harness_task, termination_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if termination_task in done:
+                        await self._session.termination_complete.wait()
+                        harness_task.cancel()
+                    else:
+                        await harness_task
+                finally:
+                    termination_task.cancel()
+                    if not harness_task.done():
+                        harness_task.cancel()
+                    await asyncio.gather(
+                        harness_task,
+                        termination_task,
+                        return_exceptions=True,
+                    )
         except TimeoutError as e:
             # Only the rollout deadline reads as a clean truncation; a TimeoutError
             # from the harness's own I/O with no expired deadline is a failure —
@@ -386,8 +412,8 @@ class RolloutRun:
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`
-        and per-rollout scoring (skipped when the run already failed — but a stopped
-        run is complete and scores its partial trajectory), then runtime teardown.
+        and per-rollout scoring (skipped when the run failed or was terminally
+        intercepted), then runtime teardown.
         Idempotent; always returns the trace."""
         if self._closed:
             return self.trace
@@ -400,7 +426,11 @@ class RolloutRun:
             finally:
                 if trace.timing.generation.start and not trace.timing.generation.end:
                     trace.timing.generation.end = time.time()
-            if not self._failed and self._opened:
+            if (
+                not self._failed
+                and self._opened
+                and not self._session.terminated.is_set()
+            ):
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
                     await asyncio.wait_for(

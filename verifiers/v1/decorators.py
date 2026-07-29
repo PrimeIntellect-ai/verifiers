@@ -94,7 +94,7 @@ def intercept(
     direction: Direction | None = None,
     raw: bool = False,
 ) -> F | Callable[[F], F]:
-    """Mark an interceptor returning replacement text or `None`.
+    """Mark an interceptor returning replacement text, `Terminate`, or `None`.
 
     Annotate `message` as `ToolMessage` or `AssistantMessage` for typed request or
     response interception. Set `raw=True` to mutate the provider-native dictionary at

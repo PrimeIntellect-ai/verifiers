@@ -200,6 +200,9 @@ class Interaction:
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
         await self._run.step(messages)
+        if self._run.terminated_by_intercept:
+            self._over = True
+            return Segment(messages=[], terminated=True)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's terminated segment.

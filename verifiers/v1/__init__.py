@@ -43,7 +43,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness
-from verifiers.v1.intercepts import InterceptResult
+from verifiers.v1.intercepts import InterceptResult, Terminate
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     Criterion,
@@ -216,6 +216,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "intercept",
     # interception
     "InterceptResult",
+    "Terminate",
     # errors
     "RolloutError",
     "EnvError",

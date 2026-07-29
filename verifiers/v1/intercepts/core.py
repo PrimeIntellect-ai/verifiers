@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Literal
 
 from verifiers.v1.types import StrictBaseModel
@@ -10,7 +11,14 @@ from verifiers.v1.types import StrictBaseModel
 Direction = Literal["request", "response"]
 
 
-InterceptResult = str | dict | None
+class Terminate(StrictBaseModel):
+    """End the rollout immediately with a final reward."""
+
+    reason: str = "intercepted"
+    reward: float = 0.0
+
+
+InterceptResult = str | dict | Terminate | None
 Interceptor = Callable[..., InterceptResult | Awaitable[InterceptResult]]
 
 
@@ -19,7 +27,15 @@ class InterceptRecord(StrictBaseModel):
 
     direction: Direction
     handler: str
-    action: Literal["rewrite"]
+    action: Literal["rewrite", "terminate"]
+
+
+@dataclass(frozen=True)
+class InterceptOutcome:
+    """Internal summary of one direction's handler chain."""
+
+    rewritten: bool = False
+    termination: tuple[str, Terminate] | None = None
 
 
 __all__ = [
@@ -27,4 +43,5 @@ __all__ = [
     "InterceptRecord",
     "InterceptResult",
     "Interceptor",
+    "Terminate",
 ]

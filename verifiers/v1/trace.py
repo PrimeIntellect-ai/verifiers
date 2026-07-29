@@ -385,7 +385,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every provider exchange behind the sampled turns, in order: raw wire request/response
     plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
     interceptions: list[InterceptRecord] = Field(default_factory=list)
-    """Every rewrite produced by a task's `@intercept` handlers."""
+    """Every rewrite or termination produced by a task's `@intercept` handlers."""
 
     rewards: dict[str, Reward] = Field(default_factory=dict)
     """Named rewards from tasks, judges, and the env's `score()` — each keeps its
@@ -420,6 +420,10 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values())
+
+    @property
+    def terminated_by_intercept(self) -> bool:
+        return any(record.action == "terminate" for record in self.interceptions)
 
     @property
     def error(self) -> Error | None:
