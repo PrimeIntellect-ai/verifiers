@@ -21,7 +21,6 @@ EvalConfig                          (the run)
 │  ├─ timeout: TimeoutConfig        (episode / finalize — the env's own hooks)
 │  ├─ retries: RetryConfig          (whole-episode fallback for faults no agent owns)
 │  ├─ max_concurrent_agents          (agent runs inside one episode — 1 by default)
-│  │                                 (alias: max_concurrent)
 │  └─ interception
 ├─ serve: ServingConfig             (how it's hosted — the `--server` path)
 │  ├─ pool: PoolConfig              (static | elastic)
