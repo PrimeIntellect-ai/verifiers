@@ -26,7 +26,6 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 import verifiers.v1 as vf
-from verifiers.v1.artifacts import CONVENTION_DIR
 from verifiers.v1.types import StrictBaseModel
 
 VERDICT_FILE = "/tmp/verdict.json"
@@ -124,15 +123,8 @@ The graded agent worked in this sandbox. {_RECORD_NOTE}"""
 ISOLATED_SANDBOX_NOTE = f"""\
 ## Your workspace
 
-Your sandbox is a FRESH box, built from the same image the graded agent started
-from — so it holds the task's original state, NOT the state the agent left. The
-agent's environment is gone; you cannot inspect it, and nothing it changed is
-here except what the task declared as an artifact. Those artifacts have been
-restored at their original paths (a patch under `{CONVENTION_DIR}/` is the usual
-one for code tasks), so to see the agent's work you generally have to apply or
-read them rather than looking at the working tree. If something you need to
-check was never declared as an artifact, say so in your reason rather than
-assuming its absence means the agent failed. {_RECORD_NOTE}"""
+This is a fresh sandbox. The task's artifacts were restored at their original
+paths; other changes made by the graded agent are not present. {_RECORD_NOTE}"""
 
 HINT_SECTION = """\
 ## Hints
