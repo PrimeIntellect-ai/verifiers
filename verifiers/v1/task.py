@@ -121,7 +121,8 @@ class TaskData(StrictBaseModel):
     entries. Prime runtimes accept host-level entries and require `vm=true`."""
     network_block: list[str] = Field(default_factory=list)
     """Execution-time destinations denied by this task and combined with runtime
-    blocks. Prime runtimes cannot combine an allowlist and a blocklist."""
+    blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
+    framework routes take precedence; ordinary Prime deny rules pass through unchanged."""
     artifacts: list[Artifact] = Field(default_factory=list)
     """Paths carried out of the agent's box and into a grading box, on top of the
     implicitly collected `/logs/artifacts/` convention dir. Declare only what a grader

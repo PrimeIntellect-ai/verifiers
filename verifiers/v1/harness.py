@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.decorators import discover_decorated, invoke_all
-from verifiers.v1.errors import HarnessError, boundary
+from verifiers.v1.errors import HarnessError, SandboxError, boundary
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
@@ -140,6 +140,11 @@ class Harness(ABC, Generic[ConfigT]):
         if result.exit_code != 0:
             # The real cause is at the END of a traceback, so keep the tail.
             detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
+            if not await runtime.alive():
+                raise SandboxError(
+                    f"runtime died under harness {self.config.id!r} "
+                    f"(exit {result.exit_code}): {detail}"
+                )
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )

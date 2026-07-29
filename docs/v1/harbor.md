@@ -94,9 +94,12 @@ baseline; legacy `[environment].allow_internet` is normalized by Harbor's schema
 
 Trusted task and harness setup remains online. The policy starts immediately before the
 agent and stays active through finalization and scoring. Interception and MCP URLs are
-added automatically; evaluator-provided `allow` entries add exceptions and `block`
-entries can narrow them. Restricted Harbor tasks require Docker or a Prime VM; Prime
-accepts host-level entries and rejects combinations that need both policy modes.
+added automatically in allowlist and framework-only modes. Concrete task/runtime
+allowlists combine, as do blocklists; framework-only access on either side takes
+precedence, and concrete allowlists cannot be combined with blocklists. Docker framework
+routes take precedence over deny rules, while ordinary Prime deny rules are applied
+unchanged and may block a matching route. Restricted Harbor tasks require Docker or a
+Prime VM; Prime accepts host-level entries.
 
 ## Artifacts and collect hooks
 
