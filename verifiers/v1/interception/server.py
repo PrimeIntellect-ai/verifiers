@@ -164,16 +164,15 @@ class InterceptionServer(Interception):
 
     async def url(self) -> str:
         """The server's reachable base URL right now — asked per acquire rather than
-        cached, because a healing tunnel re-minted since the last acquire answers with a
-        new URL. Raises `TunnelError` when the tunnel is dead and can't be re-established."""
+        cached, because a healing tunnel may have re-minted at a new URL. Raises
+        `TunnelError` when the tunnel is dead and can't be re-established."""
         assert self.endpoint is not None, "server not started"
         return await self.endpoint.url()
 
     async def healthy(self, url: str) -> bool:
-        """Whether the server is still reachable at `url` — the base URL a rollout's slot
-        handed out (trivially yes without a tunnel). A fresh probe, anchored to that
-        rollout's tunnel rather than the current one so a concurrent heal can't mask its
-        death: the failure-attribution hook for a rollout whose harness just failed."""
+        """Whether the server is still reachable at `url`, the base URL a rollout's slot
+        handed out (trivially yes without a tunnel) — the failure-attribution hook for a
+        rollout whose harness just failed."""
         return self.endpoint is None or await self.endpoint.healthy(url)
 
     @asynccontextmanager

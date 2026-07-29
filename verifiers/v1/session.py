@@ -73,9 +73,8 @@ class RolloutSession:
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
     server: InterceptionServer | None = None
-    """The interception server this session is registered on (set by `register`). How the
-    rollout, after a harness failure, asks whether the server's tunnel was down
-    (`healthy()`) — attributing the failure to the tunnel rather than the harness."""
+    """The interception server this session is registered on (set by `register`) — how
+    the rollout attributes a harness failure to a dead tunnel (`healthy()`)."""
     last_request: bytes | None = None
     """Digest of the most recently served request body; with `last_response`, the replay cache
     that keeps the message graph atomic under harness-SDK retries. A retry re-sends the

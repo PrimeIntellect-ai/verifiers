@@ -26,8 +26,7 @@ TUNNELS_PER_MIN = 512
 TUNNEL_LIMITER = creation_limiter(TUNNELS_PER_MIN / 60, "prime-tunnel")
 
 # A registration can lapse server-side while frpc is still running locally, so `url()`
-# also probes the tunnel service — but that's a network call, so at most this often.
-# (`is_running`, a local process poll, guards every call.)
+# also probes the tunnel service — a network call, so at most this often.
 REGISTRATION_CHECK_INTERVAL = 60.0
 
 
@@ -39,10 +38,10 @@ class PrimeTunnelConfig(BaseTunnelConfig):
 
 
 class PrimeEndpoint:
-    """A self-healing prime tunnel: `url()` verifies the frpc process (and, throttled, the
-    server-side registration) and re-mints the tunnel when either is gone — at a NEW public
-    URL. Healing serves the *next* acquire; a consumer holding the old URL isn't saved (its
-    URL is baked in) — `healthy()` is how its failure gets attributed to the tunnel."""
+    """A self-healing prime tunnel: `url()` re-mints when the frpc process or the
+    server-side registration is gone — at a NEW public URL. Healing serves the *next*
+    acquire; a consumer holding the old URL isn't saved, `healthy()` attributes its
+    failure to the tunnel."""
 
     def __init__(self, port: int) -> None:
         self.port = port
@@ -61,9 +60,8 @@ class PrimeEndpoint:
 
     async def healthy(self, url: str) -> bool:
         async with self._lock:
-            # A re-mint changes the URL, so a stale `url` proves the consumer's tunnel
-            # died — even when a concurrent acquire already healed past it. (Without the
-            # anchor, probing the replacement would mask the death.)
+            # A stale `url` means the consumer's tunnel died, even if a concurrent
+            # acquire already healed past it.
             if url != self._url:
                 return False
             # Torn down (or a heal already failed): it was dead.
@@ -75,9 +73,8 @@ class PrimeEndpoint:
             return False
 
     async def _alive(self, fresh: bool = False) -> bool:
-        """Whether the tunnel is up: frpc running locally and (throttled — or forced with
-        `fresh`, the attribution path) still registered server-side. An unreachable tunnel
-        API is not a dead tunnel: the probe reads as alive."""
+        """Whether the tunnel is up: frpc running locally and (throttled, or forced with
+        `fresh`) still registered server-side. An unreachable tunnel API reads as alive."""
         assert self._client is not None
         client = self._client
         if not client.is_running:
@@ -88,9 +85,8 @@ class PrimeEndpoint:
         if fresh or now - self._last_registration_check > REGISTRATION_CHECK_INTERVAL:
             self._last_registration_check = now
             try:
-                # Not `client.check_registered()`: deletion is soft server-side (the
-                # record survives as `status="terminated"`, and GET keeps returning it),
-                # so existence alone reads a terminated tunnel as registered.
+                # Deletion is soft server-side (`status="terminated"`, GET still 200),
+                # so probe status rather than `check_registered()`'s existence check.
                 info = await client._client.get_tunnel(client.tunnel_id)
                 if info is None or info.status == "terminated":
                     logger.warning(
@@ -108,9 +104,8 @@ class PrimeEndpoint:
         return True
 
     async def _mint(self) -> None:
-        """Register a fresh tunnel (network-bound and globally rate-capped — 512/min,
-        host-wide via the shared `TUNNEL_LIMITER` — so transient failures are retried);
-        a terminal one raises `TunnelError`."""
+        """Register a fresh tunnel; transient failures are retried, a terminal one
+        raises `TunnelError`."""
         from prime_tunnel import Tunnel as TunnelClient
 
         from verifiers.v1.errors import TunnelError
@@ -123,20 +118,14 @@ class PrimeEndpoint:
                     client = TunnelClient(local_port=self.port)
                     async with TUNNEL_LIMITER:
                         self._url = str(await client.start()).rstrip("/")
-                        # Record the client with no await in between: a cancellation
-                        # landing on the limiter's exit would otherwise orphan the
-                        # started frpc/registration — `close()` only stops what's
-                        # recorded. (A cancellation inside `start()` is the SDK's to
-                        # clean up, and it does.)
-                        self._client = client
+                        self._client = client  # no await in between, or a cancellation orphans the tunnel
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
         logger.info("prime tunnel up: %s -> 127.0.0.1:%d", self._url, self.port)
 
     async def close(self) -> None:
-        """Stop the *current* frpc client (it changes across heals). Runs the synchronous
-        stop to completion even under cancellation (`run_shielded` re-raises the
-        cancellation after); tunnel-stop failures are best-effort."""
+        """Stop the *current* frpc client (it changes across heals); best-effort and
+        shielded from cancellation."""
         client, self._client = self._client, None
         if client is not None:
             with contextlib.suppress(Exception):

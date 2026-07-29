@@ -372,11 +372,9 @@ class RolloutRun:
 
     async def _tunnel_failure(self) -> RolloutError | None:
         """The real cause behind a harness exit when the interception tunnel was down:
-        the harness's model calls hit a dead tunnel (e.g. the gateway's 404 page) and the
-        program died on them — infra, not the agent. Probe the server this rollout is
-        registered on, anchored to THIS rollout's slot URL (a concurrent acquire may
-        already have healed the tunnel — at a new URL — and a bare liveness probe would
-        mask the death); an inconclusive probe blames nothing."""
+        its model calls hit a dead tunnel — infra, not the agent. Probed against THIS
+        rollout's slot URL (a concurrent acquire may already have healed at a new URL);
+        an inconclusive probe blames nothing."""
         server = self._session.server
         if server is None or self._base_url is None:
             return None

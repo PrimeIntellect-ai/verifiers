@@ -22,25 +22,22 @@ ConfigT = TypeVar("ConfigT", bound=BaseTunnelConfig)
 
 
 class Endpoint(Protocol):
-    """A live exposed endpoint, valid while its `Tunnel.expose` is entered. A tunnel's URL
-    is not a constant: a healing tunnel (prime) re-establishes itself when it finds its
-    underlying tunnel dead — and comes back at a NEW public URL. So consumers ask `url()`
-    per acquire instead of caching a snapshot."""
+    """A live exposed endpoint, valid while its `Tunnel.expose` is entered. A healing
+    tunnel re-mints at a NEW URL when it finds itself dead, so consumers ask `url()` per
+    acquire instead of caching a snapshot."""
 
     async def url(self) -> str:
-        """The current public URL — healing the tunnel first if it has died (so it may
-        differ across calls). Raises `TunnelError` when the tunnel is dead and can't be
-        re-established."""
+        """The current public URL, healing a dead tunnel first (so it may differ across
+        calls). Raises `TunnelError` when it can't be re-established."""
         ...
 
     async def healthy(self, url: str) -> bool:
-        """Whether the endpoint a consumer reached at `url` is still the live one — the
+        """Whether the endpoint a consumer reached at `url` is still up — the
         failure-attribution hook: `False` means that tunnel died, so the consumer's
-        concurrent failure was the tunnel's fault, not its own. `url` anchors the answer
-        to the consumer's tunnel, not the current one: a heal re-mints at a NEW URL, so a
-        stale `url` proves its tunnel died even when a replacement is already up (probing
-        bare liveness would race the heal and mask the death). Must not raise; an
-        inconclusive probe reads as healthy."""
+        concurrent failure was the tunnel's fault. Anchored to `url` rather than bare
+        liveness because a heal re-mints at a new URL: a stale `url` proves its tunnel
+        died even when a replacement is already up. Must not raise; an inconclusive
+        probe reads as healthy."""
         ...
 
 
