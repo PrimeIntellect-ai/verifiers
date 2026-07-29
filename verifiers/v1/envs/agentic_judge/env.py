@@ -99,27 +99,26 @@ def _render(template: str, **fields: str) -> str:
     return pattern.sub(lambda m: fields[m.group(1)], template)
 
 
-_RECORD_NOTE = f"""\
-The agent's raw
-trace record (JSON: messages, tool calls, and its `info` artifacts) is uploaded
-at `{TRACE_FILE}`. The record can be very large — never dump it whole; peek
-selectively (list its keys, then slice out specific fields with python or jq)
-and pull only what you need. It is complete — it may also carry the task's own
-scores/metrics and reference material (a gold answer, a reference solution,
-held-out tests). Those are context, not your standard: recorded scores can be
-wrong and references can be narrower than the task; do not over-index on how a
-reference solves it. Your verdict is what YOU verified by execution."""
-
-SHARED_SANDBOX_NOTE = f"""\
+WORKSPACE_NOTE = f"""\
 ## Your workspace
 
-The graded agent worked in this sandbox. {_RECORD_NOTE}"""
+Your sandbox is either the box the graded agent worked in or a fresh one built
+from the task's image — so the working tree may or may not contain the agent's
+changes. An unmodified tree does not mean the agent did nothing: reconstruct
+its work from the trace record and the published artifacts. Files the task
+published as artifacts are at the same paths they had in the agent's box — the
+usual place is `{vf.ARTIFACTS_DIR}/` (for code tasks, typically a patch to read
+or apply) plus any task-declared paths.
 
-ISOLATED_SANDBOX_NOTE = f"""\
-## Your workspace
-
-This is a fresh sandbox. The task's artifacts were restored at their original
-paths; other changes made by the graded agent are not present. {_RECORD_NOTE}"""
+The agent's raw trace record (JSON: messages, tool calls, and its `info`
+artifacts) is written by the harness — not the agent — at `{TRACE_FILE}`. The
+record can be very large — never dump it whole; peek selectively (list its
+keys, then slice out specific fields with python or jq) and pull only what you
+need. It is complete — it may also carry the task's own scores/metrics and
+reference material (a gold answer, a reference solution, held-out tests). Those
+are context, not your standard: recorded scores can be wrong and references can
+be narrower than the task; do not over-index on how a reference solves it. Your
+verdict is what YOU verified by execution."""
 
 HINT_SECTION = """\
 ## Hints
@@ -154,10 +153,9 @@ class JudgeTask(vf.Task):
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace.
 
-        `share_runtime` selects the workspace note. It has to match how the judge is
-        actually placed: the note is the judge's only account of what its box
-        contains, and a judge told it is standing in the agent's workspace when it
-        is standing in a fresh one will read an unmodified tree as a failed attempt.
+        `share_runtime` mirrors how the judge is placed: in the solver's box the
+        published artifacts are already on disk, so none travel; a fresh box gets
+        the collected set, restored by `setup` at the paths they had.
         """
         solved = solution.task.data
         files = {TRACE_FILE: json.dumps(solution.to_record()).encode()}
@@ -166,8 +164,7 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
-        note = SHARED_SANDBOX_NOTE if share_runtime else ISOLATED_SANDBOX_NOTE
-        sections = [body, _verdict_section(config.criteria()), note]
+        sections = [body, _verdict_section(config.criteria()), WORKSPACE_NOTE]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
         prompt = "\n\n".join(sections)
