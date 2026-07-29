@@ -377,14 +377,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 def parse_verifier_extras(
     task_dir: Path, parsed
 ) -> tuple[list[Artifact], list[CollectHook]]:
-    """Harbor's `artifacts` and `[[verifier.collect]]` blocks, narrowed to what a
-    single-container runtime can honor.
-
-    The convention dir is deliberately not prepended here (Harbor's
-    `with_convention_entry` would): collection injects it itself, as an optional sweep.
-    Prepending it would make it an explicitly declared entry, and declared entries are
-    required — which would fail every task that never writes there.
-    """
+    """Parse supported artifact and collect-hook settings."""
     from harbor.constants import MAIN_SERVICE_NAME
     from harbor.models.task.artifacts import (
         effective_artifact_service,
