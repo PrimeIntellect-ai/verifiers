@@ -262,8 +262,16 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     if harbor_config.ignore_timeouts:
         harness_timeout = scoring_timeout = None
     else:
-        harness_timeout = parsed.agent.timeout_sec
-        scoring_timeout = parsed.verifier.timeout_sec
+        harness_timeout = (
+            parsed.agent.timeout_sec
+            if "timeout_sec" in parsed.agent.model_fields_set
+            else None
+        )
+        scoring_timeout = (
+            parsed.verifier.timeout_sec
+            if "timeout_sec" in parsed.verifier.model_fields_set
+            else None
+        )
     return HarborData(
         idx=idx,
         name=harbor_task.name,
