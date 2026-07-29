@@ -179,6 +179,7 @@ class ModalRuntime(Runtime):
                 str(PurePosixPath(target).parent)
             )
             await self._sandbox.filesystem.write_bytes.aio(data, target)
+            self._workdir_written(path)
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
 
