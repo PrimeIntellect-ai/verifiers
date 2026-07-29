@@ -358,9 +358,6 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 await agents.judge.run(judge_task, runtime=box)
             return
 
-        # Collection is the barrier: once it returns, nothing downstream needs the
-        # solver's box. Letting the context manager tear it down normally keeps an
-        # episode at one box rather than two, which is what costs on a paid runtime.
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
             if not solution.ok:
