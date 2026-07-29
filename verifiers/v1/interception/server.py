@@ -409,6 +409,7 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
+            assert response.raw is not None
             if replay is not None:
                 request_key, fut = replay
                 _retain_replay(session, request_key, response.raw)
@@ -555,6 +556,7 @@ class InterceptionServer(Interception):
                             rewritten_response = dialect.parse_response(
                                 dialect.validate_response(call_response.raw)
                             )
+                            rewritten_response.tokens = call_response.tokens
                             rewritten_response.raw = call_response.raw
                         except Exception as e:
                             raise TaskError(
@@ -848,6 +850,7 @@ class InterceptionServer(Interception):
                         rewritten_response = dialect.parse_response(
                             dialect.validate_response(response.raw)
                         )
+                        rewritten_response.tokens = response.tokens
                         rewritten_response.raw = response.raw
                         buffer.seek(0)
                         buffer.truncate()

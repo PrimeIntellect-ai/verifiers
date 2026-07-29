@@ -8,7 +8,6 @@ is the framework's per-rollout budget (turns / tokens), checked between turns.
 """
 
 import asyncio
-import copy
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
@@ -245,7 +244,6 @@ class RolloutSession:
                         message, _message_types(handler)
                     ):
                         continue
-                    before = copy.deepcopy(raw) if raw_handler else None
                     action = invoke(
                         handler,
                         {
@@ -261,15 +259,21 @@ class RolloutSession:
                     )
                     if inspect.isawaitable(action):
                         action = await action
+                    if raw_handler:
+                        if action is not None and action is not raw:
+                            raise TypeError(type(action).__name__)
+                        if action is raw:
+                            self.trace.interceptions.append(
+                                InterceptRecord(
+                                    direction=direction,
+                                    handler=name,
+                                    action="rewrite",
+                                )
+                            )
+                            rewritten = True
+                        continue
                     if action is not None and not isinstance(action, str):
                         raise TypeError(type(action).__name__)
-                    if raw_handler and raw != before:
-                        self.trace.interceptions.append(
-                            InterceptRecord(
-                                direction=direction, handler=name, action="rewrite"
-                            )
-                        )
-                        rewritten = True
                     if isinstance(action, str):
                         if message is None:
                             raise TypeError(

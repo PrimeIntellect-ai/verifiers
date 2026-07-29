@@ -10,7 +10,7 @@ from verifiers.v1.types import StrictBaseModel
 Direction = Literal["request", "response"]
 
 
-InterceptResult = str | None
+InterceptResult = str | dict | None
 Interceptor = Callable[..., InterceptResult | Awaitable[InterceptResult]]
 
 

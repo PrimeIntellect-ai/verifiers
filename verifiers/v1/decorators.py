@@ -98,7 +98,8 @@ def intercept(
 
     Annotate `message` as `ToolMessage` or `AssistantMessage` for typed request or
     response interception. Set `raw=True` to mutate the provider-native dictionary at
-    either boundary, selecting one explicitly with `direction`."""
+    either boundary and return that dictionary to mark it rewritten (or `None` when
+    unchanged), selecting one boundary explicitly with `direction`."""
     extra: dict[str, Any] = {
         "intercept_priority": priority,
         "intercept_raw": raw,
