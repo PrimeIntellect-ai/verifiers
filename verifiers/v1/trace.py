@@ -341,26 +341,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_v4(cls, data: Any) -> Any:
-        """Upgrade pre-v5 records to the v5 shape: drop the explicit nulls whose
-        fields v5 defaults now fill, seat records that predate the required
-        `agent`, and drop a run stamp with no id. Current-version records
-        validate strictly; delete this when v4 support is dropped."""
-        if not isinstance(data, dict) or data.get("version", TRACE_VERSION) >= 5:
-            return data
-        data = dict(data)
-        for field in ("tools", "verifiers", "agent"):
-            if field in data and data[field] is None:
-                del data[field]
-        data.setdefault("agent", {"config": {}})
-        run = data.get("run")
-        if isinstance(run, dict) and run.get("id") is None:
-            data["run"] = None
-        data["version"] = 5
-        return data
-
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values())
@@ -537,6 +517,32 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     def to_record(self) -> dict[str, Any]:
         """JSON record without raw tensors, which remain available on the msgpack wire."""
         return self.model_dump(mode="json", exclude=EXCLUDE_FIELDS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate(cls, data: Any) -> Any:
+        """Upgrade older records step by step to the current schema. Every schema
+        bump owns its step: bump `TRACE_VERSION`, add a `_to_v<n>` util, chain it
+        here. Current-version records validate strictly."""
+        if not isinstance(data, dict):
+            return data
+        if data.get("version", TRACE_VERSION) < 5:
+            data = _to_v5(dict(data))
+        return data
+
+
+def _to_v5(record: dict) -> dict:
+    """<v5 -> v5: drop the explicit nulls whose fields v5 defaults now fill, seat
+    records that predate the required `agent`, and drop a run stamp with no id."""
+    for field in ("tools", "verifiers", "agent"):
+        if field in record and record[field] is None:
+            del record[field]
+    record.setdefault("agent", {"config": {}})
+    run = record.get("run")
+    if isinstance(run, dict) and run.get("id") is None:
+        record["run"] = None
+    record["version"] = 5
+    return record
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]
