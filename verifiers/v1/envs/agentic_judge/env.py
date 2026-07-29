@@ -119,8 +119,7 @@ reference solves it. Your verdict is what YOU verified by execution."""
 SHARED_SANDBOX_NOTE = f"""\
 ## Your workspace
 
-Your sandbox is the SAME box the graded agent worked in, in the state the agent
-left it — its edits (and any scoring side effects) are applied. {_RECORD_NOTE}"""
+The graded agent worked in this sandbox. {_RECORD_NOTE}"""
 
 ISOLATED_SANDBOX_NOTE = f"""\
 ## Your workspace
