@@ -250,7 +250,7 @@ class Branch(StrictBaseModel):
         return self.num_total_tokens - self.num_output_tokens
 
 
-_NODE_DUMP_EXCLUDE: dict = {
+EXCLUDE_FIELDS: dict = {
     "nodes": {
         "__all__": {
             "multi_modal_data",
@@ -610,7 +610,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     def to_record(self) -> dict[str, Any]:
         """JSON record without raw tensors, which remain available on the msgpack wire."""
-        return self.model_dump(mode="json", exclude=_NODE_DUMP_EXCLUDE)
+        return self.model_dump(mode="json", exclude=EXCLUDE_FIELDS)
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]
