@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-RequestKey = tuple[str, bytes, str | None]
+RequestKey = tuple[str, bytes, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,10 +82,11 @@ class RolloutSession:
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
     last_request: RequestKey | None = None
-    """Route, body digest, and optional logical request id of the most recently served request;
-    with `last_response`, the cache that keeps the message graph atomic under explicitly marked
-    harness-SDK retries. Only a fully completed model response is cached, so a genuinely failed
-    attempt still re-runs. Keeping only the last response is sufficient and bounded."""
+    """Route, body digest, and Idempotency-Key of the most recently served replayable request;
+    with `last_response`, the cache that keeps the message graph atomic under explicitly keyed
+    harness-SDK retries. Unkeyed requests never enter replay state. Only a fully completed model
+    response is cached, so a genuinely failed attempt still re-runs. Keeping only the last
+    response is sufficient and bounded."""
     last_response: ReplayResponse | None = None
     """The completed response for `last_request`, replayed verbatim on a retry."""
     inflight: dict[RequestKey, "asyncio.Future[ReplayResponse | None]"] = field(

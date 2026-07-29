@@ -316,9 +316,11 @@ class InterceptionServer(Interception):
         except ValueError:
             body = json.loads(raw)
         request_id = request.headers.get("idempotency-key")
-        request_key = (request.path, await _request_digest(raw), request_id)
-        retry_count = request.headers.get("x-stainless-retry-count")
-        deduplicate = request_id is not None or retry_count not in (None, "0")
+        request_key = (
+            (request.path, await _request_digest(raw), request_id)
+            if request_id is not None
+            else None
+        )
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
@@ -330,16 +332,15 @@ class InterceptionServer(Interception):
             session.trace.id,
             streaming,
         )
-        # Graph atomicity under explicitly identified retries. A logical request id identifies
-        # every attempt directly; Stainless SDKs instead mark attempts after the first with a
-        # retry count. Unmarked byte-identical calls are independent samples. Two retry cases are
-        # resolved without re-sampling:
+        # Graph atomicity under explicitly identified retries. An Idempotency-Key identifies
+        # every attempt of one logical request; unkeyed byte-identical calls are independent
+        # samples. Two retry cases are resolved without re-sampling:
         #   1. the first attempt already finished -> replay the recorded response;
         #   2. the first attempt is still computing (a slow turn) -> await it and return its
         #      result, so a slow turn is safe without an inflated client timeout.
         # A failed attempt caches nothing and re-runs normally.
         if (
-            deduplicate
+            request_key is not None
             and session.last_request == request_key
             and session.last_response is not None
         ):
@@ -361,26 +362,29 @@ class InterceptionServer(Interception):
                 )
             return _completion_response(completion)
 
-        if deduplicate and (inflight := session.inflight.get(request_key)) is not None:
-            return await coalesced(inflight)
-        # Publish this attempt so an explicitly marked retry can coalesce onto it. A separate
-        # unmarked request may replace the entry and sample independently.
-        fut: asyncio.Future[ReplayResponse | None] = (
-            asyncio.get_running_loop().create_future()
-        )
-        session.inflight[request_key] = fut
+        replay: tuple[RequestKey, asyncio.Future[ReplayResponse | None]] | None = None
+        if request_key is not None:
+            if (inflight := session.inflight.get(request_key)) is not None:
+                return await coalesced(inflight)
+            fut: asyncio.Future[ReplayResponse | None] = (
+                asyncio.get_running_loop().create_future()
+            )
+            session.inflight[request_key] = fut
+            replay = request_key, fut
 
         def serve(response: Response) -> web.Response:
             # Record the served turn and hand it to any coalesced retry, so a retried
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            if isinstance(session.last_response, StreamReplay):
-                session.last_response.path.unlink(missing_ok=True)
-            session.last_request = request_key
-            session.last_response = response.raw
-            if not fut.done():
-                fut.set_result(response.raw)
+            if replay is not None:
+                request_key, fut = replay
+                if isinstance(session.last_response, StreamReplay):
+                    session.last_response.path.unlink(missing_ok=True)
+                session.last_request = request_key
+                session.last_response = response.raw
+                if not fut.done():
+                    fut.set_result(response.raw)
             return _completion_response(response.raw)
 
         try:
@@ -398,7 +402,7 @@ class InterceptionServer(Interception):
                     dialect,
                     body,
                     prompt,
-                    replay=(request_key, fut),
+                    replay=replay,
                     tools=tools,
                 )
             # The rollout may conclude (deadline, teardown) while this exchange was
@@ -519,10 +523,12 @@ class InterceptionServer(Interception):
             # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
             # response" (an error/refuse return above), so the waiter surfaces a retryable error.
             # Only clear our own entry — never one a later owner may have installed.
-            if session.inflight.get(request_key) is fut:
-                session.inflight.pop(request_key, None)
-            if not fut.done():
-                fut.set_result(None)
+            if replay is not None:
+                request_key, fut = replay
+                if session.inflight.get(request_key) is fut:
+                    session.inflight.pop(request_key, None)
+                if not fut.done():
+                    fut.set_result(None)
 
     async def _stream(
         self,
@@ -531,10 +537,10 @@ class InterceptionServer(Interception):
         dialect: Dialect,
         body: dict,
         prompt: Messages,
-        replay: tuple[RequestKey, "asyncio.Future[ReplayResponse | None]"],
+        replay: tuple[RequestKey, "asyncio.Future[ReplayResponse | None]"] | None,
         tools: list[Tool] | None = None,
     ) -> web.StreamResponse:
-        """Relay one SSE turn live while retaining its model events for retry replay."""
+        """Relay one SSE turn live, retaining events only for explicitly keyed replay."""
         if session.released:  # concluded while this request queued — seal holds
             return web.json_response(
                 dialect.error_body("rollout concluded"), status=409
@@ -559,8 +565,12 @@ class InterceptionServer(Interception):
         error: BaseException | None = None
         turn = graph.prepare_turn(session.trace, prompt)
         started = time.time()
-        buffer = NamedTemporaryFile(prefix="vf-stream-replay-", delete=False)  # noqa: SIM115
-        replay_path = Path(buffer.name)
+        buffer = (
+            NamedTemporaryFile(prefix="vf-stream-replay-", delete=False)  # noqa: SIM115
+            if replay is not None
+            else None
+        )
+        replay_path = Path(buffer.name) if buffer is not None else None
         published = False
         try:
             try:
@@ -665,7 +675,8 @@ class InterceptionServer(Interception):
                     ):
                         await write(b": keepalive\n")
                         continue
-                    buffer.write(chunk)
+                    if buffer is not None:
+                        buffer.write(chunk)
                     if deferred or dialect.is_terminal_event(chunk):
                         feed(chunk)
                         # forwarded after the turn is committed, below
@@ -693,17 +704,19 @@ class InterceptionServer(Interception):
                 return resp
 
             node = turn.commit(response, tools)
-            buffer.flush()
-            buffer.close()
-            stream_replay = StreamReplay(replay_path, resp.content_type)
-            request_key, fut = replay
-            if isinstance(session.last_response, StreamReplay):
-                session.last_response.path.unlink(missing_ok=True)
-            session.last_request = request_key
-            session.last_response = stream_replay
-            published = True
-            if not fut.done():
-                fut.set_result(stream_replay)
+            if replay is not None:
+                request_key, fut = replay
+                assert buffer is not None and replay_path is not None
+                buffer.flush()
+                buffer.close()
+                stream_replay = StreamReplay(replay_path, resp.content_type)
+                if isinstance(session.last_response, StreamReplay):
+                    session.last_response.path.unlink(missing_ok=True)
+                session.last_request = request_key
+                session.last_response = stream_replay
+                published = True
+                if not fut.done():
+                    fut.set_result(stream_replay)
             logger.debug("intercept stream turn: id=%s", session.trace.id)
             # Release turn-ending events only after the graph commit and replay cache update.
             await finish_live()
@@ -728,8 +741,9 @@ class InterceptionServer(Interception):
                 usage=response.usage if response is not None else None,
                 error=error,
             )
-            buffer.close()
-            if not published:
+            if buffer is not None:
+                buffer.close()
+            if replay_path is not None and not published:
                 replay_path.unlink(missing_ok=True)
 
     async def handle_aux(
