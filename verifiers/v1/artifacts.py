@@ -51,8 +51,7 @@ async def collect(
     and grading a partial state scores the rollout wrong rather than failing it. The
     implicit convention sweep is exempt — most tasks never write there.
 
-    One archive per source: BusyBox `tar` (every alpine-based image) implements only
-    `c`/`x`/`t` with no `-r` to append, and each source carries its own excludes anyway.
+    Each source is archived separately so its exclude patterns stay local.
     """
     # Harbor permits a relative source, and the probe below resolves one against the
     # runtime's workdir — so the tar, which runs `-C /`, has to agree or it archives a
