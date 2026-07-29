@@ -551,6 +551,10 @@ class InterceptionServer(Interception):
                         dialect,
                         prompt,
                     )
+                    if session.released:
+                        return web.json_response(
+                            dialect.error_body("rollout concluded"), status=409
+                        )
                     if response_rewritten:
                         try:
                             rewritten_response = dialect.parse_response(
@@ -876,7 +880,10 @@ class InterceptionServer(Interception):
 
                 await keepalive()
             if session.released:
-                if not intercept_response:
+                if intercept_response:
+                    if request.transport is not None:
+                        request.transport.abort()
+                else:
                     await finish_live()
                 return resp
 

@@ -126,7 +126,7 @@ def parse_messages(body: dict) -> Messages:
 def response_from_wire(message: AnthropicMessage) -> Response:
     """An Anthropic `Message` -> a vf `Response` (its content blocks folded into one assistant
     message: text -> content, thinking -> reasoning, tool_use -> tool calls)."""
-    data = message.model_dump()
+    data = message.model_dump(exclude_none=True)
     blocks = data.get("content") or []
     state = [
         block
