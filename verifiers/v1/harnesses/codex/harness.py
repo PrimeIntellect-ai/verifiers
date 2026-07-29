@@ -11,6 +11,8 @@ import re
 import shlex
 from collections import Counter
 
+from pydantic import Field
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
@@ -26,7 +28,7 @@ PROVIDER = "intercept"
 # The env var codex reads the provider api key (its bearer = the session secret) from.
 KEY_VAR = "CODEX_INTERCEPT_KEY"
 
-CODEX_DIR = "/tmp/vf-codex"
+CODEX_DIR = "/tmp/vf-codex-{version}"
 CODEX_BIN = f"{CODEX_DIR}/bin/codex"
 SKILLS_DIR = ".agents/skills"
 INSTALL = r"""
@@ -42,7 +44,7 @@ chmod +x {bin}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: str = "0.144.5"
+    version: str = Field(default="0.144.5", pattern=r"^[A-Za-z0-9._+-]+$")
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
@@ -57,15 +59,17 @@ class CodexHarness(Harness[CodexHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
         logger.info("codex: ensuring codex %s is installed", self.config.version)
+        directory = CODEX_DIR.format(version=self.config.version)
+        binary = CODEX_BIN.format(version=self.config.version)
         script = (
             INSTALL.replace("{version}", self.config.version)
-            .replace("{dir}", CODEX_DIR)
-            .replace("{bin}", CODEX_BIN)
+            .replace("{dir}", directory)
+            .replace("{bin}", binary)
         )
-        ensure = shlex.quote(f"[ -x {CODEX_BIN} ] || ({script})")
-        # Shared local runtimes may provision concurrently; only the first downloads.
+        ensure = shlex.quote(f"[ -x {binary} ] || ({script})")
+        # Shared local runtimes may provision one release concurrently; only the first downloads.
         guarded = (
-            f"mkdir -p {CODEX_DIR} && flock {CODEX_DIR}/install.lock sh -c {ensure}"
+            f"mkdir -p {directory} && flock {directory}/install.lock sh -c {ensure}"
         )
         install = await runtime.run(["sh", "-c", guarded], {})
         if install.exit_code != 0:
@@ -129,7 +133,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
                     image_index += 1
             prompt = "\n\n".join(texts)
         argv = [
-            CODEX_BIN,
+            CODEX_BIN.format(version=self.config.version),
             "exec",
             *self._config_args(ctx, endpoint, mcp_urls),
             *image_args,
@@ -195,7 +199,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
                 data.model_copy(update={"prompt": messages}),
             )
         argv = [
-            CODEX_BIN,
+            CODEX_BIN.format(version=self.config.version),
             "exec",
             "resume",
             "--last",
