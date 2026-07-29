@@ -173,12 +173,6 @@ async def capture_patch(
         trace.info["patch_truncated"] = True
     trace.info["patch"] = raw.decode("utf-8", errors="replace")
     if write_path is not None:
-        try:
-            parent = str(PurePosixPath(write_path).parent)
-            await runtime.run(["mkdir", "-p", parent], env or {})
-            await runtime.write(write_path, raw)
-        except Exception as exc:
-            # Transport again, not the policy: the patch exists, we could not place it.
-            raise SandboxError(
-                f"patch capture could not write {write_path!r}: {exc}"
-            ) from exc
+        parent = str(PurePosixPath(write_path).parent)
+        await runtime.run(["mkdir", "-p", parent], env or {})
+        await runtime.write(write_path, raw)
