@@ -356,6 +356,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
             # refusal, or tool state can survive the scrub.
             choice["message"] = {"role": "assistant", "content": text}
             choice["finish_reason"] = "stop"
+            choice["logprobs"] = None
 
     def rewrite_tool_result(self, body: dict, tool_call_id: str, text: str) -> None:
         for message in body.get("messages") or []:
