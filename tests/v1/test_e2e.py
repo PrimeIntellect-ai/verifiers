@@ -392,25 +392,12 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 
 @pytest.mark.e2e
 async def test_env_id_agentic_judge(run_v1, tmp_path):
-    """The agentic judge over the echo taskset (needs docker), on the default
-    `shared` topology: the box is provisioned once from the solver's runtime
-    policy, the solver plays the task in it, the judge lands in the SAME box with
-    the graded trace uploaded, investigates with real execution, and its parsed
-    verdict lands on the solver's trace under the spec's reward key. Wiring, not
-    taste: the judge followed the verdict-file contract — the grade itself is the
-    model's call. Exercises the config surface too: an unpinned judge runtime
-    (inherits the solver's), a policy-only prompt override (the verdict contract
-    is appended regardless), and reward-composition weights."""
     traces = await run_v1(
         "echo-v1",
-        harness=None,  # seats pin their own harness; there is no run-level one
+        harness=None,
         env={
             "id": "agentic-judge",
-            # The solver owns the shared box, so the container is pinned here; the
-            # judge's runtime is left unset to exercise the inheritance.
             "solver": {"harness": {"id": "bash"}, "runtime": {"type": "docker"}},
-            # The judge reads the trace and reasons before it writes the
-            # verdict file; the shared 2048-token run cap truncates it mid-audit.
             "judge": {
                 "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
@@ -429,10 +416,9 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     (judge,) = [t for t in traces if t.agent_name == "judge"]
     assert solver.ok and judge.ok
     assert judge.trainable is False
-    # The task's own reward keeps its raw score; the rescale lands on the weight.
     assert solver.rewards["echoed"].score == 1.0
     assert solver.rewards["echoed"].weight == 0.5
-    assert isinstance(judge.info.get("verdict"), dict)  # scraped off the box
+    assert isinstance(judge.info.get("verdict"), dict)
     assert 0.0 <= solver.rewards["judge"].score <= 1.0
 
 
