@@ -71,9 +71,10 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
-# Built-in harnesses use the OpenAI SDK's short default retry backoff. Keep a generous window
-# for transport-failure detection without retaining every completed turn for the whole rollout.
-_REPLAY_TTL_SECONDS = 30
+# The Bash harness uses the OpenAI SDK's 600-second read timeout. Keep the replay through that
+# full failure-detection window plus the SDK's bounded retry delay, while still expiring entries
+# during long-running sessions.
+_REPLAY_TTL_SECONDS = 660
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
