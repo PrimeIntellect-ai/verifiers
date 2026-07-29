@@ -89,7 +89,7 @@ class TaskTimeout(StrictBaseModel):
     model_config = ConfigDict(frozen=True)
 
     setup: float | None = None
-    harness: float | None = None
+    agent: float | None = None
     finalize: float | None = None
     scoring: float | None = None
 

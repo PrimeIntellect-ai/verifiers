@@ -62,7 +62,7 @@ class SubprocessRuntime(Runtime):
             stdout, stderr = await proc.communicate()
         finally:
             # If the await didn't finish, the caller cancelled it (e.g. the rollout's
-            # scoring_timeout / harness_timeout fired): communicate() leaves the process
+            # scoring_timeout / agent_timeout fired): communicate() leaves the process
             # running, so SIGKILL its whole group (start_new_session => pgid == pid) — otherwise
             # a hung child (a wedged uv/sympy verify) outlives the rollout and leaks CPU. A
             # no-op once it has exited on its own.

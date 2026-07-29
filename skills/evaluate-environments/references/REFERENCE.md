@@ -173,7 +173,7 @@ On `EnvServerConfig` (below): set `id` (leave `env.taskset` unset) to run a clas
 
 The separate `verifiers/v1/configs/env.py` `TimeoutConfig` (the env's `--env.timeout.*`) keeps only `episode` — the bound on the whole `run()` interaction — and `finalize` — the bound on the env's `finalize()` hook.
 
-> Remote sandboxes cap any harness timeout at 24 hours (provider max lifetime).
+> Remote sandboxes cap any agent timeout at 24 hours (provider max lifetime).
 
 ---
 

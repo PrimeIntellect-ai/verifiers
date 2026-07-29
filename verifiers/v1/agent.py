@@ -45,7 +45,7 @@ from verifiers.v1.types import (
     UserMessage,
 )
 from verifiers.v1.utils.compile import (
-    cap_remote_harness_timeout,
+    cap_remote_agent_timeout,
     resolve_runtime_config,
     validate_pairing,
 )
@@ -390,7 +390,7 @@ class Agent:
                 attempt + 1,
                 retry.max_retries,
                 delay,
-                trace.error.type if trace.error else "?",
+                trace.last_error.type if trace.last_error else "?",
             )
             await asyncio.sleep(delay)
         if history:
@@ -419,8 +419,8 @@ class Agent:
             # close() never runs — free the run's servers and owned runtime first.
             await run.abort()
             raise
-        if trace.runtime is not None:
-            trace.runtime.borrowed = runtime is not None
+        if trace.agent is not None and trace.agent.runtime is not None:
+            trace.agent.runtime.borrowed = runtime is not None
         return trace
 
     @asynccontextmanager
@@ -520,10 +520,10 @@ class Agent:
             self.harness, type(task), runtime_config, shared_tools=shared_tools
         )
         # Timeout precedence: agent-level wins, else the task's, else no limit.
-        harness_timeout = (
+        agent_timeout = (
             self.timeout.rollout
             if self.timeout.rollout is not None
-            else task.data.timeout.harness
+            else task.data.timeout.agent
         )
         return {
             "agent_config": self.config,
@@ -535,8 +535,8 @@ class Agent:
                 if self.timeout.setup is not None
                 else task.data.timeout.setup
             ),
-            "harness_timeout": cap_remote_harness_timeout(
-                harness_timeout, runtime_config, task
+            "agent_timeout": cap_remote_agent_timeout(
+                agent_timeout, runtime_config, task
             ),
             "finalize_timeout": (
                 self.timeout.finalize

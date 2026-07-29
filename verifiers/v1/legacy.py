@@ -227,7 +227,6 @@ def _timing(raw: Any) -> Timing:
 _V0_TO_V1_TRUNCATION_STOP = {
     "max_turns_reached": "max_turns",
     "prompt_too_long": "context_length",
-    "timeout_reached": "harness_timeout",
     "max_total_completion_tokens_reached": "max_output_tokens",
 }
 

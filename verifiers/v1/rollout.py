@@ -118,7 +118,7 @@ class RolloutRun:
         wire_data: TaskData | None = None,
         has_user: bool = False,
         setup_timeout: float | None = None,
-        harness_timeout: float | None = None,
+        agent_timeout: float | None = None,
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
@@ -133,7 +133,8 @@ class RolloutRun:
         self.runtime_config = runtime_config
         self._has_user = has_user
         self._setup_timeout = setup_timeout
-        self._harness_time_remaining = harness_timeout
+        self._agent_timeout = agent_timeout
+        self._agent_time_remaining = agent_timeout
         self._finalize_timeout = finalize_timeout
         self._scoring_timeout = scoring_timeout
         self._shared_tools = shared_tools or {}
@@ -166,7 +167,7 @@ class RolloutRun:
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
-        `harness_timeout` budget only while its own segments run, so time awaiting
+        `agent_timeout` budget only while its own segments run, so time awaiting
         the caller (including another interleaved agent) cannot starve it."""
 
     @property
@@ -308,7 +309,8 @@ class RolloutRun:
         for an exchange the user opens, this is also the first segment, on an
         empty conversation); without, it launches on the task's own prompt.
         Returns whether the exchange can continue — a refused turn (limit, @stop),
-        a timeout, a failure, or a segment that made no progress all end it."""
+        a failure (an expired agent timeout included), or a segment that made no
+        progress all end it."""
         if not self._opened or self._closed or not self.ok:
             return False
         trace = self.trace
@@ -317,11 +319,10 @@ class RolloutRun:
         segment_start = loop.time()
         self.deadline_at = (
             None
-            if self._harness_time_remaining is None
-            else segment_start + max(0.0, self._harness_time_remaining)
+            if self._agent_time_remaining is None
+            else segment_start + max(0.0, self._agent_time_remaining)
         )
         # Prefer an intercepted model/tool error to the harness exit it caused.
-        # A timeout still scores the partial trajectory.
         try:
             async with asyncio.timeout_at(self.deadline_at):
                 await self.harness.run(
@@ -335,11 +336,16 @@ class RolloutRun:
                     messages,
                 )
         except TimeoutError as e:
-            # Only the rollout deadline reads as a clean truncation; a TimeoutError
-            # from the harness's own I/O with no expired deadline is a failure —
-            # recording it as a stop would score a broken run as a partial success.
+            # An expired rollout deadline is the agent breaking its time budget —
+            # an agent failure, never a clean stop. A TimeoutError from the
+            # harness's own I/O with no expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                trace.stop("harness_timeout")
+                self.fail(
+                    HarnessError(
+                        f"agent timeout: rollout exceeded its "
+                        f"{self._agent_timeout:g}s budget"
+                    )
+                )
             else:
                 self.fail(e)
             return False
@@ -352,9 +358,9 @@ class RolloutRun:
                 self.fail(e)
             return False
         finally:
-            if self._harness_time_remaining is not None:
-                self._harness_time_remaining = max(
-                    0.0, self._harness_time_remaining - (loop.time() - segment_start)
+            if self._agent_time_remaining is not None:
+                self._agent_time_remaining = max(
+                    0.0, self._agent_time_remaining - (loop.time() - segment_start)
                 )
             self.deadline_at = None
         if self._session.error is not None:
@@ -457,6 +463,6 @@ class RolloutRun:
             self.task.data.idx,
             trace.reward,
             trace.num_turns,
-            trace.error.type if trace.error else trace.stop_condition,
+            trace.last_error.type if trace.last_error else trace.stop_condition,
         )
         return trace
