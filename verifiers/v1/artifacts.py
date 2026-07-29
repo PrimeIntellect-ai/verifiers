@@ -1,17 +1,4 @@
-"""Artifact collection and restoration across runtimes.
-
-Grading in the box the agent worked in leaves a seam a policy under RL pressure will
-find. Grading in a second box removes it — only what the task declares crosses over.
-
-Two channels, non-overlapping: `Trace.info` is the durable record (`capture_patch` puts
-the diff there, a judge puts its verdict there) and never travels; `/logs/artifacts/` is
-transport, Harbor's in-sandbox convention, collected with no declaration and restored at
-the same path in the grading box ("no translation", as in Harbor).
-
-`collect` runs while the agent's box is alive, right after `Task.finalize` produced the
-files. It is the barrier: once it returns, nothing downstream needs the agent's box and
-it can be torn down.
-"""
+"""Artifact collection and restoration across runtimes."""
 
 from __future__ import annotations
 
