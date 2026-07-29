@@ -16,9 +16,15 @@ worker.
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
 (own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
-broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
-monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
-so worker death is rare).
+broker dies. TODO: downscale idle workers, stats/lag monitors (v0 had them).
+
+A worker that dies is reaped: `EnvClient` awaits rollout replies untimed, so an
+unanswered request is an unbounded hang, and a dead worker's `active` count never drains
+— least-busy dispatch would elect the corpse for every subsequent request. The broker
+therefore polls its workers' exit codes, answers their in-flight requests with an error,
+and replaces each failed worker up to `MAX_WORKER_RESTARTS` times. Readiness is a worker
+handshake, not a socket bind: the broker reports its address only once a worker answers
+`health`, so a spawner is never told "ready" about a pool whose env failed to load.
 """
 
 import asyncio
@@ -26,10 +32,14 @@ import contextlib
 import logging
 import multiprocessing as mp
 import os
+import queue
 import signal
 import threading
+import time
 import uuid
 from collections.abc import Callable
+from multiprocessing.process import BaseProcess
+from pathlib import Path
 
 import msgpack
 import zmq
@@ -37,11 +47,27 @@ import zmq.asyncio
 
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
+from verifiers.v1.serve.types import BaseResponse, HealthResponse, RunGroupRequest
 
 logger = logging.getLogger(__name__)
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
+
+MAX_WORKER_RESTARTS = 3
+"""Consecutive replacement attempts per worker slot. A ready worker resets its slot's
+budget; repeated startup failures exhaust only that slot, not the rest of the pool."""
+
+ENV_SERVER_SPAWN_TIMEOUT = 600.0
+"""Default deadline for a spawned server to report its address. Generous: it reports only
+once its env is loaded, which for a legacy bridge includes pulling a dataset."""
+
+# Broker loop wake-up, so exited workers are reaped even while no socket is readable.
+_REAP_INTERVAL_S = 0.25
+_REAP_INTERVAL_MS = int(_REAP_INTERVAL_S * 1000)
+_MAX_SCALE_UP_BACKOFF_S = 30.0
+# Startup handshake: a `health` request whose reply proves a worker loaded its env.
+_STARTUP_PROBE = b"startup"
+_EMPTY_PAYLOAD = msgpack.packb({}, use_bin_type=True)
 
 
 def _arm_teardown(death_pipe=None) -> None:
@@ -74,10 +100,10 @@ class EnvServerPool:
 
     With `elastic=True` (default) it starts with a single worker and spawns another
     whenever in-flight requests reach 90% of current capacity (`workers * multiplex`), up
-    to `max_workers`. Upscale-only for now — workers are never reclaimed. `elastic=False`
-    pre-spawns all `max_workers` upfront (the old fixed-pool behavior). The broker forwards
-    opaque request frames, so workers can be `EnvServer` (v1) or `LegacyEnvServer` (v0)
-    without the broker caring."""
+    to `max_workers`. Upscale-only for now — a live worker is never reclaimed, though a dead
+    one is (see the module docstring). `elastic=False` pre-spawns all `max_workers` upfront
+    (the old fixed-pool behavior). The broker forwards opaque request frames, so workers can
+    be `EnvServer` (v1) or `LegacyEnvServer` (v0) without the broker caring."""
 
     def __init__(
         self,
@@ -88,6 +114,7 @@ class EnvServerPool:
         log_setup: Callable[[], None] | None = None,
         multiplex: int = 128,
         elastic: bool = True,
+        address_queue=None,
     ) -> None:
         self.server_kwargs = server_kwargs
         self.max_workers = max_workers
@@ -95,10 +122,19 @@ class EnvServerPool:
         self.elastic = elastic
         self.legacy = legacy
         self.log_setup = log_setup
+        self.address_queue = address_queue
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
+        # request_id -> {client_id, worker, rollout_slots}
+        self.pending: dict[bytes, dict] = {}
+        self.in_flight = 0
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
+        self._next_index = 0
+        self._replacement_queue: list[int] = []
+        self._scale_up_failures = 0
+        self._scale_up_retry_at = 0.0
+        self._last_reap = 0.0
 
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
@@ -112,8 +148,9 @@ class EnvServerPool:
     def _worker_path(self, i: int) -> str:
         return f"/tmp/vf-pool-{self.session}-{i}"
 
-    def _spawn_worker(self) -> None:
-        i = len(self.workers)  # upscale-only, so the next index is the current count
+    def _spawn_worker(self, restarts: int = 0) -> None:
+        i = self._next_index  # monotonic: a retired worker's path is never reused
+        self._next_index += 1
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
@@ -140,31 +177,255 @@ class EnvServerPool:
                 "pipe": parent_conn,
                 "active": 0,
                 "index": i,
+                "ready": False,
+                "probe_sent": False,
+                "restarts": restarts,
             }
         )
         if self._poller is not None:
             self._poller.register(dealer, zmq.POLLIN)
 
-    def _maybe_scale_up(self, in_flight: int) -> None:
+    def _try_spawn_worker(self, restarts: int = 0) -> bool:
+        """Spawn a worker mid-serve, where failing to spawn must not be fatal: this process
+        holds every client's in-flight requests, so dying here strands all of them. A pool
+        one worker short still serves. (At startup the opposite holds — a pool with no
+        workers has nothing to serve — so `run` lets that failure propagate.)"""
+        try:
+            self._spawn_worker(restarts)
+            return True
+        except Exception:
+            logger.exception("EnvServerPool failed to spawn a worker")
+            return False
+
+    def _maybe_scale_up(self) -> None:
         """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
 
-        A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
-        it as it comes online (a few seconds to load the env) — fine, since we only scale
-        up once already saturated. `max_workers=None` scales without a cap."""
-        if self.max_workers is not None and len(self.workers) >= self.max_workers:
+        A new worker receives traffic only after its health probe succeeds.
+        `max_workers=None` scales without a cap."""
+        now = time.monotonic()
+        if now < self._scale_up_retry_at:
             return
-        if in_flight >= 0.9 * len(self.workers) * self.multiplex:
-            self._spawn_worker()
+        slots = len(self.workers) + len(self._replacement_queue)
+        if self.max_workers is not None and slots >= self.max_workers:
+            return
+        if self.in_flight >= 0.9 * slots * self.multiplex:
+            if not self._try_spawn_worker():
+                self._scale_up_failures += 1
+                self._scale_up_retry_at = now + min(
+                    2 ** min(self._scale_up_failures - 1, 5),
+                    _MAX_SCALE_UP_BACKOFF_S,
+                )
+                return
+            self._scale_up_failures = 0
+            self._scale_up_retry_at = 0.0
             logger.info(
                 "EnvServerPool scaled up to %d/%s workers (in_flight=%d)",
                 len(self.workers),
                 self._cap_str,
-                in_flight,
+                self.in_flight,
             )
 
     @property
     def _cap_str(self) -> str:
         return "inf" if self.max_workers is None else str(self.max_workers)
+
+    async def _wait_for_worker(self, w: dict) -> None:
+        """Block until a worker answers `health`.
+
+        A worker binds its socket before loading the env, so its first reply — not its
+        bind — is what proves the env loaded. Untimed on purpose: a slow load (a legacy
+        dataset pull) is the spawner's deadline to enforce, not ours. We only insist that
+        the process is still alive."""
+        dealer = w["dealer"]
+        await self._probe_worker(w)
+        while not await dealer.poll(timeout=_REAP_INTERVAL_MS):
+            if w["process"].exitcode is not None:
+                raise RuntimeError(
+                    f"env server worker {w['index']} died while loading the env "
+                    f"(exit code {w['process'].exitcode})"
+                )
+        await dealer.recv_multipart()
+        if w["process"].exitcode is not None:
+            raise RuntimeError(
+                f"env server worker {w['index']} died while loading the env "
+                f"(exit code {w['process'].exitcode})"
+            )
+        self._mark_worker_ready(w)
+
+    async def _probe_worker(self, w: dict) -> None:
+        if w["probe_sent"]:
+            return
+        await w["dealer"].send_multipart([_STARTUP_PROBE, b"health", _EMPTY_PAYLOAD])
+        w["probe_sent"] = True
+
+    async def _probe_new_workers(self) -> None:
+        for w in self.workers:
+            if not w["ready"]:
+                await self._probe_worker(w)
+
+    def _mark_worker_ready(self, w: dict) -> None:
+        if w["ready"]:
+            return
+        w["ready"] = True
+        w["restarts"] = 0
+        logger.info("EnvServerPool worker %d ready", w["index"])
+
+    async def _reply_error(
+        self, client_id: bytes, request_id: bytes, error: str
+    ) -> None:
+        """Answer a request with a failure the client raises on. `EnvClient` awaits
+        rollout replies untimed, so leaving one unanswered is an unbounded hang."""
+        data = msgpack.packb(
+            BaseResponse(success=False, error=error).model_dump(mode="json"),
+            use_bin_type=True,
+        )
+        with contextlib.suppress(zmq.ZMQError):
+            await self.frontend.send_multipart([client_id, request_id, data])
+
+    def _retire(self, w: dict) -> None:
+        """Drop a worker from dispatch and release everything it held."""
+        self.workers.remove(w)
+        if self._poller is not None:
+            self._poller.unregister(w["dealer"])
+        with contextlib.suppress(Exception):
+            w["dealer"].close()
+        with contextlib.suppress(Exception):
+            w["pipe"].close()
+        with contextlib.suppress(OSError):
+            os.unlink(self._worker_path(w["index"]))
+
+    def _retry_replacements(self) -> None:
+        """Try each missing worker slot once, preserving independent restart budgets."""
+        missing = self._replacement_queue
+        self._replacement_queue = []
+        for restarts in missing:
+            if restarts >= MAX_WORKER_RESTARTS:
+                self._replacement_queue.append(restarts)
+                continue
+            attempt = restarts + 1
+            if self._try_spawn_worker(attempt):
+                logger.warning(
+                    "EnvServerPool replaced a dead worker (restart %d/%d)",
+                    attempt,
+                    MAX_WORKER_RESTARTS,
+                )
+            else:
+                self._replacement_queue.append(attempt)
+                if attempt == MAX_WORKER_RESTARTS:
+                    logger.error(
+                        "EnvServerPool exhausted a worker slot's %d restart(s)",
+                        MAX_WORKER_RESTARTS,
+                    )
+
+    async def _reap_dead_workers(self) -> None:
+        """Retire exited workers, fail their in-flight requests, and replace them.
+
+        Rate-limited: reading `exitcode` is a waitpid per worker, and the broker loop turns
+        once per request."""
+        now = time.monotonic()
+        if now - self._last_reap < _REAP_INTERVAL_S:
+            return
+        self._last_reap = now
+        dead_workers = [w for w in self.workers if w["process"].exitcode is not None]
+        for w in dead_workers:
+            exitcode = w["process"].exitcode
+            # Relay what it already answered before closing its socket: a worker can queue
+            # several replies and then exit, and retiring it first would discard them —
+            # reporting finished rollouts as deaths.
+            await self._drain_replies(w)
+            self._retire(w)
+            orphaned = [
+                rid for rid, entry in self.pending.items() if entry["worker"] is w
+            ]
+            logger.error(
+                "EnvServerPool worker %d died (exit code %s) — failing %d in-flight request(s)",
+                w["index"],
+                exitcode,
+                len(orphaned),
+            )
+            for request_id in orphaned:
+                entry = self.pending.pop(request_id)
+                self.in_flight -= entry["rollout_slots"]
+                await self._reply_error(
+                    entry["client_id"],
+                    request_id,
+                    f"env server worker died (exit code {exitcode})",
+                )
+            self._replacement_queue.append(w["restarts"])
+            if w["restarts"] >= MAX_WORKER_RESTARTS:
+                logger.error(
+                    "EnvServerPool exhausted worker %d's %d restart(s) — not replacing",
+                    w["index"],
+                    MAX_WORKER_RESTARTS,
+                )
+        self._retry_replacements()
+
+    async def _on_request(
+        self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
+    ) -> None:
+        """Answer `health` inline; dispatch everything else to the least-busy worker."""
+        if method == b"health":
+            await self.frontend.send_multipart([client_id, request_id, _HEALTH])
+            return
+        if not self.workers:
+            await self._reply_error(
+                client_id, request_id, "env server has no live workers"
+            )
+            return
+        ready_workers = [
+            w for w in self.workers if w["ready"] and w["process"].exitcode is None
+        ]
+        if not ready_workers:
+            await self._reply_error(
+                client_id, request_id, "env server has no ready workers"
+            )
+            return
+        # Pool capacity is measured in rollouts; one group request carries n.
+        rollout_slots = 1
+        if method == b"run_group":
+            with contextlib.suppress(Exception):
+                request = RunGroupRequest.model_validate(
+                    msgpack.unpackb(payload, raw=False)
+                )
+                rollout_slots = max(1, request.n)
+        worker = min(ready_workers, key=lambda w: w["active"])
+        worker["active"] += rollout_slots
+        self.pending[request_id] = {
+            "client_id": client_id,
+            "worker": worker,
+            "rollout_slots": rollout_slots,
+        }
+        self.in_flight += rollout_slots
+        # forward without client_id — the DEALER identity is the worker's `client_id`;
+        # we hold the real one in `pending`.
+        await worker["dealer"].send_multipart([request_id, method, payload])
+        if self.elastic:
+            self._maybe_scale_up()
+
+    async def _drain_replies(self, w: dict) -> None:
+        """Relay every reply already queued from this worker, then return. The serve loop
+        takes one reply per pass (so a chatty worker can't starve the frontend); a worker
+        about to be retired instead has to be emptied, since its socket is closing."""
+        while await w["dealer"].poll(timeout=0):
+            await self._on_reply(w)
+
+    async def _on_reply(self, w: dict) -> None:
+        """Relay one worker reply back to the client that asked for it."""
+        request_id, data = await w["dealer"].recv_multipart(copy=False)
+        if request_id.bytes == _STARTUP_PROBE:
+            if w["process"].exitcode is None:
+                self._mark_worker_ready(w)
+            return
+        # Copy only the routing key; relay the response Frames unchanged.
+        entry = self.pending.pop(request_id.bytes, None)
+        if entry is None:
+            return
+        entry["worker"]["active"] -= entry["rollout_slots"]
+        self.in_flight -= entry["rollout_slots"]
+        with contextlib.suppress(zmq.ZMQError):
+            await self.frontend.send_multipart(
+                [entry["client_id"], request_id, data], copy=False
+            )
 
     async def run(self) -> None:
         self._poller = zmq.asyncio.Poller()
@@ -173,68 +434,33 @@ class EnvServerPool:
         # (`max_workers` is a concrete count when elastic is off).
         for _ in range(1 if self.elastic else (self.max_workers or 1)):
             self._spawn_worker()
-        # request_id -> {client_id, worker, rollout_slots}
-        pending: dict[bytes, dict] = {}
-        logger.info(
-            "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
-            self.address,
-            len(self.workers),
-            self._cap_str,
-            self.multiplex,
-            self.elastic,
-        )
         try:
-            in_flight = 0
+            # Report the address only once a worker can actually serve. The frontend binds
+            # before any env is loaded, so a spawner told "ready" at bind time would connect
+            # happily to a pool whose workers are still loading — or already dead.
+            for w in list(self.workers):
+                await self._wait_for_worker(w)
+            if self.address_queue is not None:
+                self.address_queue.put(self.address)
+            logger.info(
+                "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
+                self.address,
+                len(self.workers),
+                self._cap_str,
+                self.multiplex,
+                self.elastic,
+            )
             while True:
-                events = dict(await self._poller.poll())
-                if self.frontend in events:
-                    (
-                        client_id,
-                        request_id,
-                        method,
-                        payload,
-                    ) = await self.frontend.recv_multipart()
-                    if method == b"health":
-                        await self.frontend.send_multipart(
-                            [client_id, request_id, _HEALTH]
-                        )
-                    else:
-                        # Pool capacity is measured in rollouts; one group request carries n.
-                        rollout_slots = 1
-                        if method == b"run_group":
-                            with contextlib.suppress(Exception):
-                                request = RunGroupRequest.model_validate(
-                                    msgpack.unpackb(payload, raw=False)
-                                )
-                                rollout_slots = max(1, request.n)
-                        worker = min(self.workers, key=lambda w: w["active"])
-                        worker["active"] += rollout_slots
-                        pending[request_id] = {
-                            "client_id": client_id,
-                            "worker": worker,
-                            "rollout_slots": rollout_slots,
-                        }
-                        in_flight += rollout_slots
-                        # forward without client_id — the DEALER identity is the worker's
-                        # `client_id`; we hold the real one in `pending`.
-                        await worker["dealer"].send_multipart(
-                            [request_id, method, payload]
-                        )
-                        if self.elastic:
-                            self._maybe_scale_up(in_flight)
-                for w in self.workers:
+                await self._probe_new_workers()
+                events = dict(await self._poller.poll(timeout=_REAP_INTERVAL_MS))
+                # Drain replies before reaping, so a worker that answered and then died
+                # still has its reply relayed instead of failed.
+                for w in list(self.workers):
                     if w["dealer"] in events:
-                        request_id, data = await w["dealer"].recv_multipart(copy=False)
-                        # Copy only the routing key; relay the response Frames unchanged.
-                        entry = pending.pop(request_id.bytes, None)
-                        if entry is None:
-                            continue
-                        entry["worker"]["active"] -= entry["rollout_slots"]
-                        in_flight -= entry["rollout_slots"]
-                        with contextlib.suppress(zmq.ZMQError):
-                            await self.frontend.send_multipart(
-                                [entry["client_id"], request_id, data], copy=False
-                            )
+                        await self._on_reply(w)
+                await self._reap_dead_workers()
+                if self.frontend in events:
+                    await self._on_request(*await self.frontend.recv_multipart())
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
@@ -283,8 +509,9 @@ def serve_env(
     """Serve one env over ZMQ: a single in-process `EnvServer` when `max_workers <= 1`,
     else an `EnvServerPool` broker over up to `max_workers` worker processes (`None` =
     unbounded). The frontend speaks the same protocol either way, so the client is
-    identical. Reports the bound address on `address_queue` (for a spawner that passed an
-    OS-assigned `:0`).
+    identical. Reports the served address on `address_queue` (for a spawner that passed an
+    OS-assigned `:0`) once the env is loaded and serving — read it with `wait_for_address`,
+    which fails fast if this process dies first.
 
     `elastic` (default True) starts the pool at one worker and scales up to `max_workers`
     as load grows; `multiplex` is the per-worker capacity for the scale-up trigger (spawn
@@ -323,9 +550,10 @@ def serve_env(
                 log_setup,
                 multiplex,
                 elastic,
+                # The pool reports its own address, once a worker answers `health` — see
+                # EnvServerPool.run.
+                address_queue=address_queue,
             )
-            if address_queue is not None:
-                address_queue.put(pool.address)
             asyncio.run(pool.run())
         else:
             from verifiers.v1.legacy import LegacyEnvServer
@@ -347,3 +575,51 @@ def serve_env(
     except Exception:
         logger.exception("Env server failed")
         raise
+
+
+def _log_tail(log_file: str | Path | None, lines: int = 20) -> str:
+    """The tail of a spawned server's log, to quote in a failure message. A spawner that
+    redirects the child's output has the real traceback there, so this is what turns "the
+    server died" into the actual cause."""
+    if log_file is None:
+        return ""
+    with contextlib.suppress(OSError):
+        tail = Path(log_file).read_text(errors="replace").splitlines()[-lines:]
+        if tail:
+            return "\n".join(["", f"--- tail of {log_file} ---", *tail])
+    return ""
+
+
+async def wait_for_address(
+    process: BaseProcess,
+    address_queue,
+    *,
+    name: str = "env server",
+    timeout: float = ENV_SERVER_SPAWN_TIMEOUT,
+    log_file: str | Path | None = None,
+) -> str:
+    """Wait for a spawned `serve_env` process to report its address, failing fast if it
+    dies first.
+
+    The address arrives only once the env is loaded and serving, so a server that dies on
+    startup (a bad import, missing credentials, an OOM) never reports one. Waiting on the
+    queue alone would then block for the full `timeout` and blame a timeout for what was a
+    crash — so poll the exit code alongside it and raise as soon as the process is gone."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            address = await asyncio.to_thread(address_queue.get, timeout=1.0)
+        except queue.Empty:
+            pass
+        else:
+            if process.exitcode is None:
+                return address
+        if process.exitcode is not None:
+            raise RuntimeError(
+                f"{name} died on startup with exit code {process.exitcode}"
+                f"{_log_tail(log_file)}"
+            )
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"{name} did not report its address within {timeout}s{_log_tail(log_file)}"
+            )

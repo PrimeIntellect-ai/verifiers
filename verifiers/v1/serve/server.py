@@ -72,15 +72,13 @@ class EnvServer:
 
     @classmethod
     def run_server(cls, address_queue=None, **kwargs) -> None:
-        """Run a spawned server and report its concrete address when requested."""
+        """Run a spawned server and report its address once serving resources are ready."""
         # Pin tqdm to a threading lock first, so a dataset pull (legacy bridge) never
         # leaks a multiprocessing semaphore (resource_tracker warning at shutdown).
         use_threading_tqdm_lock()
         server = cls(**kwargs)
-        if address_queue is not None:
-            address_queue.put(server.address)
         try:
-            asyncio.run(server.run())
+            asyncio.run(server.run(address_queue))
         except KeyboardInterrupt:
             # SIGTERM arrives as KeyboardInterrupt (see serve.pool._arm_teardown) so the event
             # loop runs its cleanup finallys; swallow it for a clean spawned-worker exit instead
@@ -175,7 +173,7 @@ class EnvServer:
         except zmq.ZMQError as e:
             logger.warning("failed to send response: %s", e)
 
-    async def run(self) -> None:
+    async def run(self, address_queue=None) -> None:
         logger.info(
             "EnvServer up: taskset=%s address=%s tasks=%s group_scoring=%s",
             self.taskset_id,
@@ -188,6 +186,8 @@ class EnvServer:
         tasks: set[asyncio.Task] = set()
         # Shared servers and the interception live across requests in this worker.
         async with self.serving():
+            if address_queue is not None:
+                address_queue.put(self.address)
             try:
                 while True:
                     events = dict(await poller.poll(timeout=100))
