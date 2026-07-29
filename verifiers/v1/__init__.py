@@ -45,7 +45,6 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness
 from verifiers.v1.intercepts import (
     InterceptResult,
-    ModelExchange,
     Terminate,
     intercept_code_search,
     intercept_provider_tools,
@@ -227,7 +226,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "intercept",
     # interception
     "InterceptResult",
-    "ModelExchange",
     "Terminate",
     "intercept_code_search",
     "intercept_provider_tools",

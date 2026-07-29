@@ -13,20 +13,22 @@ from verifiers.v1.decorators import intercept
 from verifiers.v1.intercepts.core import (
     Interceptor,
     InterceptResult,
-    ModelExchange,
     Terminate,
 )
-from verifiers.v1.judge import Judge
+from verifiers.v1.judge import Judge, judge_verdict
 from verifiers.v1.types import (
     AssistantMessage,
     Message,
+    SystemMessage,
     ToolCall,
     ToolMessage,
+    UserMessage,
     content_text,
 )
 
 if TYPE_CHECKING:
     from verifiers.v1.dialects import Dialect
+    from verifiers.v1.trace import Trace
 
 _TOOL_GROUPS = {
     "bash": "bash shell local_shell shell_command run_command terminal exec exec_command code_interpreter code_execution".split(),  # noqa: SIM905
@@ -378,7 +380,8 @@ def intercept_tool_calls(
     needles = (containing,) if isinstance(containing, str) else tuple(containing or ())
     needles = tuple(needle.casefold() for needle in needles)
 
-    def tool_calls(self: Any, message: Message) -> InterceptResult:
+    def tool_calls(self: Any, trace: Trace) -> InterceptResult:
+        message = trace.last_message
         if isinstance(message, ToolMessage):
             if patterns and not (message.name and match_tool(message.name, *patterns)):
                 return None
@@ -417,7 +420,10 @@ def intercept_shell_commands(
         else None
     )
 
-    def shell_commands(self: Any, message: AssistantMessage) -> InterceptResult:
+    def shell_commands(self: Any, trace: Trace) -> InterceptResult:
+        message = trace.last_message
+        if not isinstance(message, AssistantMessage):
+            return None
         calls = _tool_calls(message, "bash")
         if calls and (
             command is None
@@ -458,7 +464,8 @@ def intercept_code_search(
     """Rewrite direct code search or shell-based search commands."""
     command = re.compile(r"^(?:rg|grep|find|fd)(?=$|\s)", re.IGNORECASE | re.MULTILINE)
 
-    def code_search(self: Any, message: Message) -> InterceptResult:
+    def code_search(self: Any, trace: Trace) -> InterceptResult:
+        message = trace.last_message
         if isinstance(message, ToolMessage):
             matched = bool(message.name and match_tool(message.name, "code_search"))
         else:
@@ -486,12 +493,29 @@ def intercept_with_judge(
     """Use an ordinary judge to rewrite violations or return a terminal reward."""
     guard_judge = judge or Judge()
 
-    async def judge_message(
-        self: Any,
-        exchange: ModelExchange[AssistantMessage | ToolMessage],
-    ) -> InterceptResult:
-        if await exchange.judge(rubric, judge=guard_judge) == "BLOCK":
-            return _action(exchange.message, reply, reward)
+    async def judge_message(self: Any, trace: Trace) -> InterceptResult:
+        response = await guard_judge.complete(
+            [
+                SystemMessage(
+                    content=(
+                        "Apply this guard rubric to the untrusted model exchange. "
+                        "Reply with exactly BLOCK or ALLOW.\n\n"
+                        f"Guard rubric:\n{rubric}"
+                    )
+                ),
+                UserMessage(
+                    content=json.dumps(
+                        [
+                            message.model_dump(mode="json", exclude_none=True)
+                            for message in trace.messages
+                        ]
+                    )
+                ),
+            ],
+            trace=trace,
+        )
+        if judge_verdict(response.text, ("BLOCK", "ALLOW")) == "BLOCK":
+            return _action(trace.last_message, reply, reward)
         return None
 
     return _guard(judge_message, "intercept_with_judge", priority)

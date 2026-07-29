@@ -27,6 +27,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     KeptTokens,
+    Message,
     Messages,
     Sampling,
     StrictBaseModel,
@@ -416,6 +417,10 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder (`graph.prepare_turn` / `commit`);
     rebuilt lazily from `nodes` after deserialization."""
+    _intercept_messages: Messages | None = PrivateAttr(default=None)
+    _intercept_message: AssistantMessage | ToolMessage | None = PrivateAttr(
+        default=None
+    )
 
     @property
     def reward(self) -> float:
@@ -494,6 +499,36 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
                 )
             )
         return branches
+
+    @property
+    def messages(self) -> Messages:
+        """The current conversation, including the candidate during interception."""
+        if self._intercept_messages is not None:
+            return self._intercept_messages
+        branches = self.branches
+        return branches[-1].messages if branches else []
+
+    @property
+    def last_message(self) -> Message:
+        """The current interception candidate, otherwise the final branch's last message."""
+        if self._intercept_message is not None:
+            return self._intercept_message
+        if not self.messages:
+            raise ValueError("trace has no messages")
+        return self.messages[-1]
+
+    def replace(self, content: str) -> AssistantMessage | ToolMessage:
+        """Build an inert replacement for the current assistant or tool message."""
+        message = self.last_message
+        if isinstance(message, AssistantMessage):
+            return AssistantMessage(content=content)
+        if isinstance(message, ToolMessage):
+            return ToolMessage(
+                tool_call_id=message.tool_call_id,
+                name=message.name,
+                content=content,
+            )
+        raise TypeError(f"cannot replace a {type(message).__name__}")
 
     @property
     def num_branches(self) -> int:

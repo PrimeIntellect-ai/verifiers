@@ -13,7 +13,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import ModelContext
@@ -24,7 +24,6 @@ from verifiers.v1.intercepts.core import (
     Interceptor,
     InterceptOutcome,
     InterceptRecord,
-    ModelExchange,
     Terminate,
 )
 from verifiers.v1.trace import Trace
@@ -39,7 +38,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MESSAGE_TYPES = (AssistantMessage, ToolMessage)
 RequestKey = tuple[str, bytes, str]
 
 
@@ -52,31 +50,11 @@ class StreamReplay:
 ReplayResponse = dict | StreamReplay
 
 
-def _message_types(handler: Callable[..., Any]) -> tuple[type, ...]:
-    """Concrete message classes accepted by a handler's optional annotation."""
-    hints = get_type_hints(
-        handler, localns={"ModelExchange": ModelExchange, "Trace": Trace}
-    )
-    hint = hints.get("message")
-    exchange = hints.get("exchange")
-    if hint is None and get_origin(exchange) is ModelExchange:
-        hint = get_args(exchange)[0]
-    accepted = tuple(
-        kind for kind in (get_args(hint) or (hint,)) if kind in MESSAGE_TYPES
-    )
-    return accepted or MESSAGE_TYPES
-
-
 def _directions(handler: Callable[..., Any]) -> tuple[Direction, ...]:
     if marked := getattr(handler, "intercept_directions", None):
         return marked
     if getattr(handler, "intercept_raw", False):
         raise TypeError("raw @intercept requires an explicit direction")
-    accepted = _message_types(handler)
-    if accepted == (AssistantMessage,):
-        return ("response",)
-    if accepted == (ToolMessage,):
-        return ("request",)
     return ("request", "response")
 
 
@@ -265,32 +243,27 @@ class RolloutSession:
                     ]
 
                 for message in candidates:
-                    if message is not None and not isinstance(
-                        message, _message_types(handler)
-                    ):
-                        continue
                     candidate = (
                         message.model_copy(deep=True) if message is not None else None
                     )
-                    action = invoke(
-                        handler,
-                        {
-                            "task": self.trace.task.data,
-                            "trace": self.trace,
-                            "raw": raw,
-                            "dialect": dialect,
-                            "message": candidate,
-                            "prompt": messages,
-                            "exchange": ModelExchange(
-                                direction=direction,
-                                trace=self.trace,
-                                prompt=messages,
-                                message=candidate,
-                            )
-                            if candidate is not None
-                            else None,
-                        },
-                    )
+                    trace = self.trace
+                    available: dict[str, Any] = {
+                        "task": self.trace.task.data,
+                        "trace": trace,
+                    }
+                    if raw_handler:
+                        available.update({"raw": raw, "dialect": dialect})
+                    else:
+                        assert candidate is not None
+                        trace = self.trace.model_copy()
+                        trace._intercept_messages = [
+                            item.model_copy(deep=True) for item in messages
+                        ]
+                        if direction == "response":
+                            trace._intercept_messages.append(candidate)
+                        trace._intercept_message = candidate
+                        available["trace"] = trace
+                    action = invoke(handler, available)
                     if inspect.isawaitable(action):
                         action = await action
                     if isinstance(action, Terminate):
