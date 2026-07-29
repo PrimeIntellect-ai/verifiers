@@ -123,7 +123,12 @@ class PrimeEndpoint:
                     client = TunnelClient(local_port=self.port)
                     async with TUNNEL_LIMITER:
                         self._url = str(await client.start()).rstrip("/")
-                    self._client = client
+                        # Record the client with no await in between: a cancellation
+                        # landing on the limiter's exit would otherwise orphan the
+                        # started frpc/registration — `close()` only stops what's
+                        # recorded. (A cancellation inside `start()` is the SDK's to
+                        # clean up, and it does.)
+                        self._client = client
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
         logger.info("prime tunnel up: %s -> 127.0.0.1:%d", self._url, self.port)
