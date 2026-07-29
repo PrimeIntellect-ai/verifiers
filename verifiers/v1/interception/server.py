@@ -27,10 +27,12 @@ import time
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from tempfile import SpooledTemporaryFile
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Literal
 
 from aiohttp import web
+from aiohttp.payload import BufferedReaderPayload
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
@@ -69,7 +71,6 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
-_STREAM_MEMORY_BUFFER = 4 * 1024**2
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -92,7 +93,12 @@ async def _request_digest(raw: bytes) -> bytes:
 def _completion_response(completion: ReplayResponse) -> web.Response:
     """Serialize a model's JSON-native response without an intermediate string."""
     if isinstance(completion, StreamReplay):
-        return web.Response(body=completion.body, content_type=completion.content_type)
+        body = BufferedReaderPayload(
+            completion.path.open("rb"),
+            content_type=completion.content_type,
+        )
+        body.headers.pop("Content-Disposition", None)
+        return web.Response(body=body)
     try:
         body = to_json(completion, inf_nan_mode="constants")
     except PydanticSerializationError:
@@ -309,7 +315,10 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        request_key = (request.path, await _request_digest(raw))
+        request_id = request.headers.get("idempotency-key")
+        request_key = (request.path, await _request_digest(raw), request_id)
+        retry_count = request.headers.get("x-stainless-retry-count")
+        deduplicate = request_id is not None or retry_count not in (None, "0")
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
@@ -321,15 +330,19 @@ class InterceptionServer(Interception):
             session.trace.id,
             streaming,
         )
-        # Graph atomicity under retries. The harness SDK retries a transient failure by
-        # re-sending the byte-identical request; sampling it again would commit a second turn and
-        # fork the graph into a dead-end branch. Two cases, both resolved without re-sampling:
+        # Graph atomicity under explicitly identified retries. A logical request id identifies
+        # every attempt directly; Stainless SDKs instead mark attempts after the first with a
+        # retry count. Unmarked byte-identical calls are independent samples. Two retry cases are
+        # resolved without re-sampling:
         #   1. the first attempt already finished -> replay the recorded response;
         #   2. the first attempt is still computing (a slow turn) -> await it and return its
         #      result, so a slow turn is safe without an inflated client timeout.
-        # A growing conversation never repeats a body, so these only ever match a real retry; a
-        # failed attempt caches nothing and re-runs normally.
-        if session.last_request == request_key and session.last_response is not None:
+        # A failed attempt caches nothing and re-runs normally.
+        if (
+            deduplicate
+            and session.last_request == request_key
+            and session.last_response is not None
+        ):
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
 
@@ -348,12 +361,10 @@ class InterceptionServer(Interception):
                 )
             return _completion_response(completion)
 
-        if (inflight := session.inflight.get(request_key)) is not None:
+        if deduplicate and (inflight := session.inflight.get(request_key)) is not None:
             return await coalesced(inflight)
-        # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above)
-        # rather than starting a second inference. The get / create / assign run with no
-        # await between them, so two concurrent identical requests can never both become
-        # owner.
+        # Publish this attempt so an explicitly marked retry can coalesce onto it. A separate
+        # unmarked request may replace the entry and sample independently.
         fut: asyncio.Future[ReplayResponse | None] = (
             asyncio.get_running_loop().create_future()
         )
@@ -364,6 +375,8 @@ class InterceptionServer(Interception):
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
+            if isinstance(session.last_response, StreamReplay):
+                session.last_response.path.unlink(missing_ok=True)
             session.last_request = request_key
             session.last_response = response.raw
             if not fut.done():
@@ -546,7 +559,9 @@ class InterceptionServer(Interception):
         error: BaseException | None = None
         turn = graph.prepare_turn(session.trace, prompt)
         started = time.time()
-        buffer = SpooledTemporaryFile(max_size=_STREAM_MEMORY_BUFFER)  # noqa: SIM115
+        buffer = NamedTemporaryFile(prefix="vf-stream-replay-", delete=False)  # noqa: SIM115
+        replay_path = Path(buffer.name)
+        published = False
         try:
             try:
                 upstream_request = dialect.apply_overrides(
@@ -678,11 +693,15 @@ class InterceptionServer(Interception):
                 return resp
 
             node = turn.commit(response, tools)
-            buffer.seek(0)
-            stream_replay = StreamReplay(buffer.read(), resp.content_type)
+            buffer.flush()
+            buffer.close()
+            stream_replay = StreamReplay(replay_path, resp.content_type)
             request_key, fut = replay
+            if isinstance(session.last_response, StreamReplay):
+                session.last_response.path.unlink(missing_ok=True)
             session.last_request = request_key
             session.last_response = stream_replay
+            published = True
             if not fut.done():
                 fut.set_result(stream_replay)
             logger.debug("intercept stream turn: id=%s", session.trace.id)
@@ -710,6 +729,8 @@ class InterceptionServer(Interception):
                 error=error,
             )
             buffer.close()
+            if not published:
+                replay_path.unlink(missing_ok=True)
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str

@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from verifiers.v1.clients import ModelContext
@@ -21,12 +22,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-RequestKey = tuple[str, bytes]
+RequestKey = tuple[str, bytes, str | None]
 
 
 @dataclass(frozen=True, slots=True)
 class StreamReplay:
-    body: bytes
+    path: Path
     content_type: str
 
 
@@ -81,14 +82,10 @@ class RolloutSession:
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
     last_request: RequestKey | None = None
-    """Route plus digest of the most recently served request; with `last_response`, the cache
-    that keeps the message graph atomic under harness-SDK retries. A retry re-sends the
-    byte-identical request; when it matches, the interception server replays the recorded
-    response instead of re-sampling and committing a second turn — which would fork the graph
-    into a dead-end branch. Only a fully completed model response is cached, so a genuinely
-    failed attempt still re-runs. Turns are issued sequentially (one outstanding request at a
-    time), so a retry is always of the most recent request — keeping only the last one is
-    sufficient and bounded."""
+    """Route, body digest, and optional logical request id of the most recently served request;
+    with `last_response`, the cache that keeps the message graph atomic under explicitly marked
+    harness-SDK retries. Only a fully completed model response is cached, so a genuinely failed
+    attempt still re-runs. Keeping only the last response is sufficient and bounded."""
     last_response: ReplayResponse | None = None
     """The completed response for `last_request`, replayed verbatim on a retry."""
     inflight: dict[RequestKey, "asyncio.Future[ReplayResponse | None]"] = field(
@@ -125,6 +122,8 @@ class RolloutSession:
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""
         self.released = True
+        if isinstance(self.last_response, StreamReplay):
+            self.last_response.path.unlink(missing_ok=True)
         for task in list(self.tasks):
             task.cancel()
 
