@@ -1,4 +1,4 @@
-"""agentic-judge: a solver plays the task, a code-executing judge verifies the work.
+"""agentic-judge: a solver plays the task, then a judge verifies the work.
 
 A reusable env (`--env.id agentic-judge` over any taskset). The solver plays the
 task in a container provisioned from its runtime policy; the judge then grades
