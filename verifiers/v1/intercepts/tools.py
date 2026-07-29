@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 _TOOL_GROUPS = {
-    "bash": "bash shell shell_command run_command terminal exec exec_command code_interpreter".split(),  # noqa: SIM905
+    "bash": "bash shell local_shell shell_command run_command terminal exec exec_command code_interpreter".split(),  # noqa: SIM905
     "web_search": "search web_search search_web web_search_preview google_search bing_search brave_search tavily_search".split(),  # noqa: SIM905
     "code_search": "rg grep find fd glob code_search search_code file_search".split(),  # noqa: SIM905
 }
@@ -36,6 +36,13 @@ _ALIASES = {
     for canonical, aliases in _TOOL_GROUPS.items()
     for alias in aliases
 }
+_SHELL_COMMAND_START = (
+    r"(?:^|[;&|()\n])\s*"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+|sudo|env|command|exec|nice|nohup|time|xargs|"
+    r"if|then|elif|while|until|do|!)\s+)*"
+    r"(?:[^\s;&|()]*/)?"
+)
+_SHELL_COMMAND_END = r"(?=$|[\s;&|()])"
 
 
 def _tool_name(name: str) -> str:
@@ -101,6 +108,35 @@ def _tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
     return [call for call in calls if not patterns or match_tool(call.name, *patterns)]
 
 
+def _shell_text(call: ToolCall) -> str:
+    """Extract only executable command text from common shell-tool arguments."""
+    try:
+        arguments = json.loads(call.arguments)
+    except json.JSONDecodeError:
+        return call.arguments
+    if isinstance(arguments, str):
+        return arguments
+    if not isinstance(arguments, dict):
+        return ""
+    action = arguments.get("action")
+    sources = [arguments, action] if isinstance(action, dict) else [arguments]
+    values = (
+        source.get(key) for source in sources for key in ("command", "commands", "cmd")
+    )
+    return "\n".join(
+        item
+        for value in values
+        for item in (
+            [value]
+            if isinstance(value, str)
+            else value
+            if isinstance(value, list)
+            else []
+        )
+        if isinstance(item, str)
+    )
+
+
 def _action(reply: str, reward: float | None) -> str | Terminate:
     return reply if reward is None else Terminate(reason=reply, reward=reward)
 
@@ -141,7 +177,12 @@ def intercept_tool_calls(
             texts = [content_text(message.content).casefold()]
         else:
             texts = [
-                call.arguments.casefold() for call in _tool_calls(message, *patterns)
+                (
+                    _shell_text(call)
+                    if match_tool(call.name, "bash")
+                    else call.arguments
+                ).casefold()
+                for call in _tool_calls(message, *patterns)
             ]
         if texts and (
             not needles or any(needle in text for text in texts for needle in needles)
@@ -161,7 +202,8 @@ def intercept_shell_commands(
     """Rewrite matching shell calls, or terminate when ``reward`` is set."""
     command = (
         re.compile(
-            rf"(?<![\w.-])(?:{'|'.join(map(re.escape, commands))})(?![\w.-])",
+            rf"{_SHELL_COMMAND_START}(?:{'|'.join(map(re.escape, commands))})"
+            rf"{_SHELL_COMMAND_END}",
             re.IGNORECASE,
         )
         if commands
@@ -171,7 +213,7 @@ def intercept_shell_commands(
     def shell_commands(self: Any, message: AssistantMessage) -> InterceptResult:
         calls = _tool_calls(message, "bash")
         if calls and (
-            command is None or any(command.search(call.arguments) for call in calls)
+            command is None or any(command.search(_shell_text(call)) for call in calls)
         ):
             return _action(reply, reward)
         return None
@@ -204,7 +246,10 @@ def intercept_code_search(
     priority: int = 0,
 ) -> Interceptor:
     """Rewrite direct code search or shell-based search commands."""
-    command = re.compile(r"(?<![\w.-])(?:rg|grep|find|fd)(?![\w.-])", re.IGNORECASE)
+    command = re.compile(
+        rf"{_SHELL_COMMAND_START}(?:rg|grep|find|fd){_SHELL_COMMAND_END}",
+        re.IGNORECASE,
+    )
 
     def code_search(self: Any, message: Message) -> InterceptResult:
         if isinstance(message, ToolMessage):
@@ -214,7 +259,7 @@ def intercept_code_search(
                 match_tool(call.name, "code_search")
                 or (
                     match_tool(call.name, "bash")
-                    and bool(command.search(call.arguments))
+                    and bool(command.search(_shell_text(call)))
                 )
                 for call in _tool_calls(message)
             )
