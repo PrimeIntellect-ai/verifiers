@@ -248,8 +248,7 @@ class Dialect(ABC, Generic[ReqT, RespT]):
 
         selected = name(choice)
         if (
-            isinstance(choice, dict)
-            and selected not in (None, "auto", "none", "required", "any")
+            selected not in (None, "auto", "none", "required", "any")
             and selected not in clients
             and matcher(selected)
         ):
