@@ -15,6 +15,7 @@ from typing import Any
 from openai import AsyncOpenAI, OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, RendererConfig
+from renderers.base import ToolCallParseStatus
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -111,7 +112,12 @@ def response_from_generate(
             else json.dumps(tc.arguments or {}),
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
+        # Only OK-status calls reach the agent: renderers keeps non-OK attempts
+        # (UNKNOWN_TOOL, MALFORMED_*) visible for inspection, but vLLM >= 0.24
+        # drops them server-side on the eval path, so passing them through here
+        # would make train recoverable where eval is terminal.
         if getattr(tc, "name", None)
+        and getattr(tc, "status", ToolCallParseStatus.OK) == ToolCallParseStatus.OK
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
