@@ -130,7 +130,9 @@ class EnvServerConfig(BaseConfig):
     """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
     scales up on demand; `static` pre-spawns a fixed `num_workers`."""
     max_concurrent: int | None = Field(
-        None, validation_alias=AliasChoices("max_concurrent", "max_concurrent_episodes")
+        None,
+        ge=1,
+        validation_alias=AliasChoices("max_concurrent", "max_concurrent_episodes"),
     )
     """Episodes in flight at once, per worker (None = no limit). The episode is the unit
     here; how many agent runs one episode carries is the env's own

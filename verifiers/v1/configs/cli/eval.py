@@ -37,10 +37,10 @@ class EvalConfig(EnvServerConfig):
     shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
+        128, ge=1, validation_alias=AliasChoices("max_concurrent", "c")
     )
-    """Episodes in flight at once (per worker under `--server`). An episode plays its
-    agents one at a time, so this is the live agent runs too — until
+    """Episodes in flight at once (per worker under `--server`), `None` for no limit. An
+    episode plays its agents one at a time, so this is the live agent runs too — until
     `--env.max-concurrent-agents` says otherwise."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
