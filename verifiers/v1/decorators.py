@@ -3,9 +3,10 @@
 import asyncio
 import inspect
 from collections.abc import Callable
-from typing import Any, TypeVar, overload
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
-from verifiers.v1.intercepts.core import Direction
+if TYPE_CHECKING:
+    from verifiers.v1.intercepts.core import Direction
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -76,7 +77,7 @@ def intercept(
     func: F,
     *,
     priority: int = 0,
-    direction: Direction | None = None,
+    direction: "Direction | None" = None,
     raw: bool = False,
 ) -> F: ...
 @overload
@@ -84,14 +85,14 @@ def intercept(
     func: None = None,
     *,
     priority: int = 0,
-    direction: Direction | None = None,
+    direction: "Direction | None" = None,
     raw: bool = False,
 ) -> Callable[[F], F]: ...
 def intercept(
     func: F | None = None,
     *,
     priority: int = 0,
-    direction: Direction | None = None,
+    direction: "Direction | None" = None,
     raw: bool = False,
 ) -> F | Callable[[F], F]:
     """Mark an interceptor returning replacement text, `Terminate`, or `None`.

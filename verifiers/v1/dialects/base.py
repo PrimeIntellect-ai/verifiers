@@ -175,6 +175,73 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def rewrite_tool_result(self, body: ReqT, tool_call_id: str, text: str) -> None:
         """Replace one native tool result in a request."""
 
+    def intercept_provider_tools(
+        self, body: ReqT, matcher: Callable[[str], bool]
+    ) -> list[str]:
+        """Remove matching provider-hosted tools and their forced choices."""
+        tools = body.get("tools")
+        if not isinstance(tools, list):
+            return []
+
+        def name(value) -> str | None:
+            if isinstance(value, str):
+                return value
+            if not isinstance(value, dict):
+                return None
+            inner = value.get("function") or value.get("custom") or value.get("tool")
+            if isinstance(inner, dict) and inner.get("name"):
+                return inner["name"]
+            return value.get("name") or value.get("type")
+
+        def is_client(tool: dict) -> bool:
+            return bool(
+                {"function", "custom", "input_schema"} & tool.keys()
+                or tool.get("type") in ("function", "custom")
+            )
+
+        kept = []
+        removed = []
+        clients = set()
+        for tool in tools:
+            label = name(tool)
+            if isinstance(tool, dict) and is_client(tool):
+                clients.add(label)
+            elif label and matcher(label):
+                removed.append(label)
+                continue
+            kept.append(tool)
+        if not removed:
+            return []
+        if kept:
+            body["tools"] = kept
+        else:
+            body.pop("tools", None)
+
+        choice = body.get("tool_choice")
+        if isinstance(choice, dict):
+            container = choice.get("allowed_tools")
+            container = container if isinstance(container, dict) else choice
+            if isinstance(container.get("tools"), list):
+                container["tools"] = [
+                    tool
+                    for tool in container["tools"]
+                    if not (
+                        (label := name(tool))
+                        and matcher(label)
+                        and label not in clients
+                    )
+                ]
+                if not container["tools"]:
+                    body.pop("tool_choice", None)
+                return removed
+
+        selected = name(choice)
+        if (selected in ("required", "any") and not kept) or (
+            selected and matcher(selected) and selected not in clients
+        ):
+            body.pop("tool_choice", None)
+        return removed
+
     @abstractmethod
     def stream_events(self, raw: dict) -> list[bytes]:
         """Serialize a complete native response as a valid SSE stream."""

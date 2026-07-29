@@ -46,6 +46,9 @@ class CodexHarnessConfig(HarnessConfig):
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
+    search: bool = False
+    """Enable Codex's provider-executed Responses web-search tool. A task can remove it
+    before inference with `intercept_provider_tools("web_search*")`."""
 
 
 class CodexHarness(Harness[CodexHarnessConfig]):
@@ -292,6 +295,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         return [
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            *(["-c", 'web_search="live"'] if self.config.search else []),
             # Apps/plugins can flip on remotely and advertise definitions custom providers reject.
             "--disable",
             "apps",
