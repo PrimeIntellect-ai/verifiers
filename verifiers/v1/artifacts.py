@@ -79,8 +79,7 @@ async def collect(
             if sweep and source == ARTIFACTS_DIR:
                 continue
             raise ArtifactError(
-                f"declared artifact {source!r} does not exist in the box; the task must "
-                "produce it in finalize() (or a [[verifier.collect]] hook)"
+                f"declared artifact {source!r} does not exist in the runtime"
             )
         archive = await _tar_out(runtime, artifact, budget)
         budget -= len(archive)
