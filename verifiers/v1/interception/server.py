@@ -856,7 +856,7 @@ class InterceptionServer(Interception):
                         buffer.truncate()
                         for event in dialect.stream_events(response.raw):
                             buffer.write(event)
-                    except Exception as e:  # noqa: BLE001 - policy boundary
+                    except Exception as e:  # noqa: BLE001 - interception boundary
                         failure = TaskError(
                             "@intercept produced an invalid response: "
                             f"{type(e).__name__}: {e}"
