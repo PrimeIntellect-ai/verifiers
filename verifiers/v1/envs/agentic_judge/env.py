@@ -1,4 +1,4 @@
-"""agentic-judge: a solver plays the task, a code-executing judge verifies the work.
+"""agentic-judge: a solver plays the task, then a judge verifies the work.
 
 A reusable env (`--env.id agentic-judge` over any taskset). The solver plays the
 task in a container provisioned from its runtime policy; the judge then grades
@@ -8,12 +8,9 @@ verdicts to `/tmp/verdict.json`, with the solver's full trace record uploaded at
 `judge/<name>` metrics plus a weighted-mean `judge` reward, composed with the
 taskset's own rewards via `[env.score]` (judge-only by default).
 
-`--env.topology` decides where the judge stands. Under `shared` (the default) it
-plays in the box the agent worked in, seeing that environment directly and every
-seam in it. Under `isolated` it gets its own box from the same image, holding only
-what the task declared as artifacts, so nothing the agent did to its environment
-can reach the grader — worth opting into once a taskset publishes its evidence
-somewhere that travels.
+`--env.share-runtime` controls whether the judge uses the solver's runtime. It is
+enabled by default. When disabled, the judge gets a fresh runtime containing the
+task's collected artifacts.
 """
 
 import json
@@ -21,12 +18,10 @@ import math
 import re
 import tomllib
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field, field_validator
 
 import verifiers.v1 as vf
-from verifiers.v1.artifacts import CONVENTION_DIR
 from verifiers.v1.types import StrictBaseModel
 
 VERDICT_FILE = "/tmp/verdict.json"
@@ -118,21 +113,13 @@ reference solves it. Your verdict is what YOU verified by execution."""
 SHARED_SANDBOX_NOTE = f"""\
 ## Your workspace
 
-Your sandbox is the SAME box the graded agent worked in, in the state the agent
-left it — its edits (and any scoring side effects) are applied. {_RECORD_NOTE}"""
+The graded agent worked in this sandbox. {_RECORD_NOTE}"""
 
 ISOLATED_SANDBOX_NOTE = f"""\
 ## Your workspace
 
-Your sandbox is a FRESH box, built from the same image the graded agent started
-from — so it holds the task's original state, NOT the state the agent left. The
-agent's environment is gone; you cannot inspect it, and nothing it changed is
-here except what the task declared as an artifact. Those artifacts have been
-restored at their original paths (a patch under `{CONVENTION_DIR}/` is the usual
-one for code tasks), so to see the agent's work you generally have to apply or
-read them rather than looking at the working tree. If something you need to
-check was never declared as an artifact, say so in your reason rather than
-assuming its absence means the agent failed. {_RECORD_NOTE}"""
+This is a fresh sandbox. The task's artifacts were restored at their original
+paths; other changes made by the graded agent are not present. {_RECORD_NOTE}"""
 
 HINT_SECTION = """\
 ## Hints
@@ -148,20 +135,26 @@ class JudgeTask(vf.Task):
 
     NEEDS_CONTAINER = True
 
-    def __init__(self, data: vf.TaskData, files: dict[str, bytes]) -> None:
+    def __init__(
+        self,
+        data: vf.TaskData,
+        files: dict[str, bytes],
+        artifacts: dict[str, bytes],
+    ) -> None:
         super().__init__(data)
         self.files = files
+        self.artifacts = artifacts
 
     @classmethod
     def from_trace(
         cls,
         solution: vf.Trace,
         config: "JudgeTaskConfig",
-        topology: str = "shared",
+        share_runtime: bool = True,
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace.
 
-        `topology` selects the workspace note. It has to match how the judge is
+        `share_runtime` selects the workspace note. It has to match how the judge is
         actually placed: the note is the judge's only account of what its box
         contains, and a judge told it is standing in the agent's workspace when it
         is standing in a fresh one will read an unmodified tree as a failed attempt.
@@ -173,7 +166,7 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
-        note = SHARED_SANDBOX_NOTE if topology == "shared" else ISOLATED_SANDBOX_NOTE
+        note = SHARED_SANDBOX_NOTE if share_runtime else ISOLATED_SANDBOX_NOTE
         sections = [body, _verdict_section(config.criteria()), note]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
@@ -187,9 +180,11 @@ class JudgeTask(vf.Task):
                 resources=solved.resources,
             ),
             files=files,
+            artifacts={} if share_runtime else solution.state.artifacts,
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        await vf.restore(runtime, self.artifacts)
         # The solver had this box first: a pre-seeded verdict must never read as
         # the judge's own, and a file (or planted symlink) at an upload path must
         # never survive it — a symlinked TRACE_FILE would redirect the write onto
@@ -289,38 +284,16 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     """The solver agent. Its runtime must be a container:
     `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. Under `isolated` it provisions its own box from this policy;
-    under `shared` it plays in the solver's box and this policy is ignored."""
-    topology: Literal["shared", "isolated"] = "shared"
-    """Whether the judge grades in the solver's box or its own.
-
-    `shared` places the judge in the box the agent worked in, so it can inspect that
-    environment directly — at the cost of leaving every seam in it reachable. It is the
-    default because it is what has been measured, and because a judge only gains from
-    isolation once the task publishes what the judge needs.
-
-    `isolated` boots a second box from the same image, carries the task's declared
-    artifacts across, and grades there, so nothing the agent did to its environment can
-    reach the grader. Opt in per taskset, and only once that taskset puts its evidence
-    somewhere that travels: an artifact under `vf.CONVENTION_DIR` (see
-    `capture_patch(write_path=...)`), a declared `TaskData.artifacts` path, or the trace
-    record itself. A task whose judge hint says to run `git diff` in the box will find
-    a pristine checkout here and grade every attempt as untouched."""
+    """The judge agent. Its runtime is ignored when `share_runtime` is enabled."""
+    share_runtime: bool = True
+    """Whether the judge grades in the solver's runtime."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        # The judge inherits the solver's runtime policy unless it pins a container of
-        # its own. Under `shared` that is definitional — its effective runtime IS the
-        # solver's box, and aligning the config keeps the base env's subprocess warning
-        # and the runtime stamped on its trace truthful. Under `isolated` it is the
-        # fallback every other unpinned `AgentConfig` field already gets (harness,
-        # model, sampling): `runtime` defaults to `SubprocessConfig` with no `None` to
-        # distinguish unset from chosen, and a code-executing judge can never run on the
-        # host anyway, so subprocess here always means "not specified".
-        if config.topology == "shared" or isinstance(
+        if config.share_runtime or isinstance(
             config.judge.runtime, vf.SubprocessConfig
         ):
             config.judge = config.judge.model_copy(
@@ -339,15 +312,15 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         judge = self._harnesses["judge"]
         if not judge.EXECUTES_CODE:
             raise ValueError(
-                "agentic-judge plays a code-executing judge in its own sandbox, but "
+                "agentic-judge requires a judge harness that can execute code, but "
                 f"harness {judge.config.id!r} is a tool-less chat loop — a verdict "
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
         if isinstance(self.config.solver.runtime, vf.SubprocessConfig):
             raise TypeError(
-                "agentic-judge runs a code-executing solver in a container, but the "
-                "solver resolves to the subprocess runtime; use "
+                "agentic-judge requires the solver to run in a container, but it "
+                "resolves to the subprocess runtime; use "
                 "--env.solver.runtime.type docker or prime"
             )
 
@@ -356,36 +329,24 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        if self.config.topology == "shared":
+        if self.config.share_runtime:
             async with agents.solver.provision(task) as box:
                 solution = await agents.solver.run(task, runtime=box)
-                judge_task = JudgeTask.from_trace(solution, self.config.task, "shared")
+                judge_task = JudgeTask.from_trace(solution, self.config.task)
                 await agents.judge.run(judge_task, runtime=box)
             return
 
-        # Collection is the barrier: once it returns, nothing downstream needs the
-        # solver's box. Letting the context manager tear it down normally keeps an
-        # episode at one box rather than two, which is what costs on a paid runtime.
-        async with agents.solver.provision(task) as box:
-            solution = await agents.solver.run(task, runtime=box)
-            if not solution.ok:
-                # The rollout errored, so its own scoring never ran either; grading it
-                # would spend a second sandbox to reproduce a failure the trace already
-                # records. Return rather than raise: `episode.ok` follows the failed
-                # trace, and `episode_should_retry` classifies off that trace's own
-                # error — an exception raised here would bury the real type.
-                return
-            collected = await vf.collect(box, task.data.artifacts)
-
-        async with agents.judge.provision(task) as judge_box:
-            await vf.restore(judge_box, collected)
-            judge_task = JudgeTask.from_trace(solution, self.config.task, "isolated")
-            await agents.judge.run(judge_task, runtime=judge_box)
+        solution = await agents.solver.run(task)
+        if not solution.ok:
+            return
+        await agents.judge.run(
+            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
+        )
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent_name: t for t in episode.traces}
         if "judge" not in by_agent:
-            return  # solver errored; `run` skipped grading and the trace says why
+            return
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):

@@ -133,7 +133,7 @@ async def capture_patch(
     infrastructure failed.
 
     `write_path` additionally writes the patch to that path inside the box, for tasks
-    graded in a second sandbox. Point it at `vf.CONVENTION_DIR` (e.g.
+    graded in a second sandbox. Point it at `vf.ARTIFACTS_DIR` (e.g.
     `/logs/artifacts/patch.diff`) and collection picks it up with no declaration. Leave
     it on the convention sweep rather than declaring it as an `Artifact`: a declared
     path is collected strictly, which would turn an agent-broken repo into a rollout
@@ -161,8 +161,6 @@ async def capture_patch(
             )
             return
         raw = await runtime.read(capped)
-    except Exception as exc:
-        raise SandboxError(f"patch capture could not reach the box: {exc}") from exc
     finally:
         # Unique names don't overwrite each other, so leftovers would accumulate
         # on shared-filesystem runtimes; removal is best-effort by design.
@@ -175,12 +173,6 @@ async def capture_patch(
         trace.info["patch_truncated"] = True
     trace.info["patch"] = raw.decode("utf-8", errors="replace")
     if write_path is not None:
-        try:
-            parent = str(PurePosixPath(write_path).parent)
-            await runtime.run(["mkdir", "-p", parent], env or {})
-            await runtime.write(write_path, raw)
-        except Exception as exc:
-            # Transport again, not the policy: the patch exists, we could not place it.
-            raise SandboxError(
-                f"patch capture could not write {write_path!r}: {exc}"
-            ) from exc
+        parent = str(PurePosixPath(write_path).parent)
+        await runtime.run(["mkdir", "-p", parent], env or {})
+        await runtime.write(write_path, raw)

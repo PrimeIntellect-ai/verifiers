@@ -1,17 +1,4 @@
-"""Carry a task's declared files out of the agent's box and into a grading box.
-
-Grading in the box the agent worked in leaves a seam a policy under RL pressure will
-find. Grading in a second box removes it — only what the task declares crosses over.
-
-Two channels, non-overlapping: `Trace.info` is the durable record (`capture_patch` puts
-the diff there, a judge puts its verdict there) and never travels; `/logs/artifacts/` is
-transport, Harbor's in-sandbox convention, collected with no declaration and restored at
-the same path in the grading box ("no translation", as in Harbor).
-
-`collect` runs while the agent's box is alive, right after `Task.finalize` produced the
-files. It is the barrier: once it returns, nothing downstream needs the agent's box and
-it can be torn down.
-"""
+"""Artifact collection and restoration across runtimes."""
 
 from __future__ import annotations
 
@@ -23,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
-from verifiers.v1.errors import ArtifactError
 from verifiers.v1.types import StrictBaseModel
 
 if TYPE_CHECKING:
@@ -31,9 +17,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CONVENTION_DIR = "/logs/artifacts"
-"""Harbor's in-sandbox publish directory, swept implicitly so a task that writes here
-needs no declaration."""
+ARTIFACTS_DIR = "/logs/artifacts"
+"""Implicit artifact directory; tasks that write here need no declaration."""
 
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 """Ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
@@ -41,11 +26,7 @@ agent's image, so the repo is already there and only its output has to travel.""
 
 
 class Artifact(StrictBaseModel):
-    """One path to carry into the grading box, where it lands at this same path.
-
-    Harbor's `ArtifactConfig` minus `destination` (host trial-directory placement, which
-    verifiers has no equivalent for) and `service` (compose sidecars, unsupported).
-    """
+    """One path to restore at the same location in another runtime."""
 
     source: str
     exclude: list[str] = Field(default_factory=list)
@@ -64,37 +45,34 @@ async def collect(
     and grading a partial state scores the rollout wrong rather than failing it. The
     implicit convention sweep is exempt — most tasks never write there.
 
-    One archive per source: BusyBox `tar` (every alpine-based image) implements only
-    `c`/`x`/`t` with no `-r` to append, and each source carries its own excludes anyway.
+    Each source is archived separately so its exclude patterns stay local.
     """
-    # Harbor permits a relative source, and the probe below resolves one against the
-    # runtime's workdir — so the tar, which runs `-C /`, has to agree or it archives a
-    # different file. Joining also normalises `/work/` to `/work`, so one tree cannot
-    # key two entries (the source is both the dict key and `restore`'s rm -rf target).
+    # Resolve relative sources against the runtime workdir. Joining also normalises
+    # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
+    # dict key and `restore`'s rm -rf target).
     workdir = PurePosixPath(getattr(runtime.config, "workdir", "") or "/")
     declared = [
         a.model_copy(update={"source": str(workdir / a.source)})
         for a in artifacts or []
     ]
-    convention = PurePosixPath(CONVENTION_DIR)
+    convention = PurePosixPath(ARTIFACTS_DIR)
     sweep = not any(
         (p := PurePosixPath(a.source)) == convention
         or p.is_relative_to(convention)
         or convention.is_relative_to(p)
         for a in declared
     )
-    entries = ([Artifact(source=CONVENTION_DIR)] if sweep else []) + declared
+    entries = ([Artifact(source=ARTIFACTS_DIR)] if sweep else []) + declared
 
     collected: dict[str, bytes] = {}
     budget = MAX_ARTIFACT_BYTES
     for artifact in entries:
         source = artifact.source
         if (await runtime.run(["test", "-e", source], {})).exit_code != 0:
-            if sweep and source == CONVENTION_DIR:
+            if sweep and source == ARTIFACTS_DIR:
                 continue
-            raise ArtifactError(
-                f"declared artifact {source!r} does not exist in the box; the task must "
-                "produce it in finalize() (or a [[verifier.collect]] hook)"
+            raise RuntimeError(
+                f"declared artifact {source!r} does not exist in the runtime"
             )
         archive = await _tar_out(runtime, artifact, budget)
         budget -= len(archive)
@@ -111,7 +89,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
     # Extraction writes to absolute paths. In a container that is the point; under the
     # subprocess runtime it is the developer's own filesystem.
     if getattr(runtime.config, "type", None) == "subprocess":
-        raise ArtifactError(
+        raise RuntimeError(
             "refusing to restore artifacts into the subprocess runtime: extraction "
             "writes to absolute paths on the host. Grade in a container."
         )
@@ -144,7 +122,7 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         # memory, not after.
         sized = await runtime.run(["sh", "-c", f"wc -c < {shlex.quote(path)}"], {})
         if (raw := sized.stdout.strip()).isdigit() and int(raw) > budget:
-            raise ArtifactError(
+            raise RuntimeError(
                 f"artifact {artifact.source!r} takes the collection over the "
                 f"{MAX_ARTIFACT_BYTES} byte limit. The grading box boots from the "
                 "agent's image, so only the delta needs to travel — narrow the source "
@@ -163,4 +141,4 @@ async def _run(runtime: Runtime, command: str, action: str) -> None:
     result = await runtime.run(["sh", "-c", command], {})
     if result.exit_code:
         detail = (result.stderr or result.stdout).strip()[-500:]
-        raise ArtifactError(f"failed to {action}: {detail}")
+        raise RuntimeError(f"failed to {action}: {detail}")

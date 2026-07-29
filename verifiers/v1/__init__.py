@@ -5,7 +5,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACP
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
 from verifiers.v1.artifacts import (
-    CONVENTION_DIR,
+    ARTIFACTS_DIR,
     Artifact,
     collect,
     restore,
@@ -37,7 +37,6 @@ from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.errors import (
-    ArtifactError,
     EnvError,
     HarnessError,
     InterceptionError,
@@ -162,9 +161,6 @@ from verifiers.v1.utils.git import (
 from verifiers.v1.utils.git import (
     resolve_head as resolve_head,
 )
-from verifiers.v1.utils.git import (
-    snapshot_untracked as snapshot_untracked,
-)
 
 __all__ = [  # noqa: RUF022 - grouped by public API area
     # types
@@ -230,7 +226,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ToolsetError",
     "SandboxError",
     "TaskError",
-    "ArtifactError",
     "InterceptionError",
     "TunnelError",
     # clients
@@ -303,9 +298,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "PATCH_CAP_BYTES",
     "capture_patch",
     "resolve_head",
-    "snapshot_untracked",
     # grading artifacts
-    "CONVENTION_DIR",
+    "ARTIFACTS_DIR",
     "Artifact",
     "collect",
     "restore",

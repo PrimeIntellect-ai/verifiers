@@ -25,10 +25,10 @@ from pathlib import Path
 
 from pydantic import Field
 
-from verifiers.v1.artifacts import Artifact
+from verifiers.v1.artifacts import Artifact, collect
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.decorators import reward
-from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
@@ -83,7 +83,7 @@ class CollectHook(StrictBaseModel):
     """One `[[verifier.collect]]` command, run in the agent's box by `finalize`."""
 
     command: str
-    timeout_sec: float = 60.0
+    timeout_sec: float = 600.0
 
 
 class HarborData(TaskData):
@@ -130,15 +130,16 @@ class HarborTask(Task[HarborData]):
                     hook.timeout_sec,
                 )
             except TimeoutError as exc:
-                raise TaskError(
+                raise RuntimeError(
                     f"collect hook timed out after {hook.timeout_sec}s: {hook.command}"
                 ) from exc
             if result.exit_code:
                 detail = (result.stderr or result.stdout).strip()[-500:]
-                raise TaskError(
+                raise RuntimeError(
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
+        trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime) -> float:
@@ -377,14 +378,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 def parse_verifier_extras(
     task_dir: Path, parsed
 ) -> tuple[list[Artifact], list[CollectHook]]:
-    """Harbor's `artifacts` and `[[verifier.collect]]` blocks, narrowed to what a
-    single-container runtime can honor.
-
-    The convention dir is deliberately not prepended here (Harbor's
-    `with_convention_entry` would): collection injects it itself, as an optional sweep.
-    Prepending it would make it an explicitly declared entry, and declared entries are
-    required — which would fail every task that never writes there.
-    """
+    """Parse supported artifact and collect-hook settings."""
     from harbor.constants import MAIN_SERVICE_NAME
     from harbor.models.task.artifacts import (
         effective_artifact_service,
@@ -406,8 +400,9 @@ def parse_verifier_extras(
     for entry in normalize_artifact_entries(parsed.artifacts):
         if effective_artifact_service(entry) != MAIN_SERVICE_NAME:
             raise ValueError(
-                f"{task_dir.name}: artifact {entry.source!r} targets service "
-                f"{entry.service!r}; sidecars need a compose-capable runtime"
+                f"{task_dir.name}: artifact {entry.source!r} targets additional "
+                f"service {entry.service!r}; verifiers currently supports artifacts "
+                "from the main service only"
             )
         # `destination` positions a file in Harbor's host trial directory. Verifiers has
         # no such directory (the trace is the record) and Harbor never lets destination
@@ -420,8 +415,9 @@ def parse_verifier_extras(
     for hook in verifier.collect:
         if hook.service != MAIN_SERVICE_NAME:
             raise ValueError(
-                f"{task_dir.name}: collect hook targets service {hook.service!r}; "
-                "sidecars need a compose-capable runtime"
+                f"{task_dir.name}: collect hook targets additional service "
+                f"{hook.service!r}; verifiers currently supports collect hooks for "
+                "the main service only"
             )
         if hook.user is not None:
             raise ValueError(
