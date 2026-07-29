@@ -4,9 +4,14 @@ config that owns one, and the retired keys such a config refuses.
 A run composes the blocks it needs — `[env]` (what runs, `configs/env.py`),
 `[serve]` (how it's hosted, `configs/serve.py`), `[legacy]` (the v0 bridge,
 `configs/legacy.py`) — plus its own fields. Nothing here is a base class: the eval
-CLI, the `serve` CLI, GEPA and a trainer each declare their blocks and call these."""
+CLI, the `serve` CLI, GEPA and a trainer each declare their blocks and call these.
 
-from pydantic import Field, ValidationError
+Declare the env field as `SerializeAsAny[EnvConfig] = Field(default_factory=
+single_agent_env_config)`. The `SerializeAsAny` is load-bearing: pydantic serializes
+by declared type, so a plain `EnvConfig` silently drops a narrowed subclass's agents
+and knobs from `model_dump()` — the env-server wire's payload."""
+
+from pydantic import ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.env import EnvConfig
@@ -30,14 +35,6 @@ RETIRED = {
 }
 """Top-level keys a run config no longer owns, each pointing at its home. Every one
 would otherwise fail as a bare `extra_forbidden`, saying nothing about where it went."""
-
-
-def env_field() -> Field:  # type: ignore[valid-type]
-    """The default for the `env` field every run config declares: the single-agent
-    shape. Annotate the field `SerializeAsAny[EnvConfig]` — pydantic serializes by
-    declared type, so a plain `EnvConfig` silently drops a narrowed subclass's agents
-    and knobs from `model_dump()`, which is the env-server wire's payload."""
-    return Field(default_factory=_single_agent_env_config)
 
 
 def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> dict:
@@ -85,9 +82,10 @@ def narrowed_env_annotation(cls) -> "type[EnvConfig] | None":
     return None
 
 
-def _single_agent_env_config() -> EnvConfig:
-    """The default `env` block: the single-agent shape. Lazy — the concrete env
-    lives in `envs/`, which imports `env.py`."""
+def single_agent_env_config() -> EnvConfig:
+    """The default `env` block: the single-agent shape. Imported inside the body to
+    keep the env runtime (`envs/` pulls in `env.py`, `agent.py`, `task.py`) out of a
+    module that only describes configs."""
     from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 
     return SingleAgentEnvConfig()
