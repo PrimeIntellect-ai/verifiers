@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 
 class EnvServer:
     def __init__(
-        self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
+        self,
+        config: EnvConfig,
+        address: str = "tcp://127.0.0.1:5000",
+        max_concurrent: int | None = None,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
@@ -52,9 +55,8 @@ class EnvServer:
         # v1 envs never group-score (siblings score inside the env's own rollout);
         # only the legacy (v0) bridge sets this.
         self.requires_group_scoring = False
-        self._gate = (
-            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-        )
+        # This worker's episode bound (`--max-concurrent`), spanning requests.
+        self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -122,8 +124,8 @@ class EnvServer:
     async def _run(self, req: RunRequest) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         (slot,) = self.env.slots(self._build_task(req.task_data))
-        # The gate spans requests: `--env.max-concurrent` bounds this worker's
-        # agent runs the same way the in-process eval's semaphore does.
+        # The gate spans requests: `--max-concurrent` bounds this worker's episodes
+        # in flight the same way the in-process eval's semaphore does.
         episode = await self.env.run_slot(slot, ctx, self._gate)
         # Trust the env-minted episode; serialize it once before client-side re-typing.
         return RunResponse.model_construct(episode=episode)

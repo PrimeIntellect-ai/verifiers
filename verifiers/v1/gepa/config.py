@@ -4,9 +4,9 @@ GEPA optimizes one taskset's `Task.system_prompt` by alternating rollouts (`eval
 teacher LM reflecting on the reflective dataset (`make_reflective_dataset`) — see
 `verifiers.v1.gepa.adapter.GEPAAdapter`. Like `EvalConfig`, it owns an `env` field (the
 environment: its taskset, seats, limits) and adds the optimization loop's own knobs (model,
-reflection model, train/val split, budget). There is no worker pool here (`EnvServerConfig`
-is not a base) — GEPA always runs in-process, since its adapter protocol is itself
-synchronous (see `GEPAAdapter`)."""
+reflection model, train/val split, budget). There is no `[serve]` block here — GEPA
+always runs in-process, since its adapter protocol is itself synchronous (see
+`GEPAAdapter`)."""
 
 from pathlib import Path
 from uuid import uuid4
