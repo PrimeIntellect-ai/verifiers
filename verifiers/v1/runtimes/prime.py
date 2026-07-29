@@ -306,6 +306,7 @@ class PrimeRuntime(Runtime):
             await self._client.upload_bytes(
                 self.info.id, target, data, filename=PurePosixPath(target).name
             )
+            self._workdir_written(path)
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
 

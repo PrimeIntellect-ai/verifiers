@@ -380,6 +380,7 @@ class DockerRuntime(Runtime):
             raise SandboxError(
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
+        self._workdir_written(path)
 
     def cleanup(self) -> None:
         if self._container is None or self._stopped:

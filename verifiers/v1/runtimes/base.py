@@ -44,6 +44,34 @@ _ENSURE_UV = (
 # Shared restricted rollouts run agents as this unprivileged user. Trusted setup
 # can then reap every process that user left behind using executables it cannot replace.
 _REUSE_UID = "65534"
+_REUSE_PRIVILEGES = (
+    f"--reuid={_REUSE_UID}",
+    f"--regid={_REUSE_UID}",
+    "--clear-groups",
+    "--no-new-privs",
+    "--bounding-set=-all",
+    "--inh-caps=-all",
+    "--ambient-caps=-all",
+)
+_UNSAFE_REUSE_WORKDIRS = {
+    "/",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/home",
+    "/lib",
+    "/lib64",
+    "/opt",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/sys",
+    "/tmp",
+    "/usr",
+    "/var",
+}
 _RESET_REUSE = r"""
 while :; do
     targeted=
@@ -192,6 +220,7 @@ class Runtime(ABC):
         self._setup_claimed = False
         self._rollout_used = False
         self._reuse_tools: dict[str, str] | None = None
+        self._reuse_workdir_owned = False
         self.execution_prepared = False
         """Whether a rollout successfully activated this runtime's execution policy."""
         self.stopped = False
@@ -259,21 +288,26 @@ class Runtime(ABC):
         if self._reuse_tools is None:
             return argv, env
         tools = self._reuse_tools
-        ownership = await self.run(
-            [tools["chown"], "-R", f"{_REUSE_UID}:{_REUSE_UID}", tools["workdir"]],
-            {},
-        )
-        if ownership.exit_code != 0:
-            raise SandboxError(
-                f"failed to prepare {self.type} workdir for safe reuse: "
-                f"{ownership.stderr.strip()[-500:]}"
+        if not self._reuse_workdir_owned:
+            ownership = await self.run(
+                [
+                    tools["chown"],
+                    "-R",
+                    f"{_REUSE_UID}:{_REUSE_UID}",
+                    tools["workdir"],
+                ],
+                {},
             )
+            if ownership.exit_code != 0:
+                raise SandboxError(
+                    f"failed to prepare {self.type} workdir for safe reuse: "
+                    f"{ownership.stderr.strip()[-500:]}"
+                )
+            self._reuse_workdir_owned = True
         return (
             [
-                tools["chroot"],
-                f"--userspec={_REUSE_UID}:{_REUSE_UID}",
-                f"--groups={_REUSE_UID}",
-                "/",
+                tools["setpriv"],
+                *_REUSE_PRIVILEGES,
                 tools["sh"],
                 "-c",
                 'cd "$1" && shift && exec "$@"',
@@ -378,6 +412,15 @@ class Runtime(ABC):
     async def write(self, path: str, data: bytes) -> None:
         pass
 
+    def _workdir_written(self, path: str) -> None:
+        """Require a fresh ownership pass after framework writes into the workdir."""
+        if self._reuse_tools is None:
+            return
+        target = PurePosixPath(path)
+        workdir = PurePosixPath(self._reuse_tools["workdir"])
+        if not target.is_absolute() or target.is_relative_to(workdir):
+            self._reuse_workdir_owned = False
+
     def host_url(self, url: str) -> str:
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
@@ -390,36 +433,61 @@ class Runtime(ABC):
             raise SandboxError(
                 f"restricted {self.type} runtime reuse must be prepared before its first rollout"
             )
-        workdir = getattr(self.config, "workdir", None)
-        if not isinstance(workdir, str) or not PurePosixPath(workdir).is_absolute():
+        configured_workdir = getattr(self.config, "workdir", None)
+        if (
+            not isinstance(configured_workdir, str)
+            or not PurePosixPath(configured_workdir).is_absolute()
+        ):
             raise SandboxError("restricted runtime reuse requires an absolute workdir")
         find = await self.run(
             [
                 "sh",
                 "-c",
                 (
-                    "set -e; command -v chroot; command -v chown; command -v rm; "
-                    "command -v sh; command -v mkdir"
+                    "set -e; command -v setpriv; command -v chown; command -v rm; "
+                    "command -v realpath; command -v sh; command -v mkdir"
                 ),
             ],
             {},
         )
         paths = find.stdout.strip().splitlines()
-        if find.exit_code != 0 or len(paths) != 5:
+        if find.exit_code != 0 or len(paths) != 6:
             raise SandboxError(
                 f"{self.type} image {getattr(self.config, 'image', '')!r} cannot safely "
-                "reuse a restricted runtime; install chroot, chown, rm, sh, and mkdir"
+                "reuse a restricted runtime; install setpriv, chown, rm, realpath, sh, "
+                "and mkdir"
             )
-        chroot, chown, rm, sh, mkdir = paths
+        setpriv, chown, rm, realpath, sh, mkdir = paths
+        resolved = await self.run([realpath, "--", configured_workdir], {})
+        workdir = resolved.stdout.strip()
+        workdir_path = PurePosixPath(workdir)
+        parts = workdir_path.parts
+        unsafe_cache = (
+            len(parts) >= 3 and parts[:2] == ("/", "tmp") and parts[2].startswith("vf-")
+        )
+        if (
+            resolved.exit_code != 0
+            or not workdir_path.is_absolute()
+            or workdir in _UNSAFE_REUSE_WORKDIRS
+            or unsafe_cache
+            or any(PurePosixPath(path).is_relative_to(workdir_path) for path in paths)
+        ):
+            raise SandboxError(
+                "restricted runtime reuse requires a dedicated workdir outside system "
+                "directories and /tmp/vf-*"
+            )
         probe = await self.run(
             [
-                chroot,
-                f"--userspec={_REUSE_UID}:{_REUSE_UID}",
-                f"--groups={_REUSE_UID}",
-                "/",
+                setpriv,
+                *_REUSE_PRIVILEGES,
                 sh,
                 "-c",
-                "id -u; id -g; id -G",
+                (
+                    "id -u; id -g; id -G; "
+                    "while read -r key value _; do "
+                    '[ "$key" = "NoNewPrivs:" ] && { echo "$value"; break; }; '
+                    "done < /proc/self/status"
+                ),
             ],
             {},
         )
@@ -427,15 +495,16 @@ class Runtime(ABC):
         if (
             probe.exit_code != 0
             or identity[:2] != [_REUSE_UID, _REUSE_UID]
-            or len(identity) != 3
+            or len(identity) != 4
             or set(identity[2].split()) != {_REUSE_UID}
+            or identity[3] != "1"
         ):
             raise SandboxError(
                 f"{self.type} image {getattr(self.config, 'image', '')!r} cannot drop "
-                f"agent programs to uid/gid {_REUSE_UID} for safe restricted reuse"
+                f"agent programs to uid/gid {_REUSE_UID} without privilege regain"
             )
         self._reuse_tools = {
-            "chroot": chroot,
+            "setpriv": setpriv,
             "chown": chown,
             "rm": rm,
             "sh": sh,
@@ -484,6 +553,8 @@ class Runtime(ABC):
                         f"{result.stderr.strip()[-500:]}"
                     )
                 self._uv_interpreters.clear()
+            if self._reuse_tools is not None:
+                self._reuse_workdir_owned = False
             if self.execution_prepared:
                 await self._apply_network_policy(None)
                 self.execution_prepared = False
