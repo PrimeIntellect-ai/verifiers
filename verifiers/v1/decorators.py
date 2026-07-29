@@ -12,7 +12,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
-    """Bound methods on `obj` tagged with `attr`, sorted by priority then name. Scans the
+    """Bound methods on `obj` tagged with `attr`, sorted by priority then attribute name. Scans the
     class MRO for tagged functions (not `inspect.getmembers(obj)`, which evaluates every
     descriptor — a property with side effects would run here) and binds each through
     `getattr`, so the most-derived override wins."""
@@ -23,10 +23,12 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
         if callable(fn) and hasattr(fn, attr)
     }
     # An undecorated override suppresses a decorated base method.
-    methods = [method for name in names if hasattr(method := getattr(obj, name), attr)]
+    methods = [
+        (name, method) for name in names if hasattr(method := getattr(obj, name), attr)
+    ]
     priority_attr = f"{attr}_priority"
-    methods.sort(key=lambda m: (-getattr(m, priority_attr, 0), m.__name__))
-    return methods
+    methods.sort(key=lambda item: (-getattr(item[1], priority_attr, 0), item[0]))
+    return [method for _, method in methods]
 
 
 def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:

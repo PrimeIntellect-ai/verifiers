@@ -216,6 +216,8 @@ class Dialect(ABC, Generic[ReqT, RespT]):
             body["tools"] = kept
         else:
             body.pop("tools", None)
+            body.pop("tool_choice", None)
+            return removed
 
         choice = body.get("tool_choice")
         if isinstance(choice, dict):
@@ -227,7 +229,7 @@ class Dialect(ABC, Generic[ReqT, RespT]):
                     for tool in container["tools"]
                     if not (
                         (label := name(tool))
-                        and matcher(label)
+                        and label in removed
                         and label not in clients
                     )
                 ]
@@ -236,9 +238,7 @@ class Dialect(ABC, Generic[ReqT, RespT]):
                 return removed
 
         selected = name(choice)
-        if (selected in ("required", "any") and not kept) or (
-            selected and matcher(selected) and selected not in clients
-        ):
+        if selected in removed and selected not in clients:
             body.pop("tool_choice", None)
         return removed
 

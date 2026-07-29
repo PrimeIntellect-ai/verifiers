@@ -19,6 +19,7 @@ from verifiers.v1.types import (
     ToolCall,
     ToolMessage,
     UserMessage,
+    content_text,
 )
 
 if TYPE_CHECKING:
@@ -57,8 +58,9 @@ def match_tool(name: str, *patterns: str) -> bool:
             continue
         pattern = pattern.casefold()
         normalized_pattern = re.sub(r"[^a-z0-9*?]+", "", pattern)
+        stripped_normalized = re.sub(r"[^a-z0-9]+", "", normalized)
         if fnmatchcase(name.casefold(), pattern) or fnmatchcase(
-            normalized, normalized_pattern
+            stripped_normalized, normalized_pattern
         ):
             return True
     return False
@@ -74,7 +76,9 @@ def _tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
         if kind in ("server_tool_use", "mcp_tool_use"):
             name = item.get("name")
         elif kind != "function_call" and kind.endswith(("_call", "_tool_result")):
-            name = item.get("name") or kind.rsplit("_", 1)[0]
+            name = item.get("name") or kind.removesuffix("_tool_result").removesuffix(
+                "_call"
+            )
         else:
             continue
         if not isinstance(name, str):
@@ -134,13 +138,16 @@ def intercept_tool_calls(
 
     def tool_calls(self: Any, message: Message) -> InterceptResult:
         if isinstance(message, ToolMessage):
-            matched = not patterns or bool(
-                message.name and match_tool(message.name, *patterns)
-            )
+            if patterns and not (message.name and match_tool(message.name, *patterns)):
+                return None
+            texts = [content_text(message.content).casefold()]
         else:
-            matched = bool(_tool_calls(message, *patterns))
-        text = message.model_dump_json().casefold()
-        if matched and (not needles or any(needle in text for needle in needles)):
+            texts = [
+                call.arguments.casefold() for call in _tool_calls(message, *patterns)
+            ]
+        if texts and (
+            not needles or any(needle in text for text in texts for needle in needles)
+        ):
             return _action(reply, reward)
         return None
 
