@@ -148,12 +148,8 @@ class Harness(ABC, Generic[ConfigT]):
         if result.exit_code != 0:
             # The real cause is at the END of a traceback, so keep the tail.
             detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
-            if not await runtime.alive():
-                raise SandboxError(
-                    f"runtime died under harness {self.config.id!r} "
-                    f"(exit {result.exit_code}): {detail}"
-                )
             marker = "VF_MCP_ERROR="
+            mcp_error = None
             if marker in detail:
                 diagnostic = detail.rsplit(marker, 1)[1].splitlines()[0]
                 try:
@@ -172,7 +168,16 @@ class Harness(ABC, Generic[ConfigT]):
                         and not payload["replay_safe"]
                         else MCPTransportError
                     )
-                    raise error_cls(diagnostic)
+                    mcp_error = error_cls(diagnostic)
+            if isinstance(mcp_error, MCPDeliveryUnknownError):
+                raise mcp_error
+            if not await runtime.alive():
+                raise SandboxError(
+                    f"runtime died under harness {self.config.id!r} "
+                    f"(exit {result.exit_code}): {detail}"
+                )
+            if mcp_error is not None:
+                raise mcp_error
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )
