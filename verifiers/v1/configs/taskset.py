@@ -1,6 +1,8 @@
 """The taskset plugin's config: which rows load, under `--env.taskset.*`."""
 
-from pydantic import SerializeAsAny
+from pathlib import Path
+
+from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.task import TaskConfig
@@ -14,6 +16,26 @@ class TasksetConfig(BaseConfig):
     positional `eval <taskset-id>`)."""
     task: SerializeAsAny[TaskConfig] = TaskConfig()
     """Config passed to each task, under `--env.taskset.task.*`."""
+    system_prompt: str | None = None
+    """Config-layer system prompt: replaces each task's baked-in `TaskData.system_prompt`
+    after `load()` (applied in `Taskset.select`). Lets a run set the system prompt without
+    editing the taskset — e.g. hand a GEPA `best_system_prompt.txt` to eval/train via
+    `system_prompt_file`. Mutually exclusive with `system_prompt_file`."""
+    system_prompt_file: Path | None = None
+    """File form of `system_prompt` (read as UTF-8), mutually exclusive with it."""
+
+    @model_validator(mode="after")
+    def check_system_prompt_source(self) -> "TasksetConfig":
+        if self.system_prompt is not None and self.system_prompt_file is not None:
+            raise ValueError("set `system_prompt` or `system_prompt_file`, not both")
+        return self
+
+    def resolve_system_prompt(self) -> str | None:
+        """The effective config-layer system prompt: the file's text if `system_prompt_file`
+        is set, else `system_prompt` (None when neither is)."""
+        if self.system_prompt_file is not None:
+            return self.system_prompt_file.read_text(encoding="utf-8")
+        return self.system_prompt
 
     @property
     def name(self) -> str:

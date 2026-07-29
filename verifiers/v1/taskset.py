@@ -79,10 +79,26 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
                     "taking the first %d generated tasks",
                     num_tasks,
                 )
-            return list(itertools.islice(self.load(), num_tasks))
-        if shuffle:
-            return sample(self.load(), shuffle=True, limit=num_tasks)
-        return list(itertools.islice(self.load(), num_tasks))
+            tasks = list(itertools.islice(self.load(), num_tasks))
+        elif shuffle:
+            tasks = sample(self.load(), shuffle=True, limit=num_tasks)
+        else:
+            tasks = list(itertools.islice(self.load(), num_tasks))
+        return self._apply_system_prompt(tasks)
+
+    def _apply_system_prompt(self, tasks: list[TaskT]) -> list[TaskT]:
+        """Overlay the config-layer `system_prompt` (see `TasksetConfig`) onto the
+        materialized tasks, replacing each task's baked-in `TaskData.system_prompt`. A no-op
+        unless `--env.taskset.system-prompt[-file]` is set — so every entrypoint that selects
+        tasks (eval, validate, debug, GEPA, and the env server's client) picks the override up
+        the same way, e.g. a GEPA `best_system_prompt.txt` handed to eval or training."""
+        override = self.config.resolve_system_prompt()
+        if override is None:
+            return tasks
+        return [
+            type(t)(t.data.model_copy(update={"system_prompt": override}), t.config)
+            for t in tasks
+        ]
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a `tools` entry is built with, resolved off `self.config` (the
