@@ -643,13 +643,18 @@ class InterceptionServer(Interception):
                     await resp.write(chunk)
                 except ConnectionResetError:
                     connected = False
+                    if replay is None:
+                        raise
 
             async def finish_live() -> None:
                 for event in deferred:
                     await write(event)
                 if connected:
-                    with contextlib.suppress(ConnectionResetError):
+                    if replay is None:
                         await resp.write_eof()
+                    else:
+                        with contextlib.suppress(ConnectionResetError):
+                            await resp.write_eof()
 
             def feed(chunk: bytes) -> None:
                 nonlocal parser_error
@@ -672,6 +677,8 @@ class InterceptionServer(Interception):
                     await resp.prepare(request)
                 except ConnectionResetError:
                     connected = False
+                    if replay is None:
+                        raise
                 while True:
                     try:
                         async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
@@ -721,21 +728,25 @@ class InterceptionServer(Interception):
                 await finish_live()
                 return resp
 
-            try:
-                stream_replay = None
-                if replay is not None:
-                    assert buffer is not None and replay_path is not None
-                    buffer.flush()
-                    buffer.close()
-                    stream_replay = StreamReplay(replay_path, resp.content_type)
+            if replay is None:
+                # Without a replay artifact, a lost terminal event would make a client retry an
+                # already-committed turn. Deliver the complete stream before committing instead.
+                await finish_live()
                 node = turn.commit(response, tools)
-                if replay is not None:
-                    request_key, fut = replay
-                    assert stream_replay is not None
-                    _retain_replay(session, request_key, stream_replay)
-                    published = True
-                    if not fut.done():
-                        fut.set_result(stream_replay)
+                logger.debug("intercept stream turn: id=%s", session.trace.id)
+                return resp
+
+            try:
+                assert buffer is not None and replay_path is not None
+                buffer.flush()
+                buffer.close()
+                stream_replay = StreamReplay(replay_path, resp.content_type)
+                node = turn.commit(response, tools)
+                request_key, fut = replay
+                _retain_replay(session, request_key, stream_replay)
+                published = True
+                if not fut.done():
+                    fut.set_result(stream_replay)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
             finally:
                 # Never strand a live client on withheld terminal events, even if replay
