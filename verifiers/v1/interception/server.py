@@ -744,9 +744,17 @@ class InterceptionServer(Interception):
                     if not fut.done():
                         fut.set_result(stream_replay)
                 logger.debug("intercept stream turn: id=%s", session.trace.id)
-            finally:
-                # Never strand a live client on withheld terminal events, even if replay
-                # finalization, graph commit, or cache publication fails.
+            except BaseException:
+                if node is None:
+                    # A client must not observe a successful terminal event for a turn that was
+                    # never committed. Propagating the error closes this prepared response.
+                    resp.force_close()
+                else:
+                    # The turn is already durable; don't strand the live client if replay cache
+                    # publication fails afterward.
+                    await finish_live()
+                raise
+            else:
                 await finish_live()
             return resp
         except BaseException as e:
