@@ -1,20 +1,20 @@
 # interception-v1
 
-An example v1 environment that composes deterministic interception with an ordinary
-LLM judge.
+An example v1 environment that defines deterministic and judge-based policies directly
+with `@vf.intercept`.
 
-The task class installs three policies in priority order:
+The task class installs two response handlers in priority order:
 
-1. `intercept_provider_tools("web_search*")` removes matching provider-hosted tools
-   from the request before inference.
-2. `intercept_shell_commands("curl", "wget")` rewrites matching assistant tool calls
-   before the harness can execute them.
-3. `intercept_with_judge(...)` checks the remaining content after the cheaper
-   deterministic rules have run.
+1. `deterministic_policy` uses a typed `vf.AssistantMessage` to select the response
+   boundary and returns replacement text when an exact rule matches.
+2. `judge_policy` receives the candidate, request prompt, and trace, then calls
+   `vf.Judge.complete()` for semantic classification. Passing `trace` records the judge
+   call and its usage.
 
-The first task triggers the deterministic shell policy. The second task emits a marker
-that the example judge rubric blocks. Their reward checks `trace.interceptions` to show
-which policy actually rewrote the exchange.
+The higher-priority deterministic handler always runs first. The lower-priority judge
+sees any replacement it produced, so it classifies the cleaned result rather than the
+original candidate. The reward checks `trace.interceptions` to show which decorated
+handler rewrote the exchange.
 
 ## Develop
 
@@ -25,12 +25,9 @@ uv pip install -e environments/interception_v1
 uv run eval interception-v1 -n 2
 ```
 
-The judge uses `vf.Judge()` and its default model. To select another ordinary judge,
-pass one explicitly:
+The example uses `vf.Judge()` and its default model. A handler can select another model
+by constructing the judge with a config:
 
 ```python
-vf.intercept_with_judge(
-    rubric,
-    judge=vf.Judge(vf.JudgeConfig(model="openai/gpt-5.4-nano")),
-)
+judge = vf.Judge(vf.JudgeConfig(model="openai/gpt-5.4-nano"))
 ```
