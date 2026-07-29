@@ -555,9 +555,19 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         # ==, short-circuits at the first divergent node) — no full concatenation materialized.
         keep = 0
         off = 0
-        for nid in prefix:
-            node_tokens = trace.nodes[nid].token_ids
-            if prompt_ids[off : off + len(node_tokens)] != node_tokens:
+        for i, nid in enumerate(prefix):
+            node = trace.nodes[nid]
+            node_tokens = node.token_ids
+            span = spans[i] if spans and i < len(spans) else None
+            if node.rewritten and span is not None:
+                # A replacement has no model-sampled token ids. The next full render is the
+                # first source of truth for its canonical input form, so hydrate that existing
+                # node instead of forking the message-identical graph at stale generation tokens.
+                node_tokens = prompt_ids[off : span[1]]
+                node.token_ids = node_tokens
+                node.mask = [False] * len(node_tokens)
+                node.is_content = is_content[off : span[1]] if has_is_content else []
+            elif prompt_ids[off : off + len(node_tokens)] != node_tokens:
                 break
             off += len(node_tokens)
             keep += 1
