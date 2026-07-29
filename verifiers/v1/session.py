@@ -7,6 +7,8 @@ and stashes the real failure on `error`. `RolloutLimits` is the framework's per-
 budget (turns / tokens), checked between turns.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
@@ -65,12 +67,12 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    error: "RolloutError | None" = None
+    error: RolloutError | None = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
-    server: "InterceptionServer | None" = None
+    server: InterceptionServer | None = None
     """The interception server this session is registered on (set by `register`). How the
     rollout, after a harness failure, asks whether the server's tunnel was down
     (`healthy()`) — attributing the failure to the tunnel rather than the harness."""
@@ -84,7 +86,7 @@ class RolloutSession:
     is always of the most recent request — keeping only the last one is sufficient and bounded."""
     last_response: dict | None = None
     """The response returned for `last_request`, replayed verbatim on a retry."""
-    inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
+    inflight: dict[bytes, asyncio.Future[dict | None]] = field(default_factory=dict)
     """Body digest -> the future of the attempt currently computing it. A retry that arrives
     while the first attempt is still in flight (a slow turn) awaits this future instead of
     starting a second inference — the other half of retry atomicity (with `last_response`, which
@@ -95,12 +97,12 @@ class RolloutSession:
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record
     calls, or write state onto it — the in-memory trace must stay what the run produced."""
-    tasks: set["asyncio.Task"] = field(default_factory=set)
+    tasks: set[asyncio.Task] = field(default_factory=set)
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
 
-    def adopt(self, task: "asyncio.Task | None") -> None:
+    def adopt(self, task: asyncio.Task | None) -> None:
         """Track a handler task serving this session, for cancellation at release.
         Callers adopt in the same synchronous stretch that fetched the session, so
         `release()` can't interleave; the released check keeps the seal even if a
