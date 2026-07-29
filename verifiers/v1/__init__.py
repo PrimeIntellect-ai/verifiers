@@ -37,7 +37,6 @@ from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.errors import (
-    ArtifactError,
     EnvError,
     HarnessError,
     InterceptionError,
@@ -230,7 +229,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ToolsetError",
     "SandboxError",
     "TaskError",
-    "ArtifactError",
     "InterceptionError",
     "TunnelError",
     # clients
