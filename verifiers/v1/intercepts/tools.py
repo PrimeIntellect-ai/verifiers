@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from collections.abc import Iterable
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
@@ -36,13 +37,34 @@ _ALIASES = {
     for canonical, aliases in _TOOL_GROUPS.items()
     for alias in aliases
 }
-_SHELL_COMMAND_START = (
-    r"(?:^|[;&|()\n])\s*"
-    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+|sudo|env|command|exec|nice|nohup|time|xargs|"
-    r"if|then|elif|while|until|do|!)\s+)*"
-    r"(?:[^\s;&|()]*/)?"
-)
-_SHELL_COMMAND_END = r"(?=$|[\s;&|()])"
+_SHELL_WRAPPER_OPTIONS = {
+    "sudo": {"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"},
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+    "nice": {"-n", "--adjustment"},
+    "time": {"-f", "--format", "-o", "--output"},
+    "xargs": {
+        "-a",
+        "--arg-file",
+        "-E",
+        "-I",
+        "-L",
+        "-n",
+        "-P",
+        "-s",
+        "-d",
+    },
+    "command": set(),
+    "exec": set(),
+    "nohup": set(),
+    "if": set(),
+    "then": set(),
+    "elif": set(),
+    "while": set(),
+    "until": set(),
+    "do": set(),
+    "!": set(),
+}
+_SHELL_INTERPRETERS = {"sh", "bash", "dash", "ksh", "zsh"}
 
 
 def _tool_name(name: str) -> str:
@@ -108,33 +130,115 @@ def _tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
     return [call for call in calls if not patterns or match_tool(call.name, *patterns)]
 
 
-def _shell_text(call: ToolCall) -> str:
-    """Extract only executable command text from common shell-tool arguments."""
+def _shell_text(call: ToolCall, *, commands_only: bool = False) -> str:
+    """Extract shell text, optionally reduced to normalized invocation lines."""
     try:
         arguments = json.loads(call.arguments)
     except json.JSONDecodeError:
         return call.arguments
     if isinstance(arguments, str):
-        return arguments
-    if not isinstance(arguments, dict):
-        return ""
-    action = arguments.get("action")
-    sources = [arguments, action] if isinstance(action, dict) else [arguments]
-    values = (
-        source.get(key) for source in sources for key in ("command", "commands", "cmd")
-    )
-    return "\n".join(
-        item
-        for value in values
-        for item in (
-            [value]
-            if isinstance(value, str)
-            else value
-            if isinstance(value, list)
-            else []
+        text = arguments
+    elif isinstance(arguments, dict):
+        action = arguments.get("action")
+        sources = [arguments, action] if isinstance(action, dict) else [arguments]
+        values = (
+            source.get(key)
+            for source in sources
+            for key in ("command", "commands", "cmd")
         )
-        if isinstance(item, str)
-    )
+        text = "\n".join(
+            item
+            for value in values
+            for item in (
+                [value]
+                if isinstance(value, str)
+                else value
+                if isinstance(value, list)
+                else []
+            )
+            if isinstance(item, str)
+        )
+    else:
+        text = ""
+    if not commands_only or not text:
+        return text
+
+    # Tokenize command fields only, then unwrap launchers and nested shell payloads.
+    pending = [text]
+    invocations = []
+    while pending:
+        lexer = shlex.shlex(
+            pending.pop().replace("\\\n", "").replace("\n", ";"),
+            posix=True,
+            punctuation_chars=";&|()<>",
+        )
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        segments = [[]]
+        for token in tokens:
+            if token and set(token) <= set(";&|()"):
+                segments.append([])
+            else:
+                segments[-1].append(token)
+
+        for segment in segments:
+            index = 0
+            while index < len(segment):
+                token = segment[index]
+                redirect = token and set(token) <= set("<>&")
+                descriptor = (
+                    token.isdigit()
+                    and index + 1 < len(segment)
+                    and set(segment[index + 1]) <= set("<>&")
+                )
+                if redirect:
+                    index += 2
+                    continue
+                if descriptor:
+                    index += 3
+                    continue
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+                    index += 1
+                    continue
+
+                name = token.rsplit("/", 1)[-1]
+                line = " ".join(segment[index:])
+                invocations.append(line)
+                if name != token:
+                    invocations.append(" ".join([name, *segment[index + 1 :]]))
+                index += 1
+
+                if name in _SHELL_INTERPRETERS:
+                    while index < len(segment) and segment[index].startswith("-"):
+                        option = segment[index]
+                        command_option = option == "--command" or (
+                            option.startswith("-")
+                            and not option.startswith("--")
+                            and "c" in option[1:]
+                        )
+                        if command_option:
+                            if index + 1 < len(segment):
+                                pending.append(segment[index + 1])
+                            break
+                        index += 2 if option in ("-o", "-O") else 1
+                    break
+
+                if name not in _SHELL_WRAPPER_OPTIONS:
+                    break
+                option_arguments = _SHELL_WRAPPER_OPTIONS[name]
+                while index < len(segment) and segment[index].startswith("-"):
+                    option = segment[index]
+                    index += (
+                        2
+                        if option.split("=", 1)[0] in option_arguments
+                        and "=" not in option
+                        else 1
+                    )
+
+    return "\n".join(invocations)
 
 
 def _action(reply: str, reward: float | None) -> str | Terminate:
@@ -202,9 +306,8 @@ def intercept_shell_commands(
     """Rewrite matching shell calls, or terminate when ``reward`` is set."""
     command = (
         re.compile(
-            rf"{_SHELL_COMMAND_START}(?:{'|'.join(map(re.escape, commands))})"
-            rf"{_SHELL_COMMAND_END}",
-            re.IGNORECASE,
+            rf"^(?:{'|'.join(map(re.escape, commands))})(?=$|\s)",
+            re.IGNORECASE | re.MULTILINE,
         )
         if commands
         else None
@@ -213,7 +316,10 @@ def intercept_shell_commands(
     def shell_commands(self: Any, message: AssistantMessage) -> InterceptResult:
         calls = _tool_calls(message, "bash")
         if calls and (
-            command is None or any(command.search(_shell_text(call)) for call in calls)
+            command is None
+            or any(
+                command.search(_shell_text(call, commands_only=True)) for call in calls
+            )
         ):
             return _action(reply, reward)
         return None
@@ -246,10 +352,7 @@ def intercept_code_search(
     priority: int = 0,
 ) -> Interceptor:
     """Rewrite direct code search or shell-based search commands."""
-    command = re.compile(
-        rf"{_SHELL_COMMAND_START}(?:rg|grep|find|fd){_SHELL_COMMAND_END}",
-        re.IGNORECASE,
-    )
+    command = re.compile(r"^(?:rg|grep|find|fd)(?=$|\s)", re.IGNORECASE | re.MULTILINE)
 
     def code_search(self: Any, message: Message) -> InterceptResult:
         if isinstance(message, ToolMessage):
@@ -259,7 +362,7 @@ def intercept_code_search(
                 match_tool(call.name, "code_search")
                 or (
                     match_tool(call.name, "bash")
-                    and bool(command.search(_shell_text(call)))
+                    and bool(command.search(_shell_text(call, commands_only=True)))
                 )
                 for call in _tool_calls(message)
             )
