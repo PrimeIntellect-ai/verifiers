@@ -1,4 +1,4 @@
-"""Carry a task's declared files out of the agent's box and into a grading box.
+"""Artifact collection and restoration across runtimes.
 
 Grading in the box the agent worked in leaves a seam a policy under RL pressure will
 find. Grading in a second box removes it — only what the task declares crosses over.
