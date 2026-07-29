@@ -189,9 +189,10 @@ class Dialect(ABC, Generic[ReqT, RespT]):
             if not isinstance(value, dict):
                 return None
             inner = value.get("function") or value.get("custom") or value.get("tool")
-            if isinstance(inner, dict) and inner.get("name"):
+            if isinstance(inner, dict) and isinstance(inner.get("name"), str):
                 return inner["name"]
-            return value.get("name") or value.get("type")
+            label = value.get("name") or value.get("type")
+            return label if isinstance(label, str) else None
 
         def is_client(tool: dict) -> bool:
             return bool(

@@ -73,6 +73,8 @@ def _tool_calls(message: Message, *patterns: str) -> list[ToolCall]:
     calls = list(message.tool_calls or [])
     for item in message.provider_state or []:
         kind = item.get("type", "")
+        if not isinstance(kind, str):
+            continue
         if kind in ("server_tool_use", "mcp_tool_use"):
             name = item.get("name")
         elif kind != "function_call" and kind.endswith(("_call", "_tool_result")):
