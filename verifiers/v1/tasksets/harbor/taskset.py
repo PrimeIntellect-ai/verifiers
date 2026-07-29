@@ -126,7 +126,7 @@ class HarborTask(Task[HarborData]):
         for hook in self.data.collect:
             try:
                 result = await asyncio.wait_for(
-                    runtime.run(["sh", "-c", hook.command], verifier_env(self.data)),
+                    runtime.run(["sh", "-c", hook.command], {}),
                     hook.timeout_sec,
                 )
             except TimeoutError as exc:
