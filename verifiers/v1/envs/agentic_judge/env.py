@@ -337,12 +337,16 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             return
 
         solution = await agents.solver.run(task)
+        if not solution.ok:
+            return
         await agents.judge.run(
             JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
         )
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent_name: t for t in episode.traces}
+        if "judge" not in by_agent:
+            return
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
