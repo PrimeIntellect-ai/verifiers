@@ -66,6 +66,7 @@ _SHELL_WRAPPER_OPTIONS = {
     "!": set(),
 }
 _SHELL_INTERPRETERS = {"sh", "bash", "dash", "ksh", "zsh"}
+_SHELL_INTERPRETER_OPTIONS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 
 
 def _tool_name(name: str) -> str:
@@ -223,18 +224,28 @@ def _shell_text(
                 index += 1
 
                 if name in _SHELL_INTERPRETERS:
-                    while index < len(segment) and segment[index].startswith("-"):
+                    while index < len(segment) and segment[index].startswith(
+                        ("-", "+")
+                    ):
                         option = segment[index]
-                        command_option = option == "--command" or (
-                            option.startswith("-")
+                        option_name, separator, option_value = option.partition("=")
+                        command_option = option_name == "--command" or (
+                            option_name.startswith("-")
                             and not option.startswith("--")
-                            and "c" in option[1:]
+                            and "c" in option_name[1:]
                         )
                         if command_option:
-                            if index + 1 < len(segment):
+                            if separator:
+                                pending.append(option_value)
+                            elif index + 1 < len(segment):
                                 pending.append(segment[index + 1])
                             break
-                        index += 2 if option in ("-o", "-O") else 1
+                        index += (
+                            2
+                            if option_name in _SHELL_INTERPRETER_OPTIONS
+                            and not separator
+                            else 1
+                        )
                     break
 
                 if name not in _SHELL_WRAPPER_OPTIONS:
