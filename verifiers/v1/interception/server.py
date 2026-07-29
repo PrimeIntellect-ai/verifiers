@@ -27,6 +27,7 @@ import time
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from tempfile import SpooledTemporaryFile
 from typing import Literal
 
 from aiohttp import web
@@ -49,7 +50,12 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import (
+    ReplayResponse,
+    RequestKey,
+    RolloutSession,
+    StreamReplay,
+)
 from verifiers.v1.trace import Error, ModelCall, TimeSpan
 from verifiers.v1.types import FinishReason, Messages, Response, Tool, Usage
 
@@ -63,6 +69,7 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
+_STREAM_MEMORY_BUFFER = 4 * 1024**2
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -82,8 +89,10 @@ async def _request_digest(raw: bytes) -> bytes:
     return await asyncio.to_thread(_body_digest, raw)
 
 
-def _completion_response(completion: dict | None) -> web.Response:
+def _completion_response(completion: ReplayResponse) -> web.Response:
     """Serialize a model's JSON-native response without an intermediate string."""
+    if isinstance(completion, StreamReplay):
+        return web.Response(body=completion.body, content_type=completion.content_type)
     try:
         body = to_json(completion, inf_nan_mode="constants")
     except PydanticSerializationError:
@@ -300,7 +309,7 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        req_hash = await _request_digest(raw)
+        request_key = (request.path, await _request_digest(raw))
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
@@ -320,45 +329,42 @@ class InterceptionServer(Interception):
         #      result, so a slow turn is safe without an inflated client timeout.
         # A growing conversation never repeats a body, so these only ever match a real retry; a
         # failed attempt caches nothing and re-runs normally.
-        if session.last_request == req_hash and session.last_response is not None:
+        if session.last_request == request_key and session.last_response is not None:
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
 
-        # A streamed response cannot be replayed as a JSON completion without
-        # buffering the full SSE body. Keep streaming outside the non-streaming
-        # coalescing cache, as it was before in-flight retries were introduced.
-        if streaming:
-            prompt, tools = dialect.parse_request(body)
-            return await self._stream(request, session, dialect, body, prompt, tools)
-
-        async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
+        async def coalesced(
+            inflight: "asyncio.Future[ReplayResponse | None]",
+        ) -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
             # response (it errored/refused), so let the SDK retry afresh.
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
-            completion = await inflight
+            completion = await asyncio.shield(inflight)
             if completion is None:
                 return web.json_response(
                     dialect.error_body("upstream attempt failed"), status=503
                 )
             return _completion_response(completion)
 
-        if (inflight := session.inflight.get(req_hash)) is not None:
+        if (inflight := session.inflight.get(request_key)) is not None:
             return await coalesced(inflight)
         # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above)
         # rather than starting a second inference. The get / create / assign run with no
         # await between them, so two concurrent identical requests can never both become
         # owner.
-        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
-        session.inflight[req_hash] = fut
+        fut: asyncio.Future[ReplayResponse | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+        session.inflight[request_key] = fut
 
         def serve(response: Response) -> web.Response:
             # Record the served turn and hand it to any coalesced retry, so a retried
             # byte-identical request replays instead of re-sampling and forking the graph.
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
-            session.last_request = req_hash
+            session.last_request = request_key
             session.last_response = response.raw
             if not fut.done():
                 fut.set_result(response.raw)
@@ -372,6 +378,16 @@ class InterceptionServer(Interception):
             # the request is ground truth for what the model saw, but a refused or failed request
             # was never seen at all.
             prompt, tools = dialect.parse_request(body)
+            if streaming:
+                return await self._stream(
+                    request,
+                    session,
+                    dialect,
+                    body,
+                    prompt,
+                    replay=(request_key, fut),
+                    tools=tools,
+                )
             # The rollout may conclude (deadline, teardown) while this exchange was
             # upstream: the trace is sealed, so drop the turn instead of mutating it.
             if session.released:
@@ -490,8 +506,8 @@ class InterceptionServer(Interception):
             # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
             # response" (an error/refuse return above), so the waiter surfaces a retryable error.
             # Only clear our own entry — never one a later owner may have installed.
-            if session.inflight.get(req_hash) is fut:
-                session.inflight.pop(req_hash, None)
+            if session.inflight.get(request_key) is fut:
+                session.inflight.pop(request_key, None)
             if not fut.done():
                 fut.set_result(None)
 
@@ -502,11 +518,10 @@ class InterceptionServer(Interception):
         dialect: Dialect,
         body: dict,
         prompt: Messages,
+        replay: tuple[RequestKey, "asyncio.Future[ReplayResponse | None]"],
         tools: list[Tool] | None = None,
     ) -> web.StreamResponse:
-        """A streamed (SSE) model turn: relay the provider's stream through to the program,
-        incrementally assembling the response to record on the trace (the only client that
-        streams is the eval relay)."""
+        """Relay one SSE turn live while retaining its model events for retry replay."""
         if session.released:  # concluded while this request queued — seal holds
             return web.json_response(
                 dialect.error_body("rollout concluded"), status=409
@@ -528,9 +543,10 @@ class InterceptionServer(Interception):
         reply = None
         response: Response | None = None
         node: int | None = None
-        error: Exception | None = None
+        error: BaseException | None = None
         turn = graph.prepare_turn(session.trace, prompt)
         started = time.time()
+        buffer = SpooledTemporaryFile(max_size=_STREAM_MEMORY_BUFFER)  # noqa: SIM115
         try:
             try:
                 upstream_request = dialect.apply_overrides(
@@ -571,31 +587,55 @@ class InterceptionServer(Interception):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
             )
             resp.content_type = reply.content_type.split(";")[0].strip()
-            # Parse complete events as they relay, avoiding a full-stream byte copy.
             parser = dialect.stream_parser()
-            feed_event = parser.feed
-            on_done = parser.on_done
-            # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
+            parser_error: Exception | None = None
+            deferred: list[bytes] = []
+            connected = True
+
+            async def write(chunk: bytes) -> None:
+                nonlocal connected
+                if not connected:
+                    return
+                try:
+                    await resp.write(chunk)
+                except ConnectionResetError:
+                    connected = False
+
+            async def finish_live() -> None:
+                for event in deferred:
+                    await write(event)
+                if connected:
+                    with contextlib.suppress(ConnectionResetError):
+                        await resp.write_eof()
+
+            def feed(chunk: bytes) -> None:
+                nonlocal parser_error
+                if parser_error is not None:
+                    return
+                try:
+                    if parser.on_done is not None and is_sse_done_event(chunk):
+                        parser.on_done()
+                    parser.feed(chunk)
+                except Exception as e:  # noqa: BLE001 - defer parser failure
+                    parser_error = e
+
             queue: asyncio.Queue[bytes | None] = asyncio.Queue(
                 maxsize=_STREAM_QUEUE_MAXSIZE
             )
             ready = asyncio.Event()
             producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
-            parser_error: Exception | None = None
-            # SSE events from the turn-ending one onward (the terminal event and any trailing
-            # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
-            # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
-            # with the turn still unrecorded.
-            deferred: list[bytes] = []
             try:
-                await resp.prepare(request)
+                try:
+                    await resp.prepare(request)
+                except ConnectionResetError:
+                    connected = False
                 while True:
                     try:
                         async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
                             await ready.wait()
                     except TimeoutError:
                         # Don't terminate an empty event; some SSE clients try to JSON-decode it.
-                        await resp.write(b": keepalive\n")
+                        await write(b": keepalive\n")
                         continue
                     chunk = queue.get_nowait()
                     if queue.empty():
@@ -608,29 +648,16 @@ class InterceptionServer(Interception):
                     if not any(
                         line.startswith(b"data:") for line in chunk.splitlines()
                     ):
-                        await resp.write(b": keepalive\n")
+                        await write(b": keepalive\n")
                         continue
+                    buffer.write(chunk)
                     if deferred or dialect.is_terminal_event(chunk):
-                        if parser_error is None:
-                            try:
-                                if on_done is not None and is_sse_done_event(chunk):
-                                    on_done()
-                                feed_event(chunk)
-                            except Exception as e:  # noqa: BLE001 - defer parser failure
-                                parser_error = e
+                        feed(chunk)
                         # forwarded after the turn is committed, below
                         deferred.append(chunk)
                         continue
-                    await resp.write(chunk)
-                    if parser_error is None:
-                        try:
-                            feed_event(chunk)
-                        except Exception as e:  # noqa: BLE001 - defer parser failure
-                            parser_error = e
-            except ConnectionResetError as e:
-                # The harness went away mid-stream; the provider exchange still happened.
-                error = e
-                return resp
+                    await write(chunk)
+                    feed(chunk)
             finally:
                 producer.cancel()
                 # Let a canceled producer enqueue EOF while unwinding.
@@ -643,15 +670,24 @@ class InterceptionServer(Interception):
                 if parser_error is not None:
                     raise parser_error
                 response = parser.finish()
-                if not session.released:  # concluded mid-stream — seal holds
-                    node = turn.commit(response, tools)
-                    logger.debug("intercept stream turn: id=%s", session.trace.id)
-            finally:
-                # Release the withheld events only now — after the commit — then close.
-                with contextlib.suppress(ConnectionResetError):
-                    for event in deferred:
-                        await resp.write(event)
-                    await resp.write_eof()
+            except Exception:
+                await finish_live()
+                raise
+            if session.released:  # concluded mid-stream — seal holds
+                await finish_live()
+                return resp
+
+            node = turn.commit(response, tools)
+            buffer.seek(0)
+            stream_replay = StreamReplay(buffer.read(), resp.content_type)
+            request_key, fut = replay
+            session.last_request = request_key
+            session.last_response = stream_replay
+            if not fut.done():
+                fut.set_result(stream_replay)
+            logger.debug("intercept stream turn: id=%s", session.trace.id)
+            # Release turn-ending events only after the graph commit and replay cache update.
+            await finish_live()
             return resp
         except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit
@@ -673,6 +709,7 @@ class InterceptionServer(Interception):
                 usage=response.usage if response is not None else None,
                 error=error,
             )
+            buffer.close()
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str
