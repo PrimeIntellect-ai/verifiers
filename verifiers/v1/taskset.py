@@ -89,10 +89,12 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
     def _apply_system_prompt(self, tasks: list[TaskT]) -> list[TaskT]:
         """Overlay the config-layer `system_prompt` (see `TasksetConfig`) onto the
         materialized tasks, replacing each task's baked-in `TaskData.system_prompt`. A no-op
-        unless `--env.taskset.system-prompt[-file]` is set — so every entrypoint that selects
-        tasks (eval, validate, debug, GEPA, and the env server's client) picks the override up
-        the same way, e.g. a GEPA `best_system_prompt.txt` handed to eval or training."""
-        override = self.config.resolve_system_prompt()
+        unless `--env.taskset.system-prompt` / `system-prompt-file` is set — so every
+        entrypoint that selects tasks (eval, validate, debug, GEPA, and the env server's
+        client) picks the override up the same way, e.g. a GEPA `best_system_prompt.txt`
+        handed to eval or training. The file form is collapsed into `system_prompt` at
+        config validation; this reads the string and materializes it onto `TaskData`."""
+        override = self.config.system_prompt
         if override is None:
             return tasks
         return [t.with_system_prompt(override) for t in tasks]

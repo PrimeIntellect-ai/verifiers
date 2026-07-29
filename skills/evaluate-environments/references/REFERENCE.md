@@ -224,6 +224,8 @@ Elastic pool: start at one worker and scale up on demand.
 | --- | --- | --- | --- |
 | `id` | `ID` | `""` | Local package or Hub `org/name[@version]`; selects the taskset and its config type. Set via `--env.taskset.id` or the positional `eval <taskset-id>`. |
 | `task` | `TaskConfig` | `TaskConfig()` | Task-facing config passed to every constructed task. `SerializeAsAny` preserves a narrowed subclass. Set through `--env.taskset.task.*`. |
+| `system_prompt` | `str \| None` | `None` | Run-level override applied in `Taskset.select`, replacing each task's baked-in `TaskData.system_prompt`. Mutually exclusive with `system_prompt_file`. |
+| `system_prompt_file` | `Path \| None` | `None` | UTF-8 file form of `system_prompt`. Mutually exclusive with `system_prompt`; collapsed into `system_prompt` at validation so the runtime only sees the string. |
 
 `.name` → the package name (id with org / version stripped).
 
