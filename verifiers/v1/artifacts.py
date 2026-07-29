@@ -18,8 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ARTIFACTS_DIR = "/logs/artifacts"
-"""Harbor's in-sandbox publish directory, swept implicitly so a task that writes here
-needs no declaration."""
+"""Implicit artifact directory; tasks that write here need no declaration."""
 
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 """Ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
@@ -27,11 +26,7 @@ agent's image, so the repo is already there and only its output has to travel.""
 
 
 class Artifact(StrictBaseModel):
-    """One path to carry into the grading box, where it lands at this same path.
-
-    Harbor's `ArtifactConfig` minus `destination` (host trial-directory placement, which
-    verifiers has no equivalent for) and `service` (compose sidecars, unsupported).
-    """
+    """One path to restore at the same location in another runtime."""
 
     source: str
     exclude: list[str] = Field(default_factory=list)
@@ -52,10 +47,9 @@ async def collect(
 
     Each source is archived separately so its exclude patterns stay local.
     """
-    # Harbor permits a relative source, and the probe below resolves one against the
-    # runtime's workdir — so the tar, which runs `-C /`, has to agree or it archives a
-    # different file. Joining also normalises `/work/` to `/work`, so one tree cannot
-    # key two entries (the source is both the dict key and `restore`'s rm -rf target).
+    # Resolve relative sources against the runtime workdir. Joining also normalises
+    # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
+    # dict key and `restore`'s rm -rf target).
     workdir = PurePosixPath(getattr(runtime.config, "workdir", "") or "/")
     declared = [
         a.model_copy(update={"source": str(workdir / a.source)})
