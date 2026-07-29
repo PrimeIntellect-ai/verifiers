@@ -31,7 +31,7 @@ EvalConfig                          (the run)
    └─ id / args / extra_env_kwargs
 ```
 
-There is no run-level harness: each agent pins its own (`--env.agent.harness.*` on the single-agent env), an unpinned agent runs the taskset's default harness (its bundled one, else `bash`), and a declared pin is the env author's default. The retired flat axes error with a pointer: `--taskset.*` → `--env.taskset.*`, `--harness.*` → `--env.<agent>.harness.*`, `--pool.*` → `--serve.pool.*`, `--address` → `--serve.address`, `--id` / `--args` / `--extra-env-kwargs` → `--legacy.*`.
+There is no run-level harness: each agent pins its own (`--env.agent.harness.*` on the single-agent env), an unpinned agent runs the taskset's default harness (its bundled one, else `bash`), and a declared pin is the env author's default. Nothing is flat on the run config — a taskset is `--env.taskset.*`, a harness `--env.<agent>.harness.*`, the pool and bind address `--serve.*`, and a v0 env's id/args `--legacy.*`.
 
 Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-server-cli) (env server) and [`ValidateConfig`](#validateconfig--the-validate-cli) (per-task validation). All three live in `verifiers/v1/configs/cli/`.
 

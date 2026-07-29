@@ -17,36 +17,14 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.utils.generic import prefix_validation_error
 
-RETIRED = {
-    "taskset": "the taskset lives on the env: --env.taskset.id <id> (TOML: "
-    "[env.taskset]), or the positional `eval <taskset-id>`",
-    "harness": "a harness belongs to an agent: --env.agent.harness.* on the "
-    "single-agent env, --env.<agent>.harness.* on a multi-agent one (TOML: "
-    "[env.agent.harness])",
-    "pool": "the worker pool is serving, not the env: --serve.pool.type "
-    "elastic|static (TOML: [serve.pool])",
-    "address": "the bind address is serving, not the env: --serve.address "
-    "(TOML: address under [serve])",
-    "id": "a classic (v0) env is its own block: --legacy.id <env-id>; pairing a "
-    "reusable v1 env with a taskset is --env.id",
-    "args": "v0 construction kwargs live with the v0 env: --legacy.args",
-    "extra_env_kwargs": "v0 post-load kwargs live with the v0 env: "
-    "--legacy.extra-env-kwargs",
-}
-"""Top-level keys a run config no longer owns, each pointing at its home. Every one
-would otherwise fail as a bare `extra_forbidden`, saying nothing about where it went."""
-
 
 def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> dict:
-    """Shared `mode="before"` body for every run config owning an `env` field: refuse
-    the retired top-level keys with a pointer home, and narrow `env` to the concrete
-    env's config class. `narrowed` is the annotation the CLI pre-resolved
-    (`narrow_config`) — its id is authoritative, so validate against it directly."""
+    """Shared `mode="before"` body for every run config owning an `env` field: narrow
+    `env` to the concrete env's config class. `narrowed` is the annotation the CLI
+    pre-resolved (`narrow_config`) — its id is authoritative, so validate against it
+    directly."""
     if not isinstance(data, dict):
         return data
-    for key, pointer in RETIRED.items():
-        if key in data:
-            raise ValueError(pointer)
     raw = data.get("env")
     if raw is None:
         return data

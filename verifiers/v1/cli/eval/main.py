@@ -52,9 +52,8 @@ def main(argv: list[str] | None = None) -> None:
         legacy_id = any(
             a == "--legacy.id" or a.startswith("--legacy.id=") for a in argv
         )
-        # An env-block flag (or a retired flat axis) skips the usage gate so the
-        # typed parse renders its did-you-mean / pointer to the new flags instead
-        # of a bare usage line.
+        # An env-block flag (or a since-moved flat axis) skips the usage gate so the
+        # typed parse renders its did-you-mean instead of a bare usage line.
         typed_axis = any(
             a.startswith(("--env.", "--taskset.", "--harness.", "--serve."))
             for a in argv
