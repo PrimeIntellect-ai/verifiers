@@ -318,6 +318,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     def rewrite_response(self, raw: dict, text: str) -> None:
         raw["content"] = [{"type": "text", "text": text}]
         raw["stop_reason"] = "end_turn"
+        raw["stop_sequence"] = None
 
     def rewrite_tool_result(self, body: dict, tool_call_id: str, text: str) -> None:
         for message in body.get("messages") or []:
