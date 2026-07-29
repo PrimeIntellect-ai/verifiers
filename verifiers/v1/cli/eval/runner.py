@@ -107,23 +107,23 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     import multiprocessing as mp
     from functools import partial
 
-    from verifiers.v1.configs.cli.env import pool_serve_kwargs
+    from verifiers.v1.configs.serve import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
     from verifiers.v1.utils.logging import setup_logging
 
     legacy = config.is_legacy
     server_kwargs = (
         {
-            "env_id": config.id,
-            "env_args": config.args,
-            "extra_env_kwargs": config.extra_env_kwargs,
+            "env_id": config.legacy.id,
+            "env_args": config.legacy.args,
+            "extra_env_kwargs": config.legacy.extra_env_kwargs,
         }
         if legacy
         else {
             "config_data": env_config_data(config.env),  # picklable across the spawn
-            # `-c` is the episode bound here too, per worker — so a pool carries
-            # `workers * max_concurrent` episodes, as the pool's `multiplex` implies.
-            "max_concurrent": config.max_concurrent,
+            # `-c` seeds each worker's episode bound unless `[serve]` pins one — so a
+            # pool carries `workers * bound` episodes, as `multiplex` implies.
+            "max_concurrent": config.worker_max_concurrent,
         }
     )
     tasks = []
@@ -147,7 +147,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     proc = mpctx.Process(
         target=serve_env,
         kwargs=dict(
-            **pool_serve_kwargs(config.pool),
+            **pool_serve_kwargs(config.serve.pool),
             legacy=legacy,
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
@@ -215,7 +215,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 "running %dx%d rollouts via the env-server %s pool on %s",
                 len(plan),
                 config.num_rollouts,
-                config.pool.type,
+                config.serve.pool.type,
                 config.model,
             )
         logger.info("results: %s", out)

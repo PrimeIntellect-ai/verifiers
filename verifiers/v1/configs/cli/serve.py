@@ -1,16 +1,53 @@
 """Environment-server CLI configuration."""
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
+from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.cli.env import EnvServerConfig
+from verifiers.v1.configs.cli.env import (
+    EnvField,
+    env_field,
+    narrowed_env_annotation,
+    resolve_env_field,
+)
+from verifiers.v1.configs.legacy import (
+    LegacyEnvConfig,
+    is_legacy,
+    refuse_mixed_run,
+    run_env_id,
+)
+from verifiers.v1.configs.serve import ServingConfig
 
 
-class ServeConfig(EnvServerConfig):
-    address: str = Field(
-        "tcp://127.0.0.1:5000", validation_alias=AliasChoices("address", "a")
-    )
-    """ZMQ address the ROUTER binds (and clients connect to)."""
+class ServeConfig(BaseConfig):
+    """`uv run serve`: what to serve (`[env]`, or `[legacy]` for a classic v0 env) and
+    how it's hosted (`[serve]`)."""
+
+    env: EnvField = env_field()
+    """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
+    the selected env's config class by the env id, else the taskset id."""
+    serve: ServingConfig = ServingConfig()
+    """How it's served: the worker pool, the bind address, each worker's episode bound."""
+    legacy: LegacyEnvConfig = LegacyEnvConfig()
+    """A classic (v0) environment to serve through the bridge instead of `[env]`."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of info."""
     dry_run: bool = False
     """Resolve + validate the config and dump it, then exit."""
+
+    @property
+    def is_legacy(self) -> bool:
+        return is_legacy(self.env, self.legacy)
+
+    @property
+    def env_id(self) -> str:
+        return run_env_id(self.env, self.legacy)
+
+    @model_validator(mode="after")
+    def _refuse_mixed_run(self):
+        refuse_mixed_run(self.env, self.legacy)
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_env(cls, data):
+        return resolve_env_field(data, narrowed_env_annotation(cls))

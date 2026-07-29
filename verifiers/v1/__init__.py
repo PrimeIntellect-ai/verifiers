@@ -14,16 +14,17 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.configs.cli.env import (
-    ElasticPoolConfig,
-    EnvServerConfig,
-    StaticPoolConfig,
-    pool_serve_kwargs,
-)
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig, Judges
+from verifiers.v1.configs.legacy import LegacyEnvConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.serve import (
+    ElasticPoolConfig,
+    ServingConfig,
+    StaticPoolConfig,
+    pool_serve_kwargs,
+)
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.decorators import metric, reward, stop, tool
@@ -248,7 +249,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Env",
     "SingleAgentEnv",
     "EnvConfig",
-    "EnvServerConfig",
+    "ServingConfig",
+    "LegacyEnvConfig",
     "SingleAgentEnvConfig",
     "AgentConfig",
     "StaticPoolConfig",
