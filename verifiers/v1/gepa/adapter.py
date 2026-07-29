@@ -104,10 +104,10 @@ class GEPAAdapter:
                     "completion": trace.last_reply,
                     "reward": trace.reward,
                 }
-                if trace.agent_name:
-                    record["agent"] = trace.agent_name
+                if trace.agent is not None:
+                    record["agent"] = trace.agent.name
                 if trace.has_error:
-                    record["error"] = str(trace.error)
+                    record["error"] = str(trace.last_error)
                 if trace.stop_condition:
                     record["stop_condition"] = trace.stop_condition
                 for column in self.reflection_columns:

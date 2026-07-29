@@ -355,9 +355,9 @@ async def test_multi_agent_env(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one episode, one trace per role
-    assert sorted(t.agent_name for t in traces) == ["a", "b"]
-    (b,) = [t for t in traces if t.agent_name == "b"]
-    assert b.trainable is False
+    assert sorted(t.agent.name for t in traces) == ["a", "b"]
+    (b,) = [t for t in traces if t.agent.name == "b"]
+    assert b.agent.trainable is False
     for trace in traces:
         assert trace.ok
         assert trace.reward == 1.0  # each seat's own task reward
@@ -385,7 +385,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one episode, two attempts
-    assert all(t.agent_name == "agent" and t.ok for t in traces)
+    assert all(t.agent.name == "agent" and t.ok for t in traces)
     assert any(t.metrics["best"] == 1.0 for t in traces)
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes
 
@@ -423,11 +423,11 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
         max_turns=10,
         rollout_timeout=600,
     )
-    assert sorted(t.agent_name for t in traces) == ["judge", "solver"]
-    (solver,) = [t for t in traces if t.agent_name == "solver"]
-    (judge,) = [t for t in traces if t.agent_name == "judge"]
+    assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
+    (solver,) = [t for t in traces if t.agent.name == "solver"]
+    (judge,) = [t for t in traces if t.agent.name == "judge"]
     assert solver.ok and judge.ok
-    assert judge.trainable is False
+    assert judge.agent.trainable is False
     # The task's own reward keeps its raw score; the rescale lands on the weight.
     assert solver.rewards["echoed"].score == 1.0
     assert solver.rewards["echoed"].weight == 0.5
@@ -448,11 +448,11 @@ async def test_env_id_user_sim(run_v1, tmp_path):
         max_turns=6,
         rollout_timeout=300,
     )
-    assert sorted(t.agent_name for t in traces) == ["assistant", "user"]
-    (assistant,) = [t for t in traces if t.agent_name == "assistant"]
-    (user,) = [t for t in traces if t.agent_name == "user"]
+    assert sorted(t.agent.name for t in traces) == ["assistant", "user"]
+    (assistant,) = [t for t in traces if t.agent.name == "assistant"]
+    (user,) = [t for t in traces if t.agent.name == "user"]
     assert assistant.ok and user.ok
-    assert user.trainable is False
+    assert user.agent.trainable is False
     assert user.num_turns >= 1  # the modeled user actually spoke
     assert assistant.metrics["user_turns"] >= 1
     # `mask_prompt`: the scenario is hidden from the assistant's harness (the run's
@@ -465,7 +465,7 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     from verifiers.v1.trace import WireTrace
 
     (record,) = read_episodes(tmp_path, WireTrace)
-    assert {t.agent_name for t in record.traces} == {"assistant", "user"}
+    assert {t.agent.name for t in record.traces} == {"assistant", "user"}
     assert record.id  # both traces are persisted under one durable episode identity
 
 
@@ -488,8 +488,8 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
         max_tokens=8192,
         rollout_timeout=300,
     )
-    (assistant,) = [t for t in traces if t.agent_name == "assistant"]
-    (user,) = [t for t in traces if t.agent_name == "user"]
+    (assistant,) = [t for t in traces if t.agent.name == "assistant"]
+    (user,) = [t for t in traces if t.agent.name == "user"]
     assert assistant.ok and user.ok
     assert assistant.task.data.prompt is None  # the scenario stayed off the wire
     assert user.num_turns >= 1  # the modeled user actually drove the exchange
@@ -514,8 +514,8 @@ async def test_kuhn_poker_self_play(run_v1, tmp_path):
         max_tokens=8192,
         rollout_timeout=300,
     )
-    assert sorted(t.agent_name for t in traces) == ["player0", "player1"]
-    payoffs = {t.agent_name: t.rewards["payoff"].score for t in traces}
+    assert sorted(t.agent.name for t in traces) == ["player0", "player1"]
+    payoffs = {t.agent.name: t.rewards["payoff"].score for t in traces}
     assert payoffs["player0"] + payoffs["player1"] == 0  # zero-sum
     assert abs(payoffs["player0"]) in (1.0, 2.0)
     for trace in traces:
@@ -542,7 +542,7 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2
-    assert sorted(t.agent_name for t in traces) == ["a", "b"]
+    assert sorted(t.agent.name for t in traces) == ["a", "b"]
     for trace in traces:
         assert trace.ok
         assert trace.metrics["duet"] == 1.0

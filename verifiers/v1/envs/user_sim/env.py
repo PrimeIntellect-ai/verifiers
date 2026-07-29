@@ -89,7 +89,7 @@ class UserSimEnv(vf.Env[UserSimEnvConfig]):
     async def finalize(self, task, episode):
         """One conversation-shape fact about the user's side, recorded on the
         assistant's trace; judgement stays on the task's rewards."""
-        (user,) = (t for t in episode.traces if t.agent_name == "user")
+        (user,) = (t for t in episode.traces if t.agent and t.agent.name == "user")
         for trace in episode.traces:
-            if trace.agent_name == "assistant":
+            if trace.agent and trace.agent.name == "assistant":
                 trace.record_metric("user_turns", float(user.num_turns))

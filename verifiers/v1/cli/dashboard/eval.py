@@ -302,7 +302,9 @@ def Progress(
     # run, a modeled user) are `trainable=False` and carry no rewards, so counting
     # them dilutes every mean with structural zeros. An all-untrainable run (every
     # role frozen) falls back to all traces rather than showing nothing.
-    scored = [t for t in done_traces if t.trainable] or done_traces
+    scored = [
+        t for t in done_traces if t.agent is None or t.agent.trainable
+    ] or done_traces
     total = len(slots)
     # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
     # the global avg (errored count as 0) in parens. `err` is the share of episodes that
@@ -369,7 +371,7 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
     by_agent: dict[str | None, list[Trace]] = {}
     for trace in done:
-        by_agent.setdefault(trace.agent_name, []).append(trace)
+        by_agent.setdefault(trace.agent.name if trace.agent else None, []).append(trace)
     for label, source in score_rows:
         if len(by_agent) > 1:
             segments = [
@@ -564,14 +566,14 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
                 continue
             for t in slot.traces:
-                label = f"{base} agent={t.agent_name}" if t.agent_name else base
+                label = f"{base} agent={t.agent.name}" if t.agent else base
                 if slot.done:  # fully scored — reward is final
                     state = "error" if t.has_error else "success"
                     # A trace that recorded nothing shows no reward: a judge or
                     # modeled-user seat's `reward=0.00` would read as a score.
                     result = (
-                        t.error.type
-                        if t.has_error
+                        t.last_error.type
+                        if t.has_error and t.last_error
                         else (f"reward={t.reward:.2f}" if t.rewards else "")
                     )
                     if t.has_error:
@@ -582,7 +584,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                             t.is_truncated
                         ):  # flag a clipped rollout next to its stop condition
                             stop = f"{stop} (truncated)".strip()
-                elif t.is_completed and (err := t.error) is not None:
+                elif t.is_completed and (err := t.last_error) is not None:
                     # An errored trace whose episode is still running its other
                     # traces (or `score()`) is already a failure — show it, don't
                     # let it sit as "scoring" until the whole episode lands.
@@ -592,12 +594,9 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                 # The trace's own stamp, not the run-level runtime: a role's harness
                 # may resolve elsewhere (the judge env's sandboxed judge on a
                 # subprocess run).
-                if t.runtime is not None:
-                    runtime = (
-                        f"{t.runtime.type}({t.runtime.id})"
-                        if t.runtime.id
-                        else t.runtime.type
-                    )
+                if t.agent is not None and t.agent.runtime is not None:
+                    rt = t.agent.runtime
+                    runtime = f"{rt.type}({rt.id})" if rt.id else rt.type
                 else:
                     runtime = runtime_type
                 turns = t.num_turns
@@ -635,7 +634,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     f"{nbranches} branch{'es' * (nbranches != 1)}",
                     tokens,
                     f"{format_cost_usd(cost)}" if cost is not None else "",
-                    stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
+                    stop,  # stop condition (agent_completed / max_turns / error), once done
                 ]
                 # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
                 elapsed = format_time(end - start) if start else ""

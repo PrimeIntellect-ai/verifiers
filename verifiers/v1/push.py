@@ -58,8 +58,8 @@ def trace_to_sample(
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
         "episode_id": episode_id,
-        "agent": trace.agent_name,
-        "trainable": trace.trainable,
+        "agent": trace.agent.name if trace.agent else None,
+        "trainable": trace.agent.trainable if trace.agent else True,
         "task": task,
         "prompt": [],
         "completion": dump(branches[-1].messages) if branches else [],
@@ -73,8 +73,8 @@ def trace_to_sample(
         "is_completed": trace.is_completed,
         "is_truncated": trace.is_truncated,
         "metrics": trace.metrics,
-        "error": trace.error.model_dump(mode="json", exclude_none=True)
-        if trace.error
+        "error": trace.last_error.model_dump(mode="json", exclude_none=True)
+        if trace.last_error
         else None,
         "stop_condition": trace.stop_condition,
         "trajectory": [
@@ -124,7 +124,7 @@ def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]
     back to all traces when none are trainable (same rule as the dashboard).
     `avg_error` is the share of EPISODES that aren't ok: a hook failure counts
     even when its traces are clean or it left none."""
-    scored = [t for t in traces if t.trainable] or traces
+    scored = [t for t in traces if t.agent is None or t.agent.trainable] or traces
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
     for trace in scored:

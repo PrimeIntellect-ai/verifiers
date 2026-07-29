@@ -150,7 +150,7 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
 
     @staticmethod
     def _solve_rate(traces: list[vf.Trace]) -> float:
-        solves = [t for t in traces if t.agent_name == "solver"]
+        solves = [t for t in traces if t.agent and t.agent.name == "solver"]
         if not solves:
             return 0.0
         return sum(
@@ -163,7 +163,7 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
         the problem, 0 when it's trivial or impossible for them (4p(1-p))."""
         rate = self._solve_rate(episode.traces)
         for trace in episode.traces:
-            if trace.agent_name == "proposer":
+            if trace.agent and trace.agent.name == "proposer":
                 trace.record_metric("solve_rate", rate)
                 trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
 

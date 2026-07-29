@@ -355,30 +355,26 @@ class Reward(StrictBaseModel):
 
 
 class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    """Unique id for this rollout, auto-generated per trace."""
-    task: TraceTask[DataT]
-    """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
     version: int = TRACE_VERSION
-    """The trace record schema this trace serializes as."""
+    """The trace schema this trace serializes as."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    """Unique ID for this trace, auto-generated."""
     verifiers: VersionInfo | None = None
-    """The verifiers build that produced this trace, stamped at rollout start —
-    replayed/re-read traces keep the build that originally produced them."""
+    """The verifiers version that produced this trace."""
     run: RunInfo | None = None
     """The run this trace belongs to (eval or train), consumer-stamped."""
+
+    task: TraceTask[DataT]
+    """The task data that seeded this trace."""
     agent: AgentInfo[AgentConfigT] | None = None
-    """The agent (config: harness x model x runtime, plus the provisioned box) that
-    produced the sampled turns."""
+    """The agent (harness x model x runtime) that produced this trace."""
+    tools: list[Tool] | None = None
+    """The tools advertised to the agent, automatically recorded from last intercepted turn."""
+
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
-    tools: list[Tool] | None = None
-    """The tools advertised to the model, recorded when an intercepted turn commits (last
-    committed turn wins) — never from a refused/failed request the model never saw. The full
-    advertised list (not just tools called), so tool-use SFT can re-render the exact prompt;
-    a trace-level snapshot: mid-rollout changes collapse to the last set the model saw."""
     calls: list[ModelCall] = Field(default_factory=list)
-    """Every provider exchange behind the sampled turns, in order: raw wire request/response
-    plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
+    """Every model call; automatically recorded at intercept time + linked into `nodes`."""
 
     rewards: dict[str, Reward] = Field(default_factory=dict)
     """Named rewards from tasks, judges, and the env's `score()` — each keeps its
@@ -394,16 +390,15 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Usage from judges and other calls outside the agent's message graph."""
 
     is_completed: bool = False
+    """Whether the trace completed."""
     ok: bool = False
-    """THE success sentinel, stamped by the engine when the rollout ran to
-    completion without its final attempt failing. Distinct from `errors`
-    emptiness: a rollout that recovered on retry is `ok` and still keeps its
-    earlier attempts' errors."""
+    """Whether the trace completed successfully."""
     stop_condition: str | None = None
+    """What ended the trace — `agent_completed` / `user_closed` for a normal finish,
+    a limit or `@stop` name for a refused turn, `error` for a failure; None while
+    running."""
     errors: list[Error] = Field(default_factory=list)
-    """Every error captured across attempts, oldest first (more than one only when
-    the rollout was retried). `error` exposes the most recent; success is `ok`,
-    never errors-emptiness."""
+    """Every error captured across attempts, oldest to newest first."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
@@ -415,33 +410,12 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         return sum(r.value for r in self.rewards.values())
 
     @property
-    def error(self) -> Error | None:
+    def last_error(self) -> Error | None:
         return self.errors[-1] if self.errors else None
 
     @property
     def has_error(self) -> bool:
         return not self.ok
-
-    @property
-    def agent_name(self) -> str | None:
-        """The agent that produced this trace (`agent.name`); None only on traces
-        with no agent info (the legacy bridge)."""
-        return self.agent.name if self.agent is not None else None
-
-    @property
-    def trainable(self) -> bool:
-        """Whether this trace's tokens train the run's policy (`agent.trainable`)."""
-        return self.agent.trainable if self.agent is not None else True
-
-    @property
-    def runtime(self) -> RuntimeInfo | None:
-        """The box this rollout ran in (`agent.runtime`); None until provisioning
-        and on traces with no agent info (the legacy bridge)."""
-        return self.agent.runtime if self.agent is not None else None
-
-    def _last_assistant(self) -> MessageNode | None:
-        """Most recent model-produced node, ignoring prompt-supplied assistant messages."""
-        return next((n for n in reversed(self.nodes) if n.sampled), None)
 
     @property
     def num_input_tokens(self) -> int:
@@ -490,8 +464,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def num_turns(self) -> int:
-        """Total model turns (sampled responses) across all branches — prompt-supplied
-        assistant messages don't count."""
         return sum(1 for n in self.nodes if n.sampled)
 
     @property
@@ -503,7 +475,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
             "max_output_tokens",
             "max_total_tokens",
             "context_length",
-            "harness_timeout",
         ):
             return True
         last = next((c for c in reversed(self.calls) if c.error is None), None)
@@ -520,13 +491,19 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         ]
 
     @property
+    def tool_messages(self) -> list[ToolMessage]:
+        """Every tool result, in order — branch-independent."""
+        return [n.message for n in self.nodes if isinstance(n.message, ToolMessage)]
+
+    @property
     def last_reply(self) -> str:
+        """The last recorded model response, in text format."""
         msgs = self.assistant_messages
         return (msgs[-1].content or "").strip() if msgs else ""
 
     @property
     def transcript(self) -> str:
-        """Final-branch text and tool calls for judges; images and reasoning are omitted."""
+        """Text transcript of the last branch's messages; tool outputs are omitted."""
         branches = self.branches
         blocks: list[str] = []
         for message in branches[-1].messages if branches else []:
@@ -545,14 +522,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
                     lines.append(text)
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
-
-    @property
-    def tool_messages(self) -> list[ToolMessage]:
-        """The tool results in the latest full context — the main (last) branch's
-        conversation. For a linear rollout that's every tool result."""
-        branches = self.branches
-        messages = branches[-1].messages if branches else []
-        return [m for m in messages if isinstance(m, ToolMessage)]
 
     def record_metric(self, name: str, value: float) -> None:
         self.metrics[name] = float(value)
@@ -576,7 +545,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.run = run
         self.info.update(info)
 
-    def stop(self, condition: str = "done") -> None:
+    def stop(self, condition: str) -> None:
         """Stop the trace, optionally with a stop condition."""
         self.is_completed = True
         if self.stop_condition is None:
