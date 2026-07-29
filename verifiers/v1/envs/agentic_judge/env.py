@@ -312,15 +312,15 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         judge = self._harnesses["judge"]
         if not judge.EXECUTES_CODE:
             raise ValueError(
-                "agentic-judge plays a code-executing judge in its own sandbox, but "
+                "agentic-judge requires a judge harness that can execute code, but "
                 f"harness {judge.config.id!r} is a tool-less chat loop — a verdict "
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
         if isinstance(self.config.solver.runtime, vf.SubprocessConfig):
             raise TypeError(
-                "agentic-judge runs a code-executing solver in a container, but the "
-                "solver resolves to the subprocess runtime; use "
+                "agentic-judge requires the solver to run in a container, but it "
+                "resolves to the subprocess runtime; use "
                 "--env.solver.runtime.type docker or prime"
             )
 
