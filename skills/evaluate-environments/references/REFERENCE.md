@@ -21,6 +21,7 @@ EvalConfig                          (the run)
 │  ├─ timeout: TimeoutConfig        (episode / finalize — the env's own hooks)
 │  ├─ retries: RetryConfig          (whole-episode fallback for faults no agent owns)
 │  ├─ max_concurrent_agents          (agent runs inside one episode — 1 by default)
+│  │                                 (alias: max_concurrent)
 │  └─ interception
 ├─ serve: ServingConfig             (how it's hosted — the `--server` path)
 │  ├─ pool: PoolConfig              (static | elastic)
@@ -49,7 +50,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 | `num_tasks` | `int \| None` | `None` | `batch_size`, `num_examples`, `num_tasks`, `n` | How many tasks to evaluate (None = all). |
 | `num_rollouts` | `int` | `1` | `group_size`, `rollouts_per_example`, `num_rollouts`, `r` | Independent episodes per task — the trainer's group size. Env-internal fan-out (e.g. best-of-n attempts) is the env's own knob, not `-r`. |
 | `shuffle` | `bool` | `False` | `shuffle`, `s` | Shuffle tasks before taking the first `num_tasks`. |
-| `max_concurrent` | `int \| None` | `128` (≥1) | `max_concurrent`, `c` | Episodes in flight at once (`None` = no limit). An episode plays its agents one at a time, so this is the live agent runs too — until `--env.max-concurrent-agents` says otherwise. Under `--server` it seeds each worker's bound unless `--serve.max-concurrent` pins one. |
+| `max_concurrent` | `int \| None` | `128` (≥1) | `max_concurrent`, `c` | Episodes in flight at once (`None` = no limit); under `--server` it seeds each worker's bound unless `--serve.max-concurrent` pins one. Agent runs inside one episode are `--env.max-concurrent-agents`. |
 | `verbose` | `bool` | `False` | `verbose`, `v` | Log at debug level instead of info. |
 | `dry_run` | `bool` | `False` | — | Resolve + validate the config and dump it, then exit. |
 | `rich` | `bool` | `True` | — | Live dashboard instead of per-rollout logs (in-process only). |

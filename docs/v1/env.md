@@ -43,25 +43,6 @@ class DebateEnv(vf.Env[DebateConfig]):
 
 An `Episode` holds all agents' traces from a single invocation of `Env.run`. A good mental model is: the `Trace` is an agent's local view of a rollout, while the `Episode` is the global view.
 
-## Concurrency
-
-Concurrency is bounded at two levels, and the **episode is the unit** at the outer one:
-
-| knob | bounds |
-| --- | --- |
-| `max_concurrent` / `-c` | episodes in flight (per worker when served) |
-| `env.max_concurrent_agents` | agent runs inside one episode — **1** by default |
-
-So an episode plays its agents one at a time, and `-c 128` is 128 live agent runs whatever the env does internally. Write independent agents as independent (`asyncio.gather`, a `TaskGroup`) — how many actually run at once is the run's call, not the env's. Without the inner bound an env's fan-out would multiply the outer one invisibly: `-c 128` on a 16-attempt `best-of-n` would be 2048 live agent runs, each with its own sandbox and in-flight completions.
-
-Raise `max_concurrent_agents` (or set it to `None` for no limit) when you want that multiplication — an eval fanning `best-of-n`'s attempts out is the case for it, since `-c` still caps the episodes carrying them:
-
-```bash
-uv run eval gsm8k-v1 --env.id best-of-n --env.n 16 --env.max-concurrent-agents None -c 128
-```
-
-An episode holds its permit for as long as it lives — its agent runs, their boxes, `finalize()` — and an interaction holds an agent permit only around an active segment, never while awaiting its caller, so two-sided conversations (`user-sim`, turn-taking games) interleave turn by turn at any setting.
-
 ## Pluggability
 
 Just like tasksets and harnesses, an `Env` can be user-defined for full expressiveness over multi-agent interaction patterns — export an `Env` subclass via `__all__`. Otherwise, verifiers ships with a handful of built-ins.
@@ -71,3 +52,20 @@ Just like tasksets and harnesses, an `Env` can be user-defined for full expressi
 | `single-agent` | `agent` | (default) one `agent` plays the taskset |
 | `best-of-n` | `agent` | `n` independent attempts per episode; its metrics mark the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
 | `agentic-judge` | `solver`, `judge` | the solver plays the task; a code-executing judge agent verifies the finished attempt with real execution. |
+
+## Concurrency
+
+Write independent agents as independent (`asyncio.gather`, a `TaskGroup`) — how many actually run at once is the run's call, not the env's. Two knobs bound it, and the **episode is the unit** at the outer one:
+
+| knob | bounds |
+| --- | --- |
+| `max_concurrent` / `-c` | episodes in flight (per worker when served) |
+| `env.max_concurrent_agents` | agent runs inside one episode — **1** by default |
+
+At the default, `-c 128` is 128 live agent runs whatever the env does internally. Set `max_concurrent_agents` higher (or `None` for no limit) when you want an episode's fan-out to run together — `-c` still caps the episodes carrying it:
+
+```bash
+uv run eval gsm8k-v1 --env.id best-of-n --env.n 16 --env.max-concurrent-agents None -c 128
+```
+
+Turn-taking envs are unaffected: an interaction holds its agent permit only around an active segment, never while awaiting its caller, so `user-sim` and games alternate at any setting.

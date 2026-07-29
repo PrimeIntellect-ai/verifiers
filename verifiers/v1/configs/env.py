@@ -3,7 +3,7 @@ each role as an `AgentConfig` field, and the env-level knobs."""
 
 from typing import get_args
 
-from pydantic import Field, SerializeAsAny, model_validator
+from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.agent import AgentConfig
@@ -48,13 +48,20 @@ class EnvConfig(BaseConfig):
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
     retried episode reruns whole (a half-played sibling context isn't reproducible)."""
-    max_concurrent_agents: int | None = Field(1, ge=1)
-    """How many of ONE episode's agent runs may be active at once (None = no limit).
-    One at a time by default, so the bound above — `--max-concurrent` episodes, a
-    dispatched training episode — is also one live agent run, whatever `run()` fans
-    out to internally. Raise it where per-episode latency matters and the
-    multiplication is wanted: `--env.max-concurrent-agents None` plays an episode's
-    `best-of-n` attempts together, so `-c` episodes carry `-c * n` live runs."""
+    max_concurrent_agents: int | None = Field(
+        1,
+        ge=1,
+        validation_alias=AliasChoices("max_concurrent_agents", "max_concurrent"),
+    )
+    """How many of ONE episode's agent runs may be active at once (None = no limit;
+    `--env.max-concurrent` is an alias). One at a time by default, so the bound above —
+    `--max-concurrent` episodes, a dispatched training episode — is also one live agent
+    run, whatever `run()` fans out to internally. Raise it where per-episode latency
+    matters and the multiplication is wanted: `--env.max-concurrent-agents None` plays
+    an episode's `best-of-n` attempts together, so `-c` episodes carry `-c * n` live
+    runs. The unqualified name is `_agents` because two other fields spell
+    `max_concurrent` and both bound episodes, not agents: the run's own `-c` and
+    `serve.max_concurrent`."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape: `elastic` (default), `server`, or `static`."""
 

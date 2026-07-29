@@ -80,12 +80,3 @@ def narrowed_env_annotation(cls) -> "type[EnvConfig] | None":
     ):
         return annotation
     return None
-
-
-def single_agent_env_config() -> EnvConfig:
-    """The default `env` block: the single-agent shape. Imported inside the body to
-    keep the env runtime (`envs/` pulls in `env.py`, `agent.py`, `task.py`) out of a
-    module that only describes configs."""
-    from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
-
-    return SingleAgentEnvConfig()
