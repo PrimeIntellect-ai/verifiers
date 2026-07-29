@@ -294,7 +294,7 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge agent. Under `isolated` it provisions its own box from this policy;
     under `shared` it plays in the solver's box and this policy is ignored."""
-    sandbox_mode: Literal["shared", "isolated"] = "shared"
+    sandbox_mode: SandboxMode = "shared"
     """Whether the judge grades in the solver's box or its own.
 
     `shared` places the judge in the box the agent worked in, so it can inspect that
