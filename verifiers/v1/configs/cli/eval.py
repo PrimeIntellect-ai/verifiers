@@ -39,7 +39,9 @@ class EvalConfig(EnvServerConfig):
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
-    """Max rollouts in flight at once."""
+    """Episodes in flight at once (per worker under `--server`). An episode plays its
+    agents one at a time, so this is the live agent runs too — until
+    `--env.max-concurrent-agents` says otherwise."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = Field(False, exclude=True)

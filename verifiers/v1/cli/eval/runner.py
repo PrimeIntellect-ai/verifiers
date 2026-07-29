@@ -119,7 +119,12 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
             "extra_env_kwargs": config.extra_env_kwargs,
         }
         if legacy
-        else {"config_data": env_config_data(config.env)}  # picklable across the spawn
+        else {
+            "config_data": env_config_data(config.env),  # picklable across the spawn
+            # `-c` is the episode bound here too, per worker — so a pool carries
+            # `workers * max_concurrent` episodes, as the pool's `multiplex` implies.
+            "max_concurrent": config.max_concurrent,
+        }
     )
     tasks = []
     if not legacy:

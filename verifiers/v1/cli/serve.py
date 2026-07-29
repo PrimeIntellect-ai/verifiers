@@ -65,7 +65,9 @@ def main(argv: list[str] | None = None) -> None:
             "extra_env_kwargs": config.extra_env_kwargs,
         }
         if config.is_legacy
-        else {"config": config.env}
+        # `--max-concurrent` is each v1 worker's episode bound; the legacy bridge
+        # has never had one.
+        else {"config": config.env, "max_concurrent": config.max_concurrent}
     )
     serve_env(
         **pool_serve_kwargs(config.pool),

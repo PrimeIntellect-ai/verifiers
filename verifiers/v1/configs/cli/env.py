@@ -3,7 +3,13 @@ configs that own one, and how a served env sizes its worker pool."""
 
 from typing import Annotated, Literal
 
-from pydantic import Field, SerializeAsAny, ValidationError, model_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    SerializeAsAny,
+    ValidationError,
+    model_validator,
+)
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.env import EnvConfig
@@ -80,7 +86,7 @@ class ElasticPoolConfig(BaseConfig):
     max_workers: int | None = None
     """Upper bound on workers (None = unbounded)."""
     multiplex: int = Field(128, ge=1)
-    """Rollouts per worker for the scale-up trigger: add a worker once in-flight rollouts
+    """Episodes per worker for the scale-up trigger: add a worker once in-flight episodes
     reach 90% of `workers * multiplex`."""
 
 
@@ -123,6 +129,12 @@ class EnvServerConfig(BaseConfig):
     pool: PoolConfig = Field(default_factory=ElasticPoolConfig)
     """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
     scales up on demand; `static` pre-spawns a fixed `num_workers`."""
+    max_concurrent: int | None = Field(
+        None, validation_alias=AliasChoices("max_concurrent", "max_concurrent_episodes")
+    )
+    """Episodes in flight at once, per worker (None = no limit). The episode is the unit
+    here; how many agent runs one episode carries is the env's own
+    (`--env.max-concurrent-agents`, one at a time by default)."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
