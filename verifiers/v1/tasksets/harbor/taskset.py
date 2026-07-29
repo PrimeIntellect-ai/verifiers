@@ -28,7 +28,7 @@ from pydantic import Field
 from verifiers.v1.artifacts import Artifact, collect
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.decorators import reward
-from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
@@ -130,12 +130,12 @@ class HarborTask(Task[HarborData]):
                     hook.timeout_sec,
                 )
             except TimeoutError as exc:
-                raise TaskError(
+                raise RuntimeError(
                     f"collect hook timed out after {hook.timeout_sec}s: {hook.command}"
                 ) from exc
             if result.exit_code:
                 detail = (result.stderr or result.stdout).strip()[-500:]
-                raise TaskError(
+                raise RuntimeError(
                     f"collect hook failed (exit {result.exit_code}): "
                     f"{hook.command}\n{detail}"
                 )
