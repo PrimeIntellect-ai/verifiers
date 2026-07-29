@@ -42,6 +42,8 @@ _SHELL_WRAPPER_OPTIONS = {
     "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
     "nice": {"-n", "--adjustment"},
     "time": {"-f", "--format", "-o", "--output"},
+    "timeout": {"-k", "--kill-after", "-s", "--signal"},
+    "stdbuf": {"-i", "--input", "-o", "--output", "-e", "--error"},
     "xargs": {
         "-a",
         "--arg-file",
@@ -76,6 +78,7 @@ _SHELL_WRAPPER_OPTIONS = {
     "do": set(),
     "!": set(),
 }
+_SHELL_WRAPPER_OPERANDS = {"timeout": 1}
 _SHELL_INTERPRETERS = {"sh", "bash", "dash", "ksh", "zsh"}
 _SHELL_INTERPRETER_OPTIONS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 
@@ -161,23 +164,20 @@ def _shell_text(
             for source in sources
             for key in ("command", "commands", "cmd")
         )
-        values = (
-            source.get(key)
-            for source in sources
-            for key in ("command", "commands", "cmd")
-        )
-        text = "\n".join(
-            item
-            for value in values
-            for item in (
-                [value]
-                if isinstance(value, str)
-                else value
-                if isinstance(value, list)
-                else []
-            )
-            if isinstance(item, str)
-        )
+        command_text = []
+        for source in sources:
+            for key in ("command", "commands", "cmd"):
+                value = source.get(key)
+                if isinstance(value, str):
+                    command_text.append(value)
+                elif isinstance(value, list) and all(
+                    isinstance(item, str) for item in value
+                ):
+                    if key == "commands":
+                        command_text.extend(value)
+                    else:
+                        command_text.append(shlex.join(value))
+        text = "\n".join(command_text)
         if not has_command and raw_fallback:
             return call.arguments
     else:
@@ -197,6 +197,16 @@ def _shell_text(
         index = 0
         while index < len(source):
             char = source[index]
+            if char == "`" and quote != "'":
+                end = index + 1
+                while end < len(source) and source[end] != "`":
+                    end += 2 if source[end] == "\\" else 1
+                if end < len(source):
+                    pending.append(source[index + 1 : end])
+                    cleaned.append("substitution")
+                    word_start = False
+                    index = end + 1
+                    continue
             if quote:
                 cleaned.append(char)
                 if char == quote:
@@ -316,6 +326,7 @@ def _shell_text(
                     index += (
                         2 if option_name in option_arguments and not separator else 1
                     )
+                index += _SHELL_WRAPPER_OPERANDS.get(name, 0)
 
     return "\n".join(invocations)
 
