@@ -61,6 +61,8 @@ def _message_types(handler: Callable[..., Any]) -> tuple[type, ...]:
 def _directions(handler: Callable[..., Any]) -> tuple[Direction, ...]:
     if marked := getattr(handler, "intercept_directions", None):
         return marked
+    if getattr(handler, "intercept_raw", False):
+        raise TypeError("raw @intercept requires an explicit direction")
     accepted = _message_types(handler)
     if accepted == (AssistantMessage,):
         return ("response",)
