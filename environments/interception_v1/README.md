@@ -3,22 +3,22 @@
 An example v1 environment that defines deterministic and judge-backed guards directly
 with `@vf.intercept`.
 
-The task class installs two response handlers in priority order:
+The task class installs two handlers in priority order:
 
-1. `deterministic_guard` checks `exchange.message` with an exact rule.
-2. `judge_guard` calls `exchange.judge()` only when the deterministic rule did not
-   rewrite the candidate.
+1. `deterministic_guard` checks `trace.last_message` with an exact rule.
+2. `judge_guard` then passes `trace.messages` to an ordinary `vf.Judge`.
 
-Both handlers receive one `vf.ModelExchange`: the current prompt, typed candidate, trace,
-and direction. `exchange.replace()` returns an inert message of the same kind, while
-`exchange.judge()` builds and parses the guard prompt and records the ordinary judge call
-and its usage on the trace.
+Both handlers receive only the trace. During interception, `trace.messages` is the full
+exchange and `trace.last_message` is the candidate crossing the model boundary.
+`trace.replace()` returns an inert message of the same kind. Passing the trace to
+`Judge.evaluate()` records the judge call and its usage on that trace.
 
 ```python
 @vf.intercept()
-async def judge_guard(self, exchange: vf.ModelExchange[vf.AssistantMessage]):
-    if await exchange.judge(JUDGE_RUBRIC) == "BLOCK":
-        return exchange.replace("Blocked by the judge guard.")
+async def judge_guard(self, trace: vf.Trace):
+    verdict = await JUDGE.evaluate(trace=trace, exchange=trace.messages)
+    if verdict.text.strip() == "BLOCK":
+        return trace.replace("Blocked by the judge guard.")
 ```
 
 The higher-priority deterministic handler always runs first. The lower-priority judge
@@ -35,10 +35,10 @@ uv pip install -e environments/interception_v1
 uv run eval interception-v1 -n 2
 ```
 
-The example uses `vf.Judge()` and its default model. A handler can select another model
-by constructing the judge with a config:
+The example uses `vf.Judge()` and its default model. Select another model in the judge
+configuration:
 
 ```python
-judge = vf.Judge(vf.JudgeConfig(model="openai/gpt-5.4-nano"))
-verdict = await exchange.judge(JUDGE_RUBRIC, judge=judge)
+judge = vf.Judge(vf.JudgeConfig(model="openai/gpt-5.4-nano", prompt=JUDGE_PROMPT))
+verdict = await judge.evaluate(trace=trace, exchange=trace.messages)
 ```
