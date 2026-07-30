@@ -51,6 +51,8 @@ EXCLUDE_FIELDS: dict = {
 
 
 class TimeSpan(StrictBaseModel):
+    """Wall-clock timestamps with a derived, non-serialized duration in seconds."""
+
     start: float = 0.0
     end: float = 0.0
 
@@ -60,6 +62,8 @@ class TimeSpan(StrictBaseModel):
 
 
 class TimeSplit(StrictBaseModel):
+    """Records a measured duration in seconds."""
+
     duration: float = 0.0
 
 

@@ -271,7 +271,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             type="Task",
             data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
         ),
-        # v0 rollouts carry no seat config — record the default seat, like the
+        # v0 rollouts carry no agent config — record the default, like the
         # base task type above.
         agent=AgentInfo(config=AgentConfig()),
         tools=_to_v1_tools(out.get("tool_defs")) or [],

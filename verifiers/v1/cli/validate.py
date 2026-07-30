@@ -96,7 +96,7 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
         trace = Trace(
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
-            # No agent plays here: the seat records the runtime policy only.
+            # No agent runs here — the info only records the runtime policy.
             agent=vf.AgentInfo(
                 config=vf.AgentConfig(runtime=config.runtime),
                 name="validate",
@@ -137,7 +137,7 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
         trace = Trace(
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
-            # No agent plays here: the seat records the runtime policy only.
+            # No agent runs here — the info only records the runtime policy.
             agent=vf.AgentInfo(
                 config=vf.AgentConfig(runtime=config.runtime),
                 name="validate",
