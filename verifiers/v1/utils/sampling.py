@@ -2,9 +2,9 @@
 
 Every entrypoint narrows its items the same way: with `--shuffle`, a shuffle under a fixed
 seed so the sampled subset is the *same* every run (reproducible), then an optional slice to
-the first `limit`. Taskset entrypoints (eval, validate, debug, GEPA) go through
-`Taskset.select`, which shares this shuffle; the server eval path and the legacy bridge
-sample plain index lists here directly.
+the first `limit`. Taskset entrypoints compose `Taskset.shuffle()`/`select()`, which share
+this shuffle; the server eval path and the legacy bridge sample plain index lists here
+directly.
 """
 
 import random

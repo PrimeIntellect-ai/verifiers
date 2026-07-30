@@ -26,7 +26,15 @@ logger = logging.getLogger(__name__)
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.select(config.num_tasks, config.shuffle)
+    taskset = env.taskset
+    if config.num_tasks is None and taskset.INFINITE:
+        raise ValueError(
+            f"{type(taskset).__name__} is infinite - bound the run with -n"
+        )
+    selected = taskset.shuffle() if config.shuffle else taskset
+    if config.num_tasks is not None:
+        selected = selected.head(config.num_tasks)
+    tasks = list(selected)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
@@ -132,9 +140,15 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
 
         # The client owns the taskset: load it here, once — the server (and its pool
         # workers) never load data, they rebuild each dispatched task from its request.
-        tasks = load_taskset(config.env.taskset).select(
-            config.num_tasks, config.shuffle
-        )
+        taskset = load_taskset(config.env.taskset)
+        if config.num_tasks is None and taskset.INFINITE:
+            raise ValueError(
+                f"{type(taskset).__name__} is infinite - bound the run with -n"
+            )
+        selected = taskset.shuffle() if config.shuffle else taskset
+        if config.num_tasks is not None:
+            selected = selected.head(config.num_tasks)
+        tasks = list(selected)
     # Spawned processes inherit no logging — hand them the main process's setup so
     # their rollout logs land in the output dir.
     level = "DEBUG" if config.verbose else "INFO"

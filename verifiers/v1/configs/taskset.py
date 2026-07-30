@@ -17,8 +17,8 @@ class TasksetConfig(BaseConfig):
     task: SerializeAsAny[TaskConfig] = TaskConfig()
     """Config passed to each task, under `--env.taskset.task.*`."""
     system_prompt: Path | None = None
-    """File whose text overrides each task's `TaskData.system_prompt` in
-    `Taskset.select` (e.g. a GEPA `best_system_prompt.txt`)."""
+    """File whose text overrides each task's `TaskData.system_prompt` on
+    iteration (e.g. a GEPA `best_system_prompt.txt`)."""
 
     @property
     def name(self) -> str:
