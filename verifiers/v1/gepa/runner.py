@@ -37,8 +37,8 @@ class _GEPALog:
 
 def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
-    # Global shuffle, like every entrypoint: an infinite taskset raises here —
-    # run it with shuffle=false (there is no whole set to sample from).
+    # Global shuffle: an infinite taskset raises here — run it with
+    # shuffle=false (there is no whole set to sample from).
     taskset = env.taskset.shuffle() if config.shuffle else env.taskset
     all_tasks = list(taskset.head(config.num_train + config.num_val))
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
