@@ -31,11 +31,18 @@ Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA,
 - `reflection_model` / `reflection_client` — model/endpoint that proposes new prompts (default: reuse `model` / `client`)
 - `num_train` / `num_val` — train tasks for reflection minibatches and held-out val tasks for the pareto frontier (defaults: 100 / 50)
 - `max_total_rollouts` — total rollouts the run may spend (default: 500)
-- `max_concurrent` / `-c` — caps how many rollouts are in flight at once (default: 128)
+- `max_concurrent` / `-c` — caps how many episodes are in flight at once (default: 128)
 
 ## Output
 
-Results go under `outputs/<env>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is printed when the run finishes.
+Results go under `outputs/<env>--<model>--<harness>/<uuid>/`, matching `eval`. The best system prompt is printed when the run finishes and written to `best_system_prompt.txt` in that folder.
+
+Hand it back to eval or training via the config-layer taskset system prompt:
+
+```bash
+uv run eval reverse-text-v1 \
+  --env.taskset.system-prompt outputs/<run>/best_system_prompt.txt
+```
 
 ## Limitations
 

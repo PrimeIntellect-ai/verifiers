@@ -154,13 +154,16 @@ class Env(ABC, Generic[ConfigT]):
         """One episode: how the agents interact on `task`, returning nothing —
         every finished run joins the episode automatically, stamped with its seat's
         standing. An agent-run failure is data on its trace (this hook decides what
-        it means); an exception raised here is the episode itself failing."""
+        it means); an exception raised here is the episode itself failing.
+        Independent agents are written as such (`asyncio.gather`); how many of them
+        actually run at once is the run's bound, not this hook's
+        (`--env.max-concurrent-agents`, one at a time by default)."""
 
     async def finalize(self, task: Task, episode: Episode) -> None:
         """Cross-agent judgement — THE programmable judgement surface: plain
         imperative Python over the finished episode (per-trace judgement already
         ran on each trace's own task). `episode.traces` is the flat episode in
-        completion order, each trace's `agent_name` stamp naming its agent; attach
+        completion order, each trace's `agent.name` stamp naming its agent; attach
         signals via `record_reward`/`record_metric`, in program order. A raise
         fails the episode (the retryable unit) — validate strictly, never
         record a guess."""
@@ -188,13 +191,16 @@ class Env(ABC, Generic[ConfigT]):
     def _episode_agents(
         self,
         ctx: ModelContext,
-        gate: "asyncio.Semaphore | None",
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
     ) -> Agents:
         """One episode's `Agents` — fresh value objects riding the live serving
-        resources (nothing shared across concurrent episodes); `setup()` sees them first."""
+        resources (nothing shared across concurrent episodes), sharing one semaphore
+        so the episode plays `--env.max-concurrent-agents` of them at a time;
+        `setup()` sees them first."""
+        limit = self.config.max_concurrent_agents
+        gate = asyncio.Semaphore(limit) if limit else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
@@ -242,17 +248,17 @@ class Env(ABC, Generic[ConfigT]):
         *,
         on_trace: Callable[[Trace], None] | None = None,
         on_discard: Callable[[Trace], None] | None = None,
-        gate: asyncio.Semaphore | None = None,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
-        over fresh agents, then `finalize()`; `gate` bounds
-        the agent runs, so internal fan-out counts against `--max-concurrent` too.
+        over fresh agents, then `finalize()`. Its agents run one at a time
+        (`--env.max-concurrent-agents`), so one live episode is one live agent run
+        however `run()` fans out.
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
         retry mints a replacement)."""
         episode = Episode(env=self.config.env_id)
-        agents = self._episode_agents(ctx, gate, episode.traces, on_trace, on_discard)
+        agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
@@ -306,8 +312,10 @@ class Env(ABC, Generic[ConfigT]):
         on_complete: Callable[[Episode], Awaitable[None]] | None = None,
     ) -> Episode:
         """Run one planned episode to completion, with whole-episode
-        retries per `--env.retries`; `semaphore` gates the agent RUNS, not the
-        episode; `on_complete` (the runners' persistence hook) fires when final."""
+        retries per `--env.retries`; `semaphore` bounds concurrent EPISODES — one
+        permit for the attempt in flight, held across the whole of it (its agents,
+        their boxes, `finalize()`) and released before a retry's backoff and before
+        `on_complete` (the runners' persistence hook, which fires when final)."""
 
         async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
@@ -318,13 +326,13 @@ class Env(ABC, Generic[ConfigT]):
                 with contextlib.suppress(ValueError):
                     live.remove(trace)
 
-            return await self.run_episode(
-                slot.task,
-                ctx,
-                on_trace=live.append,
-                on_discard=discard,
-                gate=semaphore,
-            )
+            async with semaphore or contextlib.nullcontext():
+                return await self.run_episode(
+                    slot.task,
+                    ctx,
+                    on_trace=live.append,
+                    on_discard=discard,
+                )
 
         episode = await run_episode_with_retry(attempt, self.config.retries)
         slot.traces = list(episode.traces)

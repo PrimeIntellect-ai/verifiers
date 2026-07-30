@@ -18,6 +18,7 @@ import verifiers.v1 as vf
 from verifiers.v1.cli.output import append_trace, save_config
 from verifiers.v1.cli.resolve import (
     extract_id,
+    narrow_taskset_config,
     plugin_errors,
     references_config_file,
     with_positional_taskset,
@@ -43,15 +44,7 @@ USAGE = (
 
 def _narrow(argv: list[str]) -> type[DebugConfig]:
     """`DebugConfig` with `taskset` narrowed to the config type of the id on the CLI."""
-    taskset_id = extract_id(argv, "taskset")
-    if not taskset_id:
-        return DebugConfig
-    ftype = vf.taskset_config_type(taskset_id)
-    return type(
-        DebugConfig.__name__,
-        (DebugConfig,),
-        {"__annotations__": {"taskset": ftype}, "taskset": ftype(id=taskset_id)},
-    )
+    return narrow_taskset_config(DebugConfig, extract_id(argv, "taskset"))
 
 
 def output_path(config: DebugConfig) -> Path:
@@ -108,9 +101,9 @@ def error_info(
 
 
 def capture_trace_error(trace: Trace, error: BaseException) -> None:
-    # CancelledError is a BaseException; Trace.capture_error accepts Exception.
+    # CancelledError is a BaseException; Trace.record_error accepts Exception.
     if isinstance(error, Exception):
-        trace.capture_error(error)
+        trace.record_error(error)
         return
     trace.errors.append(
         Error(

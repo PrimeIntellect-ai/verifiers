@@ -33,7 +33,7 @@ class DebateEnv(vf.Env[DebateConfig]):
         await agents.judge.run(VerdictTask.from_traces(task, pro, con))
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        by_agent = {t.agent_name: t for t in episode.traces}
+        by_agent = {t.agent.name: t for t in episode.traces}
         winner = (by_agent["judge"].last_reply or "").strip().lower()
         by_agent["pro"].record_reward("won", float(winner == "pro"))
         by_agent["con"].record_reward("won", float(winner == "con"))
@@ -71,3 +71,20 @@ class MyTask(vf.Task[MyData]):
 ```
 
 Declared paths must exist when collected. The implicit directory is optional.
+
+## Concurrency
+
+Write independent agents as independent (`asyncio.gather`, a `TaskGroup`) — how many actually run at once is the run's call, not the env's. Two knobs bound it, and the **episode is the unit** at the outer one:
+
+| knob | bounds |
+| --- | --- |
+| `max_concurrent` / `-c` | episodes in flight (per worker when served) |
+| `env.max_concurrent_agents` | agent runs inside one episode — **1** by default |
+
+At the default, `-c 128` is 128 live agent runs whatever the env does internally. Set `max_concurrent_agents` higher (or `None` for no limit) when you want an episode's fan-out to run together — `-c` still caps the episodes carrying it:
+
+```bash
+uv run eval gsm8k-v1 --env.id best-of-n --env.n 16 --env.max-concurrent-agents None -c 128
+```
+
+Turn-taking envs are unaffected: an interaction holds its agent permit only around an active segment, never while awaiting its caller, so `user-sim` and games alternate at any setting.

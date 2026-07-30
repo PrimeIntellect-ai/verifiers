@@ -217,16 +217,15 @@ class JudgeTaskConfig(vf.BaseConfig):
     """The judge's minted task: the grading policy and what lands in its box."""
 
     prompt: Path | str | None = None
-    """Grading-policy override: inline text, or a policy file (a value ending in
-    `.md`/`.txt` is read from disk). Replaces only the policy body — the verdict
-    contract and workspace note are always appended, so a custom policy cannot
-    break verdict scraping. May reference `{prompt}` (the solver task's prompt);
-    if it doesn't, the task statement is appended after the policy."""
+    """Grading policy, either inline or a `.md`/`.txt` file. Replaces only the
+    policy body — the verdict contract and workspace note are always appended.
+    May reference `{prompt}` (the solver task's prompt); if it doesn't, the task
+    statement is appended after."""
     hint: Path | str | None = None
-    """Optional hints injected as their own section (inline text or a `.md`/
-    `.txt` file): task-family pointers into the trace or box — e.g. for math,
-    where the reference answer lives in the record; for SWE, to diff the repo
-    or read `info.patch`."""
+    """Optional inline hints or a `.md`/`.txt` hints file, injected as their own
+    section: task-family pointers into the trace or box — e.g. for math, where
+    the reference answer lives in the record; for SWE, to diff the repo or read
+    `info.patch`."""
     rubric: Path | None = None
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
@@ -349,7 +348,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         )
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        by_agent = {t.agent_name: t for t in episode.traces}
+        by_agent = {t.agent.name: t for t in episode.traces}
         if "judge" not in by_agent:
             return
         solution, verdict = by_agent["solver"], by_agent["judge"]

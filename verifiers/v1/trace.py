@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import time
 import traceback
 import uuid
@@ -35,7 +34,20 @@ from verifiers.v1.types import (
     content_text,
 )
 
-logger = logging.getLogger(__name__)
+TRACE_VERSION = 1
+"""Current version of the trace schema."""
+
+
+EXCLUDE_FIELDS: dict = {
+    "nodes": {
+        "__all__": {
+            "multi_modal_data",
+            "routed_experts",
+            "kept_tokens",
+        }
+    }
+}
+"""Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
 
 
 class TimeSpan(StrictBaseModel):
@@ -50,20 +62,12 @@ class TimeSpan(StrictBaseModel):
 
 
 class TimeSplit(StrictBaseModel):
-    """A span's share attributed to one side of a split: disjoint sub-intervals summed
-    into a duration, so there is no single start/end. Serialized, unlike a span's
-    derived `duration`, since it cannot be recomputed from two timestamps."""
+    """Records a measured duration in seconds."""
 
     duration: float = 0.0
 
 
 class GenerationSpan(TimeSpan):
-    """The generation span plus its split into time inside model calls (`model`) vs.
-    outside them (`harness`: harness logic, tools, user simulation). Stamped from the
-    recorded model calls' spans by `Trace.split_generation` when the span closes, with
-    `model.duration + harness.duration == duration` — concurrent calls (subagent forks)
-    are clamped to the span, saturating the model share."""
-
     model: TimeSplit = Field(default_factory=TimeSplit)
     harness: TimeSplit = Field(default_factory=TimeSplit)
 
@@ -81,40 +85,91 @@ class Error(StrictBaseModel):
     type: str
     message: str
     status_code: int | None = None
-    """The upstream HTTP status a provider failure surfaced (the provider's own, or one
-    chosen for a transport fault); None when the failure carried no HTTP exchange."""
     traceback: str | None = None
 
 
+class VersionInfo(StrictBaseModel):
+    version: str
+    commit: str | None = None
+
+
+def _current_build() -> VersionInfo:
+    # Lazy: `verifiers/__init__` (and its v0 surface) must not load with this module.
+    from verifiers import __version__
+    from verifiers.v1.utils.version import verifiers_commit
+
+    return VersionInfo(version=__version__, commit=verifiers_commit())
+
+
+AgentConfigT = TypeVar("AgentConfigT", bound=AgentConfig, default=AgentConfig)
+
+
+class AgentInfo(StrictBaseModel, Generic[AgentConfigT]):
+    config: AgentConfigT
+    """The resolved config that rebuilds the agent (`Agent(trace.agent.config)`)."""
+    runtime: RuntimeInfo | None = None
+    """The box the rollout ran in; None until provisioning."""
+    name: str = "agent"
+    """The env agent that produced this trace (the config field name, e.g. `solver`)."""
+    trainable: bool = True
+    """Whether this trace's tokens train the run's policy."""
+
+
+class TraceTask(StrictBaseModel, Generic[DataT]):
+    """The task as recorded on the trace, self-describing without the run's config."""
+
+    type: str
+    """The Task class name (`type(task).__name__`)."""
+    data: DataT
+    """The (immutable) row being solved."""
+
+
+class Reward(StrictBaseModel):
+    score: float
+    weight: float = 1.0
+
+    @property
+    def value(self) -> float:
+        return self.score * self.weight
+
+
+class EvalRunInfo(StrictBaseModel):
+    type: Literal["eval"] = "eval"
+
+    id: str
+    step: int | None = None
+
+
+class TrainRunInfo(StrictBaseModel):
+    type: Literal["train"] = "train"
+
+    id: str
+    step: int | None = None
+
+
+RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
+"""The run a trace belongs to, discriminated on `type`."""
+
+
 class ModelCall(StrictBaseModel):
-    """One provider exchange behind a sampled turn; its conversation is the linked
-    node's root-to-self path, never repeated here."""
+    """A model call, automatically recorded at intercept time."""
 
     node: int | None = None
-    """Index into `Trace.nodes` of the assistant node this call committed — the link into
-    the message graph (the call's conversation is that node's root-to-self path). None for
-    a call that committed no turn (see `error`)."""
+    """Index into `Trace.nodes` of the assistant node this call committed."""
     model: str | None = None
-    """The model requested from the provider. The rollout's model override makes this
-    `agent.config.model` on every call; recorded per call because it is cheap and provable."""
+    """The model requested from the provider."""
     sampling: Sampling | None = None
-    """The call's effective settings, scraped off the wire request by the dialect's
-    `sampling_fields` whitelist — the eval-imposed knobs plus whatever the harness set
-    that the eval left alone (`seed`, `tool_choice`, `response_format`, ... as extras)."""
+    """The call's effective sampling settings (may differ from trace-level sampling)."""
     endpoint: str | None = None
-    """The provider endpoint path the request went to (e.g. `/chat/completions`) — says
-    which wire dialect the exchange spoke."""
+    """The provider endpoint path the request went to (e.g. `/chat/completions`)."""
     finish_reason: FinishReason = None
-    """Why the model stopped, normalized (`stop` / `length` / `tool_calls`); None for a
-    failed call or an unrecognized provider reason."""
+    """Why the model stopped, normalized (`stop` / `length` / `tool_calls`)."""
     usage: Usage | None = None
-    """Provider-reported token usage for this exchange, cache reads included; None for
-    a failed call."""
+    """Provider-reported token usage for this exchange, cache reads included."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """Wall-clock span from sending the request to the fully received response."""
     error: Error | None = None
-    """The failure that ended this call, coupled to the exchange that caused it; None on
-    success. A failed call still records the settings it was sent with."""
+    """The failure that ended this call, coupled to the exchange that caused it."""
 
 
 class Branch(StrictBaseModel):
@@ -196,10 +251,8 @@ class Branch(StrictBaseModel):
 
     @property
     def kept_tokens(self) -> KeptTokens | None:
-        """The branch's kept-set sampling masks: `counts` is int32 aligned 1:1 with
-        `token_ids` (0 = no mask, safe under partial coverage — unlike `routed_experts`
-        this is not all-or-nothing), `ids` the flat int32 concatenation of the kept
-        sets in position order. None when no node carries kept-set data."""
+        """int32 kept-set `counts` aligned 1:1 with `token_ids` plus flat `ids` in
+        position order; partial data scatters as 0 counts, no data returns None."""
         if all(n.kept_tokens is None for n in self.nodes):
             return None
         # `_attribute_kept_tokens` validates counts/ids against the node's sampled
@@ -226,225 +279,79 @@ class Branch(StrictBaseModel):
 
     @property
     def last_usage(self) -> Usage | None:
-        """Provider usage from the final model call on this branch — the full context it saw."""
         return next(
             (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
 
     @property
     def num_total_tokens(self) -> int:
-        """Final sequence length: the last call's prompt + completion. Earlier turns' context
-        is already contained in that prompt, so re-sent tokens are counted once rather than
-        summed per turn."""
         last = self.last_usage
         return last.total_tokens if last is not None else 0
 
     @property
     def num_output_tokens(self) -> int:
-        """Every model-generated token across all turns (completions, reasoning included)."""
         usage = self.usage
         return usage.completion_tokens if usage is not None else 0
 
     @property
     def num_input_tokens(self) -> int:
-        """Tokens fed to the model, counted once: the final sequence minus everything the model
-        generated (i.e. system + user + tool inputs). Not the last prompt — re-sent context is
-        not double-counted."""
         return self.num_total_tokens - self.num_output_tokens
 
 
-_NODE_DUMP_EXCLUDE: dict = {
-    "nodes": {
-        "__all__": {
-            "multi_modal_data",
-            "routed_experts",
-            "kept_tokens",
-        }
-    }
-}
-"""Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
-
-
-TRACE_VERSION = 4
-"""Version of the trace record schema (see `Trace.model_json_schema()`). Bumped on
-breaking shape changes; optional-with-default fields are additive and don't bump it."""
-
-
-class EvalRunInfo(StrictBaseModel):
-    """An eval run, stamped by the consumer (the eval CLI / a trainer's inline eval)."""
-
-    type: Literal["eval"] = "eval"
-    id: str | None = None
-    """The producing run: the eval CLI stamps its run uuid (a resumed eval counts as
-    a new run; kept traces keep their original id), trainers stamp their own."""
-    step: int | None = None
-    """The training step an inline eval was triggered at, stamped by the trainer;
-    None for a standalone eval (the eval CLI doesn't set it)."""
-
-
-class TrainRunInfo(StrictBaseModel):
-    """A training run, stamped by the trainer."""
-
-    type: Literal["train"] = "train"
-    id: str | None = None
-    """The trainer's run identifier."""
-    step: int | None = None
-    """The training step this rollout belongs to."""
-
-
-RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
-"""The run a trace belongs to, discriminated on `type`."""
-
-
-class VersionInfo(StrictBaseModel):
-    """The verifiers build that produced this trace."""
-
-    version: str
-    """The installed verifiers package version."""
-    commit: str | None = None
-    """The verifiers git commit, when resolvable (a git-pinned install or a source
-    checkout); None otherwise (e.g. a PyPI wheel)."""
-
-
-AgentConfigT = TypeVar("AgentConfigT", bound=AgentConfig, default=AgentConfig)
-"""`default=AgentConfig`: an unparameterized record is the strict, fully-typed
-read (the config is exactly `AgentConfig` at write time, so nothing is lost);
-`WireTrace` parameterizes with `WireAgentConfig` for the plugin-free read."""
-
-
-class AgentInfo(StrictBaseModel, Generic[AgentConfigT]):
-    config: AgentConfigT
-    """The agent's resolved config — the exact value that rebuilds it
-    (`Agent(trace.agent.config)`). Validating a record narrows the harness by
-    its id (the plugin must be importable); consumers without the packages
-    (e.g. a trainer) read through `WireTrace`, which keeps it loose."""
-    runtime: RuntimeInfo | None = None
-    """The box the rollout ran in — the agent's runtime policy resolved for the
-    task, plus the provisioned resource ID; None until provisioning."""
-    name: str = "agent"
-    """The env agent that produced this trace — the config field name (`solver`,
-    `judge`); the default outside an env and for `SingleAgentEnv`'s sole agent.
-    First-class so training can filter and baseline per agent."""
-    trainable: bool = True
-    """Whether this trace's tokens are training data for the run's policy. An env's
-    `setup()` marks fixed-model agents (a frozen judge, a pinned user sim) untrainable."""
-
-
-class TraceTask(StrictBaseModel, Generic[DataT]):
-    """The task as recorded on the trace: the row (`data`, fully typed, flows into
-    scoring) plus the Task class name that produced the rollout (`type`) — so a bare
-    trace is self-describing without the run's config. Only data and a name ride
-    the wire; behavior re-attaches by construction."""
-
-    type: str
-    """The Task class name (`type(task).__name__`)."""
-    data: DataT
-    """The (immutable) row being solved."""
-
-
-class Reward(StrictBaseModel):
-    """One named reward as recorded on the trace: the raw score next to its weight,
-    so records keep both readable and the weighted sum stays a derived view."""
-
-    score: float
-    """The raw value the reward function returned, unweighted."""
-    weight: float = 1.0
-    """The multiplier `score` carries in the trace-level `reward` sum."""
-
-    @property
-    def value(self) -> float:
-        """This reward's weighted contribution to the trace-level `reward`."""
-        return self.score * self.weight
-
-
 class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    """Unique id for this rollout, auto-generated per trace."""
-    task: TraceTask[DataT]
-    """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
     version: int = TRACE_VERSION
-    """The trace record schema this trace serializes as."""
-    verifiers: VersionInfo | None = None
-    """The verifiers build that produced this trace, stamped at rollout start —
-    replayed/re-read traces keep the build that originally produced them."""
+    """The trace schema this trace serializes as."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    """Unique ID for this trace, auto-generated."""
+    verifiers: VersionInfo = Field(default_factory=_current_build)
+    """The verifiers version that produced this trace."""
     run: RunInfo | None = None
     """The run this trace belongs to (eval or train), consumer-stamped."""
-    agent: AgentInfo[AgentConfigT] | None = None
-    """The agent (config: harness x model x runtime, plus the provisioned box) that
-    produced the sampled turns."""
+
+    task: TraceTask[DataT]
+    """The task data that seeded this trace."""
+    agent: AgentInfo[AgentConfigT]
+    """The agent (harness x model x runtime) that produced this trace."""
+    tools: list[Tool] = Field(default_factory=list)
+    """The tools advertised to the agent, automatically recorded from last intercepted turn."""
+
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
-    tools: list[Tool] | None = None
-    """The tools advertised to the model, recorded when an intercepted turn commits (last
-    committed turn wins) — never from a refused/failed request the model never saw. The full
-    advertised list (not just tools called), so tool-use SFT can re-render the exact prompt;
-    a trace-level snapshot: mid-rollout changes collapse to the last set the model saw."""
     calls: list[ModelCall] = Field(default_factory=list)
-    """Every provider exchange behind the sampled turns, in order: raw wire request/response
-    plus per-call timing and errors, linked into `nodes` via `ModelCall.node`."""
+    """Every model call; automatically recorded at intercept time + linked into `nodes`."""
 
     rewards: dict[str, Reward] = Field(default_factory=dict)
-    """Named rewards from tasks, judges, and the env's `score()` — each keeps its
-    raw `score` and `weight`; the trace-level `reward` is their weighted sum."""
+    """Named, weighted rewards"""
     metrics: dict[str, float] = Field(default_factory=dict)
-    """Unweighted metrics from tasks, harnesses, and judges."""
+    """Unweighted, named metrics"""
     info: dict[str, Any] = Field(default_factory=dict)
-    """Persistent JSON scratch space for task metadata that is not a reward or metric."""
+    """Scratch space for task-specific metadata."""
     state: StateT = Field(default_factory=State, exclude=True)
-    """Transient state shared with servers and scoring; excluded from every dump."""
+    """Runtime (possibly, non-serializable) state shared across runtimes; excluded from serialization."""
 
     extra_usage: list[Usage] = Field(default_factory=list)
     """Usage from judges and other calls outside the agent's message graph."""
 
     is_completed: bool = False
+    """Whether the trace completed."""
     ok: bool = False
-    """THE success sentinel, stamped by the engine when the rollout ran to
-    completion without its final attempt failing. Distinct from `errors`
-    emptiness: a rollout that recovered on retry is `ok` and still keeps its
-    earlier attempts' errors."""
+    """Whether the trace completed successfully."""
     stop_condition: str | None = None
+    """What stopped the trace."""
     errors: list[Error] = Field(default_factory=list)
-    """Every error captured across attempts, oldest first (more than one only when
-    the rollout was retried). `error` exposes the most recent; success is `ok`,
-    never errors-emptiness."""
+    """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
-    """`(parent, msg_hash) -> node_id` for the graph builder (`graph.prepare_turn` / `commit`);
-    rebuilt lazily from `nodes` after deserialization."""
+    """`(parent, msg_hash) -> node_id` for the graph builder."""
 
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values())
 
     @property
-    def error(self) -> Error | None:
-        return self.errors[-1] if self.errors else None
-
-    @property
     def has_error(self) -> bool:
         return not self.ok
-
-    @property
-    def agent_name(self) -> str | None:
-        """The agent that produced this trace (`agent.name`); None only on traces
-        with no agent info (the legacy bridge)."""
-        return self.agent.name if self.agent is not None else None
-
-    @property
-    def trainable(self) -> bool:
-        """Whether this trace's tokens train the run's policy (`agent.trainable`)."""
-        return self.agent.trainable if self.agent is not None else True
-
-    @property
-    def runtime(self) -> RuntimeInfo | None:
-        """The box this rollout ran in (`agent.runtime`); None until provisioning
-        and on traces with no agent info (the legacy bridge)."""
-        return self.agent.runtime if self.agent is not None else None
-
-    def _last_assistant(self) -> MessageNode | None:
-        """Most recent model-produced node, ignoring prompt-supplied assistant messages."""
-        return next((n for n in reversed(self.nodes) if n.sampled), None)
 
     @property
     def num_input_tokens(self) -> int:
@@ -493,8 +400,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def num_turns(self) -> int:
-        """Total model turns (sampled responses) across all branches — prompt-supplied
-        assistant messages don't count."""
         return sum(1 for n in self.nodes if n.sampled)
 
     @property
@@ -506,7 +411,6 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
             "max_output_tokens",
             "max_total_tokens",
             "context_length",
-            "harness_timeout",
         ):
             return True
         last = next((c for c in reversed(self.calls) if c.error is None), None)
@@ -523,13 +427,24 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         ]
 
     @property
+    def tool_messages(self) -> list[ToolMessage]:
+        """Every tool result, in order — branch-independent."""
+        return [n.message for n in self.nodes if isinstance(n.message, ToolMessage)]
+
+    @property
     def last_reply(self) -> str:
+        """The last recorded model response, in text format."""
         msgs = self.assistant_messages
         return (msgs[-1].content or "").strip() if msgs else ""
 
     @property
+    def last_error(self) -> Error | None:
+        """The last error captured across attempts."""
+        return self.errors[-1] if self.errors else None
+
+    @property
     def transcript(self) -> str:
-        """Final-branch text and tool calls for judges; images and reasoning are omitted."""
+        """Text transcript of the last branch's messages; tool outputs are omitted."""
         branches = self.branches
         blocks: list[str] = []
         for message in branches[-1].messages if branches else []:
@@ -549,55 +464,36 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
 
-    @property
-    def tool_messages(self) -> list[ToolMessage]:
-        """The tool results in the latest full context — the main (last) branch's
-        conversation. For a linear rollout that's every tool result."""
-        branches = self.branches
-        messages = branches[-1].messages if branches else []
-        return [m for m in messages if isinstance(m, ToolMessage)]
-
     def record_metric(self, name: str, value: float) -> None:
-        if name in self.metrics:
-            logger.warning(
-                "metric %r overridden: %s -> %s", name, self.metrics[name], value
-            )
         self.metrics[name] = float(value)
 
     def record_metrics(self, values: Mapping[str, float]) -> None:
         for name, value in values.items():
             self.record_metric(name, value)
 
+    def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
+        reward = Reward(score=float(value), weight=float(weight))
+        self.rewards[name] = reward
+
     def record_judge(self, response: JudgeResponse) -> None:
         self.info.setdefault("judge", []).append(response.model_dump())
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
-    def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
-        reward = Reward(score=float(value), weight=float(weight))
-        if name in self.rewards:
-            logger.warning(
-                "reward %r overridden: %s -> %s", name, self.rewards[name], reward
-            )
-        self.rewards[name] = reward
-
-    def stamp(self, run: RunInfo | None = None, **info: Any) -> None:
-        """Stamp identity only the consumer knows (the eval CLI / a trainer) onto the
-        trace; anything beyond `run` lands in `info`."""
+    def record_run(self, run: RunInfo | None = None, **info: Any) -> None:
+        """Record the run identity (eval / train), and optional extra info."""
         if run is not None:
             self.run = run
         self.info.update(info)
 
-    def stop(self, condition: str = "done") -> None:
+    def stop(self, condition: str) -> None:
+        """Stop the trace, optionally with a stop condition."""
         self.is_completed = True
         if self.stop_condition is None:
             self.stop_condition = condition
 
     def split_generation(self) -> None:
-        """Stamp the closed generation span's model/harness split: model time is the
-        sum of the recorded calls' spans (clamped to the span), harness the complement.
-        Every path that closes the span calls this — a span without model calls (e.g.
-        a debug action) is all harness time."""
+        """Split the generation span into model and harness time."""
         gen = self.timing.generation
         if not gen.end:
             return
@@ -605,7 +501,8 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         gen.model.duration = min(model, gen.duration)
         gen.harness.duration = gen.duration - gen.model.duration
 
-    def capture_error(self, error: Exception) -> None:
+    def record_error(self, error: Exception) -> None:
+        """Record an error, and stop the trace as failed."""
         self.errors.append(
             Error(
                 type=type(error).__name__,
@@ -623,7 +520,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     def to_record(self) -> dict[str, Any]:
         """JSON record without raw tensors, which remain available on the msgpack wire."""
-        return self.model_dump(mode="json", exclude=_NODE_DUMP_EXCLUDE)
+        return self.model_dump(mode="json", exclude=EXCLUDE_FIELDS)
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]

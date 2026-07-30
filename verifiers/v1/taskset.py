@@ -79,10 +79,15 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
                     "taking the first %d generated tasks",
                     num_tasks,
                 )
-            return list(itertools.islice(self.load(), num_tasks))
+            shuffle = False  # can't materialize the whole taskset to sample from
         if shuffle:
-            return sample(self.load(), shuffle=True, limit=num_tasks)
-        return list(itertools.islice(self.load(), num_tasks))
+            tasks = sample(self.load(), shuffle=True, limit=num_tasks)
+        else:
+            tasks = list(itertools.islice(self.load(), num_tasks))
+        if self.config.system_prompt is not None:
+            override = self.config.system_prompt.read_text()
+            tasks = [t.with_system_prompt(override) for t in tasks]
+        return tasks
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a `tools` entry is built with, resolved off `self.config` (the

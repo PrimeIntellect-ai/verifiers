@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from verifiers.v1 import graph
 from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
+from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
@@ -34,6 +35,7 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1.trace import (
+    AgentInfo,
     Error,
     GenerationSpan,
     ModelCall,
@@ -227,7 +229,6 @@ def _timing(raw: Any) -> Timing:
 _V0_TO_V1_TRUNCATION_STOP = {
     "max_turns_reached": "max_turns",
     "prompt_too_long": "context_length",
-    "timeout_reached": "harness_timeout",
     "max_total_completion_tokens_reached": "max_output_tokens",
 }
 
@@ -270,7 +271,10 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             type="Task",
             data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
         ),
-        tools=_to_v1_tools(out.get("tool_defs")),
+        # v0 rollouts carry no agent config — record the default, like the
+        # base task type above.
+        agent=AgentInfo(config=AgentConfig()),
+        tools=_to_v1_tools(out.get("tool_defs")) or [],
         rewards={"reward": Reward(score=float(out.get("reward") or 0.0))},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         info=dict(out.get("info") or {}),
@@ -495,7 +499,7 @@ def _legacy_output_dir(config) -> Path:
 
     if config.output_dir is not None:
         return config.output_dir
-    name = f"{env_name(config.id)}--{config.model.replace('/', '--')}--legacy"
+    name = f"{env_name(config.legacy.id)}--{config.model.replace('/', '--')}--legacy"
     return Path("outputs") / name / config.uuid
 
 
@@ -510,15 +514,21 @@ async def run_legacy_eval(config) -> list[Episode]:
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
     # already importable), then load by module name.
-    env = load_environment(ensure_installed(config.id), **(config.args or {}))
-    if config.extra_env_kwargs:  # post-load knobs (max_total_completion_tokens, …)
-        env.set_kwargs(**config.extra_env_kwargs)
+    env = load_environment(
+        ensure_installed(config.legacy.id), **(config.legacy.args or {})
+    )
+    if (
+        config.legacy.extra_env_kwargs
+    ):  # post-load knobs (max_total_completion_tokens, …)
+        env.set_kwargs(**config.legacy.extra_env_kwargs)
     dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
     idxs = sample(list(range(len(dataset))), config.shuffle, config.num_tasks)
 
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)
-    taskset_id = env_name(config.id)  # the same identity the served bridge stamps
+    taskset_id = env_name(
+        config.legacy.id
+    )  # the same identity the served bridge stamps
     out_dir = _legacy_output_dir(config)
     save_config(config, out_dir)
     logger.info("results: %s", out_dir)
@@ -527,7 +537,7 @@ async def run_legacy_eval(config) -> list[Episode]:
         len(idxs),
         config.num_rollouts,
         config.model,
-        config.id,
+        config.legacy.id,
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None

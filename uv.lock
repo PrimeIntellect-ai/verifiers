@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 4
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
@@ -159,12 +159,6 @@ name = "alphabet-sort-v1"
 version = "0.1.0"
 source = { editable = "environments/alphabet_sort_v1" }
 dependencies = [
-    { name = "datasets" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
     { name = "datasets" },
     { name = "verifiers" },
 ]
@@ -679,24 +673,6 @@ wheels = [
 ]
 
 [[package]]
-name = "claude-agent-sdk"
-version = "0.2.116"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "anyio" },
-    { name = "mcp" },
-    { name = "sniffio" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/50/79/b0f01a18bb119e595cc1e66d4adbe39bb09879a570e54793c222a142b662/claude_agent_sdk-0.2.116.tar.gz", hash = "sha256:37d6c9d98960c7ea41d1a7fd3331ad0b1bef68e559ed9cc5ccf9d00ae68adfcd", size = 268648, upload-time = "2026-07-11T01:04:47.192Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/cd/2ed6eaee9e5fa1a13d91d1ccbb9f09a3b53379acd55b3ccb9d6c94378a3f/claude_agent_sdk-0.2.116-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9ea5ababb44afdcc7e33b857ca3ad5008f906c30052aa2d957dacfa7f70ead9f", size = 71529658, upload-time = "2026-07-11T01:04:51.792Z" },
-    { url = "https://files.pythonhosted.org/packages/f0/5a/28cefff3eacb8ba8a2caf2a8e7c944faca8c253157cc5aa207d87964c5cb/claude_agent_sdk-0.2.116-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:93c1f60ed1e4d73dc13f2c714bbe1be43798d9bb4067a6d563358c397b300801", size = 75044679, upload-time = "2026-07-11T01:04:56.414Z" },
-    { url = "https://files.pythonhosted.org/packages/72/e8/6663bd715b1822db87a560aa04ddc51a1e36bbfb076441d96b3af827e572/claude_agent_sdk-0.2.116-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:e130166e5b1054b4e3741d957fd6759546fa657fa765385955a9ef12fdc545f9", size = 80070001, upload-time = "2026-07-11T01:05:01.862Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/a2/305b81ee541ff1323920809803695c0294584f30b7e451a290213f53f4d7/claude_agent_sdk-0.2.116-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:d5e420912378cf66a90cf898bdd4567cc8f994308bd8011d7bd71968066f3894", size = 81082600, upload-time = "2026-07-11T01:05:06.688Z" },
-    { url = "https://files.pythonhosted.org/packages/b2/cb/c492bf6d973837f00894604f2e0ad3b216a03163dc204bff14b3e7e596f0/claude_agent_sdk-0.2.116-py3-none-win_amd64.whl", hash = "sha256:fb8dbc73f52d103e08b30fe865199ea1d89e7b2197652a19a97a15b040cf685b", size = 80616940, upload-time = "2026-07-11T01:05:12.229Z" },
-]
-
-[[package]]
 name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -716,21 +692,12 @@ dependencies = [
     { name = "verifiers" },
 ]
 
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
-
 [[package]]
 name = "color-codeword-v1"
 version = "0.1.0"
 source = { editable = "environments/color_codeword_v1" }
 dependencies = [
     { name = "pillow" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pillow", specifier = ">=11.0.0" },
     { name = "verifiers" },
 ]
 
@@ -750,9 +717,6 @@ source = { editable = "environments/compact" }
 dependencies = [
     { name = "verifiers" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "connect-python"
@@ -987,9 +951,6 @@ source = { editable = "environments/deepwiki_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "defusedxml"
@@ -1394,9 +1355,6 @@ dependencies = [
     { name = "verifiers" },
 ]
 
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
-
 [[package]]
 name = "googleapis-common-protos"
 version = "1.75.0"
@@ -1545,9 +1503,6 @@ dependencies = [
     { name = "datasets" },
 ]
 
-[package.metadata]
-requires-dist = [{ name = "datasets" }]
-
 [[package]]
 name = "h11"
 version = "0.16.0"
@@ -1572,19 +1527,20 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.14.0"
+version = "0.20.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "claude-agent-sdk" },
-    { name = "datasets" },
     { name = "dirhash" },
     { name = "fastapi" },
+    { name = "filelock" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "litellm" },
     { name = "packaging" },
     { name = "pathspec" },
+    { name = "platformdirs" },
     { name = "pydantic" },
+    { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -1596,9 +1552,9 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/f3/cba38a11b0cca01ecd471437869f1cd57d86a3b1e4091b8fd3d112cba8af/harbor-0.14.0.tar.gz", hash = "sha256:0ffffc25a618e4b7bf2b901a8c717c8bc28877f5aa8c37be47f1ec8c301cb0b6", size = 1241271, upload-time = "2026-06-17T16:43:23.495Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/da/5a26998c6e7d9455321ab39bc8e9122993892ece13c3ad4f2b0de986aaf6/harbor-0.20.0.tar.gz", hash = "sha256:e2e5e88f772690fd121553ca34fd5d6dd6b4aaa51c8fae635abc84b112303112", size = 1590870, upload-time = "2026-07-18T21:25:22.578Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/22/cb447121af474cfc7662b9f997be20316eadc692f19fa884608460589020/harbor-0.14.0-py3-none-any.whl", hash = "sha256:171971a008386ce633ef9f53fb4170e7d7807dba15349e930366581dd4c511e2", size = 1412739, upload-time = "2026-06-17T16:43:25.062Z" },
+    { url = "https://files.pythonhosted.org/packages/76/03/b6617f32385295729f3af0ae0d512cf87ba4793b9ce462ea020d776a9025/harbor-0.20.0-py3-none-any.whl", hash = "sha256:4b7e48223aea2384cdb8c9eff35eaebd482fc9b1ec09f8193a121c47356ff19a", size = 1792416, upload-time = "2026-07-18T21:25:19.206Z" },
 ]
 
 [[package]]
@@ -2104,9 +2060,6 @@ source = { editable = "environments/kuhn_poker_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "latex2sympy2-extended"
@@ -2857,9 +2810,6 @@ dependencies = [
     { name = "verifiers", extra = ["openenv"] },
 ]
 
-[package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["openenv"] }]
-
 [[package]]
 name = "opentelemetry-api"
 version = "1.43.0"
@@ -3299,9 +3249,6 @@ source = { editable = "environments/proposer_solver_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "protobuf"
@@ -4052,7 +3999,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.8"
+version = "0.1.9.dev9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -4064,9 +4011,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f9/82/e493c5f6752283b18f43b8bb3e6f3b2068310a0a42b0650de1b841713fa3/renderers-0.1.8.tar.gz", hash = "sha256:7a50b59cc64593da504c054bf3e2f0f147af5c1770bad7107de7b18887377280", size = 343291, upload-time = "2026-07-15T14:10:22.918Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/55/e7ec6c23404c18b7ee0e38d7f9825f6adfe87334ce9968733e179c4cb4e1/renderers-0.1.9.dev9.tar.gz", hash = "sha256:d46c34f6a94151bf705e4213df197a766b8508e9c5828fac6d733e677f62beaf", size = 349151, upload-time = "2026-07-29T22:54:15.097Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4c/2b/6defb0cc5ca19d66798a6c656d30aab86d7c9d4cec14c2b24248b5421c86/renderers-0.1.8-py3-none-any.whl", hash = "sha256:40e6b2c766e23feb12f73b1fbdfef4dea51921479454756ac796612e3bef8397", size = 189915, upload-time = "2026-07-15T14:10:21.371Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/14/996990b4c5669a8979fdc0852c207366dd7d5c61a664274db8f4755328c3/renderers-0.1.9.dev9-py3-none-any.whl", hash = "sha256:f97d31ab83999bcc88bd4471c09f17deb8919b57cc1bba14928155d1e6deef3d", size = 192995, upload-time = "2026-07-29T22:54:13.779Z" },
 ]
 
 [[package]]
@@ -4104,9 +4051,6 @@ source = { editable = "environments/reverse_text_v1" }
 dependencies = [
     { name = "datasets" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "datasets" }]
 
 [[package]]
 name = "rich"
@@ -4280,9 +4224,6 @@ source = { editable = "environments/scratchpad_v1" }
 dependencies = [
     { name = "verifiers" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "secretstorage"
@@ -4977,79 +4918,6 @@ examples = [
     { name = "wordle-v1" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "aiolimiter", specifier = ">=1.2.1" },
-    { name = "anthropic", specifier = ">=0.78.0" },
-    { name = "datasets", specifier = ">=3.3.0,<6.0.0" },
-    { name = "gepa", specifier = ">=0.0.6" },
-    { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.14.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "loguru", specifier = ">=0.7.0" },
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "mcp", specifier = ">=1.24.0,<2" },
-    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.4.0" },
-    { name = "msgpack", specifier = ">=1.1.2" },
-    { name = "nest-asyncio", marker = "extra == 'notebook'", specifier = ">=1.6.0" },
-    { name = "nltk", marker = "extra == 'ta'", specifier = ">=3.9.2" },
-    { name = "numpy", specifier = ">=2.1.0" },
-    { name = "openai", specifier = ">=2.9.0" },
-    { name = "openai-agents", specifier = ">=0.8.2" },
-    { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
-    { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.2" },
-    { name = "prime-sandboxes", specifier = ">=0.2.33" },
-    { name = "prime-tunnel", specifier = ">=0.1.8" },
-    { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
-    { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "reasoning-gym", marker = "extra == 'rg'", specifier = ">=0.1.8" },
-    { name = "renderers", specifier = ">=0.1.8" },
-    { name = "requests" },
-    { name = "rich", specifier = ">=11.0.0" },
-    { name = "setproctitle", specifier = ">=1.3.0" },
-    { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.4.0" },
-    { name = "tenacity", specifier = ">=8.5.0" },
-    { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
-    { name = "tomli-w", specifier = ">=1.0.0" },
-    { name = "typing-extensions", specifier = ">=4.12.2" },
-    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'", specifier = ">=0.21.0" },
-]
-provides-extras = ["browser", "harbor", "modal", "notebook", "openenv", "rg", "ta"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "nest-asyncio", specifier = ">=1.6.0" },
-    { name = "nltk", specifier = ">=3.9.2" },
-    { name = "pre-commit", specifier = ">=2.19.0" },
-    { name = "pytest", specifier = ">=7.0.0,<9.1.0" },
-    { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "pytest-cov", specifier = ">=4.0.0" },
-    { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "reasoning-gym", specifier = ">=0.1.8" },
-    { name = "ruff", specifier = ">=0.16.0" },
-    { name = "stagehand", specifier = ">=3.4.0" },
-    { name = "textarena", specifier = "==0.7.4" },
-    { name = "ty", specifier = ">=0.0.63" },
-]
-examples = [
-    { name = "alphabet-sort-v1", editable = "environments/alphabet_sort_v1" },
-    { name = "code-golf-v1", editable = "environments/code_golf_v1" },
-    { name = "color-codeword-v1", editable = "environments/color_codeword_v1" },
-    { name = "compact", editable = "environments/compact" },
-    { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
-    { name = "glossary-v1", editable = "environments/glossary_v1" },
-    { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
-    { name = "kuhn-poker-v1", editable = "environments/kuhn_poker_v1" },
-    { name = "openenv-wordle-v1", editable = "environments/openenv_wordle_v1" },
-    { name = "proposer-solver-v1", editable = "environments/proposer_solver_v1" },
-    { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
-    { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },
-    { name = "wiki-search-v1", editable = "environments/wiki_search_v1" },
-    { name = "wordle-v1", editable = "environments/wordle_v1" },
-]
-
 [[package]]
 name = "virtualenv"
 version = "21.6.1"
@@ -5194,13 +5062,6 @@ dependencies = [
     { name = "verifiers" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "chromadb", specifier = ">=0.4.13" },
-    { name = "datasets" },
-    { name = "verifiers" },
-]
-
 [[package]]
 name = "win32-setctime"
 version = "1.2.0"
@@ -5217,9 +5078,6 @@ source = { editable = "environments/wordle_v1" }
 dependencies = [
     { name = "verifiers", extra = ["ta"] },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["ta"] }]
 
 [[package]]
 name = "xxhash"
