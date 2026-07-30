@@ -101,6 +101,7 @@ class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
         }
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         command = await runtime.prepare_uv_script(source, env)
+        calls_before = len(trace.calls)
         result = await HERMES_ACP.run(
             runtime,
             env,
@@ -110,7 +111,7 @@ class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
             system_prompt=system_prompt,
             session_path=f"{home}/acp-session",
         )
-        if not trace.calls:
+        if len(trace.calls) == calls_before:
             detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"
             raise RuntimeError(
                 "Hermes Agent completed without making a model request: " + detail
