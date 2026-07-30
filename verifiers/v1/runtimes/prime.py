@@ -223,21 +223,14 @@ class PrimeRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
-            # Poll directly so the rollout stage owns the execution timeout; the SDK helper
-            # otherwise imposes its own 15-minute limit.
-            job = await self._client.start_background_job(
+            result = await self._client.run_background_job(
                 self.info.id,
                 shlex.join(argv),
+                timeout=MAX_LIFETIME,
                 working_dir=self.config.workdir,
                 env=env,
+                poll_interval=1,
             )
-            delay = 0.1
-            while True:
-                result = await self._client.get_background_job(self.info.id, job)
-                if result.completed:
-                    break
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
