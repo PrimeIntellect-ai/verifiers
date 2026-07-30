@@ -5,6 +5,7 @@ socket transport, so on Windows `EnvRouter.__init__` could not bind at all and t
 server died before a single rollout ran.
 """
 
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,7 +13,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 import zmq
 
-from verifiers.utils.serve_utils import get_free_port, ipc_path_of, make_ipc_address
+from verifiers.utils.serve_utils import (
+    _SUN_PATH_MAX,
+    get_free_port,
+    ipc_path_of,
+    make_ipc_address,
+)
 
 
 class _ScriptedProbe:
@@ -64,13 +70,23 @@ class TestIpcPathOf:
 
 
 class TestMakeIpcAddressWithIpcSupport:
-    def test_uses_ipc_and_the_resolved_temp_dir(self):
+    def test_uses_ipc_and_a_writable_directory(self):
         with patch.object(zmq, "has", return_value=True):
             address = make_ipc_address("abc123", "responses")
         assert address.startswith("ipc://")
-        # not a hardcoded /tmp: it has to follow tempfile.gettempdir()
-        expected = Path(tempfile.gettempdir()) / "vf-abc123-responses"
-        assert address == f"ipc://{expected}"
+        path = Path(ipc_path_of(address))
+        assert path.name == "vf-abc123-responses"
+        # not a hardcoded /tmp: whatever directory is chosen has to be writable
+        assert os.access(path.parent, os.W_OK)
+
+    def test_falls_back_to_gettempdir_when_tmp_is_not_writable(self):
+        """The reason the hardcoded /tmp went away in the first place."""
+        with (
+            patch.object(zmq, "has", return_value=True),
+            patch("verifiers.utils.serve_utils.os.access", return_value=False),
+        ):
+            address = make_ipc_address("abc123", "responses")
+        assert Path(ipc_path_of(address)).parent == Path(tempfile.gettempdir())
 
     def test_slashes_in_name_are_flattened(self):
         """Worker names embed the env id, which can contain a slash."""
@@ -78,6 +94,59 @@ class TestMakeIpcAddressWithIpcSupport:
             address = make_ipc_address("abc123", "some/env-0")
         assert ipc_path_of(address) is not None
         assert Path(ipc_path_of(address)).name == "vf-abc123-some--env-0"
+
+
+class TestIpcPathFitsInSunPath:
+    """`sun_path` is 104 bytes on macOS, 108 on Linux. A worker name carries the env
+    id, which is arbitrary and often an `org/name` pair, and macOS puts TMPDIR under a
+    ~48 byte `/var/folders/...` path. Overflowing means the worker cannot bind after
+    the router is already up, which is the late startup failure this fix removes.
+    """
+
+    LONG_TMPDIR = "/var/folders/qx/8m4n2z1d5kv7wcpr3hb9xlk80000gn/T"
+
+    def _address_under(self, tmpdir, name, tmp_writable=False):
+        """Build an address as if gettempdir() were `tmpdir`, /tmp optionally absent."""
+        with (
+            patch.object(zmq, "has", return_value=True),
+            patch(
+                "verifiers.utils.serve_utils.tempfile.gettempdir", return_value=tmpdir
+            ),
+            patch(
+                "verifiers.utils.serve_utils.os.access",
+                side_effect=lambda p, _: Path(p) != Path("/tmp") or tmp_writable,
+            ),
+        ):
+            return make_ipc_address("abc123", name)
+
+    def test_a_long_temp_dir_is_passed_over_for_tmp(self):
+        """macOS: the per-user TMPDIR costs 44 bytes of name budget for nothing."""
+        address = self._address_under(self.LONG_TMPDIR, "org/env", tmp_writable=True)
+        assert Path(ipc_path_of(address)).parent == Path("/tmp")
+
+    def test_a_long_name_is_shortened_rather_than_overflowing(self):
+        env_id = "some-organization/a-fairly-long-environment-name-v2-hard"
+        address = self._address_under(self.LONG_TMPDIR, f"{env_id}-0")
+        assert len(ipc_path_of(address).encode()) <= _SUN_PATH_MAX
+
+    def test_shortened_names_stay_distinct_between_workers(self):
+        """Truncation alone would collide: the ids differ only past the cut."""
+        env_id = "some-organization/a-fairly-long-environment-name-v2-hard"
+        addresses = {
+            self._address_under(self.LONG_TMPDIR, f"{env_id}-{worker}")
+            for worker in range(4)
+        }
+        assert len(addresses) == 4
+
+    def test_a_name_that_already_fits_is_left_alone(self):
+        """No digest suffix on the common case: the paths stay readable."""
+        address = self._address_under("/tmp", "env-0", tmp_writable=True)
+        assert Path(ipc_path_of(address)) == Path("/tmp/vf-abc123-env-0")
+
+    def test_a_directory_with_no_room_left_fails_loudly(self):
+        """Better to say so than to hand back a path that cannot bind."""
+        with pytest.raises(RuntimeError, match="cannot fit a socket name"):
+            self._address_under("/" + "d" * _SUN_PATH_MAX, "env-0")
 
 
 class TestMakeIpcAddressWithoutIpcSupport:

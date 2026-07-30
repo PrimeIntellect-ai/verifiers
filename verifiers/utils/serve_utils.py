@@ -1,5 +1,7 @@
 import dataclasses
+import hashlib
 import logging
+import os
 import socket
 import sys
 import tempfile
@@ -24,6 +26,11 @@ TENSOR_TAG = "__torch_tensor__"
 # to offer a distinct port every attempt and the search converges in a few tries even
 # with many ports already issued.
 _PORT_PROBE_ATTEMPTS = 100
+
+# A unix socket path goes in `sockaddr_un.sun_path`, which is 108 bytes on Linux and
+# 104 on macOS, both including the terminating NUL. Hold to the smaller one everywhere
+# rather than branching on the platform, and leave a few bytes spare.
+_SUN_PATH_MAX = 100
 
 
 def _encode_array_like(arr: "np.ndarray") -> dict:
@@ -125,6 +132,48 @@ def walk_decode_tensors(obj: Any, *, to_torch: bool = True):
     return obj
 
 
+def _ipc_socket_dir() -> Path:
+    """Shortest writable directory to hold the unix socket files.
+
+    The directory is charged against the same `sun_path` budget as the socket name, so
+    a long temp dir is paid for out of the env id. macOS gives every process a per-user
+    `TMPDIR` under `/var/folders/` that runs to about 48 bytes, against 4 for `/tmp`,
+    which is most of the budget gone before the name starts. Prefer whichever candidate
+    is shorter and actually writable: `/tmp` on a normal machine, `gettempdir()`
+    wherever `/tmp` is not writable, which is the case this stopped hardcoding for.
+    """
+    candidates = sorted(
+        {Path(tempfile.gettempdir()), Path("/tmp")},
+        key=lambda directory: len(str(directory).encode()),
+    )
+    for directory in candidates:
+        if os.access(directory, os.W_OK):
+            return directory
+    return Path(tempfile.gettempdir())
+
+
+def _fit_socket_path(directory: Path, filename: str) -> Path:
+    """Path under `directory` for `filename`, shortened if `sun_path` cannot hold it.
+
+    Worker names carry the env id, which is arbitrarily long and often an `org/name`
+    pair, so a name that fits on one machine can overflow on another. Overflowing means
+    the worker fails to bind after the router has already come up, which is the same
+    class of late startup failure this module is trying to remove. Replacing the tail
+    with a digest of the whole name keeps distinct workers distinct.
+    """
+    if len(str(directory / filename).encode()) <= _SUN_PATH_MAX:
+        return directory / filename
+    digest = hashlib.sha256(filename.encode()).hexdigest()[:8]
+    room = _SUN_PATH_MAX - len(str(directory / f"-{digest}").encode())
+    if room < 1:
+        raise RuntimeError(
+            f"cannot fit a socket name under {directory}: the directory alone takes "
+            f"{len(str(directory).encode())} of the {_SUN_PATH_MAX} bytes available"
+        )
+    head = filename.encode()[:room].decode(errors="ignore")
+    return directory / f"{head}-{digest}"
+
+
 def make_ipc_address(
     session_id: str, name: str, issued_ports: set[int] | None = None
 ) -> str:
@@ -136,8 +185,8 @@ def make_ipc_address(
     Capability is read from `zmq.has("ipc")` rather than sniffing the platform, so a
     libzmq built without ipc on any OS is handled too.
 
-    The socket directory comes from `tempfile.gettempdir()` rather than a hardcoded
-    `/tmp`, so it also lands somewhere writable when `/tmp` is not.
+    The socket directory is no longer a hardcoded `/tmp`, so it also lands somewhere
+    writable when `/tmp` is not, and the result is length-checked against `sun_path`.
 
     `issued_ports` is read and updated on the TCP path. A worker address is built in
     the parent but only bound in the child, after `load_environment`, so the port sits
@@ -151,7 +200,8 @@ def make_ipc_address(
             issued_ports.add(port)
         return f"tcp://127.0.0.1:{port}"
     safe_name = name.replace("/", "--")
-    return f"ipc://{Path(tempfile.gettempdir()) / f'vf-{session_id}-{safe_name}'}"
+    directory = _ipc_socket_dir()
+    return f"ipc://{_fit_socket_path(directory, f'vf-{session_id}-{safe_name}')}"
 
 
 def ipc_path_of(address: str) -> str | None:
