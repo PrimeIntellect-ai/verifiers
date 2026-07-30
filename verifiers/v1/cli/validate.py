@@ -14,6 +14,7 @@ import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
 from verifiers.v1.cli.resolve import (
     extract_id,
+    narrow_taskset_config,
     plugin_errors,
     references_config_file,
     with_positional_taskset,
@@ -41,15 +42,7 @@ def _narrow(argv: list[str]) -> type[ValidateConfig]:
     """`ValidateConfig` with `taskset` narrowed to the config type of the id on the CLI — so
     the single `cli()` parse stays typed and `-h` renders the taskset's fields. Absent an id
     (a `@ file.toml` may carry it) the base type is left for the validator to resolve."""
-    taskset_id = extract_id(argv, "taskset")
-    if not taskset_id:
-        return ValidateConfig
-    ftype = vf.taskset_config_type(taskset_id)
-    return type(
-        ValidateConfig.__name__,
-        (ValidateConfig,),
-        {"__annotations__": {"taskset": ftype}, "taskset": ftype(id=taskset_id)},
-    )
+    return narrow_taskset_config(ValidateConfig, extract_id(argv, "taskset"))
 
 
 ResultRow = dict[str, Any]
