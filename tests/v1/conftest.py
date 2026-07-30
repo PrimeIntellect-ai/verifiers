@@ -135,9 +135,11 @@ def _eval_config(
     `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
     harness one); `model` overrides the default text model (e.g. a VLM for an image task).
 
-    `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
-    not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
-    risks truncating the reasoning before the answer (which tanks the reward).
+    Temperature stays at the provider default: greedy decoding (`temperature=0`) made
+    flash-tier models repetition-loop to the token cap, flaking the tool-call tests.
+    `max_tokens` is generous headroom, not a target — these trivial tasks finish in a
+    few hundred tokens, so capping tighter only risks truncating the reasoning before
+    the answer (which tanks the reward).
 
     `harness=None` leaves every seat on its own story — the multi-agent case: there
     is no run-level harness, so a single-agent test's `harness` lands on the `agent`
@@ -175,7 +177,6 @@ def _eval_config(
         num_rollouts=n,
         sampling={
             "max_tokens": max_tokens,
-            "temperature": 0,
             "reasoning_effort": reasoning_effort,
         },
         rich=False,
@@ -219,8 +220,8 @@ def run_v1_server():
 
 @pytest.fixture
 async def live_ctx():
-    """A live `ModelContext` (the e2e default model + endpoint, greedy) for driving
-    `Agent` directly — the agent-surface counterpart of `run_v1`."""
+    """A live `ModelContext` (the e2e default model + endpoint, provider-default
+    sampling) for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
     from verifiers.v1.clients import EvalClientConfig, ModelContext, resolve_client
     from verifiers.v1.types import SamplingConfig
 
@@ -229,7 +230,7 @@ async def live_ctx():
         yield ModelContext(
             model="deepseek/deepseek-v4-flash",
             client=client,
-            sampling=SamplingConfig(max_tokens=2048, temperature=0),
+            sampling=SamplingConfig(max_tokens=2048),
         )
     finally:
         await client.close()
@@ -252,7 +253,7 @@ def run_v0():
             legacy={"id": env_id, "args": args or {}},
             num_tasks=1,
             num_rollouts=n,
-            sampling={"max_tokens": max_tokens, "temperature": 0},
+            sampling={"max_tokens": max_tokens},
             rich=False,
             output_dir=output_dir,
         )
