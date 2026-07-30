@@ -37,8 +37,17 @@ class _GEPALog:
 
 def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
-    taskset = env.taskset.shuffle() if config.shuffle else env.taskset
-    all_tasks = list(taskset.head(config.num_train + config.num_val))
+    taskset = env.taskset
+    num_tasks = config.num_train + config.num_val
+    if taskset.INFINITE:
+        # An unbounded stream can't be sampled whole — bound it first, then
+        # shuffle within the head so the train/val split stays randomized.
+        selected = taskset.head(num_tasks)
+        selected = selected.shuffle() if config.shuffle else selected
+    else:
+        selected = taskset.shuffle() if config.shuffle else taskset
+        selected = selected.head(num_tasks)
+    all_tasks = list(selected)
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
     selected_tasks = [*train_tasks, *val_tasks]
     # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
