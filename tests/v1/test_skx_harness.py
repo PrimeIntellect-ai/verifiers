@@ -79,7 +79,12 @@ async def test_chat_wrapper_has_no_second_retry_layer() -> None:
 
 
 def test_auxiliary_sampling_can_only_tighten_the_token_cap() -> None:
-    configured = SamplingConfig(max_tokens=8192, temperature=1.0, top_p=0.95)
+    configured = SamplingConfig(
+        max_tokens=8192,
+        temperature=1.0,
+        top_p=0.95,
+        extra_body={"top_k": -1},
+    )
     body = {"max_completion_tokens": 2048, "temperature": 0}
 
     ordinary = _effective_sampling(
@@ -96,6 +101,11 @@ def test_auxiliary_sampling_can_only_tighten_the_token_cap() -> None:
     assert auxiliary.max_tokens == 2048
     assert auxiliary.temperature == 0
     assert auxiliary.top_p == 0.95
+    assert auxiliary.extra_body == {
+        "top_k": -1,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    assert configured.extra_body == {"top_k": -1}
     assert attempted_raise.max_tokens == 8192
 
 
