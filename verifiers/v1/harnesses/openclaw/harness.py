@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
 OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
-SKILLS_DIR = "skills"
 INSTALL = r"""
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -43,7 +42,6 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
         script = INSTALL.replace("{version}", self.config.version).replace(
@@ -73,9 +71,14 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
+        reasoning = ctx.sampling.reasoning_effort not in (
+            None,
+            "none",
+        ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
         directory = OPENCLAW_DIR.format(version=self.config.version)
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
+        skills_dir = f"{state_dir}/skills"
         config = {
             "gateway": {"mode": "local"},
             "agents": {
@@ -104,7 +107,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                             {
                                 "id": ctx.model,
                                 "name": ctx.model,
-                                "reasoning": True,
+                                "reasoning": reasoning,
                                 "input": ["text", "image"],
                             }
                         ],
@@ -123,9 +126,12 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 }
             },
         }
+        if self.config.skills:
+            await self.install_skills(runtime, skills_dir)
+            config["skills"] = {"load": {"extraDirs": [skills_dir]}}
         if not self.config.use_bundled_skill:
             # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
-            config["skills"] = {"allowBundled": ["__none__"]}
+            config.setdefault("skills", {})["allowBundled"] = ["__none__"]
         created = await runtime.run(["mkdir", "-p", state_dir], {})
         if created.exit_code != 0:
             raise RuntimeError(
