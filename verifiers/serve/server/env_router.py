@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from verifiers.serve.server.env_worker import EnvWorkerStats
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.process_utils import terminate_process, terminate_processes
-from verifiers.utils.serve_utils import make_ipc_address
+from verifiers.utils.serve_utils import ipc_path_of, make_ipc_address
 
 # Callback type: (client_id, request_id, response_bytes) -> awaitable
 OnResponseCallback = Callable[[bytes, bytes, bytes], Awaitable[None]]
@@ -146,9 +146,15 @@ class EnvRouter:
         self.request_to_worker: dict[bytes, int] = {}  # request_id → worker_id
         self.lag_monitor = EventLoopLagMonitor()
 
+        # Only ipc:// addresses have a file behind them to unlink on shutdown; a tcp
+        # fallback address has none, so it must not end up in this list.
         self.ipc_paths: list[str] = [
-            self.response_address.replace("ipc://", ""),
-            self.stats_address.replace("ipc://", ""),
+            path
+            for path in (
+                ipc_path_of(self.response_address),
+                ipc_path_of(self.stats_address),
+            )
+            if path is not None
         ]
 
     @property
@@ -175,7 +181,9 @@ class EnvRouter:
 
         worker_name = self.get_worker_name(worker_id)
         worker_addr = self.get_worker_address(worker_id)
-        self.ipc_paths.append(worker_addr.replace("ipc://", ""))
+        worker_ipc_path = ipc_path_of(worker_addr)
+        if worker_ipc_path is not None:
+            self.ipc_paths.append(worker_ipc_path)
 
         ctx = mp.get_context("spawn")
         process = ctx.Process(

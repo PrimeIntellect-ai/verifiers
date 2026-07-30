@@ -2,6 +2,7 @@ import dataclasses
 import logging
 import socket
 import sys
+import tempfile
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 import numpy as np
+import zmq
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +120,31 @@ def walk_decode_tensors(obj: Any, *, to_torch: bool = True):
 
 
 def make_ipc_address(session_id: str, name: str) -> str:
-    """Build an IPC address for inter-process communication."""
-    return f"ipc:///tmp/vf-{session_id}-{name.replace('/', '--')}"
+    """Build an address for router-to-worker communication.
+
+    Prefers a Unix domain socket, which needs no port and is faster, but falls back to
+    loopback TCP wherever libzmq was built without ipc support. That is always the case
+    on Windows, where `ipc://` cannot bind at all and the router dies in `__init__`.
+    Capability is read from `zmq.has("ipc")` rather than sniffing the platform, so a
+    libzmq built without ipc on any OS is handled too.
+
+    The socket directory comes from `tempfile.gettempdir()` rather than a hardcoded
+    `/tmp`, so it also lands somewhere writable when `/tmp` is not.
+    """
+    if not zmq.has("ipc"):
+        return f"tcp://127.0.0.1:{get_free_port()}"
+    safe_name = name.replace("/", "--")
+    return f"ipc://{Path(tempfile.gettempdir()) / f'vf-{session_id}-{safe_name}'}"
+
+
+def ipc_path_of(address: str) -> str | None:
+    """Filesystem path backing an `ipc://` address, or None for any other transport.
+
+    Callers unlink these on shutdown. A TCP address has no file behind it, so it must
+    not be handed to `os.unlink`.
+    """
+    prefix = "ipc://"
+    return address[len(prefix) :] if address.startswith(prefix) else None
 
 
 def get_free_port() -> int:
