@@ -414,13 +414,13 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
             if judge.cost is not None:
                 total_judge_cost += judge.cost
             have_judge = True
-        for phase in ("boot", "setup", "generation", "finalize", "scoring"):
+        for phase in ("boot", "setup", "agent", "finalize", "scoring"):
             span = getattr(trace.timing, phase)
             if span.end:  # phase was timed for this rollout
                 phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
                 phase_count[phase] = phase_count.get(phase, 0) + 1
-        model_secs += trace.timing.generation.model.duration
-        harness_secs += trace.timing.generation.harness.duration
+        model_secs += trace.timing.agent.model.duration
+        harness_secs += trace.timing.agent.harness.duration
     if (
         total_in
         or total_out
@@ -449,12 +449,12 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
             usage.append(cost)
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = []
-    for phase in ("boot", "setup", "generation", "finalize", "scoring"):
+    for phase in ("boot", "setup", "agent", "finalize", "scoring"):
         count = phase_count.get(phase)
         if not count:
             continue
         segment = f"{phase} {format_time(phase_secs[phase] / count)}"
-        if phase == "generation":
+        if phase == "agent":
             segment += (
                 f" (model {format_time(model_secs / count)}"
                 f" + harness {format_time(harness_secs / count)})"
@@ -476,7 +476,7 @@ def _stage(trace: Trace) -> str:
     for stage, span in (
         ("scoring", trace.timing.scoring),
         ("finalize", trace.timing.finalize),
-        ("running", trace.timing.generation),
+        ("running", trace.timing.agent),
         ("setup", trace.timing.setup),
         ("boot", trace.timing.boot),
     ):
@@ -585,7 +585,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                 end = (
                     t.timing.scoring.end
                     or t.timing.finalize.end
-                    or t.timing.generation.end
+                    or t.timing.agent.end
                     # a rollout that errored in boot/setup has only that span's end — freeze there
                     # once done, else (still running) the timer would grow off `now` forever
                     or (

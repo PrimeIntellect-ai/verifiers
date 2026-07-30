@@ -66,7 +66,7 @@ class TimeSplit(BaseModel):
     duration: float = 0.0
 
 
-class GenerationSpan(TimeSpan):
+class AgentSpan(TimeSpan):
     model: TimeSplit = Field(default_factory=TimeSplit)
     harness: TimeSplit = Field(default_factory=TimeSplit)
 
@@ -75,7 +75,7 @@ class Timing(BaseModel):
     start: float = Field(default_factory=time.time)
     boot: TimeSpan = Field(default_factory=TimeSpan)
     setup: TimeSpan = Field(default_factory=TimeSpan)
-    generation: GenerationSpan = Field(default_factory=GenerationSpan)
+    agent: AgentSpan = Field(default_factory=AgentSpan)
     finalize: TimeSpan = Field(default_factory=TimeSpan)
     scoring: TimeSpan = Field(default_factory=TimeSpan)
 
@@ -491,14 +491,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if self.stop_condition is None:
             self.stop_condition = condition
 
-    def split_generation(self) -> None:
-        """Split the generation span into model and harness time."""
-        gen = self.timing.generation
-        if not gen.end:
+    def split_agent_time(self) -> None:
+        """Split the agent span into model and harness time."""
+        span = self.timing.agent
+        if not span.end:
             return
         model = sum(call.time.duration for call in self.calls)
-        gen.model.duration = min(model, gen.duration)
-        gen.harness.duration = gen.duration - gen.model.duration
+        span.model.duration = min(model, span.duration)
+        span.harness.duration = span.duration - span.model.duration
 
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed."""

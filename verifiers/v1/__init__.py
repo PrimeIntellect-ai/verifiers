@@ -109,10 +109,10 @@ from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import (
     TRACE_VERSION,
     AgentInfo,
+    AgentSpan,
     Branch,
     Error,
     EvalRunInfo,
-    GenerationSpan,
     ModelCall,
     Reward,
     RunInfo,
@@ -205,7 +205,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Timing",
     "TimeSpan",
     "TimeSplit",
-    "GenerationSpan",
+    "AgentSpan",
     "Error",
     # decorators
     "stop",
