@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
 OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
-STAGED_SKILLS_DIR = ".vf-openclaw/skills"
 INSTALL = r"""
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -43,12 +42,14 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        cleared = await runtime.run(["rm", "-rf", STAGED_SKILLS_DIR], {})
+        # Borrowed runtimes can host multiple harnesses, so each owns its staging path.
+        staged_skills_dir = f".vf-openclaw/staged-skills-{id(self)}"
+        cleared = await runtime.run(["rm", "-rf", staged_skills_dir], {})
         if cleared.exit_code != 0:
             raise RuntimeError(
                 f"failed to clear OpenClaw skills: {cleared.stderr.strip()[-500:]}"
             )
-        await self.install_skills(runtime, STAGED_SKILLS_DIR)
+        await self.install_skills(runtime, staged_skills_dir)
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
         script = INSTALL.replace("{version}", self.config.version).replace(
@@ -86,6 +87,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
+        staged_skills_dir = f".vf-openclaw/staged-skills-{id(self)}"
         config = {
             "gateway": {"mode": "local"},
             "agents": {
@@ -142,7 +144,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
             exists = await runtime.run(["test", "-d", skills_dir], {})
             if exists.exit_code != 0:
                 copied = await runtime.run(
-                    ["cp", "-R", STAGED_SKILLS_DIR, skills_dir], {}
+                    ["cp", "-R", staged_skills_dir, skills_dir], {}
                 )
                 if copied.exit_code != 0:
                     raise RuntimeError(

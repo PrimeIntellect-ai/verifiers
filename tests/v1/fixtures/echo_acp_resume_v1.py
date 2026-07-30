@@ -51,7 +51,7 @@ class ACPResumeEnv(vf.SingleAgentEnv):
     async def run(self, task, agents):
         async with agents.agent.interaction(task) as interaction:
             first = await interaction.turn(
-                f"- Remember the codeword {CODEWORD}. Reply with exactly READY."
+                f"Remember the codeword {CODEWORD}. Reply with exactly READY."
             )
             segments = [first]
             if not first.terminated:
