@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
 OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
 SKILLS_DIR = "skills"
-GATEWAY_TOKEN = "verifiers"
 INSTALL = r"""
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -72,6 +71,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
+        directory = OPENCLAW_DIR.format(version=self.config.version)
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         config = {
@@ -129,26 +129,40 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         await runtime.write(config_path, json.dumps(config).encode())
 
         binary = OPENCLAW_BIN.format(version=self.config.version)
+        node = f"{directory}/tools/node/bin/node"
+        allocate_port = shlex.join(
+            [
+                node,
+                "-e",
+                (
+                    'const net=require("node:net");const server=net.createServer();'
+                    'server.listen(0,"127.0.0.1",()=>{'
+                    "process.stdout.write(String(server.address().port));server.close();});"
+                ),
+            ]
+        )
         log_path = f"{state_dir}/gateway.log"
         command = [
             "sh",
             "-c",
             (
                 "set -eu; "
-                f"{shlex.quote(binary)} gateway run --port 18789 --bind loopback "
-                f"--auth token --token {GATEWAY_TOKEN} --allow-unconfigured "
+                f"gateway_port=$({allocate_port}); "
+                f'{shlex.quote(binary)} gateway run --port "$gateway_port" --bind loopback '
+                f"--auth token --token {shlex.quote(trace.id)} --allow-unconfigured "
                 f">{shlex.quote(log_path)} 2>&1 & gateway_pid=$!; "
                 'trap \'kill "$gateway_pid" 2>/dev/null || true; '
                 'wait "$gateway_pid" 2>/dev/null || true\' EXIT; '
                 "attempt=0; "
-                "until curl -fsS http://127.0.0.1:18789/healthz >/dev/null 2>&1; do "
+                'until curl -fsS "http://127.0.0.1:$gateway_port/healthz" '
+                ">/dev/null 2>&1; do "
                 'kill -0 "$gateway_pid" 2>/dev/null || '
                 f"{{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; "
                 "attempt=$((attempt + 1)); "
                 f'[ "$attempt" -lt 120 ] || {{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; '
                 "sleep 1; done; "
-                f"{shlex.quote(binary)} acp --url ws://127.0.0.1:18789 "
-                f"--token {GATEWAY_TOKEN} --no-prefix-cwd"
+                f'{shlex.quote(binary)} acp --url "ws://127.0.0.1:$gateway_port" '
+                f"--token {shlex.quote(trace.id)} --no-prefix-cwd"
             ),
         ]
         env = {
