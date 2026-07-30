@@ -24,10 +24,11 @@ wraps it in the declared `Task` — one task type per taskset.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic
+from typing import TYPE_CHECKING, ClassVar, Generic, Self
 
 from pydantic import ConfigDict, Field
 from pydantic_config import BaseConfig
@@ -196,6 +197,15 @@ class Task(Generic[DataT, StateT, ConfigT]):
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else task_config_cls(type(self))()
+
+    def with_system_prompt(self, system_prompt: str) -> Self:
+        """A shallow copy of this task with `data.system_prompt` overridden. Copies the
+        instance instead of reconstructing via `type(self)(...)`, so a subclass with a
+        non-`(data, config)` constructor or extra load-time state keeps it. Used to apply the
+        config-layer / GEPA system prompt (see `TasksetConfig` and `verifiers.v1.gepa`)."""
+        clone = copy.copy(self)
+        clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
+        return clone
 
     def plugged_judges(self) -> list[Judge]:
         from verifiers.v1.loaders import load_judge

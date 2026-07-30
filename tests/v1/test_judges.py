@@ -371,32 +371,20 @@ async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
     assert all("SECRET REASONING" not in prompt for prompt in fake_judge_model)
 
 
-async def test_config_prompt_overrides_class_template(fake_judge_model):
-    judge = vf.ReferenceJudge(
-        vf.ReferenceJudgeConfig(prompt="Q:{question} A:{answer} R:{response}")
-    )
+async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model):
+    # Config `prompt` is a file path; the same {field} placeholders work.
+    file = tmp_path / "judge.txt"
+    file.write_text("Q:{question} A:{answer} R:{response}")
+    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt=file))
     assert judge.build_messages(question="q", answer="a", response="r") == "Q:q A:a R:r"
     # A template needn't use every evaluate field: score also passes {positive}/{negative},
     # which str.format ignores when the (custom) prompt doesn't reference them.
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 1.0
     assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
-
-
-async def test_prompt_file(tmp_path, fake_judge_model):
-    # The prompt template can come from a file; the same {field} placeholders work.
-    file = tmp_path / "judge.txt"
-    file.write_text("Q:{question} A:{answer} R:{response}")
-    trace = make_trace()
-    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=file))
-    assert await judge.score(trace.task.data, trace) == 1.0
-    assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
     # a bad path fails at judge construction, not mid-eval at score time
     with pytest.raises(FileNotFoundError):
-        vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=tmp_path / "missing.txt"))
-    # inline and file prompts are mutually exclusive
-    with pytest.raises(ValueError, match="not both"):
-        vf.ReferenceJudgeConfig(prompt="inline", prompt_file=file)
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt=tmp_path / "missing.txt"))
 
 
 # --- reference input/verdict knobs ------------------------------------------------------------

@@ -180,41 +180,31 @@ class JudgeTask(vf.Task):
 class JudgeTaskConfig(vf.BaseConfig):
     """The judge's minted task: the grading policy and what lands in its box."""
 
-    prompt: Path | str | None = None
-    """Grading-policy override: inline text, or a policy file (a value ending in
-    `.md`/`.txt` is read from disk). Replaces only the policy body — the verdict
-    contract and workspace note are always appended, so a custom policy cannot
-    break verdict scraping. May reference `{prompt}` (the solver task's prompt);
-    if it doesn't, the task statement is appended after the policy."""
-    hint: Path | str | None = None
-    """Optional hints injected as their own section (inline text or a `.md`/
-    `.txt` file): task-family pointers into the trace or box — e.g. for math,
-    where the reference answer lives in the record; for SWE, to diff the repo
-    or read `info.patch`."""
+    prompt: Path | None = None
+    """Grading-policy file. Replaces only the policy body — the verdict contract
+    and workspace note are always appended. May reference `{prompt}` (the solver
+    task's prompt); if it doesn't, the task statement is appended after."""
+    hint: Path | None = None
+    """Optional hints file injected as their own section: task-family pointers
+    into the trace or box — e.g. for math, where the reference answer lives in
+    the record; for SWE, to diff the repo or read `info.patch`."""
     rubric: Path | None = None
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
     files work for both. None grades the single built-in `solved` criterion."""
 
-    @staticmethod
-    def _resolve(value: Path | str) -> str:
-        path = Path(value)
-        if isinstance(value, Path) or path.suffix in (".md", ".txt"):
-            return path.read_text(encoding="utf-8")
-        return str(value)
-
     def build_prompt(self) -> str:
         if self.prompt is None:
             return GRADE_PROMPT + "\n\n" + TASK_SECTION
-        return self._resolve(self.prompt)
+        return self.prompt.read_text()
 
     def build_hint(self) -> str | None:
-        return self._resolve(self.hint) if self.hint is not None else None
+        return self.hint.read_text() if self.hint is not None else None
 
     def criteria(self) -> list[Criterion]:
         if self.rubric is None:
             return [SOLVED]
-        text = self.rubric.read_text(encoding="utf-8")
+        text = self.rubric.read_text()
         data = (
             tomllib.loads(text)
             if self.rubric.suffix.lower() == ".toml"
