@@ -37,6 +37,7 @@ AGENTIC_PLACEMENTS = [
     _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("codex", "docker", "codex-harness-in-docker"),
     _pair("claude-code", "docker", "claude-code-harness-in-docker"),
+    _pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]
