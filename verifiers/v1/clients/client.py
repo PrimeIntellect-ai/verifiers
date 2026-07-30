@@ -18,6 +18,9 @@ so a session-affinity router (e.g. vLLM's ``consistent_hash`` policy keyed on it
 growing cross-turn prefix warm in that engine's KV cache instead of re-prefilling it
 cold on a random shard each turn."""
 
+AUXILIARY_SAMPLING_HEADER = "X-Verifiers-Auxiliary-Sampling"
+"""Marks a masked auxiliary model call that may request stricter sampling bounds."""
+
 
 @dataclass
 class RelayReply:

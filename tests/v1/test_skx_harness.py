@@ -1,11 +1,14 @@
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harnesses.skx import program
 from verifiers.v1.harnesses.skx.harness import _SUMMARIZER_PREFIX, _mask_summaries
-from verifiers.v1.types import AssistantMessage, SystemMessage
+from verifiers.v1.interception.server import _effective_sampling
+from verifiers.v1.types import AssistantMessage, SamplingConfig, SystemMessage
 
 
 def _assistant(text: str, *, parent: int) -> MessageNode:
@@ -73,6 +76,71 @@ async def test_chat_wrapper_has_no_second_retry_layer() -> None:
     with pytest.raises(RuntimeError, match="one SDK call"):
         await program._create_with_retry(client, model="model", messages=[])
     assert calls == 1
+
+
+def test_auxiliary_sampling_can_only_tighten_the_token_cap() -> None:
+    configured = SamplingConfig(max_tokens=8192, temperature=1.0, top_p=0.95)
+    body = {"max_completion_tokens": 2048, "temperature": 0}
+
+    ordinary = _effective_sampling(
+        ChatDialect(), body, configured, auxiliary=False
+    )
+    auxiliary = _effective_sampling(
+        ChatDialect(), body, configured, auxiliary=True
+    )
+    attempted_raise = _effective_sampling(
+        ChatDialect(), {"max_tokens": 16384}, configured, auxiliary=True
+    )
+
+    assert ordinary is configured
+    assert auxiliary.max_tokens == 2048
+    assert auxiliary.temperature == 0
+    assert auxiliary.top_p == 0.95
+    assert attempted_raise.max_tokens == 8192
+
+
+@pytest.mark.asyncio
+async def test_compaction_falls_back_after_a_truncated_summary(tmp_path) -> None:
+    request = {}
+
+    async def create(**kwargs):
+        request.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(content="continued task solution"),
+                )
+            ]
+        )
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "read"},
+        {"role": "tool", "content": "file"},
+        {"role": "assistant", "content": "edit"},
+        {"role": "tool", "content": "edited"},
+        {"role": "assistant", "content": "eval"},
+        {"role": "tool", "content": "failed"},
+    ]
+    tracker = tmp_path / "compaction.jsonl"
+
+    compacted = await program.compact(client, "model", messages, 2, str(tracker))
+
+    assert request["max_completion_tokens"] == program.SUMMARIZER_MAX_TOKENS
+    assert request["temperature"] == 0
+    assert request["extra_headers"] == {program.AUXILIARY_SAMPLING_HEADER: "1"}
+    assert program.FALLBACK_SUMMARY in compacted[2]["content"]
+    record = json.loads(tracker.read_text())
+    assert record == {
+        "summary": program.FALLBACK_SUMMARY,
+        "fallback": True,
+        "finish_reason": "length",
+    }
 
 
 @pytest.mark.asyncio

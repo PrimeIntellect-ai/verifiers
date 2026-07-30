@@ -169,7 +169,7 @@ class SkxHarness(Harness[SkxHarnessConfig]):
                 raw = (await runtime.read(tracker_path)).decode(errors="replace")
             except FileNotFoundError:
                 raw = ""
-            summaries = []
+            records = []
             for line in raw.splitlines():
                 try:
                     value = json.loads(line)
@@ -177,15 +177,23 @@ class SkxHarness(Harness[SkxHarnessConfig]):
                     logger.warning("skx: ignored malformed compaction record")
                     continue
                 if isinstance(value, dict) and isinstance(value.get("summary"), str):
-                    summaries.append(value["summary"])
+                    records.append(value)
             nodes, tokens, branches = _mask_summaries(trace)
-            trace.record_metric("skx_compactions", len(summaries))
+            trace.record_metric("skx_compactions", len(records))
             trace.record_metric("skx_compaction_branches", branches)
             trace.record_metric("skx_compaction_nodes_masked", nodes)
             trace.record_metric("skx_compaction_tokens_masked", tokens)
-            if len(summaries) > branches or nodes != branches or (branches and not tokens):
+            trace.record_metric(
+                "skx_compaction_fallbacks",
+                sum(record.get("fallback") is True for record in records),
+            )
+            trace.record_metric(
+                "skx_compaction_truncations",
+                sum(record.get("finish_reason") == "length" for record in records),
+            )
+            if len(records) > branches or nodes != branches or (branches and not tokens):
                 raise RuntimeError(
                     "SKX compaction masking integrity failure: "
-                    f"summaries={len(summaries)} branches={branches} masked_nodes={nodes}"
+                    f"summaries={len(records)} branches={branches} masked_nodes={nodes}"
                 )
         return result

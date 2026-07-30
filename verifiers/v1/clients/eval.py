@@ -19,7 +19,12 @@ import httpx
 from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.clients.client import (
+    AUXILIARY_SAMPLING_HEADER,
+    SESSION_ID_HEADER,
+    Client,
+    RelayReply,
+)
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
@@ -32,6 +37,7 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         # The harness uses this rollout secret to authenticate with the localhost server.
         # The dialect adds the actual provider authorization after filtering.
         "authorization",
+        AUXILIARY_SAMPLING_HEADER.lower(),
         # HTTPX recalculates these for the provider URL, JSON bytes, and supported decoders.
         "accept-encoding",
         "content-encoding",

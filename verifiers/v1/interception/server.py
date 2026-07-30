@@ -34,6 +34,7 @@ from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
+from verifiers.v1.clients.client import AUXILIARY_SAMPLING_HEADER
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1.errors import (
@@ -51,7 +52,14 @@ from verifiers.v1.interception.tunnel import (
 )
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import Error, ModelCall, TimeSpan
-from verifiers.v1.types import FinishReason, Messages, Response, Tool, Usage
+from verifiers.v1.types import (
+    FinishReason,
+    Messages,
+    Response,
+    SamplingConfig,
+    Tool,
+    Usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +88,29 @@ async def _request_digest(raw: bytes) -> bytes:
     if len(raw) <= _HASH_INLINE_MAX:
         return _body_digest(raw)
     return await asyncio.to_thread(_body_digest, raw)
+
+
+def _effective_sampling(
+    dialect: Dialect,
+    body: dict,
+    configured: SamplingConfig,
+    *,
+    auxiliary: bool,
+) -> SamplingConfig:
+    """Apply only stricter, explicitly marked auxiliary-call sampling settings."""
+    if not auxiliary:
+        return configured
+    requested = dialect.parse_sampling(body)
+    updates = {}
+    if requested.max_tokens is not None:
+        updates["max_tokens"] = (
+            requested.max_tokens
+            if configured.max_tokens is None
+            else min(requested.max_tokens, configured.max_tokens)
+        )
+    if requested.temperature is not None:
+        updates["temperature"] = requested.temperature
+    return configured.model_copy(update=updates)
 
 
 def _completion_response(completion: dict | None) -> web.Response:
@@ -404,16 +435,22 @@ class InterceptionServer(Interception):
             started = time.time()
             try:
                 try:
+                    sampling = _effective_sampling(
+                        dialect,
+                        body,
+                        session.ctx.sampling,
+                        auxiliary=request.headers.get(AUXILIARY_SAMPLING_HEADER) == "1",
+                    )
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
                     upstream_request = dialect.apply_overrides(
-                        body, session.ctx.model, session.ctx.sampling
+                        body, session.ctx.model, sampling
                     )
                     call_response = await session.ctx.client.get_response(
                         dialect,
                         body,
                         session.ctx.model,
-                        session.ctx.sampling,
+                        sampling,
                         headers=request.headers,
                         session_id=session.trace.id,
                         turn=turn,
@@ -533,14 +570,20 @@ class InterceptionServer(Interception):
         started = time.time()
         try:
             try:
+                sampling = _effective_sampling(
+                    dialect,
+                    body,
+                    session.ctx.sampling,
+                    auxiliary=request.headers.get(AUXILIARY_SAMPLING_HEADER) == "1",
+                )
                 upstream_request = dialect.apply_overrides(
-                    body, session.ctx.model, session.ctx.sampling
+                    body, session.ctx.model, sampling
                 )
                 reply = await session.ctx.client.relay(
                     dialect,
                     body,
                     session.ctx.model,
-                    session.ctx.sampling,
+                    sampling,
                     headers=request.headers,
                     session_id=session.trace.id,
                 )
