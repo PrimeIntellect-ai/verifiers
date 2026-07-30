@@ -32,6 +32,8 @@ OPENCLAW_ACP = ACP()
 class OpenClawHarnessConfig(HarnessConfig):
     version: str = Field(default="2026.7.1-2", pattern=r"^[A-Za-z0-9._+-]+$")
     """OpenClaw release to install, pinned for reproducibility."""
+    bundled_skills: bool = True
+    """Enable OpenClaw's bundled skills in addition to uploaded harness skills."""
 
 
 class OpenClawHarness(Harness[OpenClawHarnessConfig]):
@@ -121,6 +123,8 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 }
             },
         }
+        if not self.config.bundled_skills:
+            config["skills"] = {"allowBundled": ["__none__"]}
         created = await runtime.run(["mkdir", "-p", state_dir], {})
         if created.exit_code != 0:
             raise RuntimeError(
