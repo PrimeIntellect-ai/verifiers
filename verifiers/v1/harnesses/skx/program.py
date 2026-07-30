@@ -2,7 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["openai==2.48.0", "mcp==1.28.1", "httpx==0.28.1", "tenacity==9.1.4"]
 # ///
-"""The interception endpoint and secret arrive through argv rather than the environment."""
+"""The SKX interception endpoint and secret arrive through argv."""
 
 import argparse
 import asyncio

@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.harnesses.null import program
-from verifiers.v1.harnesses.null.harness import _SUMMARIZER_PREFIX, _mask_summaries
+from verifiers.v1.harnesses.skx import program
+from verifiers.v1.harnesses.skx.harness import _SUMMARIZER_PREFIX, _mask_summaries
 from verifiers.v1.types import AssistantMessage, SystemMessage
 
 

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
-class NullCompaction(BaseModel):
+class SkxCompaction(BaseModel):
     """Context compaction for long episodes. When the last completion reports a
     context of `trigger_tokens` or more, the program summarizes everything between
     the task prompt and the recent tail and continues from the summary. The trace
@@ -32,8 +32,8 @@ class NullCompaction(BaseModel):
     mask_summaries: bool = True
 
 
-class NullHarnessConfig(HarnessConfig):
-    compaction: NullCompaction = NullCompaction()
+class SkxHarnessConfig(HarnessConfig):
+    compaction: SkxCompaction = SkxCompaction()
 
 
 _SUMMARIZER_PREFIX = "You are a context summarization assistant."
@@ -91,7 +91,7 @@ def _mask_summaries(trace: Trace) -> tuple[int, int, int]:
     return masked_nodes, masked_tokens, len(summarizer_nodes)
 
 
-class NullHarness(Harness[NullHarnessConfig]):
+class SkxHarness(Harness[SkxHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
@@ -163,7 +163,7 @@ class NullHarness(Harness[NullHarnessConfig]):
             stats = {}
         for key in ("repeat_tool_calls", "deduped_observations"):
             value = stats.get(key)
-            trace.record_metric(f"null_{key}", value if isinstance(value, int) else 0)
+            trace.record_metric(f"skx_{key}", value if isinstance(value, int) else 0)
         if tracker_path and self.config.compaction.mask_summaries:
             try:
                 raw = (await runtime.read(tracker_path)).decode(errors="replace")
@@ -174,18 +174,18 @@ class NullHarness(Harness[NullHarnessConfig]):
                 try:
                     value = json.loads(line)
                 except json.JSONDecodeError:
-                    logger.warning("null: ignored malformed compaction record")
+                    logger.warning("skx: ignored malformed compaction record")
                     continue
                 if isinstance(value, dict) and isinstance(value.get("summary"), str):
                     summaries.append(value["summary"])
             nodes, tokens, branches = _mask_summaries(trace)
-            trace.record_metric("null_compactions", len(summaries))
-            trace.record_metric("null_compaction_branches", branches)
-            trace.record_metric("null_compaction_nodes_masked", nodes)
-            trace.record_metric("null_compaction_tokens_masked", tokens)
+            trace.record_metric("skx_compactions", len(summaries))
+            trace.record_metric("skx_compaction_branches", branches)
+            trace.record_metric("skx_compaction_nodes_masked", nodes)
+            trace.record_metric("skx_compaction_tokens_masked", tokens)
             if len(summaries) > branches or nodes != branches or (branches and not tokens):
                 raise RuntimeError(
-                    "null compaction masking integrity failure: "
+                    "SKX compaction masking integrity failure: "
                     f"summaries={len(summaries)} branches={branches} masked_nodes={nodes}"
                 )
         return result
