@@ -1,7 +1,9 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
+import asyncio
 import json
 import logging
+import secrets
 import shlex
 
 from pydantic import Field
@@ -26,6 +28,8 @@ curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh | bash 
 """
 
 OPENCLAW_ACP = ACP()
+# Host-networked Docker rollouts share ports, so reserve and bind them one at a time.
+_GATEWAY_START_LOCK = asyncio.Lock()
 
 
 class OpenClawHarnessConfig(HarnessConfig):
@@ -42,14 +46,27 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        # Borrowed runtimes can host multiple harnesses, so each owns its staging path.
-        staged_skills_dir = f".vf-openclaw/staged-skills-{id(self)}"
-        cleared = await runtime.run(["rm", "-rf", staged_skills_dir], {})
-        if cleared.exit_code != 0:
-            raise RuntimeError(
-                f"failed to clear OpenClaw skills: {cleared.stderr.strip()[-500:]}"
+        if not hasattr(self, "_staged_skills_dir"):
+            self._staged_skills_dir = (
+                f".vf-openclaw/staged-skills-{secrets.token_hex(8)}"
             )
-        await self.install_skills(runtime, staged_skills_dir)
+            self._skills_setup_lock = asyncio.Lock()
+        if self.config.skills:
+            async with self._skills_setup_lock:
+                # A complete tree is immutable, so concurrent setups can safely reuse it.
+                ready_path = f"{self._staged_skills_dir}/.ready"
+                ready = await runtime.run(["test", "-f", ready_path], {})
+                if ready.exit_code != 0:
+                    cleared = await runtime.run(
+                        ["rm", "-rf", self._staged_skills_dir], {}
+                    )
+                    if cleared.exit_code != 0:
+                        raise RuntimeError(
+                            "failed to clear OpenClaw skills: "
+                            f"{cleared.stderr.strip()[-500:]}"
+                        )
+                    await self.install_skills(runtime, self._staged_skills_dir)
+                    await runtime.write(ready_path, b"")
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
         script = INSTALL.replace("{version}", self.config.version).replace(
@@ -87,7 +104,6 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
-        staged_skills_dir = f".vf-openclaw/staged-skills-{id(self)}"
         config = {
             "gateway": {"mode": "local"},
             "agents": {
@@ -144,7 +160,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
             exists = await runtime.run(["test", "-d", skills_dir], {})
             if exists.exit_code != 0:
                 copied = await runtime.run(
-                    ["cp", "-R", staged_skills_dir, skills_dir], {}
+                    ["cp", "-R", self._staged_skills_dir, skills_dir], {}
                 )
                 if copied.exit_code != 0:
                     raise RuntimeError(
@@ -170,29 +186,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
             ]
         )
         log_path = f"{state_dir}/gateway.log"
-        command = [
-            "sh",
-            "-c",
-            (
-                "set -eu; "
-                f"gateway_port=$({allocate_port}); "
-                f'{shlex.quote(binary)} gateway run --port "$gateway_port" --bind loopback '
-                f"--auth token --token {shlex.quote(trace.id)} --allow-unconfigured "
-                f">{shlex.quote(log_path)} 2>&1 & gateway_pid=$!; "
-                'trap \'kill "$gateway_pid" 2>/dev/null || true; '
-                'wait "$gateway_pid" 2>/dev/null || true\' EXIT; '
-                "attempt=0; "
-                'until curl -fsS "http://127.0.0.1:$gateway_port/healthz" '
-                ">/dev/null 2>&1; do "
-                'kill -0 "$gateway_pid" 2>/dev/null || '
-                f"{{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; "
-                "attempt=$((attempt + 1)); "
-                f'[ "$attempt" -lt 120 ] || {{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; '
-                "sleep 1; done; "
-                f'{shlex.quote(binary)} acp --url "ws://127.0.0.1:$gateway_port" '
-                f"--token {shlex.quote(trace.id)} --no-prefix-cwd"
-            ),
-        ]
+        pid_path = f"{state_dir}/gateway.pid"
         env = {
             **self.config.resolved_env,
             "OPENCLAW_CONFIG_PATH": config_path,
@@ -202,6 +196,63 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
             "OPENCLAW_SUPPRESS_NOTES": "1",
             "NO_COLOR": "1",
         }
+        async with _GATEWAY_START_LOCK:
+            allocated = await runtime.run(["sh", "-c", allocate_port], {})
+            if allocated.exit_code != 0:
+                raise RuntimeError(
+                    f"OpenClaw port allocation failed: {allocated.stderr.strip()[-500:]}"
+                )
+            gateway_port = allocated.stdout.strip()
+            await runtime.run_background(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        f"echo $$ >{shlex.quote(pid_path)}; "
+                        f"exec {shlex.quote(binary)} gateway run "
+                        f"--port {shlex.quote(gateway_port)} --bind loopback "
+                        f"--auth token --token {shlex.quote(trace.id)} "
+                        "--allow-unconfigured"
+                    ),
+                ],
+                env,
+                log_path,
+            )
+            readiness = await runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        "sleep 1; attempt=0; "
+                        f"until [ -s {shlex.quote(pid_path)} ] && "
+                        f'kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null && '
+                        f'curl -fsS "http://127.0.0.1:{gateway_port}/healthz" '
+                        ">/dev/null 2>&1; do "
+                        f"if [ -s {shlex.quote(pid_path)} ] && "
+                        f'! kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null; then '
+                        f"tail -100 {shlex.quote(log_path)} >&2; exit 1; fi; "
+                        "attempt=$((attempt + 1)); "
+                        f'[ "$attempt" -lt 120 ] || {{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; '
+                        "sleep 1; done"
+                    ),
+                ],
+                {},
+            )
+            if readiness.exit_code != 0:
+                detail = (readiness.stderr or readiness.stdout).strip()[-2000:]
+                raise RuntimeError(f"OpenClaw gateway failed to start: {detail}")
+        command = [
+            "sh",
+            "-c",
+            (
+                "set -eu; "
+                f"gateway_pid=$(cat {shlex.quote(pid_path)}); "
+                f'trap \'kill "$gateway_pid" 2>/dev/null || true; '
+                f"rm -f {shlex.quote(pid_path)}' EXIT; "
+                f'{shlex.quote(binary)} acp --url "ws://127.0.0.1:{gateway_port}" '
+                f"--token {shlex.quote(trace.id)} --no-prefix-cwd"
+            ),
+        ]
         # OpenClaw rejects ACP per-session MCP declarations; the isolated Gateway
         # config above owns the equivalent task-scoped server definitions.
         return await OPENCLAW_ACP.run(
@@ -216,7 +267,19 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         state_dir = f".vf-openclaw/{trace.id}"
-        result = await runtime.run(["rm", "-rf", state_dir], {})
+        pid_path = f"{state_dir}/gateway.pid"
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                (
+                    f"if [ -s {shlex.quote(pid_path)} ]; then "
+                    f'kill "$(cat {shlex.quote(pid_path)})" 2>/dev/null || true; fi; '
+                    f"rm -rf {shlex.quote(state_dir)}"
+                ),
+            ],
+            {},
+        )
         if result.exit_code != 0:
             raise RuntimeError(
                 f"failed to clean up OpenClaw state: {result.stderr.strip()[-500:]}"
