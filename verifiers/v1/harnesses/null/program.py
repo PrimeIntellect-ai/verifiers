@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
+# dependencies = ["openai==2.48.0", "mcp==1.28.1", "httpx==0.28.1", "tenacity==9.1.4"]
 # ///
 """The interception endpoint and secret arrive through argv rather than the environment."""
 
@@ -12,19 +12,119 @@ from pathlib import Path
 
 import httpx
 from openai import AsyncOpenAI
-from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
+from tenacity import (
+    AsyncRetrying,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
-MCP_CALL_ATTEMPTS = 6
+MCP_CONNECT_ATTEMPTS = 6
 MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
+
+async def _create_with_retry(client: AsyncOpenAI, **kwargs):
+    """Use the OpenAI client's single retry layer (configured for four attempts)."""
+
+    return await client.chat.completions.create(**kwargs)
 
 
 async def chat(
     client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
 ):
-    completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
+    completion = await _create_with_retry(
+        client, model=model, messages=messages, tools=tools or None
     )
-    return completion.choices[0].message
+    usage = getattr(completion, "usage", None)
+    total = (
+        (usage.prompt_tokens or 0) + (usage.completion_tokens or 0)
+        if usage is not None
+        else None
+    )
+    return completion.choices[0].message, total
+
+
+SUMMARIZER_SYSTEM = (
+    "You are a context summarization assistant. Summarize the work transcript you are"
+    " given for an engineer resuming the task: what has been tried, exact filenames and"
+    " current file states, eval/compiler results with their key error lines, and what"
+    " remains to be done. Be dense and factual; do not add plans of your own."
+)
+
+
+def _split_for_compaction(messages: list[dict], keep_recent: int) -> tuple[list[dict], list[dict], list[dict]]:
+    """head (system + first user task) | middle (to summarize) | tail (kept verbatim).
+
+    The tail must start on a message the model could naturally resume from: never a
+    `tool` result orphaned from the assistant call that produced it, so the boundary
+    walks back to include the owning assistant message."""
+    head_end = 0
+    while head_end < len(messages) and messages[head_end]["role"] == "system":
+        head_end += 1
+    if head_end < len(messages) and messages[head_end]["role"] == "user":
+        head_end += 1
+    tail_start = max(head_end, len(messages) - keep_recent)
+    while tail_start > head_end and messages[tail_start].get("role") == "tool":
+        tail_start -= 1
+    return messages[:head_end], messages[head_end:tail_start], messages[tail_start:]
+
+
+def _transcript(middle: list[dict]) -> str:
+    lines = []
+    for m in middle:
+        role = m.get("role", "?")
+        content = m.get("content")
+        if isinstance(content, list):
+            content = " ".join(
+                part.get("text", "") for part in content if isinstance(part, dict)
+            )
+        text = (content or "").strip()[:2000]
+        calls = m.get("tool_calls") or []
+        for call in calls:
+            fn = call.get("function", {}) if isinstance(call, dict) else {}
+            text += f"\n[tool_call {fn.get('name')}({(fn.get('arguments') or '')[:400]})]"
+        if text:
+            lines.append(f"{role}: {text}")
+    # Bound the summarizer prompt itself: keep the most recent material so a very
+    # long middle can never push the auxiliary call past the model window.
+    joined = "\n".join(lines)
+    return joined[-24000:]
+
+
+async def compact(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    keep_recent: int,
+    tracker_path: str,
+) -> list[dict]:
+    """Summarize everything between the task prompt and the recent tail, then rebuild
+    the history around the summary. The summary completion is generated through the
+    same intercepted endpoint (so it lands in the trace) and its exact text is written
+    to the tracker file for the harness to mask out of the loss."""
+    head, middle, tail = _split_for_compaction(messages, keep_recent)
+    if len(middle) < 4:
+        # Nothing substantial to fold away — re-summarizing a near-empty middle
+        # (e.g. right after a previous compaction) only burns budget.
+        return messages
+    summary_request = [
+        {"role": "system", "content": SUMMARIZER_SYSTEM},
+        {"role": "user", "content": _transcript(middle)},
+    ]
+    completion = await _create_with_retry(
+        client, model=model, messages=summary_request, max_completion_tokens=2048
+    )
+    summary = (completion.choices[0].message.content or "").strip()
+    if not summary:
+        return messages
+    with open(tracker_path, "a") as tracker:
+        tracker.write(json.dumps({"summary": summary}) + "\n")
+    bridge = {
+        "role": "user",
+        "content": (
+            "Earlier context was compacted to stay within the token budget. Summary of"
+            " the work so far:\n" + summary + "\nContinue the task from this state."
+        ),
+    }
+    return head + [bridge] + tail
 
 
 @asynccontextmanager
@@ -58,11 +158,10 @@ async def mcp_session(spec: dict):
 
 
 async def with_retry(call):
-    """Run one session-scoped operation, retrying transient failures with backoff. A call whose
-    response was lost may be replayed — MCP has no idempotency key, so tools should tolerate
-    at-least-once delivery (a tool that fails reports through its result, not an exception)."""
+    """Retry read-only MCP discovery before any rollout tool is dispatched."""
+
     async for attempt in AsyncRetrying(
-        stop=stop_after_attempt(MCP_CALL_ATTEMPTS),
+        stop=stop_after_attempt(MCP_CONNECT_ATTEMPTS),
         wait=wait_exponential_jitter(initial=0.5, max=30),
         reraise=True,
     ):
@@ -126,16 +225,44 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
 ) -> str | list[dict]:
-    """Call a tool on a fresh session per attempt — see `with_retry` for the replay semantics.
-    The result is converted outside the retry so a conversion failure fails once."""
+    """Dispatch a mutating tool at most once.
+
+    MCP has no request idempotency key here. Replaying after a lost response can
+    duplicate an eval or turn a successful exact edit into an apparent failure.
+    Session discovery may retry, but once ``call_tool`` starts this function never
+    replays it.
+    """
     server_name, raw = dispatch[name]
-
-    async def call():
-        async with mcp_session(servers[server_name]) as session:
-            return await session.call_tool(raw, arguments)
-
-    result = await with_retry(call)
+    async with mcp_session(servers[server_name]) as session:
+        result = await session.call_tool(raw, arguments)
     return mcp_content_to_chat_content(result.content)
+
+
+DEDUP_MIN_CHARS = 1500
+
+
+def _dedup_observation(cache: dict, name: str, arguments: str, content):
+    """Replace an identical repeated tool observation with a short pointer.
+
+    Only large, exact-duplicate string outputs of non-eval tools are folded —
+    evaluator results are trusted training evidence and must stay verbatim.
+    The cache is cleared on compaction (the referenced output may have been
+    summarized away). Returns (content, deduped: bool, repeated_call: bool)."""
+    key = (name, arguments)
+    repeated = key in cache
+    if not isinstance(content, str) or "eval" in name.lower():
+        cache[key] = None if not isinstance(content, str) else content
+        return content, False, repeated
+    previous = cache.get(key)
+    if repeated and previous == content and len(content) >= DEDUP_MIN_CHARS:
+        return (
+            f"[output identical to the earlier {name} call with the same"
+            " arguments — see that result above; not repeated to save context]",
+            True,
+            True,
+        )
+    cache[key] = content
+    return content, False, repeated
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,6 +274,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
+    parser.add_argument("--compact-trigger-tokens", type=int, default=0)
+    parser.add_argument("--compact-keep-recent", type=int, default=6)
+    parser.add_argument("--compact-tracker-file", default="")
+    parser.add_argument("--stats-file", default="")
     return parser.parse_args()
 
 
@@ -158,10 +289,14 @@ async def main() -> None:
         payload = path.read_bytes()
         path.unlink()
         initial = json.loads(payload)
+    # One retry layer only: the SDK retries connection/timeouts, 429, and 5xx.
+    # max_retries=3 means at most four total HTTP attempts; non-retryable 4xx
+    # responses propagate immediately.
     client = AsyncOpenAI(
         base_url=args.base_url,
         api_key=args.api_key,
-        timeout=httpx.Timeout(None, connect=5.0),
+        max_retries=3,
+        timeout=MCP_TIMEOUT,
     )
     config = json.loads(args.mcp_config or "{}")
     if config.get("mcpServers"):
@@ -179,11 +314,50 @@ async def main() -> None:
         messages.extend(initial)
     elif args.prompt:
         messages.append({"role": "user", "content": args.prompt})
+    turn = 0
+    last_compact_attempt = -10
+    observation_cache: dict = {}
+    stats = {"repeat_tool_calls": 0, "deduped_observations": 0}
+
+    def flush_stats() -> None:
+        if args.stats_file:
+            Path(args.stats_file).write_text(json.dumps(stats))
+
+    flush_stats()
     while True:
-        message = await chat(client, args.model, messages, tools)
+        message, context_tokens = await chat(client, args.model, messages, tools)
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
+            flush_stats()
             break
+        turn += 1
+        if (
+            args.compact_trigger_tokens
+            and args.compact_tracker_file
+            and context_tokens is not None
+            and context_tokens >= args.compact_trigger_tokens
+            and turn - last_compact_attempt >= 3
+        ):
+            # Compact BEFORE serving the tool results so the post-compaction
+            # branch resumes cleanly at the pending tool call. The cooldown
+            # stops a still-large post-compaction context (or a failed summary)
+            # from re-triggering every turn; a summarizer failure skips this
+            # attempt rather than killing the episode.
+            last_compact_attempt = turn
+            pending = messages[-1]
+            try:
+                messages = await compact(
+                    client,
+                    args.model,
+                    messages[:-1],
+                    args.compact_keep_recent,
+                    args.compact_tracker_file,
+                )
+            except Exception:
+                messages = messages[:-1]
+            else:
+                observation_cache.clear()  # earlier outputs may be summarized away
+            messages.append(pending)
         for call in message.tool_calls:
             name = call.function.name
             try:
@@ -212,9 +386,18 @@ async def main() -> None:
                 content = await call_mcp(servers, dispatch, name, tool_args)
             else:
                 content = f"error: unknown tool {name!r}"
+            content, deduped, repeated = _dedup_observation(
+                observation_cache,
+                name,
+                json.dumps(tool_args, sort_keys=True, separators=(",", ":")),
+                content,
+            )
+            stats["repeat_tool_calls"] += repeated
+            stats["deduped_observations"] += deduped
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": content}
             )
+        flush_stats()
 
 
 if __name__ == "__main__":

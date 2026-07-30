@@ -1,5 +1,8 @@
 import json
+import logging
 from pathlib import Path
+
+from pydantic import BaseModel, Field
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -8,12 +11,84 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import AssistantMessage
+
+logger = logging.getLogger(__name__)
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
+class NullCompaction(BaseModel):
+    """Context compaction for long episodes. When the last completion reports a
+    context of `trigger_tokens` or more, the program summarizes everything between
+    the task prompt and the recent tail and continues from the summary. The trace
+    records the pre- and post-compaction histories as separate branches (each its
+    own training sample), and the summary completion itself is masked from the
+    loss when `mask_summaries` is set."""
+
+    enabled: bool = False
+    trigger_tokens: int = Field(22528, ge=4096)
+    keep_recent_messages: int = Field(6, ge=2)
+    mask_summaries: bool = True
+
+
 class NullHarnessConfig(HarnessConfig):
-    pass
+    compaction: NullCompaction = NullCompaction()
+
+
+_SUMMARIZER_PREFIX = "You are a context summarization assistant."
+
+
+def _branch_root(trace: Trace, node) -> int | None:
+    """Index of the root node of the branch `node` sits on."""
+    index = node.parent
+    if index is None:
+        return None
+    for _ in range(len(trace.nodes)):
+        parent = trace.nodes[index]
+        if parent.parent is None:
+            return index
+        index = parent.parent
+    return None
+
+
+def _mask_summaries(trace: Trace) -> tuple[int, int, int]:
+    """Mask every sampled completion on an auxiliary summarizer branch.
+
+    Branch identity, rather than global text matching, prevents an ordinary
+    policy completion that happens to equal summary text from being masked.
+    Returns ``(masked_nodes, masked_tokens, summarizer_completions)``.
+    """
+    masked_nodes = 0
+    masked_tokens = 0
+
+    def mask(node) -> None:
+        nonlocal masked_nodes, masked_tokens
+        masked_nodes += 1
+        masked_tokens += sum(node.mask)
+        node.mask = [False] * len(node.mask)
+        node.logprobs = []
+        if getattr(node, "kept_tokens", None) is not None:
+            node.kept_tokens = None  # counts scatter onto mask-True positions
+
+    summarizer_roots = {
+        index
+        for index, node in enumerate(trace.nodes)
+        if node.parent is None
+        and getattr(node.message, "role", None) == "system"
+        and isinstance(getattr(node.message, "content", None), str)
+        and node.message.content.startswith(_SUMMARIZER_PREFIX)
+    }
+    summarizer_nodes = [
+        node
+        for node in trace.nodes
+        if node.sampled
+        and isinstance(node.message, AssistantMessage)
+        and _branch_root(trace, node) in summarizer_roots
+    ]
+    for node in summarizer_nodes:
+        mask(node)
+    return masked_nodes, masked_tokens, len(summarizer_nodes)
 
 
 class NullHarness(Harness[NullHarnessConfig]):
@@ -68,7 +143,49 @@ class NullHarness(Harness[NullHarnessConfig]):
                 json.dumps([message_to_wire(m) for m in prompt]).encode(),
             )
             args.append(f"--initial-messages-file={path}")
+        stats_path = f".vf-agent-stats-{trace.id}.json"
+        args.append(f"--stats-file={stats_path}")
+        tracker_path = ""
+        if self.config.compaction.enabled:
+            tracker_path = f".vf-compaction-{trace.id}.jsonl"
+            args += [
+                f"--compact-trigger-tokens={self.config.compaction.trigger_tokens}",
+                f"--compact-keep-recent={self.config.compaction.keep_recent_messages}",
+                f"--compact-tracker-file={tracker_path}",
+            ]
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )
-        return await runtime.run_program([*program, *args], env)
+        result = await runtime.run_program([*program, *args], env)
+        try:
+            stats = json.loads((await runtime.read(stats_path)).decode(errors="replace"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            stats = {}
+        for key in ("repeat_tool_calls", "deduped_observations"):
+            value = stats.get(key)
+            trace.record_metric(f"null_{key}", value if isinstance(value, int) else 0)
+        if tracker_path and self.config.compaction.mask_summaries:
+            try:
+                raw = (await runtime.read(tracker_path)).decode(errors="replace")
+            except FileNotFoundError:
+                raw = ""
+            summaries = []
+            for line in raw.splitlines():
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning("null: ignored malformed compaction record")
+                    continue
+                if isinstance(value, dict) and isinstance(value.get("summary"), str):
+                    summaries.append(value["summary"])
+            nodes, tokens, branches = _mask_summaries(trace)
+            trace.record_metric("null_compactions", len(summaries))
+            trace.record_metric("null_compaction_branches", branches)
+            trace.record_metric("null_compaction_nodes_masked", nodes)
+            trace.record_metric("null_compaction_tokens_masked", tokens)
+            if len(summaries) > branches or nodes != branches or (branches and not tokens):
+                raise RuntimeError(
+                    "null compaction masking integrity failure: "
+                    f"summaries={len(summaries)} branches={branches} masked_nodes={nodes}"
+                )
+        return result
