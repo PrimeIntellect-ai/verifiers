@@ -23,6 +23,7 @@ from pydantic import Field, field_validator
 
 import verifiers.v1 as vf
 from verifiers.v1.types import StrictBaseModel
+from verifiers.v1.utils.compile import validate_pairing
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
@@ -327,6 +328,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "resolves to the subprocess runtime; use "
                 "--env.solver.runtime.type docker or prime"
             )
+        validate_pairing(judge, JudgeTask, self.config.judge.runtime)
 
     async def setup(self, agents: vf.Agents) -> None:
         # The judge grades the policy; its tokens are never training data.
