@@ -27,6 +27,7 @@ from verifiers.v1.cli.output import (
     save_config,
     write_config,
 )
+from verifiers.v1.cli.resolve import narrow_taskset_config
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.configs.cli.replay import ReplayConfig
 from verifiers.v1.state import state_cls
@@ -49,14 +50,7 @@ def _narrow(config_path: Path) -> type[ReplayConfig]:
     data = tomllib.loads(config_path.read_text())
     taskset = data.get("taskset") or (data.get("env") or {}).get("taskset") or {}
     taskset_id = taskset.get("id")
-    if not taskset_id:
-        return ReplayConfig
-    ftype = vf.taskset_config_type(taskset_id)
-    return type(
-        "ReplayConfig",
-        (ReplayConfig,),
-        {"__annotations__": {"taskset": ftype}, "taskset": ftype(id=taskset_id)},
-    )
+    return narrow_taskset_config(ReplayConfig, taskset_id)
 
 
 def output_dir(config: ReplayConfig) -> Path:
