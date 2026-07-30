@@ -1,10 +1,14 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
 import asyncio
+import fcntl
 import json
 import logging
 import secrets
 import shlex
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from pydantic import Field
 
@@ -28,8 +32,22 @@ curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh | bash 
 """
 
 OPENCLAW_ACP = ACP()
-# Host-networked Docker rollouts share ports, so reserve and bind them one at a time.
-_GATEWAY_START_LOCK = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _gateway_start_lock() -> AsyncIterator[None]:
+    # Server workers are separate processes, but share host-networked Docker ports.
+    with Path("/tmp/vf-openclaw-gateway.lock").open("a") as lock:  # noqa: ASYNC230
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 class OpenClawHarnessConfig(HarnessConfig):
@@ -196,7 +214,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
             "OPENCLAW_SUPPRESS_NOTES": "1",
             "NO_COLOR": "1",
         }
-        async with _GATEWAY_START_LOCK:
+        async with _gateway_start_lock():
             allocated = await runtime.run(["sh", "-c", allocate_port], {})
             if allocated.exit_code != 0:
                 raise RuntimeError(
