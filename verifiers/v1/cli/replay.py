@@ -165,7 +165,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__
-                    trace.capture_error(exc)
+                    trace.record_error(exc)
                     if not config.rich:
                         logger.warning(
                             "replay: scoring failed for task %s",

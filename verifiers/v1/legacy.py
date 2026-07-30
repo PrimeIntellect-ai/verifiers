@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from verifiers.v1 import graph
 from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
+from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
@@ -34,6 +35,7 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1.trace import (
+    AgentInfo,
     Error,
     GenerationSpan,
     ModelCall,
@@ -227,7 +229,6 @@ def _timing(raw: Any) -> Timing:
 _V0_TO_V1_TRUNCATION_STOP = {
     "max_turns_reached": "max_turns",
     "prompt_too_long": "context_length",
-    "timeout_reached": "harness_timeout",
     "max_total_completion_tokens_reached": "max_output_tokens",
 }
 
@@ -270,7 +271,10 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             type="Task",
             data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
         ),
-        tools=_to_v1_tools(out.get("tool_defs")),
+        # v0 rollouts carry no agent config — record the default, like the
+        # base task type above.
+        agent=AgentInfo(config=AgentConfig()),
+        tools=_to_v1_tools(out.get("tool_defs")) or [],
         rewards={"reward": Reward(score=float(out.get("reward") or 0.0))},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         info=dict(out.get("info") or {}),

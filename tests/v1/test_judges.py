@@ -36,6 +36,7 @@ def make_trace(
     task_cls: type[QAData] = QAData,
 ) -> vf.Trace:
     return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
             type="Task",
             data=task_cls(idx=0, prompt="Capital of France?", answer=answer),
@@ -244,6 +245,7 @@ async def test_reference_score_messages_prompt(fake_judge_model):
         answer="Paris",
     )
     trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
@@ -269,6 +271,7 @@ async def test_reference_question_field(fake_judge_model):
         answer="Paris",
     )
     trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
@@ -293,6 +296,7 @@ def full_trace_fixture() -> vf.Trace:
     from verifiers.v1.types import ToolCall, ToolMessage
 
     return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
             type="Task", data=QAData(idx=0, prompt="Capital of France?", answer="Paris")
         ),

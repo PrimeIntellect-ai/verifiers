@@ -33,7 +33,7 @@ class DebateEnv(vf.Env[DebateConfig]):
         await agents.judge.run(VerdictTask.from_traces(task, pro, con))
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        by_agent = {t.agent_name: t for t in episode.traces}
+        by_agent = {t.agent.name: t for t in episode.traces}
         winner = (by_agent["judge"].last_reply or "").strip().lower()
         by_agent["pro"].record_reward("won", float(winner == "pro"))
         by_agent["con"].record_reward("won", float(winner == "con"))

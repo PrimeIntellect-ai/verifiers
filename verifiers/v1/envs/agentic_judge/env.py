@@ -304,7 +304,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             await agents.judge.run(judge_task, runtime=box)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        by_agent = {t.agent_name: t for t in episode.traces}
+        by_agent = {t.agent.name: t for t in episode.traces}
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):

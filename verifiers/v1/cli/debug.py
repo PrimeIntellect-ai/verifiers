@@ -101,9 +101,9 @@ def error_info(
 
 
 def capture_trace_error(trace: Trace, error: BaseException) -> None:
-    # CancelledError is a BaseException; Trace.capture_error accepts Exception.
+    # CancelledError is a BaseException; Trace.record_error accepts Exception.
     if isinstance(error, Exception):
-        trace.capture_error(error)
+        trace.record_error(error)
         return
     trace.errors.append(
         Error(

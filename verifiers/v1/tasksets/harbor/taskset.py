@@ -260,9 +260,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
     if harbor_config.ignore_timeouts:
-        harness_timeout = scoring_timeout = None
+        agent_timeout = scoring_timeout = None
     else:
-        harness_timeout = (
+        agent_timeout = (
             parsed.agent.timeout_sec
             if "timeout_sec" in parsed.agent.model_fields_set
             else None
@@ -290,8 +290,8 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             else list(network.allowed_hosts)
         ),
         timeout=TaskTimeout(
-            harness=harness_timeout * harbor_config.timeout_multiplier
-            if harness_timeout is not None
+            agent=agent_timeout * harbor_config.timeout_multiplier
+            if agent_timeout is not None
             else None,
             scoring=scoring_timeout * harbor_config.timeout_multiplier
             if scoring_timeout is not None

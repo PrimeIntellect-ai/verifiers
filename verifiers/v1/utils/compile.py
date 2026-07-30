@@ -110,23 +110,23 @@ def validate_pairing(
         )
 
 
-def cap_remote_harness_timeout(
-    harness_timeout: float | None, runtime_config: RuntimeConfig, task: Task
+def cap_remote_agent_timeout(
+    agent_timeout: float | None, runtime_config: RuntimeConfig, task: Task
 ) -> float | None:
-    """Remote sandboxes live at most 24 hours: cap the harness timeout there (with a
+    """Remote sandboxes live at most 24 hours: cap the agent timeout there (with a
     warning) so a long run times out cleanly instead of the provider killing the box
     mid-run."""
     if (
-        harness_timeout is not None
-        and harness_timeout > 24 * 60 * 60
+        agent_timeout is not None
+        and agent_timeout > 24 * 60 * 60
         and not runtime_is_local(runtime_config)
     ):
         logger.warning(
-            "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
+            "task %r resolves to a %.1f-hour agent timeout, but %s sandboxes have a "
             "maximum lifetime of 24 hours; capping it at 24 hours",
             task.data.idx,
-            harness_timeout / (60 * 60),
+            agent_timeout / (60 * 60),
             runtime_config.type,
         )
         return 24 * 60 * 60
-    return harness_timeout
+    return agent_timeout

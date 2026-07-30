@@ -163,7 +163,7 @@ class Env(ABC, Generic[ConfigT]):
         """Cross-agent judgement — THE programmable judgement surface: plain
         imperative Python over the finished episode (per-trace judgement already
         ran on each trace's own task). `episode.traces` is the flat episode in
-        completion order, each trace's `agent_name` stamp naming its agent; attach
+        completion order, each trace's `agent.name` stamp naming its agent; attach
         signals via `record_reward`/`record_metric`, in program order. A raise
         fails the episode (the retryable unit) — validate strictly, never
         record a guess."""

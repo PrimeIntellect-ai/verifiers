@@ -136,8 +136,10 @@ kuhn-poker-v1 = { path = "environments/kuhn_poker_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.
-ruff = "2026-07-27"
-ty = "2026-07-27"
+# Full UTC timestamps: bare dates resolve to local-tz midnight and churn the
+# lockfile across timezones.
+ruff = "2026-07-28T00:00:00Z"
+ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
 prime-sandboxes = false
