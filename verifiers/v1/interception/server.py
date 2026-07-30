@@ -110,11 +110,6 @@ def _effective_sampling(
         )
     if requested.temperature is not None:
         updates["temperature"] = requested.temperature
-    extra_body = dict(getattr(configured, "extra_body", None) or {})
-    chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
-    chat_template_kwargs["enable_thinking"] = False
-    extra_body["chat_template_kwargs"] = chat_template_kwargs
-    updates["extra_body"] = extra_body
     return configured.model_copy(update=updates)
 
 

@@ -50,7 +50,7 @@ SUMMARIZER_SYSTEM = (
     " eval/compiler results with key error lines, and what remains. Return at most 600"
     " words of dense factual plain text. Do not include analysis, plans, or code blocks."
 )
-SUMMARIZER_MAX_TOKENS = 1024
+SUMMARIZER_MAX_TOKENS = 4096
 SUMMARIZER_MAX_CHARS = 6000
 AUXILIARY_SAMPLING_HEADER = "X-Verifiers-Auxiliary-Sampling"
 FALLBACK_SUMMARY = (
