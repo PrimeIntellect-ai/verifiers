@@ -86,8 +86,8 @@ async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
     """Extract `collected` in `runtime` at the original absolute paths."""
     if not collected:
         return
-    # Extraction writes to absolute paths. In a container that is the point; under the
-    # subprocess runtime it is the developer's own filesystem.
+    # Restoring into the subprocess runtime would extract absolute paths onto the
+    # developer's filesystem, so refuse it before any archive reaches the host.
     if getattr(runtime.config, "type", None) == "subprocess":
         raise RuntimeError(
             "refusing to restore artifacts into the subprocess runtime: extraction "

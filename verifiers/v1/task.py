@@ -124,10 +124,9 @@ class TaskData(StrictBaseModel):
     blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
     framework routes take precedence; ordinary Prime deny rules pass through unchanged."""
     artifacts: list[Artifact] = Field(default_factory=list)
-    """Paths carried out of the agent's box and into a grading box, on top of the
-    implicitly collected `/logs/artifacts/` convention dir. Declare only what a grader
-    needs: the grading box boots from this task's image, so the repo is already there
-    and only the agent's output has to travel. A declared path that is missing at
+    """Paths collected from one runtime and restored at the same locations in another,
+    on top of the implicitly collected `/logs/artifacts/` convention dir. Declare
+    runtime outputs that must cross that boundary. A declared path that is missing at
     collection time fails the rollout."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()

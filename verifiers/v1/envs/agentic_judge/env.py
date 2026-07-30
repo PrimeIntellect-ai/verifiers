@@ -99,17 +99,7 @@ def _render(template: str, **fields: str) -> str:
     return pattern.sub(lambda m: fields[m.group(1)], template)
 
 
-WORKSPACE_NOTE = f"""\
-## Your workspace
-
-Your sandbox is either the box the graded agent worked in or a fresh one built
-from the task's image — so the working tree may or may not contain the agent's
-changes. An unmodified tree does not mean the agent did nothing: reconstruct
-its work from the trace record and the published artifacts. Files the task
-published as artifacts are at the same paths they had in the agent's box — the
-usual place is `{vf.ARTIFACTS_DIR}/` (for code tasks, typically a patch to read
-or apply) plus any task-declared paths.
-
+_RECORD_NOTE = f"""\
 The agent's raw trace record (JSON: messages, tool calls, and its `info`
 artifacts) is written by the harness — not the agent — at `{TRACE_FILE}`. The
 record can be very large — never dump it whole; peek selectively (list its
@@ -119,6 +109,21 @@ reference material (a gold answer, a reference solution, held-out tests). Those
 are context, not your standard: recorded scores can be wrong and references can
 be narrower than the task; do not over-index on how a reference solves it. Your
 verdict is what YOU verified by execution."""
+
+SHARED_WORKSPACE_NOTE = f"""\
+## Your workspace
+
+The graded agent worked in this sandbox. Its edits and any scoring side effects
+are present. {_RECORD_NOTE}"""
+
+ISOLATED_WORKSPACE_NOTE = f"""\
+## Your workspace
+
+This is a fresh sandbox built from the task's image. The task's published
+artifacts were restored at their original paths; other changes made by the
+graded agent are not present. The usual artifact location is
+`{vf.ARTIFACTS_DIR}/` (for code tasks, typically a patch to read or apply), plus
+any task-declared paths. {_RECORD_NOTE}"""
 
 HINT_SECTION = """\
 ## Hints
@@ -153,9 +158,10 @@ class JudgeTask(vf.Task):
     ) -> "JudgeTask":
         """Mint the judge's task from the solver's finished trace.
 
-        `share_runtime` mirrors how the judge is placed: in the solver's box the
-        published artifacts are already on disk, so none travel; a fresh box gets
-        the collected set, restored by `setup` at the paths they had.
+        `share_runtime` selects both the workspace note and artifact transport. In
+        the solver's box the published artifacts are already on disk, so none
+        travel; a fresh box gets the collected set, restored by `setup` at the
+        paths they had.
         """
         solved = solution.task.data
         files = {TRACE_FILE: json.dumps(solution.to_record()).encode()}
@@ -164,7 +170,10 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
-        sections = [body, _verdict_section(config.criteria()), WORKSPACE_NOTE]
+        workspace_note = (
+            SHARED_WORKSPACE_NOTE if share_runtime else ISOLATED_WORKSPACE_NOTE
+        )
+        sections = [body, _verdict_section(config.criteria()), workspace_note]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
         prompt = "\n\n".join(sections)
@@ -281,7 +290,8 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     """The solver agent. Its runtime must be a container:
     `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. Its runtime is ignored when `share_runtime` is enabled."""
+    """The judge agent. Its runtime is ignored when `share_runtime` is enabled;
+    otherwise it must be a container."""
     share_runtime: bool = True
     """Whether the judge grades in the solver's runtime."""
     task: JudgeTaskConfig = JudgeTaskConfig()
@@ -290,9 +300,7 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        if config.share_runtime or isinstance(
-            config.judge.runtime, vf.SubprocessConfig
-        ):
+        if config.share_runtime:
             config.judge = config.judge.model_copy(
                 update={"runtime": config.solver.runtime}
             )
