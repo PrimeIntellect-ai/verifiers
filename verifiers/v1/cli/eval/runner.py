@@ -141,9 +141,6 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     log_file = str(output_path(config) / "eval.log")
     mpctx = mp.get_context("spawn")
     address_queue: mp.Queue = mpctx.Queue()
-    # Death pipe: serve_env self-terminates if this process dies abruptly — we keep
-    # parent_conn, whose close (even on our SIGKILL) signals the child's watch.
-    parent_conn, child_conn = mpctx.Pipe()
     proc = mpctx.Process(
         target=serve_env,
         kwargs=dict(
@@ -151,14 +148,12 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
             legacy=legacy,
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
-            death_pipe=child_conn,
             log_setup=partial(setup_logging, level, log_file),
             **server_kwargs,
         ),
         daemon=False,
     )
     proc.start()
-    child_conn.close()  # the child holds its end; we keep parent_conn so our exit closes it
     try:
         address = await asyncio.to_thread(address_queue.get, timeout=600)
         client = EnvClient(address=address)
@@ -273,5 +268,3 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         proc.terminate()
         with contextlib.suppress(Exception):
             await asyncio.to_thread(proc.join, 10)
-        with contextlib.suppress(Exception):
-            parent_conn.close()

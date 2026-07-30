@@ -15,7 +15,7 @@ worker.
 
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
-(own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
+(own env, own loop) and monitor their parent so an orphaned worker self-exits if the
 broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
 monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
 so worker death is rare).
@@ -44,29 +44,29 @@ logger = logging.getLogger(__name__)
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 
 
-def _arm_teardown(death_pipe=None) -> None:
+def _arm_teardown() -> None:
     """Arm a spawned process (serve_env broker/single server, or pool worker) for clean
     teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
     asyncio.run()'s serving() cleanup and orphaning host tunnels (and sandboxes).
 
     - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
-    - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
-      child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
+    - when spawned, self-SIGTERM when the parent dies so no child is orphaned
+      (main -> serve_env and broker -> worker are both armed this way)."""
 
     def on_sigterm(*_) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, on_sigterm)
-    if death_pipe is None:
+    parent = mp.parent_process()
+    if parent is None:
         return
 
-    def _watch() -> None:
-        with contextlib.suppress(Exception):
-            death_pipe.recv()
+    def watch_parent() -> None:
+        parent.join()
         os.kill(os.getpid(), signal.SIGTERM)
 
-    threading.Thread(target=_watch, daemon=True).start()
+    threading.Thread(target=watch_parent, daemon=True).start()
 
 
 class EnvServerPool:
@@ -115,13 +115,11 @@ class EnvServerPool:
     def _spawn_worker(self) -> None:
         i = len(self.workers)  # upscale-only, so the next index is the current count
         address = f"ipc://{self._worker_path(i)}"
-        parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
             target=serve_env,
             kwargs=dict(
                 max_workers=1,
                 address=address,
-                death_pipe=child_conn,
                 legacy=self.legacy,
                 log_setup=self.log_setup,
                 **self.server_kwargs,
@@ -129,7 +127,6 @@ class EnvServerPool:
             daemon=False,
         )
         proc.start()
-        child_conn.close()  # parent keeps the write end (its close signals death)
         dealer = self.ctx.socket(zmq.DEALER)
         dealer.setsockopt(zmq.LINGER, 0)
         dealer.connect(address)  # connect before bind is fine — ZMQ queues
@@ -137,7 +134,6 @@ class EnvServerPool:
             {
                 "process": proc,
                 "dealer": dealer,
-                "pipe": parent_conn,
                 "active": 0,
                 "index": i,
             }
@@ -243,8 +239,6 @@ class EnvServerPool:
     def _shutdown(self) -> None:
         for w in self.workers:
             with contextlib.suppress(Exception):
-                w["pipe"].close()
-            with contextlib.suppress(Exception):
                 w["process"].terminate()
         for w in self.workers:
             with contextlib.suppress(Exception):
@@ -274,7 +268,6 @@ def serve_env(
     legacy: bool = False,
     address: str = "tcp://127.0.0.1:5000",
     address_queue=None,
-    death_pipe=None,
     log_setup: Callable[[], None] | None = None,
     multiplex: int = 128,
     elastic: bool = True,
@@ -300,11 +293,11 @@ def serve_env(
     spawned worker — without it a spawned server inherits no handlers and its INFO logs
     (rollout start/done, the pool line) are silently dropped.
 
-    `death_pipe` (when spawned by a parent, e.g. the eval main process) makes this server
-    self-terminate if that parent dies abruptly — see `_arm_teardown`."""
+    When spawned by a parent, e.g. the eval main process, this server self-terminates if
+    that parent dies abruptly — see `_arm_teardown`."""
     # Graceful SIGTERM (run asyncio teardown) + self-terminate if the parent dies. The
     # re-raised KeyboardInterrupt is swallowed below for a clean exit (no spurious traceback).
-    _arm_teardown(death_pipe)
+    _arm_teardown()
     if log_setup is not None:
         log_setup()
     try:
