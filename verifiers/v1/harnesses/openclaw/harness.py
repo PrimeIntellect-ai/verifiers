@@ -16,7 +16,7 @@ from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import DockerRuntime, ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -35,8 +35,11 @@ OPENCLAW_ACP = ACP()
 
 
 @asynccontextmanager
-async def _gateway_start_lock() -> AsyncIterator[None]:
-    # Server workers are separate processes, but share host-networked Docker ports.
+async def _gateway_start_lock(runtime: Runtime) -> AsyncIterator[None]:
+    if not isinstance(runtime, DockerRuntime) or runtime.network_restricted:
+        yield
+        return
+    # Unrestricted Docker containers share the host network across server workers.
     with Path("/tmp/vf-openclaw-gateway.lock").open("a") as lock:  # noqa: ASYNC230
         while True:
             try:
@@ -214,13 +217,25 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
             "OPENCLAW_SUPPRESS_NOTES": "1",
             "NO_COLOR": "1",
         }
-        async with _gateway_start_lock():
+        async with _gateway_start_lock(runtime):
             allocated = await runtime.run(["sh", "-c", allocate_port], {})
             if allocated.exit_code != 0:
                 raise RuntimeError(
                     f"OpenClaw port allocation failed: {allocated.stderr.strip()[-500:]}"
                 )
             gateway_port = allocated.stdout.strip()
+            port_probe = shlex.join(
+                [
+                    node,
+                    "-e",
+                    (
+                        'const net=require("node:net");'
+                        f'const socket=net.connect({{host:"127.0.0.1",port:{gateway_port}}});'
+                        'socket.on("connect",()=>socket.end());'
+                        'socket.on("error",()=>process.exit(1));'
+                    ),
+                ]
+            )
             await runtime.run_background(
                 [
                     "sh",
@@ -236,29 +251,51 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 env,
                 log_path,
             )
-            readiness = await runtime.run(
+            bound = await runtime.run(
                 [
                     "sh",
                     "-c",
                     (
-                        "sleep 1; attempt=0; "
+                        "attempt=0; "
                         f"until [ -s {shlex.quote(pid_path)} ] && "
                         f'kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null && '
-                        f'curl -fsS "http://127.0.0.1:{gateway_port}/healthz" '
-                        ">/dev/null 2>&1; do "
+                        f"{port_probe} >/dev/null 2>&1; do "
                         f"if [ -s {shlex.quote(pid_path)} ] && "
                         f'! kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null; then '
                         f"tail -100 {shlex.quote(log_path)} >&2; exit 1; fi; "
                         "attempt=$((attempt + 1)); "
-                        f'[ "$attempt" -lt 120 ] || {{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; '
-                        "sleep 1; done"
+                        f'[ "$attempt" -lt 1200 ] || {{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; '
+                        "sleep 0.1; done"
                     ),
                 ],
                 {},
             )
-            if readiness.exit_code != 0:
-                detail = (readiness.stderr or readiness.stdout).strip()[-2000:]
-                raise RuntimeError(f"OpenClaw gateway failed to start: {detail}")
+            if bound.exit_code != 0:
+                detail = (bound.stderr or bound.stdout).strip()[-2000:]
+                raise RuntimeError(f"OpenClaw gateway failed to bind: {detail}")
+        readiness = await runtime.run(
+            [
+                "sh",
+                "-c",
+                (
+                    "attempt=0; "
+                    f"until [ -s {shlex.quote(pid_path)} ] && "
+                    f'kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null && '
+                    f'curl -fsS "http://127.0.0.1:{gateway_port}/healthz" '
+                    ">/dev/null 2>&1; do "
+                    f"if [ -s {shlex.quote(pid_path)} ] && "
+                    f'! kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null; then '
+                    f"tail -100 {shlex.quote(log_path)} >&2; exit 1; fi; "
+                    "attempt=$((attempt + 1)); "
+                    f'[ "$attempt" -lt 120 ] || {{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; '
+                    "sleep 1; done"
+                ),
+            ],
+            {},
+        )
+        if readiness.exit_code != 0:
+            detail = (readiness.stderr or readiness.stdout).strip()[-2000:]
+            raise RuntimeError(f"OpenClaw gateway failed to start: {detail}")
         command = [
             "sh",
             "-c",
@@ -266,6 +303,10 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 "set -eu; "
                 f"gateway_pid=$(cat {shlex.quote(pid_path)}); "
                 f'trap \'kill "$gateway_pid" 2>/dev/null || true; '
+                'attempt=0; while kill -0 "$gateway_pid" 2>/dev/null && '
+                ' [ "$attempt" -lt 50 ]; do attempt=$((attempt + 1)); sleep 0.1; done; '
+                'kill -9 "$gateway_pid" 2>/dev/null || true; '
+                'while kill -0 "$gateway_pid" 2>/dev/null; do sleep 0.1; done; '
                 f"rm -f {shlex.quote(pid_path)}' EXIT; "
                 f'{shlex.quote(binary)} acp --url "ws://127.0.0.1:{gateway_port}" '
                 f"--token {shlex.quote(trace.id)} --no-prefix-cwd"
@@ -292,7 +333,12 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 "-c",
                 (
                     f"if [ -s {shlex.quote(pid_path)} ]; then "
-                    f'kill "$(cat {shlex.quote(pid_path)})" 2>/dev/null || true; fi; '
+                    f"gateway_pid=$(cat {shlex.quote(pid_path)}); "
+                    'kill "$gateway_pid" 2>/dev/null || true; '
+                    'attempt=0; while kill -0 "$gateway_pid" 2>/dev/null && '
+                    ' [ "$attempt" -lt 50 ]; do attempt=$((attempt + 1)); sleep 0.1; done; '
+                    'kill -9 "$gateway_pid" 2>/dev/null || true; '
+                    'while kill -0 "$gateway_pid" 2>/dev/null; do sleep 0.1; done; fi; '
                     f"rm -rf {shlex.quote(state_dir)}"
                 ),
             ],
