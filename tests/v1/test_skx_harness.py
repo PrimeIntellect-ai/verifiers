@@ -2,7 +2,10 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APIConnectionError
+from tenacity import wait_none
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harnesses.skx import program
@@ -78,6 +81,40 @@ async def test_chat_wrapper_has_no_second_retry_layer() -> None:
     assert calls == 1
 
 
+@pytest.mark.asyncio
+async def test_model_retry_attempts_are_counted(monkeypatch) -> None:
+    calls = 0
+
+    async def create(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise APIConnectionError(request=httpx.Request("POST", "http://model"))
+        return "completion"
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    stats = {"model_call_attempts": 0, "model_call_retries": 0}
+    snapshots = []
+    monkeypatch.setattr(program, "MODEL_RETRY_WAIT", wait_none())
+
+    result = await program._create_with_retry(
+        client,
+        model="model",
+        messages=[],
+        stats=stats,
+        stats_updated=lambda: snapshots.append(dict(stats)),
+    )
+
+    assert result == "completion"
+    assert stats == {"model_call_attempts": 2, "model_call_retries": 1}
+    assert snapshots == [
+        {"model_call_attempts": 1, "model_call_retries": 0},
+        {"model_call_attempts": 2, "model_call_retries": 1},
+    ]
+
+
 def test_auxiliary_sampling_can_only_tighten_the_token_cap() -> None:
     configured = SamplingConfig(max_tokens=8192, temperature=1.0, top_p=0.95)
     body = {"max_completion_tokens": 2048, "temperature": 0}
@@ -121,7 +158,15 @@ async def test_compaction_falls_back_after_a_truncated_summary(tmp_path) -> None
         {"role": "system", "content": "system"},
         {"role": "user", "content": "task"},
         {"role": "assistant", "content": "read"},
-        {"role": "tool", "content": "file"},
+        {
+            "role": "tool",
+            "content": (
+                "/workspace/.skx_artifacts/evaluations/sha256-"
+                + "a" * 64
+                + ".json\nSHA-256:"
+                + "b" * 64
+            ),
+        },
         {"role": "assistant", "content": "edit"},
         {"role": "tool", "content": "edited"},
         {"role": "assistant", "content": "eval"},
@@ -134,6 +179,10 @@ async def test_compaction_falls_back_after_a_truncated_summary(tmp_path) -> None
     assert request["max_completion_tokens"] == program.SUMMARIZER_MAX_TOKENS
     assert request["temperature"] == 0
     assert request["extra_headers"] == {program.AUXILIARY_SAMPLING_HEADER: "1"}
+    assert "/workspace/.skx_artifacts/" in request["messages"][0]["content"]
+    assert "SHA-256 handle verbatim" in request["messages"][0]["content"]
+    assert "/workspace/.skx_artifacts/evaluations/sha256-" + "a" * 64 + ".json" in request["messages"][1]["content"]
+    assert "SHA-256:" + "b" * 64 in request["messages"][1]["content"]
     assert program.FALLBACK_SUMMARY in compacted[2]["content"]
     record = json.loads(tracker.read_text())
     assert record == {
@@ -171,3 +220,46 @@ def test_observation_key_accepts_canonicalized_arguments() -> None:
     second = program._dedup_observation(cache, "read", '{"a":1,"b":2}', "x" * 1600)
     assert first[1:] == (False, False)
     assert second[1:] == (True, True)
+
+
+def test_repeat_eval_is_keyed_by_candidate_hash_and_workspace_revision() -> None:
+    cache = {}
+    hash_a = "a" * 64
+    hash_b = "b" * 64
+    first = program._dedup_observation(
+        cache,
+        "bash",
+        '{"command":"skx-eval"}',
+        f'{{"candidate_sha256":"{hash_a}"}}',
+        workspace_revision=0,
+    )
+    repeated = program._dedup_observation(
+        cache,
+        "bash",
+        '{"command":"skx-eval"}',
+        f'{{"candidate_sha256":"{hash_a}"}}',
+        workspace_revision=0,
+    )
+    edited = program._dedup_observation(
+        cache,
+        "bash",
+        '{"command":"skx-eval"}',
+        f'{{"candidate_sha256":"{hash_b}"}}',
+        workspace_revision=1,
+    )
+
+    assert first[2] is False
+    assert repeated[2] is True
+    assert edited[2] is False
+    assert program._candidate_sha256(edited[0]) == hash_b
+    assert program._is_eval_call("bash", '{"command":"skx-eval"}') is True
+    assert program._mutates_workspace("skx_edit") is True
+
+
+def test_workspace_revision_only_advances_after_successful_mutation() -> None:
+    success = json.dumps({"is_error": False, "output": "Successfully edited candidate.py"})
+    failure = json.dumps({"is_error": True, "output": "oldText did not match"})
+
+    assert program._successful_workspace_mutation("edit", success) is True
+    assert program._successful_workspace_mutation("edit", failure) is False
+    assert program._successful_workspace_mutation("read", success) is False

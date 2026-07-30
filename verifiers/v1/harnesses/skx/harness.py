@@ -161,7 +161,12 @@ class SkxHarness(Harness[SkxHarnessConfig]):
             stats = json.loads((await runtime.read(stats_path)).decode(errors="replace"))
         except (FileNotFoundError, json.JSONDecodeError):
             stats = {}
-        for key in ("repeat_tool_calls", "deduped_observations"):
+        for key in (
+            "repeat_tool_calls",
+            "deduped_observations",
+            "model_call_attempts",
+            "model_call_retries",
+        ):
             value = stats.get(key)
             trace.record_metric(f"skx_{key}", value if isinstance(value, int) else 0)
         if tracker_path and self.config.compaction.mask_summaries:
