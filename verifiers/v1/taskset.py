@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import random
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, ClassVar, Generic, Self
@@ -26,7 +27,7 @@ from typing_extensions import TypeVar
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT, resolve_server_config
 from verifiers.v1.utils.generic import concrete_type
-from verifiers.v1.utils.sampling import sample
+from verifiers.v1.utils.sampling import SEED
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
@@ -50,10 +51,6 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         self.transform: Callable[[Iterator[TaskT]], Iterator[TaskT]] | None = None
         """Iteration transform carried by `head`/`shuffle` views (see `view`)."""
 
-    @classmethod
-    def task_type(cls) -> type[Task]:
-        return concrete_type(cls, Task, origin=Taskset) or Task
-
     @abstractmethod
     def load(self) -> Iterable[TaskT]:
         """Build and yield the taskset's tasks; may be a generator (see module doc)."""
@@ -70,8 +67,7 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     def view(self, transform: Callable[[Iterator[TaskT]], Iterator[TaskT]]) -> Self:
         """A shallow copy of this taskset iterating through `transform`, composed
-        onto any transform this taskset already carries — the general combinator
-        behind `head`/`shuffle`; use it for custom lazy filters/maps."""
+        onto any transform this taskset already carries."""
         clone = copy.copy(self)
         prev = self.transform
         clone.transform = (
@@ -85,15 +81,26 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         view.INFINITE = False
         return view
 
-    def shuffle(self) -> Self:
-        """A fixed-seed shuffled view (materializes the receiver on iteration);
-        raises on an infinite taskset — bound it first (`head(n).shuffle()`)."""
+    def shuffle(self, seed: int | None = None) -> Self:
+        """A shuffled view under `seed` — the shared fixed seed when None, so runs
+        sample reproducibly (materializes the receiver on iteration); raises on an
+        infinite taskset — bound it first (`head(n).shuffle()`)."""
         if self.INFINITE:
             raise ValueError(
                 f"{type(self).__name__} is infinite - cannot shuffle; "
                 "bound it first with head(num_tasks)"
             )
-        return self.view(lambda tasks: iter(sample(tasks, shuffle=True)))
+
+        def shuffled(tasks: Iterator[TaskT]) -> Iterator[TaskT]:
+            materialized = list(tasks)
+            random.Random(SEED if seed is None else seed).shuffle(materialized)
+            return iter(materialized)
+
+        return self.view(shuffled)
+
+    @classmethod
+    def task_type(cls) -> type[Task]:
+        return concrete_type(cls, Task, origin=Taskset) or Task
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a `tools` entry is built with, resolved off `self.config` (the

@@ -55,6 +55,13 @@ def test_shuffle_samples_the_whole_taskset_reproducibly() -> None:
     assert first != [0, 1, 2, 3, 4]  # sampled from the whole set, not the head
 
 
+def test_shuffle_seed_changes_the_sample() -> None:
+    taskset = FiniteTaskset(vf.TasksetConfig())
+    seeded = idxs(taskset.shuffle(seed=7).head(5))
+    assert seeded == idxs(taskset.shuffle(seed=7).head(5))  # reproducible per seed
+    assert seeded != idxs(taskset.shuffle().head(5))  # differs from the default seed
+
+
 def test_shuffle_raises_on_infinite() -> None:
     with pytest.raises(ValueError, match="infinite"):
         InfiniteTaskset(vf.TasksetConfig()).shuffle()
