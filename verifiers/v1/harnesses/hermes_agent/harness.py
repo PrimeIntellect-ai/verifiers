@@ -127,4 +127,4 @@ class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
 
     @staticmethod
     def _home(trace: Trace) -> str:
-        return f".vf-hermes/{trace.id}"
+        return f"/tmp/vf-hermes/{trace.id}"
