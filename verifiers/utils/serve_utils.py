@@ -3,6 +3,7 @@ import logging
 import socket
 import sys
 import tempfile
+from collections.abc import Container
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -18,6 +19,11 @@ logger = logging.getLogger(__name__)
 # Marker key inside the encoded payload so the decoder can recognize a
 # tensor round-trip without disturbing arbitrary user dicts.
 TENSOR_TAG = "__torch_tensor__"
+
+# Bounds the search in get_free_port. Each rejected probe is held open, so the OS has
+# to offer a distinct port every attempt and the search converges in a few tries even
+# with many ports already issued.
+_PORT_PROBE_ATTEMPTS = 100
 
 
 def _encode_array_like(arr: "np.ndarray") -> dict:
@@ -119,7 +125,9 @@ def walk_decode_tensors(obj: Any, *, to_torch: bool = True):
     return obj
 
 
-def make_ipc_address(session_id: str, name: str) -> str:
+def make_ipc_address(
+    session_id: str, name: str, issued_ports: set[int] | None = None
+) -> str:
     """Build an address for router-to-worker communication.
 
     Prefers a Unix domain socket, which needs no port and is faster, but falls back to
@@ -130,9 +138,18 @@ def make_ipc_address(session_id: str, name: str) -> str:
 
     The socket directory comes from `tempfile.gettempdir()` rather than a hardcoded
     `/tmp`, so it also lands somewhere writable when `/tmp` is not.
+
+    `issued_ports` is read and updated on the TCP path. A worker address is built in
+    the parent but only bound in the child, after `load_environment`, so the port sits
+    free across the spawn. Callers that allocate several addresses in a row must pass a
+    shared set, or a later allocation can be handed a port an earlier worker has not
+    bound yet.
     """
     if not zmq.has("ipc"):
-        return f"tcp://127.0.0.1:{get_free_port()}"
+        port = get_free_port(exclude=issued_ports if issued_ports is not None else ())
+        if issued_ports is not None:
+            issued_ports.add(port)
+        return f"tcp://127.0.0.1:{port}"
     safe_name = name.replace("/", "--")
     return f"ipc://{Path(tempfile.gettempdir()) / f'vf-{session_id}-{safe_name}'}"
 
@@ -147,8 +164,29 @@ def ipc_path_of(address: str) -> str | None:
     return address[len(prefix) :] if address.startswith(prefix) else None
 
 
-def get_free_port() -> int:
-    """Get a free port on the system."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("localhost", 0))
-        return s.getsockname()[1]
+def get_free_port(exclude: Container[int] = ()) -> int:
+    """Get a free port on the system, skipping any in `exclude`.
+
+    The probe socket is closed before returning, so the port is only free until
+    something binds it. Callers that bind later, and allocate more than one port in
+    the meantime, have to pass back what they were already given.
+
+    Rejected probes are held open rather than closed immediately, which forces the OS
+    to offer a different port on the next attempt instead of possibly repeating the
+    one just refused.
+    """
+    held: list[socket.socket] = []
+    try:
+        for _ in range(_PORT_PROBE_ATTEMPTS):
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            held.append(probe)
+            probe.bind(("localhost", 0))
+            port = probe.getsockname()[1]
+            if port not in exclude:
+                return port
+        raise RuntimeError(
+            f"no free port outside the set already issued, after {_PORT_PROBE_ATTEMPTS} attempts"
+        )
+    finally:
+        for probe in held:
+            probe.close()

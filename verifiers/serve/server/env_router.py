@@ -129,13 +129,22 @@ class EnvRouter:
         # setup sockets
         self.ctx = zmq.asyncio.Context()
 
-        self.response_address = make_ipc_address(self.session_id, "responses")
+        # Ports handed out on the tcp fallback path. A worker binds its address in the
+        # child, after load_environment, so the port stays free across the spawn and a
+        # later allocation must not be given it again.
+        self.issued_ports: set[int] = set()
+
+        self.response_address = make_ipc_address(
+            self.session_id, "responses", self.issued_ports
+        )
         self.response_pull = self.ctx.socket(zmq.PULL)
         self.response_pull.setsockopt(zmq.RCVHWM, 0)
         self.response_pull.setsockopt(zmq.LINGER, 0)
         self.response_pull.bind(self.response_address)
 
-        self.stats_address = make_ipc_address(self.session_id, "stats")
+        self.stats_address = make_ipc_address(
+            self.session_id, "stats", self.issued_ports
+        )
         self.stats_pull = self.ctx.socket(zmq.PULL)
         self.stats_pull.setsockopt(zmq.RCVHWM, 0)
         self.stats_pull.setsockopt(zmq.LINGER, 0)
@@ -173,7 +182,7 @@ class EnvRouter:
     def get_worker_address(self, worker_id: int) -> str:
         """Get the address of an env worker."""
         worker_name = self.get_worker_name(worker_id)
-        return make_ipc_address(self.session_id, worker_name)
+        return make_ipc_address(self.session_id, worker_name, self.issued_ports)
 
     def start_worker(self, worker_id: int) -> WorkerHandle:
         """Start an EnvWorker process."""

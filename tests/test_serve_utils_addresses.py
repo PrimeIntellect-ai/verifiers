@@ -7,12 +7,47 @@ server died before a single rollout ran.
 
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import zmq
 
-from verifiers.utils.serve_utils import ipc_path_of, make_ipc_address
+from verifiers.utils.serve_utils import get_free_port, ipc_path_of, make_ipc_address
+
+
+class _ScriptedProbe:
+    """A stand-in for a probe socket that reports a caller-chosen port."""
+
+    def __init__(self, port):
+        self.port = port
+        self.closed = False
+
+    def bind(self, address):
+        pass
+
+    def getsockname(self):
+        return ("127.0.0.1", self.port)
+
+    def close(self):
+        self.closed = True
+
+
+def _scripted_socket_module(ports):
+    """Patch target for `serve_utils.socket` that hands out `ports` in order."""
+    remaining = list(ports)
+    made: list[_ScriptedProbe] = []
+
+    module = MagicMock()
+    module.AF_INET = 2
+    module.SOCK_STREAM = 1
+
+    def make_probe(family, kind):
+        probe = _ScriptedProbe(remaining.pop(0))
+        made.append(probe)
+        return probe
+
+    module.socket.side_effect = make_probe
+    return module, made
 
 
 class TestIpcPathOf:
@@ -87,3 +122,65 @@ class TestMakeIpcAddressWithoutIpcSupport:
         with patch.object(zmq, "has", return_value=False):
             address = make_ipc_address("abc123", "responses")
         assert not address.startswith("ipc:///tmp/")
+
+
+class TestPortIsNotReissuedBeforeItIsBound:
+    """A worker address is built in the parent but bound in the child, after
+    `load_environment`. The port is free for that whole window, so a later
+    allocation must not be handed it again: the second worker would die on
+    `Address already in use`, which is the crash this fix exists to remove.
+    """
+
+    def test_get_free_port_skips_an_excluded_port(self):
+        """The OS re-offering a port already issued must not be passed through."""
+        module, made = _scripted_socket_module([5001, 5001, 5002])
+        with patch("verifiers.utils.serve_utils.socket", module):
+            port = get_free_port(exclude={5001})
+        assert port == 5002
+        # every probe is closed, including the ones held open to force a new offer
+        assert all(probe.closed for probe in made)
+
+    def test_get_free_port_returns_the_first_acceptable_port(self):
+        module, made = _scripted_socket_module([5001])
+        with patch("verifiers.utils.serve_utils.socket", module):
+            assert get_free_port(exclude={5002}) == 5001
+        assert made[0].closed
+
+    def test_get_free_port_gives_up_rather_than_returning_a_used_port(self):
+        module, _ = _scripted_socket_module([5001] * 200)
+        with (
+            patch("verifiers.utils.serve_utils.socket", module),
+            pytest.raises(RuntimeError, match="no free port"),
+        ):
+            get_free_port(exclude={5001})
+
+    def test_make_ipc_address_records_the_port_it_issued(self):
+        issued: set[int] = set()
+        module, _ = _scripted_socket_module([5001])
+        with (
+            patch.object(zmq, "has", return_value=False),
+            patch("verifiers.utils.serve_utils.socket", module),
+        ):
+            make_ipc_address("abc123", "responses", issued)
+        assert issued == {5001}
+
+    def test_a_shared_set_stops_the_second_worker_reusing_the_first_port(self):
+        """The exact race: the OS offers 5001 twice because worker 0 has not bound it."""
+        issued: set[int] = set()
+        module, _ = _scripted_socket_module([5001, 5001, 5002])
+        with (
+            patch.object(zmq, "has", return_value=False),
+            patch("verifiers.utils.serve_utils.socket", module),
+        ):
+            first = make_ipc_address("abc123", "env-0", issued)
+            second = make_ipc_address("abc123", "env-1", issued)
+        assert first == "tcp://127.0.0.1:5001"
+        assert second == "tcp://127.0.0.1:5002"
+        assert issued == {5001, 5002}
+
+    def test_ipc_path_callers_are_unaffected(self):
+        """The set is only touched on the tcp path; ipc addresses use no port."""
+        issued: set[int] = set()
+        with patch.object(zmq, "has", return_value=True):
+            make_ipc_address("abc123", "responses", issued)
+        assert issued == set()
