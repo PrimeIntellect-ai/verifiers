@@ -36,9 +36,8 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
-- `env.taskset.system_prompt` / `env.taskset.system_prompt_file` — override each task's
-  `TaskData.system_prompt` at select time (mutually exclusive; the file form is read into
-  `system_prompt` at validation — e.g. hand over a GEPA `best_system_prompt.txt`)
+- `env.taskset.system_prompt` — UTF-8 file whose text overrides each task's
+  `TaskData.system_prompt` at select time (e.g. a GEPA `best_system_prompt.txt`)
 - `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it

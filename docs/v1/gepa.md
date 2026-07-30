@@ -41,7 +41,7 @@ Hand it back to eval or training via the config-layer taskset system prompt:
 
 ```bash
 uv run eval reverse-text-v1 \
-  --env.taskset.system-prompt-file outputs/<run>/best_system_prompt.txt
+  --env.taskset.system-prompt outputs/<run>/best_system_prompt.txt
 ```
 
 ## Limitations

@@ -401,6 +401,8 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     model's call. Exercises the config surface too: a policy-only prompt
     override (the verdict contract is appended regardless) and
     reward-composition weights."""
+    policy = tmp_path / "judge_policy.txt"
+    policy.write_text("Check EMPIRICALLY that the agent echoed the word back.")
     traces = await run_v1(
         "echo-v1",
         harness=None,  # seats pin their own harness; there is no run-level one
@@ -414,9 +416,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
                 "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
             },
-            "task": {
-                "prompt": "Check EMPIRICALLY that the agent echoed the word back.",
-            },
+            "task": {"prompt": str(policy)},
             "score": {"task_weight": 0.5},
         },
         output_dir=tmp_path,

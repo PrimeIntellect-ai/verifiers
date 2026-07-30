@@ -116,13 +116,13 @@ def judge_config_cls(cls: type) -> type[JudgeConfig]:
 
 class Judge(Generic[ParsedT, ConfigT]):
     prompt: str | None = None
-    """Default prompt template, overridden by config."""
+    """Default prompt template, overridden by a config `prompt` file."""
     schema: type[BaseModel] | None = None
 
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = cast(ConfigT, config or judge_config_cls(type(self))())
-        if self.config.prompt_file is not None:
-            self.prompt = self.config.prompt_file.read_text(encoding="utf-8")
+        if self.config.prompt is not None:
+            self.prompt = self.config.prompt.read_text(encoding="utf-8")
 
     @property
     def reward_name(self) -> str:
@@ -132,7 +132,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         return judge_key(self.config) or fallback or "judge"
 
     def build_messages(self, **fields: Any) -> str | Messages:
-        template = self.config.prompt or self.prompt
+        template = self.prompt
         if template is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"

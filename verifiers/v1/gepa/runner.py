@@ -108,7 +108,7 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
             result = optimize(**optimize_kwargs)
             if run_dir is not None:
                 # Persist the winning prompt as a plain file so it can be handed straight to
-                # eval/train via `--env.taskset.system-prompt-file` (see TasksetConfig).
+                # eval/train via `--env.taskset.system-prompt` (see TasksetConfig).
                 candidate = result.best_candidate
                 best = (
                     candidate.get("system_prompt", "")

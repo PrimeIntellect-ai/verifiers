@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, SerializeAsAny, model_validator
+from pydantic import BaseModel, SerializeAsAny
 
 from verifiers.v1.clients import BaseClientConfig
 from verifiers.v1.types import ID, SamplingConfig
@@ -20,15 +20,8 @@ class JudgeConfig(BaseClientConfig):
     weight: float = 1.0
     model: str = "openai/gpt-5.4-nano"
     sampling: SamplingConfig = SamplingConfig()
-    prompt: str | None = None
-    prompt_file: Path | None = None
-    """Prompt file override, mutually exclusive with `prompt`."""
-
-    @model_validator(mode="after")
-    def check_prompt_source(self) -> "JudgeConfig":
-        if self.prompt is not None and self.prompt_file is not None:
-            raise ValueError("set `prompt` or `prompt_file`, not both")
-        return self
+    prompt: Path | None = None
+    """UTF-8 file whose text overrides the judge's default prompt template."""
 
 
 Judges = list[SerializeAsAny[JudgeConfig]]

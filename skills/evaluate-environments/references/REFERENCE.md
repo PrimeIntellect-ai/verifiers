@@ -224,8 +224,7 @@ Elastic pool: start at one worker and scale up on demand.
 | --- | --- | --- | --- |
 | `id` | `ID` | `""` | Local package or Hub `org/name[@version]`; selects the taskset and its config type. Set via `--env.taskset.id` or the positional `eval <taskset-id>`. |
 | `task` | `TaskConfig` | `TaskConfig()` | Task-facing config passed to every constructed task. `SerializeAsAny` preserves a narrowed subclass. Set through `--env.taskset.task.*`. |
-| `system_prompt` | `str \| None` | `None` | Run-level override applied in `Taskset.select`, replacing each task's baked-in `TaskData.system_prompt`. Mutually exclusive with `system_prompt_file`. |
-| `system_prompt_file` | `Path \| None` | `None` | UTF-8 file form of `system_prompt`. Mutually exclusive with `system_prompt`; collapsed into `system_prompt` at validation so the runtime only sees the string. |
+| `system_prompt` | `Path \| None` | `None` | UTF-8 file whose text replaces each task's baked-in `TaskData.system_prompt` in `Taskset.select`. |
 
 `.name` → the package name (id with org / version stripped).
 
@@ -505,15 +504,14 @@ Inherits `base_url`, `api_key_var`, and `headers` from [`BaseClientConfig`](#cli
 | `weight` | `float` | `1.0` | Weight applied when the plugged judge records its verdict into aggregate `trace.reward`. |
 | `model` | `str` | `"openai/gpt-5.4-nano"` | Judge model id. |
 | `sampling` | `SamplingConfig` | `SamplingConfig()` | Per-call sampling defaults; individual calls may override them. |
-| `prompt` | `str \| None` | `None` | Inline prompt-template override for this configured judge instance. |
-| `prompt_file` | `Path \| None` | `None` | Load the prompt template from a UTF-8 text file. Mutually exclusive with `prompt`. |
+| `prompt` | `Path \| None` | `None` | UTF-8 file whose text overrides the judge's default prompt template. |
 
 ### Judge class behavior
 
 A judge class may define:
 
 - `prompt: str | None` — the default template formatted by `build_messages(**fields)`. A configured
-  `prompt` or `prompt_file` overrides it for that instance.
+  `prompt` file overrides it for that instance.
 - `schema: type[BaseModel] | None` — a Pydantic schema for structured output. `evaluate()` sends it
   through the OpenAI-compatible parsed-completion path and places the validated object on `JudgeResponse.parsed`; without a schema, `parse()` receives the text response.
 
