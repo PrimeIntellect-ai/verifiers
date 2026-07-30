@@ -35,6 +35,29 @@ logger = logging.getLogger(__name__)
 MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
+GATEWAY_RECOVERY_SECONDS = 15 * 60
+"""Keep polling the same background job through transient gateway outages."""
+
+
+def _is_transient_gateway_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "connecterror",
+            "connectionerror",
+            "connection reset",
+            "connection refused",
+            "readtimeout",
+            "uploadtimeouterror",
+            "timed out",
+            "temporarily unavailable",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+    )
+
 
 class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
@@ -63,6 +86,8 @@ class PrimeConfig(NetworkPolicyConfig):
     """Disk in GB."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
+    timeout: float = MAX_LIFETIME
+    """Hard maximum sandbox lifetime in seconds."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
@@ -86,11 +111,19 @@ class PrimeConfig(NetworkPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_idle_timeout(self) -> "PrimeConfig":
-        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
-            raise ValueError(
-                f"idle_timeout ({self.idle_timeout}s) must not exceed the "
-                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
-            )
+        if not 60 <= self.timeout <= MAX_LIFETIME:
+            raise ValueError(f"timeout must be between 60 and {MAX_LIFETIME} seconds")
+        if self.idle_timeout is not None:
+            if self.idle_timeout <= 0:
+                raise ValueError("idle_timeout must be positive or None")
+            if self.idle_timeout > self.timeout:
+                if "idle_timeout" not in self.model_fields_set:
+                    self.idle_timeout = self.timeout
+                else:
+                    raise ValueError(
+                        f"idle_timeout ({self.idle_timeout}s) must not exceed the "
+                        f"hard sandbox timeout ({self.timeout}s)"
+                    )
         return self
 
 
@@ -108,6 +141,7 @@ class PrimeRuntime(Runtime):
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
+        self._confirmed_stop_id: str | None = None
 
     @property
     def published_port(self) -> int | None:
@@ -133,7 +167,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": MAX_LIFETIME // 60,
+            "timeout_minutes": math.ceil(self.config.timeout / 60),
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
@@ -155,6 +189,8 @@ class PrimeRuntime(Runtime):
                         **{k: v for k, v in options.items() if v is not None},
                     )
                 )
+            self._confirmed_stop_id = None
+            self.stopped = False
             self.info.id = sandbox.id
             # The create response says whether the platform already has the image:
             # `pending_image_build_id` set means a first-use auto-build is running and the
@@ -232,8 +268,42 @@ class PrimeRuntime(Runtime):
                 env=env,
             )
             delay = 0.1
+            outage_started: float | None = None
             while True:
-                result = await self._client.get_background_job(self.info.id, job)
+                try:
+                    result = await self._client.get_background_job(self.info.id, job)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if not _is_transient_gateway_error(exc):
+                        raise
+                    # Never start a replacement job after an ambiguous gateway
+                    # failure.  Keep polling the exact original job so a transient
+                    # control-plane outage cannot orphan a still-running six-hour
+                    # evaluation or create a duplicate candidate execution.
+                    now = asyncio.get_running_loop().time()
+                    outage_started = now if outage_started is None else outage_started
+                    outage_seconds = now - outage_started
+                    if outage_seconds >= GATEWAY_RECOVERY_SECONDS:
+                        raise SandboxError(
+                            "prime background-job polling did not recover within "
+                            f"{GATEWAY_RECOVERY_SECONDS}s: {exc}"
+                        ) from exc
+                    retry_delay = min(max(delay, 1.0), 15.0)
+                    logger.warning(
+                        "prime: transient gateway error polling job %s in sandbox %s; "
+                        "retrying the same job in %.1fs (outage %.1fs/%.1fs): %s",
+                        job,
+                        self.info.id,
+                        retry_delay,
+                        outage_seconds,
+                        GATEWAY_RECOVERY_SECONDS,
+                        exc,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    delay = min(retry_delay * 2, 15.0)
+                    continue
+                outage_started = None
                 if result.completed:
                     break
                 await asyncio.sleep(delay)
@@ -304,16 +374,81 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
+        started = asyncio.get_running_loop().time()
+        delay = 1.0
+        while True:
+            try:
+                await self._client.execute_command(
+                    self.info.id,
+                    f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
+                )
+                await self._client.upload_bytes(
+                    self.info.id, target, data, filename=PurePosixPath(target).name
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                elapsed = asyncio.get_running_loop().time() - started
+                if (
+                    not _is_transient_gateway_error(exc)
+                    or elapsed >= GATEWAY_RECOVERY_SECONDS
+                ):
+                    raise SandboxError(f"write {path!r}: {exc}") from exc
+                logger.warning(
+                    "prime: transient gateway error writing %s to sandbox %s; "
+                    "retrying the same upload in %.1fs (elapsed %.1fs/%.1fs): %s",
+                    target,
+                    self.info.id,
+                    delay,
+                    elapsed,
+                    GATEWAY_RECOVERY_SECONDS,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 15.0)
+
+    async def stop_confirmed(self) -> None:
+        """Delete the Prime sandbox or preserve cleanup state and raise."""
+        runtime_id = self.info.id
+        if runtime_id is not None and runtime_id == self._confirmed_stop_id:
+            return
+        client = self._client
+        if client is None:
+            if runtime_id is None:
+                return
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without its live client"
+            )
+        if runtime_id is None:
+            # Provisioning failed before a provider ID was assigned; release
+            # the live client so it doesn't leak.
+            self._client = None
+            with contextlib.suppress(Exception):
+                await client.aclose()
+            raise RuntimeError(
+                "prime sandbox deletion cannot be confirmed without a provider ID"
+            )
         try:
-            await self._client.execute_command(
-                self.info.id,
-                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
-            )
-            await self._client.upload_bytes(
-                self.info.id, target, data, filename=PurePosixPath(target).name
-            )
-        except Exception as e:
-            raise SandboxError(f"write {path!r}: {e}") from e
+            await client.delete(runtime_id)
+        except Exception as exc:
+            # A 404 from the provider means the sandbox was already removed
+            # (idle timeout, max lifetime, or an earlier best-effort cleanup).
+            # That is confirmed success — treat it as such so retries don't keep
+            # failing.  Match the provider's own APIError with an HTTP 404
+            # prefix, not a loose substring, so unrelated errors can't be
+            # misread as the sandbox being gone.
+            from prime_sandboxes.core.client import APIError
+
+            if isinstance(exc, APIError) and str(exc).startswith("HTTP 404"):
+                logger.info("prime: sandbox %s already gone (404): %s", runtime_id, exc)
+            else:
+                raise
+        self._confirmed_stop_id = runtime_id
+        self.stopped = True
+        self._client = None
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
