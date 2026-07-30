@@ -296,7 +296,7 @@ OpenClaw-specific model credential is needed.
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `version` | `str` | `"2026.7.1-2"` | OpenClaw npm release to install; pinned. |
-| `bundled_skills` | `bool` | `true` | Enable OpenClaw's bundled skills in addition to uploaded harness skills. |
+| `use_bundled_skill` | `bool` | `true` | Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills. |
 
 #### `RLMHarnessConfig` — `id: "rlm"`
 
