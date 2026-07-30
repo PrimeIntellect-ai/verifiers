@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
 OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
+STAGED_SKILLS_DIR = ".vf-openclaw/skills"
 INSTALL = r"""
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
@@ -42,6 +43,12 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        cleared = await runtime.run(["rm", "-rf", STAGED_SKILLS_DIR], {})
+        if cleared.exit_code != 0:
+            raise RuntimeError(
+                f"failed to clear OpenClaw skills: {cleared.stderr.strip()[-500:]}"
+            )
+        await self.install_skills(runtime, STAGED_SKILLS_DIR)
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
         script = INSTALL.replace("{version}", self.config.version).replace(
@@ -126,17 +133,25 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 }
             },
         }
-        if self.config.skills:
-            await self.install_skills(runtime, skills_dir)
-            config["skills"] = {"load": {"extraDirs": [skills_dir]}}
-        if not self.config.use_bundled_skill:
-            # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
-            config.setdefault("skills", {})["allowBundled"] = ["__none__"]
         created = await runtime.run(["mkdir", "-p", state_dir], {})
         if created.exit_code != 0:
             raise RuntimeError(
                 f"OpenClaw state directory failed: {created.stderr.strip()[-500:]}"
             )
+        if self.config.skills:
+            exists = await runtime.run(["test", "-d", skills_dir], {})
+            if exists.exit_code != 0:
+                copied = await runtime.run(
+                    ["cp", "-R", STAGED_SKILLS_DIR, skills_dir], {}
+                )
+                if copied.exit_code != 0:
+                    raise RuntimeError(
+                        f"failed to stage OpenClaw skills: {copied.stderr.strip()[-500:]}"
+                    )
+            config["skills"] = {"load": {"extraDirs": [skills_dir]}}
+        if not self.config.use_bundled_skill:
+            # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
+            config.setdefault("skills", {})["allowBundled"] = ["__none__"]
         await runtime.write(config_path, json.dumps(config).encode())
 
         binary = OPENCLAW_BIN.format(version=self.config.version)
