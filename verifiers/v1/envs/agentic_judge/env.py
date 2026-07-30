@@ -181,13 +181,13 @@ class JudgeTaskConfig(vf.BaseConfig):
     """The judge's minted task: the grading policy and what lands in its box."""
 
     prompt: Path | None = None
-    """UTF-8 grading-policy file. Replaces only the policy body — the verdict
-    contract and workspace note are always appended. May reference `{prompt}` (the
-    solver task's prompt); if it doesn't, the task statement is appended after."""
+    """Grading-policy file. Replaces only the policy body — the verdict contract
+    and workspace note are always appended. May reference `{prompt}` (the solver
+    task's prompt); if it doesn't, the task statement is appended after."""
     hint: Path | None = None
-    """Optional UTF-8 hints file injected as their own section: task-family
-    pointers into the trace or box — e.g. for math, where the reference answer
-    lives in the record; for SWE, to diff the repo or read `info.patch`."""
+    """Optional hints file injected as their own section: task-family pointers
+    into the trace or box — e.g. for math, where the reference answer lives in
+    the record; for SWE, to diff the repo or read `info.patch`."""
     rubric: Path | None = None
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
@@ -196,15 +196,15 @@ class JudgeTaskConfig(vf.BaseConfig):
     def build_prompt(self) -> str:
         if self.prompt is None:
             return GRADE_PROMPT + "\n\n" + TASK_SECTION
-        return self.prompt.read_text(encoding="utf-8")
+        return self.prompt.read_text()
 
     def build_hint(self) -> str | None:
-        return self.hint.read_text(encoding="utf-8") if self.hint is not None else None
+        return self.hint.read_text() if self.hint is not None else None
 
     def criteria(self) -> list[Criterion]:
         if self.rubric is None:
             return [SOLVED]
-        text = self.rubric.read_text(encoding="utf-8")
+        text = self.rubric.read_text()
         data = (
             tomllib.loads(text)
             if self.rubric.suffix.lower() == ".toml"

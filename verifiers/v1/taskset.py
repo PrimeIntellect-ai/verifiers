@@ -85,7 +85,7 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
         else:
             tasks = list(itertools.islice(self.load(), num_tasks))
         if self.config.system_prompt is not None:
-            override = self.config.system_prompt.read_text(encoding="utf-8")
+            override = self.config.system_prompt.read_text()
             tasks = [t.with_system_prompt(override) for t in tasks]
         return tasks
 

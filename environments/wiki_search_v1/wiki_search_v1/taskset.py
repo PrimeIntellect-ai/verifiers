@@ -6,6 +6,8 @@ per rollout. The tools are read-only; grading comes from the plugged `reference`
 whose prompt also rejects incoherent answers.
 """
 
+from pathlib import Path
+
 from pydantic import Field
 
 import verifiers.v1 as vf
@@ -17,26 +19,7 @@ SYSTEM = (
     "one — to answer the question. When confident, reply with a concise final answer."
 )
 
-JUDGE_PROMPT = """Given a ground truth answer and a response, determine if the response \
-is both correct and coherent.
-
-Question:
-```
-{question}
-```
-
-Ground truth answer:
-```
-{answer}
-```
-
-Response:
-```
-{response}
-```
-
-Respond either "yes" or "no" only. If a response contains incoherent text, respond \
-with "no" even if the correct answer is also present."""
+JUDGE_PROMPT = Path(__file__).parent / "judge_prompt.txt"
 
 # The question bank and count are fixed properties of this env, not eval-time
 # knobs (the searchable corpus is built in `WikiSearchToolset.setup`).

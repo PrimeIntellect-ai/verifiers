@@ -224,7 +224,7 @@ Elastic pool: start at one worker and scale up on demand.
 | --- | --- | --- | --- |
 | `id` | `ID` | `""` | Local package or Hub `org/name[@version]`; selects the taskset and its config type. Set via `--env.taskset.id` or the positional `eval <taskset-id>`. |
 | `task` | `TaskConfig` | `TaskConfig()` | Task-facing config passed to every constructed task. `SerializeAsAny` preserves a narrowed subclass. Set through `--env.taskset.task.*`. |
-| `system_prompt` | `Path \| None` | `None` | UTF-8 file whose text replaces each task's baked-in `TaskData.system_prompt` in `Taskset.select`. |
+| `system_prompt` | `Path \| None` | `None` | File whose text replaces each task's baked-in `TaskData.system_prompt` in `Taskset.select`. |
 
 `.name` → the package name (id with org / version stripped).
 
@@ -504,7 +504,7 @@ Inherits `base_url`, `api_key_var`, and `headers` from [`BaseClientConfig`](#cli
 | `weight` | `float` | `1.0` | Weight applied when the plugged judge records its verdict into aggregate `trace.reward`. |
 | `model` | `str` | `"openai/gpt-5.4-nano"` | Judge model id. |
 | `sampling` | `SamplingConfig` | `SamplingConfig()` | Per-call sampling defaults; individual calls may override them. |
-| `prompt` | `Path \| None` | `None` | UTF-8 file whose text overrides the judge's default prompt template. |
+| `prompt` | `Path \| None` | `None` | File whose text overrides the judge's default prompt template. |
 
 ### Judge class behavior
 

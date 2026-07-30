@@ -21,7 +21,7 @@ class JudgeConfig(BaseClientConfig):
     model: str = "openai/gpt-5.4-nano"
     sampling: SamplingConfig = SamplingConfig()
     prompt: Path | None = None
-    """UTF-8 file whose text overrides the judge's default prompt template."""
+    """File whose text overrides the judge's default prompt template."""
 
 
 Judges = list[SerializeAsAny[JudgeConfig]]

@@ -122,7 +122,7 @@ class Judge(Generic[ParsedT, ConfigT]):
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = cast(ConfigT, config or judge_config_cls(type(self))())
         if self.config.prompt is not None:
-            self.prompt = self.config.prompt.read_text(encoding="utf-8")
+            self.prompt = self.config.prompt.read_text()
 
     @property
     def reward_name(self) -> str:

@@ -368,7 +368,7 @@ async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
 
 
 async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model):
-    # Config `prompt` is a UTF-8 file; the same {field} placeholders work.
+    # Config `prompt` is a file path; the same {field} placeholders work.
     file = tmp_path / "judge.txt"
     file.write_text("Q:{question} A:{answer} R:{response}")
     judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt=file))
