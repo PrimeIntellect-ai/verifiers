@@ -335,6 +335,7 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
         runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=10,
+        max_tokens=8192,
     )
     assert trace.ok
     assert trace.num_turns >= 1  # ran a command, then finished
