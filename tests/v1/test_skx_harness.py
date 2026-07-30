@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APIConnectionError
+from openai import APIConnectionError, APIStatusError
 from tenacity import wait_none
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.graph import MessageNode
@@ -113,6 +113,54 @@ async def test_model_retry_attempts_are_counted(monkeypatch) -> None:
         {"model_call_attempts": 1, "model_call_retries": 0},
         {"model_call_attempts": 2, "model_call_retries": 1},
     ]
+
+
+@pytest.mark.asyncio
+async def test_model_retry_exhaustion_is_bounded(monkeypatch) -> None:
+    calls = 0
+
+    async def create(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise APIConnectionError(request=httpx.Request("POST", "http://model"))
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    stats = {"model_call_attempts": 0, "model_call_retries": 0}
+    monkeypatch.setattr(program, "MODEL_RETRY_WAIT", wait_none())
+
+    with pytest.raises(APIConnectionError):
+        await program._create_with_retry(
+            client, model="model", messages=[], stats=stats
+        )
+    assert calls == program.MODEL_CALL_ATTEMPTS
+    assert stats == {"model_call_attempts": 4, "model_call_retries": 3}
+
+
+@pytest.mark.asyncio
+async def test_nonretryable_model_status_fails_immediately(monkeypatch) -> None:
+    calls = 0
+
+    async def create(**_kwargs):
+        nonlocal calls
+        calls += 1
+        request = httpx.Request("POST", "http://model")
+        response = httpx.Response(400, request=request)
+        raise APIStatusError("bad request", response=response, body=None)
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    stats = {"model_call_attempts": 0, "model_call_retries": 0}
+    monkeypatch.setattr(program, "MODEL_RETRY_WAIT", wait_none())
+
+    with pytest.raises(APIStatusError):
+        await program._create_with_retry(
+            client, model="model", messages=[], stats=stats
+        )
+    assert calls == 1
+    assert stats == {"model_call_attempts": 1, "model_call_retries": 0}
 
 
 def test_auxiliary_sampling_can_only_tighten_the_token_cap() -> None:
