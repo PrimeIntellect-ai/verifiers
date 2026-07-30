@@ -1,7 +1,7 @@
 """Harbor tasksets backed by Harbor Hub packages.
 
-The Harbor CLI downloads and caches each task directory. Its verifier runs in the
-same runtime the harness edited, then writes the score to
+Harbor downloads and caches each task directory. Its verifier runs in the same
+runtime the harness edited, then writes the score to
 ``/logs/verifier/reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
@@ -10,14 +10,11 @@ deliberately uses the harness runtime image. Tasks without an environment also u
 image unless ``require_image`` is set.
 """
 
-import hashlib
+import asyncio
 import io
-import shutil
-import subprocess
-import sys
 import tarfile
-import tempfile
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
@@ -31,8 +28,9 @@ from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.types import StrictBaseModel
 
-CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
+_HARBOR_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+_HARBOR_RUNNER = asyncio.Runner()
 
 
 class HarborConfig(TasksetConfig):
@@ -121,94 +119,39 @@ class HarborTask(Task[HarborData]):
             return 0.0
 
 
-def harbor_cli() -> str:
-    scripts_dir = Path(sys.executable).parent
-    harbor_bin = shutil.which("harbor", path=str(scripts_dir))
-    if harbor_bin is None:
+async def download_task_dirs(config: HarborConfig) -> list[Path]:
+    """Resolve a dataset through Harbor and return its cached task directories."""
+    try:
+        from harbor.registry.client.factory import RegistryClientFactory
+        from harbor.registry.client.package import PackageDatasetClient
+    except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "Harbor tasksets require the Harbor CLI from the `harbor` extra. "
+            "Harbor tasksets require the `harbor` extra. "
             f"Install it with: `{HARBOR_INSTALL_HINT}`"
-        )
-    return harbor_bin
+        ) from exc
 
-
-def cache_dir(config: HarborConfig) -> Path:
-    selector_parts = [config.dataset]
     if config.repo is not None:
-        selector_parts.extend(("repo", config.repo))
-    if config.registry_path is not None:
-        registry_path = (
-            config.registry_path
-            if config.repo is not None
-            else config.registry_path.expanduser().resolve()
+        if config.registry_url is not None:
+            raise ValueError("repo and registry_url are mutually exclusive")
+        client = RegistryClientFactory.create(
+            repo=config.repo, registry_path=config.registry_path
         )
-        selector_parts.extend(("registry_path", str(registry_path)))
-    if config.registry_url is not None:
-        selector_parts.extend(("registry_url", config.registry_url))
-
-    name = config.dataset.replace("/", "_").replace("@", "_")
-    if len(selector_parts) > 1:
-        digest = hashlib.sha256("\0".join(selector_parts).encode()).hexdigest()[:12]
-        name = f"{name}_{digest}"
-    return CACHE / name
-
-
-def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
-    command = [
-        harbor_cli(),
-        "download",
-        config.dataset,
-        "--export",
-        "-o",
-        str(output_dir),
-    ]
-    if config.repo is not None:
-        command.extend(["--repo", config.repo])
-    if config.registry_path is not None:
+    elif "/" in config.dataset:
+        client = PackageDatasetClient()
+    else:
+        if config.registry_url is not None and config.registry_path is not None:
+            raise ValueError("registry_url and registry_path are mutually exclusive")
         registry_path = (
-            config.registry_path
-            if config.repo is not None
-            else config.registry_path.expanduser()
+            config.registry_path.expanduser()
+            if config.registry_path is not None
+            else None
         )
-        command.extend(["--registry-path", str(registry_path)])
-    if config.registry_url is not None:
-        command.extend(["--registry-url", config.registry_url])
-    return command
+        client = RegistryClientFactory.create(
+            registry_url=config.registry_url, registry_path=registry_path
+        )
 
-
-def dataset_dir(config: HarborConfig) -> Path:
-    """Download/cache a Hub or legacy-registry package selected by the config."""
-    out = cache_dir(config)
-    if out.is_dir():
-        return out
-
-    CACHE.mkdir(parents=True, exist_ok=True)
-    # Publish only a complete CLI export to the cache.
-    with tempfile.TemporaryDirectory(dir=CACHE) as temp:
-        export_dir = Path(temp) / "export"
-        command = download_command(config, export_dir)
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as exc:
-            message = (
-                f"Harbor download failed for {config.dataset!r} with exit code "
-                f"{exc.returncode}"
-            )
-            outputs = [
-                output.strip()
-                for output in (exc.stdout, exc.stderr)
-                if isinstance(output, str) and output.strip()
-            ]
-            if output := "\n".join(outputs):
-                message = f"{message}:\n{output}"
-            raise RuntimeError(message) from exc
-        try:
-            export_dir.rename(out)
-        except OSError:
-            if out.is_dir():
-                return out
-            raise
-    return out
+    items = await client.download_dataset(config.dataset, export=False)
+    return [item.downloaded_path for item in items]
 
 
 def resolve_image(
@@ -344,16 +287,20 @@ def make_tar(directory: Path) -> bytes:
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
     def load(self) -> Iterator[HarborTask]:
-        root = dataset_dir(self.config)
-        task_dirs = [
-            toml_path.parent
-            for toml_path in sorted(root.rglob("task.toml"))
-            if (toml_path.parent / "instruction.md").is_file()
-            and (
-                self.config.tasks is None or toml_path.parent.name in self.config.tasks
-            )
-        ]
+        # `load` is synchronous but is also called from async debug/server paths.
+        # The dedicated runner also keeps Harbor's loop-bound clients on one loop.
+        downloaded: list[Path] = _HARBOR_EXECUTOR.submit(
+            lambda: _HARBOR_RUNNER.run(download_task_dirs(self.config))
+        ).result()
+        task_dirs = sorted(
+            (
+                task_dir
+                for task_dir in downloaded
+                if self.config.tasks is None or task_dir.name in self.config.tasks
+            ),
+            key=lambda task_dir: task_dir.name,
+        )
         if not task_dirs:
-            raise ValueError(f"no harbor tasks found in {root}")
+            raise ValueError(f"no harbor tasks found in {self.config.dataset}")
         for idx, task_dir in enumerate(task_dirs):
             yield HarborTask(parse_task(task_dir, idx, self.config), self.config.task)
