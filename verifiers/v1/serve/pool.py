@@ -115,6 +115,9 @@ class EnvServerPool:
     def _spawn_worker(self) -> None:
         i = len(self.workers)  # upscale-only, so the next index is the current count
         address = f"ipc://{self._worker_path(i)}"
+        dealer = self.ctx.socket(zmq.DEALER)
+        dealer.setsockopt(zmq.LINGER, 0)
+        dealer.connect(address)  # connect before bind is fine — ZMQ queues
         proc = self._mpctx.Process(
             target=serve_env,
             kwargs=dict(
@@ -126,10 +129,6 @@ class EnvServerPool:
             ),
             daemon=False,
         )
-        proc.start()
-        dealer = self.ctx.socket(zmq.DEALER)
-        dealer.setsockopt(zmq.LINGER, 0)
-        dealer.connect(address)  # connect before bind is fine — ZMQ queues
         self.workers.append(
             {
                 "process": proc,
@@ -138,6 +137,7 @@ class EnvServerPool:
                 "index": i,
             }
         )
+        proc.start()
         if self._poller is not None:
             self._poller.register(dealer, zmq.POLLIN)
 
@@ -165,21 +165,21 @@ class EnvServerPool:
     async def run(self) -> None:
         self._poller = zmq.asyncio.Poller()
         self._poller.register(self.frontend, zmq.POLLIN)
-        # Elastic: start with one and scale up on demand. Otherwise pre-spawn the lot
-        # (`max_workers` is a concrete count when elastic is off).
-        for _ in range(1 if self.elastic else (self.max_workers or 1)):
-            self._spawn_worker()
-        # request_id -> {client_id, worker, rollout_slots}
-        pending: dict[bytes, dict] = {}
-        logger.info(
-            "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
-            self.address,
-            len(self.workers),
-            self._cap_str,
-            self.multiplex,
-            self.elastic,
-        )
         try:
+            # Elastic: start with one and scale up on demand. Otherwise pre-spawn the lot
+            # (`max_workers` is a concrete count when elastic is off).
+            for _ in range(1 if self.elastic else (self.max_workers or 1)):
+                self._spawn_worker()
+            # request_id -> {client_id, worker, rollout_slots}
+            pending: dict[bytes, dict] = {}
+            logger.info(
+                "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
+                self.address,
+                len(self.workers),
+                self._cap_str,
+                self.multiplex,
+                self.elastic,
+            )
             in_flight = 0
             while True:
                 events = dict(await self._poller.poll())
