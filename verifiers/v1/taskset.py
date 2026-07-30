@@ -25,7 +25,7 @@ from typing_extensions import TypeVar
 
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT, resolve_server_config
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 from verifiers.v1.utils.sampling import sample
 
 if TYPE_CHECKING:
@@ -52,7 +52,7 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     @classmethod
     def task_type(cls) -> type[Task]:
-        return generic_type(cls, Task, origin=Taskset) or Task
+        return concrete_type(cls, Task, origin=Taskset) or Task
 
     @abstractmethod
     def load(self) -> Iterable[TaskT]:

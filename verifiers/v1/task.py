@@ -39,7 +39,7 @@ from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, StrictBaseModel, content_text
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
@@ -128,12 +128,12 @@ ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 def task_data_cls(cls: type) -> type[TaskData]:
     """Resolve a task's `TaskData` specialization through its MRO, else `TaskData`."""
-    return generic_type(cls, TaskData) or TaskData
+    return concrete_type(cls, TaskData) or TaskData
 
 
 def task_config_cls(cls: type) -> type[TaskConfig]:
     """Resolve a task's `TaskConfig` specialization through its MRO, else `TaskConfig`."""
-    return generic_type(cls, TaskConfig) or TaskConfig
+    return concrete_type(cls, TaskConfig) or TaskConfig
 
 
 def resolve_server_config(

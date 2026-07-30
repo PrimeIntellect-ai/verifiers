@@ -8,7 +8,7 @@ from pydantic import ConfigDict
 from typing_extensions import TypeVar
 
 from verifiers.v1.types import StrictBaseModel
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 
 
 class State(StrictBaseModel):
@@ -20,4 +20,4 @@ StateT = TypeVar("StateT", bound=State, default=State)
 
 def state_cls(cls: type) -> type[State]:
     """Resolve a class's `State` specialization through its MRO, else `State`."""
-    return generic_type(cls, State) or State
+    return concrete_type(cls, State) or State
