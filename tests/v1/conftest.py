@@ -135,12 +135,6 @@ def _eval_config(
     `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
     harness one); `model` overrides the default text model (e.g. a VLM for an image task).
 
-    Temperature stays at the provider default: greedy decoding (`temperature=0`) made
-    flash-tier models repetition-loop to the token cap, flaking the tool-call tests.
-    `max_tokens` is generous headroom, not a target — these trivial tasks finish in a
-    few hundred tokens, so capping tighter only risks truncating the reasoning before
-    the answer (which tanks the reward).
-
     `harness=None` leaves every seat on its own story — the multi-agent case: there
     is no run-level harness, so a single-agent test's `harness` lands on the `agent`
     seat and a multi-agent test pins its seats through `env` role fields instead."""
