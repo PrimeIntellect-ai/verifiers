@@ -214,30 +214,40 @@ class JudgeTask(vf.Task):
         trace.info["verdict"] = json.loads(raw)
 
 
+class TextFile(vf.BaseConfig):
+    """An explicit file-backed text value for config formats without `Path` values."""
+
+    path: Path
+
+
+TextSource = str | Path | TextFile
+
+
 class JudgeTaskConfig(vf.BaseConfig):
     """The judge's minted task: the grading policy and what lands in its box."""
 
-    prompt: Path | str | None = None
-    """Grading policy, either inline or a `.md`/`.txt` file. Replaces only the
-    policy body — the verdict contract and workspace note are always appended.
-    May reference `{prompt}` (the solver task's prompt); if it doesn't, the task
+    prompt: TextSource | None = None
+    """Grading policy: a string is inline text; a `Path` in Python or
+    `{ path = "policy.md" }` in config reads a file. Replaces only the policy
+    body — the verdict contract and workspace note are always appended. May
+    reference `{prompt}` (the solver task's prompt); if it doesn't, the task
     statement is appended after."""
-    hint: Path | str | None = None
-    """Optional inline hints or a `.md`/`.txt` hints file, injected as their own
-    section: task-family pointers into the trace or box — e.g. for math, where
-    the reference answer lives in the record; for SWE, to diff the repo or read
-    `info.patch`."""
+    hint: TextSource | None = None
+    """Optional hints, with the same explicit inline/file forms as `prompt`,
+    injected as their own section: task-family pointers into the trace or box —
+    e.g. for math, where the reference answer lives in the record; for SWE, to
+    diff the repo or read `info.patch`."""
     rubric: Path | None = None
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
     files work for both. None grades the single built-in `solved` criterion."""
 
     @staticmethod
-    def _resolve(value: Path | str) -> str:
-        path = Path(value)
-        if isinstance(value, Path) or path.suffix in (".md", ".txt"):
-            return path.read_text(encoding="utf-8")
-        return str(value)
+    def _resolve(value: TextSource) -> str:
+        if isinstance(value, str):
+            return value
+        path = value if isinstance(value, Path) else value.path
+        return path.read_text(encoding="utf-8")
 
     def build_prompt(self) -> str:
         if self.prompt is None:

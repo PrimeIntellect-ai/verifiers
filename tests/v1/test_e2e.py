@@ -413,7 +413,10 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
                 "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
             },
-            "task": {"prompt": str(policy)},
+            "task": {
+                "prompt": {"path": str(policy)},
+                "hint": "Do not rely on README.md",
+            },
             "score": {"task_weight": 0.5},
         },
         output_dir=tmp_path,
