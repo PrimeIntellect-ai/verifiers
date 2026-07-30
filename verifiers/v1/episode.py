@@ -9,10 +9,10 @@ from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.trace import AgentConfigT, Error, Trace
-from verifiers.v1.types import StrictBaseModel, Usage
+from verifiers.v1.types import Usage
 
 
-class EnvInfo(StrictBaseModel):
+class EnvInfo(BaseModel):
     """The env that ran the episode, self-describing without the run's config."""
 
     id: str = ""

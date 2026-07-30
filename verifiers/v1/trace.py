@@ -27,7 +27,6 @@ from verifiers.v1.types import (
     KeptTokens,
     Messages,
     Sampling,
-    StrictBaseModel,
     Tool,
     ToolMessage,
     Usage,
@@ -50,7 +49,7 @@ EXCLUDE_FIELDS: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
 
 
-class TimeSpan(StrictBaseModel):
+class TimeSpan(BaseModel):
     """Wall-clock timestamps with a derived, non-serialized duration in seconds."""
 
     start: float = 0.0
@@ -61,7 +60,7 @@ class TimeSpan(StrictBaseModel):
         return max(0.0, self.end - self.start) if self.end else 0.0
 
 
-class TimeSplit(StrictBaseModel):
+class TimeSplit(BaseModel):
     """Records a measured duration in seconds."""
 
     duration: float = 0.0
@@ -72,7 +71,7 @@ class GenerationSpan(TimeSpan):
     harness: TimeSplit = Field(default_factory=TimeSplit)
 
 
-class Timing(StrictBaseModel):
+class Timing(BaseModel):
     start: float = Field(default_factory=time.time)
     boot: TimeSpan = Field(default_factory=TimeSpan)
     setup: TimeSpan = Field(default_factory=TimeSpan)
@@ -81,14 +80,14 @@ class Timing(StrictBaseModel):
     scoring: TimeSpan = Field(default_factory=TimeSpan)
 
 
-class Error(StrictBaseModel):
+class Error(BaseModel):
     type: str
     message: str
     status_code: int | None = None
     traceback: str | None = None
 
 
-class VersionInfo(StrictBaseModel):
+class VersionInfo(BaseModel):
     version: str
     commit: str | None = None
 
@@ -104,7 +103,7 @@ def _current_build() -> VersionInfo:
 AgentConfigT = TypeVar("AgentConfigT", bound=AgentConfig, default=AgentConfig)
 
 
-class AgentInfo(StrictBaseModel, Generic[AgentConfigT]):
+class AgentInfo(BaseModel, Generic[AgentConfigT]):
     config: AgentConfigT
     """The resolved config that rebuilds the agent (`Agent(trace.agent.config)`)."""
     runtime: RuntimeInfo | None = None
@@ -115,7 +114,7 @@ class AgentInfo(StrictBaseModel, Generic[AgentConfigT]):
     """Whether this trace's tokens train the run's policy."""
 
 
-class TraceTask(StrictBaseModel, Generic[DataT]):
+class TraceTask(BaseModel, Generic[DataT]):
     """The task as recorded on the trace, self-describing without the run's config."""
 
     type: str
@@ -124,7 +123,7 @@ class TraceTask(StrictBaseModel, Generic[DataT]):
     """The (immutable) row being solved."""
 
 
-class Reward(StrictBaseModel):
+class Reward(BaseModel):
     score: float
     weight: float = 1.0
 
@@ -133,14 +132,14 @@ class Reward(StrictBaseModel):
         return self.score * self.weight
 
 
-class EvalRunInfo(StrictBaseModel):
+class EvalRunInfo(BaseModel):
     type: Literal["eval"] = "eval"
 
     id: str
     step: int | None = None
 
 
-class TrainRunInfo(StrictBaseModel):
+class TrainRunInfo(BaseModel):
     type: Literal["train"] = "train"
 
     id: str
@@ -151,7 +150,7 @@ RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
 """The run a trace belongs to, discriminated on `type`."""
 
 
-class ModelCall(StrictBaseModel):
+class ModelCall(BaseModel):
     """A model call, automatically recorded at intercept time."""
 
     node: int | None = None
@@ -172,7 +171,7 @@ class ModelCall(StrictBaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
 
 
-class Branch(StrictBaseModel):
+class Branch(BaseModel):
     """A root-to-leaf graph path; each branch becomes one training sample."""
 
     index: int

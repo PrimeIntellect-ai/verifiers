@@ -4,14 +4,13 @@ Tool servers synchronize it through the interception state channel. It is exclud
 from serialized traces; persist artifacts in `Trace.info` instead.
 """
 
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict
 from typing_extensions import TypeVar
 
-from verifiers.v1.types import StrictBaseModel
 from verifiers.v1.utils.generic import generic_type
 
 
-class State(StrictBaseModel):
+class State(BaseModel):
     model_config = ConfigDict(ser_json_inf_nan="constants")
 
 

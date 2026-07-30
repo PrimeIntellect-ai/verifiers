@@ -17,10 +17,9 @@ import re
 import tomllib
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 import verifiers.v1 as vf
-from verifiers.v1.types import StrictBaseModel
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
@@ -36,7 +35,7 @@ TASK_SECTION = """\
 {prompt}"""
 
 
-class Criterion(StrictBaseModel):
+class Criterion(BaseModel):
     """One rubric criterion — the plugged rubric judge's format, mirrored so the
     same `criteria` files grade both judges."""
 
