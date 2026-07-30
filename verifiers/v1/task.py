@@ -50,27 +50,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _requires_runtime(fn) -> bool:
-    param = inspect.signature(fn).parameters.get("runtime")
-    # A defaulted runtime parameter can still be called offline with None.
-    return param is not None and param.default is inspect.Parameter.empty
-
-
-def _record_result(
-    trace: Trace,
-    name: str,
-    result,
-    weight: float | None = None,
-) -> None:
-    """Record a scalar or keyed scoring result."""
-    values = list(result.items()) if isinstance(result, Mapping) else [(name, result)]
-    for key, value in values:
-        if weight is None:
-            trace.record_metric(key, value)
-        else:
-            trace.record_reward(key, value, weight)
-
-
 class TaskResources(StrictBaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -239,6 +218,11 @@ class Task(Generic[DataT, StateT, ConfigT]):
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
+        def requires_runtime(fn) -> bool:
+            param = inspect.signature(fn).parameters.get("runtime")
+            # A defaulted runtime parameter can still be called offline with None.
+            return param is not None and param.default is inspect.Parameter.empty
+
         judges = self.plugged_judges()
         available = {"task": self.data, "trace": trace}
         if runtime is not None:
@@ -249,36 +233,50 @@ class Task(Generic[DataT, StateT, ConfigT]):
             rewards = discover_decorated(self, "reward")
             if runtime is None:
                 skipped = [
-                    fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)
+                    fn.__name__ for fn in (*metrics, *rewards) if requires_runtime(fn)
                 ] + [
                     judge.reward_name
                     for judge in judges
-                    if _requires_runtime(judge.score)
+                    if requires_runtime(judge.score)
                 ]
                 if skipped:
                     logger.info(
                         "score: no runtime — skipped runtime-dependent signals: %s",
                         skipped,
                     )
-                metrics = [fn for fn in metrics if not _requires_runtime(fn)]
-                rewards = [fn for fn in rewards if not _requires_runtime(fn)]
+                metrics = [fn for fn in metrics if not requires_runtime(fn)]
+                rewards = [fn for fn in rewards if not requires_runtime(fn)]
                 judges = [
-                    judge for judge in judges if not _requires_runtime(judge.score)
+                    judge for judge in judges if not requires_runtime(judge.score)
                 ]
 
             metric_results = await invoke_all(metrics, available)
             for fn, result in zip(metrics, metric_results):
-                _record_result(trace, fn.__name__, result)
+                if isinstance(result, Mapping):
+                    trace.record_metrics(result)
+                else:
+                    trace.record_metric(fn.__name__, result)
             reward_results = await invoke_all(rewards, available)
             for fn, result in zip(rewards, reward_results):
-                _record_result(
-                    trace, fn.__name__, result, getattr(fn, "_vf_weight", 1.0)
+                weight = getattr(fn, "_vf_weight", 1.0)
+                items = (
+                    result.items()
+                    if isinstance(result, Mapping)
+                    else [(fn.__name__, result)]
                 )
+                for key, value in items:
+                    trace.record_reward(key, value, weight)
             judge_results = await invoke_all(
                 [judge.score for judge in judges], available
             )
             for judge, result in zip(judges, judge_results):
-                _record_result(trace, judge.reward_name, result, judge.config.weight)
+                items = (
+                    result.items()
+                    if isinstance(result, Mapping)
+                    else [(judge.reward_name, result)]
+                )
+                for key, value in items:
+                    trace.record_reward(key, value, judge.config.weight)
 
 
 TaskT = TypeVar("TaskT", bound=Task)
