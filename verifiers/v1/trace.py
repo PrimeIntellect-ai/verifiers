@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
-from pydantic import Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr
 from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
@@ -298,7 +298,7 @@ class Branch(StrictBaseModel):
         return self.num_total_tokens - self.num_output_tokens
 
 
-class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
+class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     version: int = TRACE_VERSION
     """The trace schema this trace serializes as."""
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)

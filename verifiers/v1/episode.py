@@ -3,51 +3,79 @@
 import uuid
 from typing import Generic
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.trace import AgentConfigT, Error, Trace
-from verifiers.v1.types import StrictBaseModel
+from verifiers.v1.types import StrictBaseModel, Usage
 
 
-class Episode(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
-    """One run of a task, whole: its identity and standing (`id`, `env`, `errors`)
-    next to its flat `traces` — the object `finalize()` receives, the engine
-    returns, and the durability envelope: one episode is one `traces.jsonl` line
-    and one serve reply, so it persists and arrives whole or not at all — a torn
-    line is the whole episode owed again, and a failure before any trace minted
-    still leaves its errors here. Episode standing lives ONLY here (zero
-    redundancy on the traces); per-trace facts (`agent`, per-trace errors) stay
-    on the traces, which remain the atomic unit.
+class EnvInfo(StrictBaseModel):
+    """The env that ran the episode, self-describing without the run's config."""
 
-    `errors` are failures not attributable to any one trace (the env's
-    `run`/`finalize` hooks, plus prior attempts' when retried).
+    id: str = ""
+    """`EnvConfig.env_id`, e.g. `agentic-judge+gsm8k-v1`."""
 
-    The type parameters serve the wire loaders: `WireEpisode` reads any taskset's
-    episodes without importing the taskset."""
+
+class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
+    """The artifact Env.run produces. Contains multiple agents' traces."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    env: str = ""
-    """The env that ran the episode (`EnvConfig.env_id`, e.g.
-    `agentic-judge+gsm8k-v1`)."""
+
+    env: EnvInfo = Field(default_factory=EnvInfo)
+    """The env that produced this episode."""
     ok: bool = False
-    """THE success sentinel — the resume unit's keep-verdict, stamped by the
-    engine when the final attempt's hooks and every trace concluded clean.
-    Distinct from `errors` emptiness: a retried-and-recovered episode is `ok`
-    and still keeps its earlier attempts' errors."""
+    """Whether the episode completed successfully."""
     errors: list[Error] = Field(default_factory=list)
+    """Every error captured across attempts, oldest to newest."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
+    """Every agent's trace, in completion order."""
 
     @property
-    def error(self) -> Error | None:
+    def last_error(self) -> Error | None:
+        """The last episode-level error captured across attempts."""
         return self.errors[-1] if self.errors else None
+
+    @property
+    def usage(self) -> Usage | None:
+        """Provider-reported usage summed across every trace's model calls;
+        judge/off-graph usage stays on the traces (`Trace.extra_usage`)."""
+        return Usage.aggregate(u for t in self.traces if (u := t.usage) is not None)
+
+    @property
+    def num_input_tokens(self) -> int:
+        """Fed-in tokens (system + user + tool), summed across traces."""
+        return sum(t.num_input_tokens for t in self.traces)
+
+    @property
+    def num_output_tokens(self) -> int:
+        """Model-generated tokens across all turns, summed across traces."""
+        return sum(t.num_output_tokens for t in self.traces)
+
+    @property
+    def num_total_tokens(self) -> int:
+        """Final sequence lengths per branch, summed across traces."""
+        return sum(t.num_total_tokens for t in self.traces)
+
+    @property
+    def num_turns(self) -> int:
+        """Sampled turns, summed across traces."""
+        return sum(t.num_turns for t in self.traces)
+
+    @property
+    def by_agent(self) -> dict[str, list[Trace[DataT, StateT, AgentConfigT]]]:
+        """Traces grouped by agent name (e.g. n solvers), in completion order."""
+        grouped: dict[str, list[Trace[DataT, StateT, AgentConfigT]]] = {}
+        for trace in self.traces:
+            grouped.setdefault(trace.agent.name, []).append(trace)
+        return grouped
 
     @classmethod
     def of(cls, trace: Trace, env: str = "") -> "Episode":
         """The single-agent record: one trace as its own episode."""
-        return cls(env=env, traces=[trace], ok=trace.ok)
+        return cls(env=EnvInfo(id=env), traces=[trace], ok=trace.ok)
 
 
 WireEpisode = Episode[WireTaskData, State, WireAgentConfig]

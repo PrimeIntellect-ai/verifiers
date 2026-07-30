@@ -84,7 +84,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     episodes = read_episodes(
         source, Trace[WireTaskData, state_cls(task_cls), WireAgentConfig]
     )
-    sourced = [(trace, e.env) for e in episodes for trace in e.traces]
+    sourced = [(trace, e.env.id) for e in episodes for trace in e.traces]
     if config.num_traces is not None:
         sourced = sourced[: config.num_traces]
     traces = [trace for trace, _ in sourced]

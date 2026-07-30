@@ -393,18 +393,19 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     phase_count: dict[str, int] = {}
     model_secs = harness_secs = 0.0
     for trace in done:
-        prompt, completion, cached, reasoning, _ = _tokens(trace)
-        total_in += prompt
-        total_out += completion
-        if cached is not None:
-            total_cached += cached
-            have_cached = True
-        if reasoning is not None:
-            total_reasoning += reasoning
-            have_reasoning = True
-        if trace.usage is not None and trace.usage.cost is not None:
-            total_cost += trace.usage.cost
-            have_cost = True
+        total_in += trace.num_input_tokens
+        total_out += trace.num_output_tokens
+        usage = trace.usage
+        if usage is not None:
+            if usage.cached_input_tokens is not None:
+                total_cached += usage.cached_input_tokens
+                have_cached = True
+            if usage.reasoning_tokens is not None:
+                total_reasoning += usage.reasoning_tokens
+                have_reasoning = True
+            if usage.cost is not None:
+                total_cost += usage.cost
+                have_cost = True
         # Judge / auxiliary scoring calls (off the message graph) shown separately from the agent's.
         judge = Usage.aggregate(trace.extra_usage)
         if judge is not None:
@@ -462,26 +463,6 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     if time_segments:
         grid.add_row("time", "  ·  ".join(time_segments))
     return grid if grid.row_count else None
-
-
-def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
-    """Input/output tokens summed across all branches: per branch, output is every assistant
-    (completion) token generated across its turns and input is the fed-in tokens counted once
-    (system + user + tool) — the final sequence minus everything the model generated. A rollout
-    yields one training sample per branch (a linear trace is a single branch; compaction and
-    subagents add more), so the totals sum them — matching `Trace.num_input_tokens` /
-    `Trace.num_output_tokens`, whose sum is `num_total_tokens`.
-
-    Both counts come from provider-reported usage. Returns the branch count from the same derived
-    view so each dashboard tick materializes it once."""
-    usage = trace.usage
-    cached = usage.cached_input_tokens if usage else None
-    reasoning = usage.reasoning_tokens if usage else None
-    branches = trace.branches
-    nbranches = len(branches)
-    prompt = sum(b.num_input_tokens for b in branches)
-    completion = sum(b.num_output_tokens for b in branches)
-    return prompt, completion, cached, reasoning, nbranches
 
 
 def _stage(trace: Trace) -> str:
@@ -551,7 +532,9 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
             base = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
             if not slot.traces:
                 if slot.done:  # the env's rollout() itself failed before any trace
-                    error = slot.episode.error if slot.episode is not None else None
+                    error = (
+                        slot.episode.last_error if slot.episode is not None else None
+                    )
                     group_rows.append(
                         (
                             "error",
@@ -612,8 +595,12 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     )
                     or now
                 )
-                prompt, completion, cached, reasoning, nbranches = _tokens(t)
-                cost = t.usage.cost if t.usage else None
+                prompt, completion = t.num_input_tokens, t.num_output_tokens
+                nbranches = t.num_branches
+                usage = t.usage
+                cached = usage.cached_input_tokens if usage else None
+                reasoning = usage.reasoning_tokens if usage else None
+                cost = usage.cost if usage else None
                 tokens = ""
                 if prompt or completion:
                     tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
