@@ -31,7 +31,7 @@ Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA,
 - `reflection_model` / `reflection_client` — model/endpoint that proposes new prompts (default: reuse `model` / `client`)
 - `num_train` / `num_val` — train tasks for reflection minibatches and held-out val tasks for the pareto frontier (defaults: 100 / 50)
 - `max_total_rollouts` — total rollouts the run may spend (default: 500)
-- `max_concurrent` / `-c` — caps how many rollouts are in flight at once (default: 128)
+- `max_concurrent` / `-c` — caps how many episodes are in flight at once (default: 128)
 
 ## Output
 

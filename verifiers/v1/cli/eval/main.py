@@ -24,7 +24,7 @@ from verifiers.v1.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run eval [<taskset-id>] [--env.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
+    "usage: uv run eval [<taskset-id>] [--env.id <id>] [--legacy.id <env-id> (v0)] [options] [@ file.toml]\n"
     "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
 )
 
@@ -49,12 +49,14 @@ def main(argv: list[str] | None = None) -> None:
             )
         config = load_resume_config(resume_dir)
     else:
-        legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
-        # An env-block flag (or a retired flat axis) skips the usage gate so the
-        # typed parse renders its did-you-mean / pointer to the new flags instead
-        # of a bare usage line.
+        legacy_id = any(
+            a == "--legacy.id" or a.startswith("--legacy.id=") for a in argv
+        )
+        # An env-block flag (or a since-moved flat axis) skips the usage gate so the
+        # typed parse renders its did-you-mean instead of a bare usage line.
         typed_axis = any(
-            a.startswith(("--env.", "--taskset.", "--harness.")) for a in argv
+            a.startswith(("--env.", "--taskset.", "--harness.", "--serve."))
+            for a in argv
         )
         if (
             not extract_id(argv, "env.taskset")
@@ -64,7 +66,7 @@ def main(argv: list[str] | None = None) -> None:
         ):
             raise SystemExit(
                 USAGE
-            )  # need a taskset (positional / --env.taskset.id), a legacy --id, or a @ file.toml
+            )  # need a taskset (positional / --env.taskset.id), a v0 --legacy.id, or a @ file.toml
 
         with plugin_errors():
             config_type = narrow_config(EvalConfig, argv)

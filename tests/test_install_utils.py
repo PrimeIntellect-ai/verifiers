@@ -1,5 +1,5 @@
-import sys
-from unittest.mock import MagicMock, patch
+from importlib.metadata import PackageNotFoundError
+from unittest.mock import patch
 
 import pytest
 
@@ -80,58 +80,32 @@ class TestIsHubEnv:
 
 
 class TestIsInstalled:
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_installed_no_version_check(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Name: gsm8k\nVersion: 1.0.0\n"
-        )
+    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    def test_installed_no_version_check(self, mock_version):
         assert is_installed("gsm8k") is True
-        mock_run.assert_called_once_with(
-            ["uv", "pip", "show", "--python", sys.executable, "gsm8k"],
-            capture_output=True,
-            text=True,
-        )
+        mock_version.assert_called_once_with("gsm8k")
 
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_not_installed(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stdout="")
+    @patch("verifiers.utils.install_utils.package_version")
+    def test_not_installed(self, mock_version):
+        mock_version.side_effect = PackageNotFoundError("gsm8k")
         assert is_installed("gsm8k") is False
 
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_installed_version_matches(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Name: gsm8k\nVersion: 1.0.0\n"
-        )
+    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    def test_installed_version_matches(self, mock_version):
         assert is_installed("gsm8k", version="1.0.0") is True
 
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_installed_version_mismatch(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Name: gsm8k\nVersion: 1.0.0\n"
-        )
+    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    def test_installed_version_mismatch(self, mock_version):
         assert is_installed("gsm8k", version="2.0.0") is False
 
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_latest_version_skips_check(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Name: gsm8k\nVersion: 1.0.0\n"
-        )
+    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    def test_latest_version_skips_check(self, mock_version):
         assert is_installed("gsm8k", version="latest") is True
 
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_normalizes_package_name(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
+    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    def test_normalizes_package_name(self, mock_version):
         is_installed("my-package")
-        mock_run.assert_called_once_with(
-            ["uv", "pip", "show", "--python", sys.executable, "my_package"],
-            capture_output=True,
-            text=True,
-        )
-
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_exception_returns_false(self, mock_run):
-        mock_run.side_effect = Exception("subprocess error")
-        assert is_installed("gsm8k") is False
+        mock_version.assert_called_once_with("my_package")
 
 
 class TestCheckHubEnvInstalled:

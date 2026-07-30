@@ -95,7 +95,7 @@ def _limits(config: EvalConfig) -> list[str]:
             toks.append(f"{label}≤{v}")
     turns = _seat_value(config, lambda spec: spec.max_turns)
     return [
-        f"≤{config.max_concurrent} concurrent"
+        f"≤{config.max_concurrent} episodes"
         if config.max_concurrent
         else "no concurrency cap",
         "per-seat turn caps"
