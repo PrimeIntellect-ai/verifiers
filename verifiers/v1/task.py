@@ -137,16 +137,6 @@ DataT = TypeVar("DataT", bound=TaskData)
 ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 
-def task_data_cls(cls: type) -> type[TaskData]:
-    """Resolve a task's `TaskData` specialization through its MRO, else `TaskData`."""
-    return concrete_type(cls, TaskData) or TaskData
-
-
-def task_config_cls(cls: type) -> type[TaskConfig]:
-    """Resolve a task's `TaskConfig` specialization through its MRO, else `TaskConfig`."""
-    return concrete_type(cls, TaskConfig) or TaskConfig
-
-
 def resolve_server_config(
     owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
 ) -> BaseConfig:
@@ -174,40 +164,18 @@ def resolve_server_config(
 
 class Task(Generic[DataT, StateT, ConfigT]):
     NEEDS_CONTAINER: ClassVar[bool] = False
-    """Whether the task needs a containerized environment (isolated filesystem, etc.)."""
+    """Whether the task needs a containerized environment (isolated filesystem, ...)."""
 
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
-        self.config = config if config is not None else task_config_cls(type(self))()
+        self.config = config if config is not None else self.config_type()()
 
     def with_system_prompt(self, system_prompt: str) -> Self:
-        """A shallow copy of this task with `data.system_prompt` overridden. Copies the
-        instance instead of reconstructing via `type(self)(...)`, so a subclass with a
-        non-`(data, config)` constructor or extra load-time state keeps it. Used to apply the
-        config-layer / GEPA system prompt (see `TasksetConfig` and `verifiers.v1.gepa`)."""
         clone = copy.copy(self)
         clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
         return clone
-
-    def plugged_judges(self) -> list[Judge]:
-        from verifiers.v1.loaders import load_judge
-
-        return [load_judge(config) for config in self.config.judges]
-
-    def server_config(self, server_cls: type) -> BaseConfig:
-        """The config a declared server class (`tools`) is built with (see
-        `resolve_server_config`). Override to pair explicitly."""
-        return resolve_server_config(
-            type(self).__name__,
-            self.config,
-            server_cls,
-            sole=len(set(type(self).tools)) == 1,
-        )
-
-    def tool_servers(self) -> list[Toolset]:
-        return [cls(self.server_config(cls)) for cls in type(self).tools]
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
@@ -282,6 +250,30 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 )
                 for key, value in items:
                     trace.record_reward(key, value, judge.config.weight)
+
+    @classmethod
+    def data_type(cls) -> type[TaskData]:
+        return concrete_type(cls, TaskData) or TaskData
+
+    @classmethod
+    def config_type(cls) -> type[TaskConfig]:
+        return concrete_type(cls, TaskConfig) or TaskConfig
+
+    def plugged_judges(self) -> list[Judge]:
+        from verifiers.v1.loaders import load_judge
+
+        return [load_judge(config) for config in self.config.judges]
+
+    def server_config(self, server_cls: type) -> BaseConfig:
+        return resolve_server_config(
+            type(self).__name__,
+            self.config,
+            server_cls,
+            sole=len(set(type(self).tools)) == 1,
+        )
+
+    def tool_servers(self) -> list[Toolset]:
+        return [cls(self.server_config(cls)) for cls in type(self).tools]
 
 
 TaskT = TypeVar("TaskT", bound=Task)

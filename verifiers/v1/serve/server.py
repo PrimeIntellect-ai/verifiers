@@ -22,7 +22,7 @@ from verifiers.v1.serve.types import (
     RunRequest,
     RunResponse,
 )
-from verifiers.v1.task import Task, task_data_cls
+from verifiers.v1.task import Task
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class EnvServer:
         self.taskset_id = config.taskset.id
         self.env = load_environment(config)
         self.task_cls = type(self.env.taskset).task_type()
-        self.data_cls = task_data_cls(self.task_cls)
+        self.data_cls = self.task_cls.data_type()
         # A dispatched task is its client-side model_dump(): a field excluded from
         # serialization would vanish on the wire and rebuild silently defaulted, so
         # refuse to serve such a taskset.
