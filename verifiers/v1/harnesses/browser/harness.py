@@ -13,10 +13,6 @@ from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
-DEFAULT_BROWSER_IMAGE = (
-    "mcr.microsoft.com/playwright/python:v1.61.0-noble@"
-    "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
-)
 
 # The helper names and persistence rules the model needs to use the local tool.
 BROWSER_SYSTEM_PROMPT = """You are a browser automation agent. Your `browser` tool executes Python code that controls a real Chromium over CDP through browser-harness; its helpers are pre-imported.
@@ -55,7 +51,6 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
-    DEFAULT_RUNTIME_IMAGE = DEFAULT_BROWSER_IMAGE
     # The browser tool executes model-authored Python through a third-party daemon.
     NEEDS_CONTAINER = True
 
