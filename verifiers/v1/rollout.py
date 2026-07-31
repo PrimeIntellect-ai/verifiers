@@ -27,7 +27,6 @@ from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.dialects import parse_message
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -70,12 +69,6 @@ class RolloutTimeouts:
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None
     """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
-
-
-def _as_messages(raw: Messages) -> Messages:
-    """A turn's messages may arrive typed or as wire dicts (env code naturally
-    writes `{"role": "user", ...}`); the trace speaks typed, so normalize here."""
-    return [parse_message(m) if isinstance(m, dict) else m for m in raw]
 
 
 @asynccontextmanager
