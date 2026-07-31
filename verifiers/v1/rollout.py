@@ -97,7 +97,12 @@ async def _serve_interception(
         [server.config for server in servers],
         shared_tools.values(),
     )
-    server = InterceptionServer(requires_tunnel=tunneled)
+    server = InterceptionServer(
+        requires_tunnel=tunneled,
+        state_service_secrets=tuple(
+            tool.state_secret for tool in shared_tools.values() if tool.state_secret
+        ),
+    )
     async with server, server.acquire(session) as slot:
         yield slot
 
@@ -271,7 +276,11 @@ class RolloutRun:
             # The harness reaches the model at `{base_url}/v1`; tool servers reach this
             # rollout's `/state` + `/task` at `base_url` — it's universally reachable
             # (the interception is exposed whenever any consumer is remote).
-            base_url, secret = await self._stack.enter_async_context(
+            (
+                base_url,
+                model_secret,
+                state_secret,
+            ) = await self._stack.enter_async_context(
                 _serve_interception(
                     self._interception,
                     runtime,
@@ -281,13 +290,14 @@ class RolloutRun:
                 )
             )
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
-            self._secret = secret
+            self._secret = model_secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
                     runtime,
                     shared=self._shared_tools,
-                    state_secret=secret,
+                    state_secret=state_secret,
+                    state_route=self.trace.id,
                     state_base=base_url,
                 )
             )

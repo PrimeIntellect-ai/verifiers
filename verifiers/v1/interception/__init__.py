@@ -54,16 +54,19 @@ def requires_tunnel(
 
 
 def make_interception(
-    config: InterceptionConfig, *, requires_tunnel: bool
+    config: InterceptionConfig,
+    *,
+    requires_tunnel: bool,
+    state_service_secrets: tuple[str, ...] = (),
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
     `make_runtime`). With `requires_tunnel`, each server is exposed through its configured
     tunnel; otherwise it remains on host loopback. The caller computes this requirement."""
     if isinstance(config, InterceptionServerConfig):
-        return InterceptionServer(config, requires_tunnel)
+        return InterceptionServer(config, requires_tunnel, state_service_secrets)
     if isinstance(config, StaticInterceptionPoolConfig):
-        return StaticInterceptionPool(config, requires_tunnel)
-    return ElasticInterceptionPool(config, requires_tunnel)
+        return StaticInterceptionPool(config, requires_tunnel, state_service_secrets)
+    return ElasticInterceptionPool(config, requires_tunnel, state_service_secrets)
 
 
 __all__ = [
