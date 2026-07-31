@@ -3,8 +3,8 @@
 `TaskData` is the wire half: a frozen pydantic model carrying the data which
 initializes a task instance. Rides on `trace.task.data` in `traces.jsonl`.
 
-`Task` is the behavior half: runtime prep (`setup`/`finalize`), tool declarations
-(`tools`), and scoring (`@reward`/`@metric`) methods.
+`Task` is the behavior half: runtime prep (`setup`/`finalize`), tool servers
+(`toolsets`), and scoring (`@reward`/`@metric`) methods.
 """
 
 from __future__ import annotations

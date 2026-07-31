@@ -183,8 +183,8 @@ Choose placement from the tool's lifetime and filesystem needs:
 
 - **Task-scoped, own runtime:** construct the server in `Task.toolsets` with a `vf.ToolsetConfig` field. One server is launched per rollout. The default subprocess runtime is inexpensive and host-side.
 - **Task-scoped, colocated:** set `colocated = true` on its `ToolsetConfig` when the tool must see the harness's filesystem or processes. It still launches once per rollout.
-- **Taskset-scoped, shared:** parameterize the toolset with `vf.SharedToolsetConfig`, put the matching config field directly on `TasksetConfig`, and construct the server in `Taskset.toolsets`.
-- **Existing remote service:** set `url` on the matching toolset config. Verifiers connects to the streamable-HTTP MCP endpoint instead of launching the class locally.
+- **Taskset-scoped, shared:** parameterize the toolset with `vf.SharedToolsetConfig`, put its config field directly on `TasksetConfig`, and construct the server in `Taskset.toolsets`.
+- **Existing remote service:** set `url` on the toolset's config. Verifiers connects to the streamable-HTTP MCP endpoint instead of launching the class locally.
 
 ## User simulation
 

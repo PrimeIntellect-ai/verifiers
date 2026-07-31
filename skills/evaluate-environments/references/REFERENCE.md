@@ -235,7 +235,7 @@ Elastic pool: start at one worker and scale up on demand.
 
 `.name` → the package name (id with org / version stripped).
 
-A taskset implements `load()` and declares exactly one task type through its generic base. It may also declare task-agnostic tool classes on `Taskset.tools`; those servers are shared by the rollouts handled by one environment worker.
+A taskset implements `load()` and declares exactly one task type through its generic base. It may also construct task-agnostic tool servers in `Taskset.toolsets`; those servers are shared by the rollouts handled by one environment worker.
 
 ### Task config
 
@@ -460,11 +460,11 @@ Per-row wall-clock timeout requests, in seconds, one for each rollout stage. For
 
 ## Toolset config
 
-`verifiers/v1/mcp/toolset.py`. Tool scope is structural: a class declared on `Task.tools` is task-scoped, while a class declared on `Taskset.tools` is shared by one environment worker. The framework finds the matching config field by the toolset's generic config type. Subclass either config to add knobs consumed by the tool's `@vf.tool` methods.
+`verifiers/v1/mcp/toolset.py`. Tool scope follows the classmethod that constructs the server: `Task.toolsets(config)` is task-scoped, `Taskset.toolsets(config)` is shared by one environment worker. Each returns `Toolset` instances the author constructs with the config field they read (`return [SearchToolset(config.tools)]`), so server and config are paired explicitly. Subclass either config to add knobs consumed by the tool's `@vf.tool` methods. Constructing a `Toolset` starts nothing — the instances describe what to serve, and are built for validation and tunnel sizing before any task exists, so keep `toolsets()` cheap and side-effect-free; expensive work belongs in `setup()` or `setup_task()`.
 
-### `ToolsetConfig` — `Task.tools`
+### `ToolsetConfig` — `Task.toolsets`
 
-A task-scoped server is launched per rollout. Its matching config field normally lives on `TaskConfig`, under `--env.taskset.task.*`.
+A task-scoped server is launched per rollout. Its config field normally lives on `TaskConfig`, under `--env.taskset.task.*`.
 
 The default placement is the toolset's own subprocess runtime on the host, where verifiers and the taskset package are already installed. The harness reaches that server over the host network when local or through a tunnel when remote. `colocated` instead runs the server inside the harness runtime; this is useful when both must see the same filesystem or processes, but a remote sandbox must then upload and install verifiers plus the taskset package for every rollout.
 
@@ -474,9 +474,9 @@ The default placement is the toolset's own subprocess runtime on the host, where
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The server's own runtime when not colocated. Select Docker/Prime/Modal to isolate it from the host. See [Runtime configs](#runtime-configs). |
 | `url` | `str \| None` | `None` | Existing streamable-HTTP MCP endpoint. When set, verifiers connects to it instead of launching the class, so placement fields do not take effect. |
 
-### `SharedToolsetConfig` — `Taskset.tools`
+### `SharedToolsetConfig` — `Taskset.toolsets`
 
-A taskset-scoped tool uses one framework-launched server per environment worker, or reuses a configured external `url` without launching a server. Its matching config field lives directly on the taskset config, not under `task`.
+A taskset-scoped tool uses one framework-launched server per environment worker, or reuses a configured external `url` without launching a server. Its config field lives directly on the taskset config, not under `task`.
 
 The framework-launched form is intended for expensive task-agnostic setup such as loading a corpus, index, or graph: `setup()` runs once per worker and `setup_task()` is not called because no single row owns the server. A vf-native shared tool may still use mutable `self.state`; the framework attaches each calling rollout's state channel to the shared URL so those values remain per rollout. There is no `colocated` option because a shared server has no single harness runtime.
 
@@ -485,7 +485,7 @@ The framework-launched form is intended for expensive task-agnostic setup such a
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The framework-launched server's own runtime. Host subprocess is cheapest; a remote runtime pays setup once per worker. See [Runtime configs](#runtime-configs). |
 | `url` | `str \| None` | `None` | Existing streamable-HTTP MCP endpoint reused across workers and rollouts instead of launching a server. |
 
-There is no `shared` boolean on `ToolsetConfig`: declare the class on `Task.tools` or `Taskset.tools` and use the matching config type to choose its scope.
+There is no `shared` boolean on `ToolsetConfig`: construct the server in `Task.toolsets` or `Taskset.toolsets` to choose its scope, and give it the config type that scope accepts.
 
 ---
 

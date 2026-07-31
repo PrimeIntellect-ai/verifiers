@@ -1,12 +1,13 @@
 """echo (v1, MCP tool): retrieve a stamped echo from a `vf.Toolset`, then report it.
 
-The v1 tool fixture for the e2e matrix. The task declares an `EchoToolset` (`vf.Toolset`)
-with one `@vf.tool` method whose placement is CLI-tunable (`--taskset.task.tools.colocated`,
-`--taskset.task.tools.runtime.type`): it runs colocated in the harness's runtime or in its
-own runtime, and the harness must reach it wherever it lives. The tool stamps its output
-with a token the prompt never reveals, so the reward is 1.0 only if the model actually
-called the tool — trivial when the infra works, impossible when it doesn't. The tool is
-task-agnostic, so it would also serve taskset-scoped (`Taskset.tools`).
+The v1 tool fixture for the e2e matrix. The task constructs an `EchoToolset`
+(`vf.Toolset`) in `Task.toolsets`, with one `@vf.tool` method whose placement is
+CLI-tunable (`--taskset.task.tools.colocated`, `--taskset.task.tools.runtime.type`):
+it runs colocated in the harness's runtime or in its own runtime, and the harness
+must reach it wherever it lives. The tool stamps its output with a token the prompt
+never reveals, so the reward is 1.0 only if the model actually called the tool —
+trivial when the infra works, impossible when it doesn't. The tool is task-agnostic,
+so it would also serve taskset-scoped (`Taskset.toolsets`).
 """
 
 import verifiers.v1 as vf

@@ -234,7 +234,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     the harness's runtime, or its own runtime) x the harness `runtime`. The tool stamps
     its output with a token the prompt never reveals, so reward 1.0 proves the tool was
     reachable from wherever the harness runs and actually ran. Eval-wide SHARED servers
-    are a different scope (`Taskset.tools`) with their own env-server-path coverage:
+    are a different scope (`Taskset.toolsets`) with their own env-server-path coverage:
     `test_shared_tool_isolation`."""
     (trace,) = await run_v1(
         "echo-tool-v1",
