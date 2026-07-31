@@ -119,17 +119,17 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
-@pytest.mark.browseruse
+@pytest.mark.browser_use
 @pytest.mark.docker
-async def test_browseruse(run_v1, tmp_path):
-    """The browseruse harness runs in an explicitly browser-capable runtime."""
+async def test_browser_use(run_v1, tmp_path):
+    """The browser_use harness runs in an explicitly browser-capable runtime."""
     image = (
         "mcr.microsoft.com/playwright/python:v1.61.0-noble@"
         "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
     )
     (trace,) = await run_v1(
         "echo-v1",
-        harness="browseruse",
+        harness="browser_use",
         runtime={"type": "docker", "image": image},
         output_dir=tmp_path,
         max_turns=2,
