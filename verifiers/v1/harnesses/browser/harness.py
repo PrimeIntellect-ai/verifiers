@@ -32,7 +32,7 @@ class BrowserHarnessConfig(HarnessConfig):
     """`chromium` launches locally; `cdp` attaches to `cdp_url` without owning it."""
 
     cdp_url: str | None = None
-    """HTTP or WebSocket CDP endpoint used with `browser = "cdp"`."""
+    """Rollout-scoped HTTP or WebSocket endpoint used with `browser = "cdp"`."""
 
     @model_validator(mode="after")
     def _require_cdp_url_iff_cdp(self) -> "BrowserHarnessConfig":
