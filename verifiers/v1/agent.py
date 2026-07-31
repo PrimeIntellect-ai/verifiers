@@ -25,7 +25,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import RolloutRun, RolloutTimeouts
+from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     NetworkPolicyConfig,
     Runtime,
@@ -151,9 +151,7 @@ class Interaction:
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed` and finishes the rollout — hooks and scoring included."""
 
-    def __init__(
-        self, run: "RolloutRun", gate: asyncio.Semaphore | None = None
-    ) -> None:
+    def __init__(self, run: "Rollout", gate: asyncio.Semaphore | None = None) -> None:
         self._run = run
         self._gate = gate
         self._over = False  # a terminated segment was already delivered
@@ -414,7 +412,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        run = RolloutRun(task=task, on_trace=on_trace, **params)
+        run = Rollout(task=task, on_trace=on_trace, **params)
         try:
             if await run.open():
                 await run.step()
@@ -475,7 +473,7 @@ class Agent:
                 "task is already opened by the first turn()"
             )
         params = self._rollout_params(task, runtime, dict(tools or {}))
-        run = RolloutRun(
+        run = Rollout(
             task=task,
             wire_data=(
                 task.data.model_copy(update={"prompt": None}) if mask_prompt else None
