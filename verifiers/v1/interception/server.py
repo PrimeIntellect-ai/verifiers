@@ -6,10 +6,10 @@ into the trace's message graph, and returns the result in OpenAI shape. We injec
 `OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Both non-streaming and
 SSE requests are supported.
 
-One server multiplexes many rollouts: each rollout registers a `RolloutSession` under its
-own secret (the bearer token the harness already sends), and the server routes by that
-secret to the right session. So N rollouts need one server (and, behind a remote runtime,
-one tunnel) per pool member rather than one each — see `interception.pool`.
+One server multiplexes many rollouts: each rollout registers separate model and state
+capabilities, and the server routes each to the right session. So N rollouts need one
+server (and, behind a remote runtime, one tunnel) per pool member rather than one each —
+see `interception.pool`.
 
 The server is a pure model boundary: one request, one turn — refusal checks (limits,
 `@stop`s), the model call, the graph commit, retry atomicity. A run's user exchange
@@ -25,7 +25,7 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -126,9 +126,13 @@ class InterceptionServer(Interception):
         self,
         config: InterceptionServerConfig | None = None,
         requires_tunnel: bool = False,
+        state_service_secrets: Collection[str] = (),
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
+        self.state_sessions: dict[str, RolloutSession] = {}
+        self.state_routes: dict[str, RolloutSession] = {}
+        self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
@@ -143,16 +147,20 @@ class InterceptionServer(Interception):
         """Rollouts currently registered — what the pools balance on."""
         return len(self.sessions)
 
-    def register(self, session: RolloutSession) -> str:
-        """Add a session under a fresh secret (the bearer token the harness must send) and
-        return it."""
-        secret = secrets.token_urlsafe(16)
-        self.sessions[secret] = session
-        return secret
+    def register(self, session: RolloutSession) -> tuple[str, str]:
+        """Register separate capabilities for model inference and private task state."""
+        model_secret = secrets.token_urlsafe(16)
+        state_secret = secrets.token_urlsafe(16)
+        self.sessions[model_secret] = session
+        self.state_sessions[state_secret] = session
+        self.state_routes[session.trace.id] = session
+        return model_secret, state_secret
 
-    def unregister(self, secret: str) -> None:
-        session = self.sessions.pop(secret, None)
+    def unregister(self, model_secret: str, state_secret: str) -> None:
+        session = self.sessions.pop(model_secret, None)
+        self.state_sessions.pop(state_secret, None)
         if session is not None:
+            self.state_routes.pop(session.trace.id, None)
             # The rollout concluded; its trace is sealed. Cancel straggler handlers
             # (aiohttp keeps them alive past client death) so a slow upstream call
             # can't commit a late turn onto the concluded trace.
@@ -166,11 +174,11 @@ class InterceptionServer(Interception):
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
-        secret = self.register(session)
+        model_secret, state_secret = self.register(session)
         try:
-            yield self.base_url, secret
+            yield self.base_url, model_secret, state_secret
         finally:
-            self.unregister(secret)
+            self.unregister(model_secret, state_secret)
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
@@ -194,12 +202,11 @@ class InterceptionServer(Interception):
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
-        # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool servers
-        # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
+        # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
-        # is never passed via env, only over this channel, keyed by the same bearer secret.
+        # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -711,12 +718,17 @@ class InterceptionServer(Interception):
             return web.json_response(dialect.error_body(str(e)), status=502)
         return web.json_response(result)
 
-    def _session_for(self, request: web.Request) -> RolloutSession | None:
-        """The session a state request belongs to, by its `Authorization: Bearer <secret>` — the
-        same per-rollout secret the model routes use (dialect-independent, so parsed directly)."""
+    def _session_for(
+        self, request: web.Request, *, allow_service: bool = False
+    ) -> RolloutSession | None:
+        """Resolve a private state bearer, or a trusted shared server plus route id."""
         auth = request.headers.get("Authorization", "")
         secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
-        session = self.sessions.get(secret)
+        session = self.state_sessions.get(secret)
+        if session is None and allow_service and secret in self.state_service_secrets:
+            session = self.state_routes.get(
+                request.headers.get("X-Verifiers-State-Route", "")
+            )
         if session is not None:  # state writes must not land on a sealed trace either
             session.adopt(asyncio.current_task())
         return session
@@ -724,7 +736,7 @@ class InterceptionServer(Interception):
     async def handle_state_get(self, request: web.Request) -> web.Response:
         """Hand a rollout's tool server the current shared `trace.state` (it pulls before each
         `@vf.tool` call, so it sees writes from the other servers)."""
-        session = self._session_for(request)
+        session = self._session_for(request, allow_service=True)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept GET /state: id=%s", session.trace.id)
@@ -738,7 +750,7 @@ class InterceptionServer(Interception):
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
         """Hand a launched tool server the rollout's task (class ref + JSON) so it can run
-        `setup_task` for this rollout — keyed by the same bearer secret as the state channel."""
+        `setup_task` for this rollout — keyed by its private state bearer."""
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
@@ -755,7 +767,7 @@ class InterceptionServer(Interception):
         """Replace a rollout's shared `trace.state` with a server's pushed copy (validated into the
         trace's `State` type). Last write wins per call. A task ends the trajectory from state via
         its own `@stop` (run in `RolloutSession.refused` before each model call)."""
-        session = self._session_for(request)
+        session = self._session_for(request, allow_service=True)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept PUT /state: id=%s", session.trace.id)

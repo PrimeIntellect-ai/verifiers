@@ -10,9 +10,7 @@ def test_color_images_are_rendered_once(monkeypatch) -> None:
         return render(image)
 
     monkeypatch.setattr(taskset, "image_data_url", counted)
-    tasks = taskset.ColorCodewordTaskset(taskset.ColorCodewordConfig()).select(
-        num_tasks=100
-    )
+    tasks = list(taskset.ColorCodewordTaskset(taskset.ColorCodewordConfig()).head(100))
 
     assert len(tasks) == 100
     assert calls == list(taskset.COLOR_RGB.values())

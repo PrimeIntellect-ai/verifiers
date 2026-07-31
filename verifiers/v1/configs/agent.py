@@ -57,7 +57,10 @@ class AgentConfig(BaseConfig):
         stays None = the taskset's default). The lazy import keeps class-body
         `AgentConfig()` defaults constructible while this module initializes."""
         if isinstance(data, dict) and data.get("harness") is not None:
-            from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
+            from verifiers.v1.utils.loaders import (
+                harness_config_type,
+                narrow_plugin_field,
+            )
 
             narrow_plugin_field(data, "harness", harness_config_type, "bash")
         return data

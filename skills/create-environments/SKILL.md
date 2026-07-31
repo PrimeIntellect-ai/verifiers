@@ -119,7 +119,7 @@ Only `TaskData` is stored on the trace. Do not put live clients, runtime handles
 - task-scoped tool declarations;
 - task-facing configuration read from `self.config`.
 
-`Taskset` owns loading and selection-time concerns. Its `load()` constructs the tasks, its direct config fields hold dataset/split/seed/sample-count knobs, and `Taskset.tools` may declare task-agnostic servers shared by one environment worker's rollouts.
+`Taskset` owns loading and selection-time concerns. Its `load()` constructs the tasks, its direct config fields hold dataset/split/seed/sample-count knobs, and `Taskset.toolsets` may construct task-agnostic servers shared by one environment worker's rollouts.
 
 The harness owns:
 
@@ -169,8 +169,10 @@ class SearchTaskConfig(vf.TaskConfig):
 
 
 class SearchTask(vf.Task[vf.TaskData, vf.State, SearchTaskConfig]):
-    # Declaring the class on Task.tools gives it one-server-per-rollout scope.
-    tools = (SearchToolset,)
+    # Constructing on Task.toolsets gives it one-server-per-rollout scope.
+    @classmethod
+    def toolsets(cls, config: SearchTaskConfig) -> list[vf.Toolset]:
+        return [SearchToolset(config.tools)]
 
 
 if __name__ == "__main__":
@@ -179,10 +181,10 @@ if __name__ == "__main__":
 
 Choose placement from the tool's lifetime and filesystem needs:
 
-- **Task-scoped, own runtime:** declare the class on `Task.tools` with `vf.ToolsetConfig`. One server is launched per rollout. The default subprocess runtime is inexpensive and host-side.
+- **Task-scoped, own runtime:** construct the server in `Task.toolsets` with a `vf.ToolsetConfig` field. One server is launched per rollout. The default subprocess runtime is inexpensive and host-side.
 - **Task-scoped, colocated:** set `colocated = true` on its `ToolsetConfig` when the tool must see the harness's filesystem or processes. It still launches once per rollout.
-- **Taskset-scoped, shared:** parameterize the toolset with `vf.SharedToolsetConfig`, put the matching config field directly on `TasksetConfig`, and declare the class on `Taskset.tools`.
-- **Existing remote service:** set `url` on the matching toolset config. Verifiers connects to the streamable-HTTP MCP endpoint instead of launching the class locally.
+- **Taskset-scoped, shared:** parameterize the toolset with `vf.SharedToolsetConfig`, put its config field directly on `TasksetConfig`, and construct the server in `Taskset.toolsets`.
+- **Existing remote service:** set `url` on the toolset's config. Verifiers connects to the streamable-HTTP MCP endpoint instead of launching the class locally.
 
 ## User simulation
 
@@ -232,7 +234,7 @@ Map concepts directly:
 | `load_environment(**kwargs)` | Exported `vf.Taskset` class + typed config |
 | `Rubric` reward function | Task `@vf.reward` method |
 | Parser object | Ordinary parsing inside task scoring |
-| `ToolEnv` tools | `vf.Toolset` declared on `Task.tools` or `Taskset.tools` |
+| `ToolEnv` tools | `vf.Toolset` constructed in `Task.toolsets` or `Taskset.toolsets` |
 | `MultiTurnEnv.env_response` | an interaction loop in the env's `run()` |
 | Dict state | Typed `vf.State` |
 | Sandbox subclass | Runtime config + task hooks |

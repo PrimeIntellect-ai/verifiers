@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import functools
+import hashlib
+import hmac
 import inspect
 import logging
 import os
@@ -13,7 +15,7 @@ from pydantic import TypeAdapter, ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.state import State, StateT, state_cls
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from httpx import AsyncClient, Response
@@ -32,6 +34,7 @@ async def _channel_request(
     url: str,
     secret: str,
     *,
+    route: str | None = None,
     content: bytes | None = None,
     client: AsyncClient | None = None,
 ) -> Response:
@@ -57,6 +60,8 @@ async def _channel_request(
         )
         async with manager as request_client:
             headers = {"Authorization": f"Bearer {secret}"}
+            if route:
+                headers["X-Verifiers-State-Route"] = route
             if content is not None:
                 headers["Content-Type"] = "application/json"
             resp = await request_client.request(
@@ -76,7 +81,15 @@ async def _channel_request(
 # Shared servers receive the calling rollout's state channel in URL parameters because one
 # process cannot carry a single rollout's channel in its environment.
 STATE_URL_PARAM = "vf_state_url"
-STATE_SECRET_PARAM = "vf_state_secret"
+STATE_ROUTE_PARAM = "vf_state_route"
+STATE_SIGNATURE_PARAM = "vf_state_signature"
+
+
+def state_signature(secret: str, url: str, route: str) -> str:
+    """Authenticate one exact shared-server state destination."""
+    message = f"vf-state-v1\0{url}\0{route}".encode()
+    return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
 
 # A context variable isolates the state seen by concurrent calls on one shared server.
 _call_state: contextvars.ContextVar[State | None] = contextvars.ContextVar(
@@ -91,7 +104,12 @@ def _request_query(name: str) -> str | None:
         request = request_ctx.get().request
     except LookupError:
         return None
-    return request.query_params.get(name) if request is not None else None
+    if request is None:
+        return None
+    values = request.query_params.getlist(name)
+    if len(values) > 1:
+        raise ValueError(f"duplicate {name!r} state coordinate")
+    return values[0] if values else None
 
 
 def _die_with_parent() -> None:
@@ -135,19 +153,32 @@ class ServerBase(Generic[ConfigT, StateT]):
         current = _call_state.get()
         return current if current is not None else self._inert_state  # type: ignore[return-value]
 
-    def _state_channel(self) -> tuple[str | None, str]:
-        """Prefer per-call coordinates for shared servers, then the process environment."""
-        url = _request_query(STATE_URL_PARAM) or os.environ.get("VF_STATE_URL")
-        secret = _request_query(STATE_SECRET_PARAM) or os.environ.get(
-            "VF_STATE_SECRET", ""
-        )
-        return url, secret
+    def _state_channel(self) -> tuple[str | None, str, str | None]:
+        """Use an env channel, or authenticate the exact coordinates of a shared call."""
+        url = os.environ.get("VF_STATE_URL")
+        secret = os.environ.get("VF_STATE_SECRET", "")
+        if url:
+            return url, secret, None
+        shared_url = _request_query(STATE_URL_PARAM)
+        route = _request_query(STATE_ROUTE_PARAM)
+        signature = _request_query(STATE_SIGNATURE_PARAM)
+        if not any((shared_url, route, signature)):
+            return None, "", None
+        if not secret or not shared_url or not route or not signature:
+            raise ValueError("invalid shared state coordinates")
+        if not hmac.compare_digest(
+            signature, state_signature(secret, shared_url, route)
+        ):
+            raise ValueError("invalid shared state coordinates")
+        return shared_url, secret, route
 
     async def _pull_state(self) -> State:
-        url, secret = self._state_channel()
+        url, secret, route = self._state_channel()
         if not url:
             return self._state_cls()
-        response = await _channel_request("GET", url, secret, client=self._state_client)
+        response = await _channel_request(
+            "GET", url, secret, route=route, client=self._state_client
+        )
         try:
             return self._state_adapter.validate_json(response.content)
         except ValidationError as e:
@@ -157,7 +188,7 @@ class ServerBase(Generic[ConfigT, StateT]):
             raise
 
     async def _push_state(self, before: bytes) -> None:
-        url, secret = self._state_channel()
+        url, secret, route = self._state_channel()
         if not url:
             return
         state = _call_state.get()
@@ -166,7 +197,12 @@ class ServerBase(Generic[ConfigT, StateT]):
         if after == before:
             return
         await _channel_request(
-            "PUT", url, secret, content=after, client=self._state_client
+            "PUT",
+            url,
+            secret,
+            route=route,
+            content=after,
+            client=self._state_client,
         )
 
     async def _fetch_task(self, state_url: str | None, secret: str):
@@ -263,7 +299,8 @@ class ServerBase(Generic[ConfigT, StateT]):
                 ):
                     self._state_client = client
                     await self.setup()
-                    await self._setup_task_from_channel(*self._state_channel())
+                    state_url, secret, _ = self._state_channel()
+                    await self._setup_task_from_channel(state_url, secret)
                     # These servers are reached through localhost or a tunnel, never a browser.
                     security = TransportSecuritySettings(
                         enable_dns_rebinding_protection=False
@@ -286,7 +323,7 @@ class ServerBase(Generic[ConfigT, StateT]):
     @classmethod
     def _config_cls(cls) -> type[BaseConfig]:
         """Resolve the server's config specialization through its MRO."""
-        if config_cls := generic_type(cls, BaseConfig):
+        if config_cls := concrete_type(cls, BaseConfig):
             return config_cls
         raise TypeError(
             f"{cls.__name__} must parameterize its config, e.g. Toolset[MyConfig]"

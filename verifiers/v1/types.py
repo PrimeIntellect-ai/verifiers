@@ -7,20 +7,16 @@ from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
 
-class StrictBaseModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class TextContentPart(StrictBaseModel):
+class TextContentPart(BaseModel):
     type: Literal["text"] = "text"
     text: str
 
 
-class ImageUrlSource(StrictBaseModel):
+class ImageUrlSource(BaseModel):
     url: str
 
 
-class ImageUrlContentPart(StrictBaseModel):
+class ImageUrlContentPart(BaseModel):
     type: Literal["image_url"] = "image_url"
     image_url: ImageUrlSource
 
@@ -57,24 +53,24 @@ def content_text(content: "MessageContent | None") -> str:
     )
 
 
-class SystemMessage(StrictBaseModel):
+class SystemMessage(BaseModel):
     role: Literal["system"] = "system"
     content: MessageContent
 
 
-class UserMessage(StrictBaseModel):
+class UserMessage(BaseModel):
     role: Literal["user"] = "user"
     content: MessageContent
 
 
-class ToolCall(StrictBaseModel):
+class ToolCall(BaseModel):
     id: str
     name: str
     arguments: str
     """Raw JSON string of arguments, exactly as the model emitted it."""
 
 
-class AssistantMessage(StrictBaseModel):
+class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str | None = None
     reasoning_content: str | None = None
@@ -83,7 +79,7 @@ class AssistantMessage(StrictBaseModel):
     """Opaque native items replayed to preserve signed or encrypted reasoning state."""
 
 
-class ToolMessage(StrictBaseModel):
+class ToolMessage(BaseModel):
     role: Literal["tool"] = "tool"
     tool_call_id: str
     content: MessageContent
@@ -98,7 +94,7 @@ Message = Annotated[
 Messages = list[Message]
 
 
-class Tool(StrictBaseModel):
+class Tool(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]
@@ -108,7 +104,7 @@ class Tool(StrictBaseModel):
 FinishReason = Literal["stop", "length", "tool_calls"] | None
 
 
-class Usage(StrictBaseModel):
+class Usage(BaseModel):
     """Provider token accounting.
 
     `prompt_tokens` excludes cache reads; `input_tokens` adds them back. Reasoning tokens
@@ -191,10 +187,10 @@ class KeptTokens:
     counts: Any
 
 
-class TurnTokens(StrictBaseModel):
+class TurnTokens(BaseModel):
     """Training tokens from renderer tokenization or provider-returned token IDs."""
 
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     prompt_ids: list[int] = Field(default_factory=list)
     completion_ids: list[int] = Field(default_factory=list)
@@ -220,7 +216,7 @@ class TurnTokens(StrictBaseModel):
     kept_tokens: KeptTokens | None = Field(default=None, exclude=True)
 
 
-class Response(StrictBaseModel):
+class Response(BaseModel):
     id: str
     created: int
     model: str

@@ -3,7 +3,7 @@ each role as an `AgentConfig` field, and the env-level knobs."""
 
 from typing import get_args
 
-from pydantic import SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.agent import AgentConfig
@@ -48,9 +48,16 @@ class EnvConfig(BaseConfig):
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
     retried episode reruns whole (a half-played sibling context isn't reproducible)."""
-    max_concurrent: int | None = None
-    """Bounds concurrent agent runs on a SERVED env, per worker (None = no limit);
-    the in-process eval CLI gates with its run-level `--max-concurrent` instead."""
+    max_concurrent_agents: int | None = Field(1, ge=1)
+    """How many of ONE episode's agent runs may be active at once (None = no limit).
+    One at a time by default, so the bound above — `--max-concurrent` episodes, a
+    dispatched training episode — is also one live agent run, whatever `run()` fans
+    out to internally. Raise it where per-episode latency matters and the
+    multiplication is wanted: `--env.max-concurrent-agents None` plays an episode's
+    `best-of-n` attempts together, so `-c` episodes carry `-c * n` live runs. Not
+    spelled `max_concurrent`: that key used to bound a served worker's agent runs
+    across episodes, and taking it as this one silently multiplies it by the episodes
+    in flight."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape: `elastic` (default), `server`, or `static`."""
 
@@ -93,7 +100,10 @@ class EnvConfig(BaseConfig):
         """Narrow `taskset` to its concrete config type by `id`; lazy import for
         the same reason as `AgentConfig._resolve_harness`."""
         if isinstance(data, dict) and data.get("taskset") is not None:
-            from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
+            from verifiers.v1.utils.loaders import (
+                narrow_plugin_field,
+                taskset_config_type,
+            )
 
             narrow_plugin_field(data, "taskset", taskset_config_type)
         return data
@@ -150,7 +160,7 @@ def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
 def default_agent_harness(taskset_id: str) -> HarnessConfig:
     """What an unpinned role's `harness=None` resolves to: the taskset's bundled
     harness when it ships one, else the built-in `bash`."""
-    from verifiers.v1.loaders import default_harness_id, harness_config_type
+    from verifiers.v1.utils.loaders import default_harness_id, harness_config_type
 
     ident = default_harness_id(taskset_id)
     return harness_config_type(ident).model_validate({"id": ident})

@@ -20,7 +20,7 @@ from verifiers.v1.configs.env import (
     _declared_agent_configs,
     default_agent_harness,
 )
-from verifiers.v1.episode import Episode
+from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import (
@@ -29,12 +29,12 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.retries import run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
-from verifiers.v1.task import Task, resolve_server_config
+from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 from verifiers.v1.utils.memory import trim_memory_periodically
+from verifiers.v1.utils.retries import run_episode_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +81,9 @@ class Env(ABC, Generic[ConfigT]):
     task the agent actually receives — an env-minted task carries its own needs."""
 
     def __init__(self, config: ConfigT) -> None:
-        from verifiers.v1.loaders import load_harness, load_taskset
+        from verifiers.v1.utils.loaders import load_harness, load_taskset
 
-        config_cls = generic_type(type(self), EnvConfig, origin=Env) or EnvConfig
+        config_cls = concrete_type(type(self), EnvConfig, origin=Env) or EnvConfig
         if not isinstance(config, config_cls):
             raise TypeError(
                 f"{type(self).__name__} declares Env[{config_cls.__name__}], "
@@ -154,13 +154,16 @@ class Env(ABC, Generic[ConfigT]):
         """One episode: how the agents interact on `task`, returning nothing —
         every finished run joins the episode automatically, stamped with its seat's
         standing. An agent-run failure is data on its trace (this hook decides what
-        it means); an exception raised here is the episode itself failing."""
+        it means); an exception raised here is the episode itself failing.
+        Independent agents are written as such (`asyncio.gather`); how many of them
+        actually run at once is the run's bound, not this hook's
+        (`--env.max-concurrent-agents`, one at a time by default)."""
 
     async def finalize(self, task: Task, episode: Episode) -> None:
         """Cross-agent judgement — THE programmable judgement surface: plain
         imperative Python over the finished episode (per-trace judgement already
         ran on each trace's own task). `episode.traces` is the flat episode in
-        completion order, each trace's `agent_name` stamp naming its agent; attach
+        completion order, each trace's `agent.name` stamp naming its agent; attach
         signals via `record_reward`/`record_metric`, in program order. A raise
         fails the episode (the retryable unit) — validate strictly, never
         record a guess."""
@@ -188,13 +191,16 @@ class Env(ABC, Generic[ConfigT]):
     def _episode_agents(
         self,
         ctx: ModelContext,
-        gate: "asyncio.Semaphore | None",
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
     ) -> Agents:
         """One episode's `Agents` — fresh value objects riding the live serving
-        resources (nothing shared across concurrent episodes); `setup()` sees them first."""
+        resources (nothing shared across concurrent episodes), sharing one semaphore
+        so the episode plays `--env.max-concurrent-agents` of them at a time;
+        `setup()` sees them first."""
+        limit = self.config.max_concurrent_agents
+        gate = asyncio.Semaphore(limit) if limit else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
@@ -242,17 +248,17 @@ class Env(ABC, Generic[ConfigT]):
         *,
         on_trace: Callable[[Trace], None] | None = None,
         on_discard: Callable[[Trace], None] | None = None,
-        gate: asyncio.Semaphore | None = None,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
-        over fresh agents, then `finalize()`; `gate` bounds
-        the agent runs, so internal fan-out counts against `--max-concurrent` too.
+        over fresh agents, then `finalize()`. Its agents run one at a time
+        (`--env.max-concurrent-agents`), so one live episode is one live agent run
+        however `run()` fans out.
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
         retry mints a replacement)."""
-        episode = Episode(env=self.config.env_id)
-        agents = self._episode_agents(ctx, gate, episode.traces, on_trace, on_discard)
+        episode = Episode(env=EnvInfo(id=self.config.env_id))
+        agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
@@ -306,8 +312,10 @@ class Env(ABC, Generic[ConfigT]):
         on_complete: Callable[[Episode], Awaitable[None]] | None = None,
     ) -> Episode:
         """Run one planned episode to completion, with whole-episode
-        retries per `--env.retries`; `semaphore` gates the agent RUNS, not the
-        episode; `on_complete` (the runners' persistence hook) fires when final."""
+        retries per `--env.retries`; `semaphore` bounds concurrent EPISODES — one
+        permit for the attempt in flight, held across the whole of it (its agents,
+        their boxes, `finalize()`) and released before a retry's backoff and before
+        `on_complete` (the runners' persistence hook, which fires when final)."""
 
         async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
@@ -318,13 +326,13 @@ class Env(ABC, Generic[ConfigT]):
                 with contextlib.suppress(ValueError):
                     live.remove(trace)
 
-            return await self.run_episode(
-                slot.task,
-                ctx,
-                on_trace=live.append,
-                on_discard=discard,
-                gate=semaphore,
-            )
+            async with semaphore or contextlib.nullcontext():
+                return await self.run_episode(
+                    slot.task,
+                    ctx,
+                    on_trace=live.append,
+                    on_discard=discard,
+                )
 
         episode = await run_episode_with_retry(attempt, self.config.retries)
         slot.traces = list(episode.traces)
@@ -342,7 +350,13 @@ class Env(ABC, Generic[ConfigT]):
         run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(
-                self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+                self.config.interception,
+                requires_tunnel=self._requires_tunnel(shared),
+                state_service_secrets=tuple(
+                    server.state_secret
+                    for server in shared.values()
+                    if server.state_secret
+                ),
             )
             async with interception:
                 self._shared_tools = shared
@@ -370,24 +384,17 @@ class Env(ABC, Generic[ConfigT]):
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: role
-        runtimes, live `shared` servers, and the task class's tool servers;
-        a class overriding `server_config` conservatively counts as remote."""
+        runtimes, live `shared` servers, and the task class's tool servers
+        (`Task.toolsets` is a classmethod, so no task instance is needed)."""
         task_cls = type(self.taskset).task_type()
-        server_classes = [*task_cls.tools]
-        if server_classes and task_cls.server_config is not Task.server_config:
-            return True
-        sole = len({*task_cls.tools}) == 1
         configs = [
-            resolve_server_config(
-                task_cls.__name__, self.taskset.config.task, server_cls, sole=sole
-            )
-            for server_cls in server_classes
+            server.config for server in task_cls.toolsets(self.taskset.config.task)
         ]
         return requires_tunnel(self._runs_local(), configs, shared.values())
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        servers = self.taskset.tool_servers()
+        servers = self.taskset.toolsets(self.taskset.config)
         if not servers:
             yield {}
             return

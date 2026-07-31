@@ -10,12 +10,12 @@ from pydantic import Field, model_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.decorators import metric
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.decorators import metric
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
         env = {**self.config.resolved_env, "RLM_HOME": RLM_HOME}
+        extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
+        env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")

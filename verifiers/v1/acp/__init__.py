@@ -33,6 +33,7 @@ class ACP:
         mcp_urls: dict[str, str] | None = None,
         system_prompt: str | None = None,
         session_path: str | None = None,
+        allow_empty_tool_reply: bool = False,
     ) -> ProgramResult:
         if prompt is None:
             raise ValueError("ACP requires a prompt")
@@ -47,6 +48,7 @@ class ACP:
             "mcp_urls": mcp_urls or {},
             "system_prompt": system_prompt or "",
             "session_path": session_path,
+            "allow_empty_tool_reply": allow_empty_tool_reply,
         }
         program = await runtime.prepare_uv_script(
             ACP_SOURCE, {**env, "UV_FROZEN": "false"}

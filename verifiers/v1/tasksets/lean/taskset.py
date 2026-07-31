@@ -16,7 +16,6 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources
@@ -28,6 +27,7 @@ from verifiers.v1.tasksets.lean.scoring import (
     protected_signature_substring_present,
 )
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.decorators import reward
 
 # Lean v4.27 with Mathlib v4.27.
 DEFAULT_DOCKER_IMAGE = "team-clyvldofb0000gg1kx39rgzjq/lean-tactic:mathlib-v4.27.0-v3"
@@ -61,7 +61,6 @@ class LeanTaskConfig(TaskConfig):
 class LeanConfig(TasksetConfig):
     dataset: LeanDatasetConfig
     docker_image: str = DEFAULT_DOCKER_IMAGE
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT
     task: LeanTaskConfig = LeanTaskConfig()
 
 
@@ -187,7 +186,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     idx=index,
                     name=str(name) if name else f"task_{index:05d}",
                     prompt=self._build_prompt(formal_statement, header),
-                    system_prompt=config.system_prompt,
+                    system_prompt=DEFAULT_SYSTEM_PROMPT,
                     image=config.docker_image,
                     workdir=config.task.lean_project_path,
                     resources=resources,

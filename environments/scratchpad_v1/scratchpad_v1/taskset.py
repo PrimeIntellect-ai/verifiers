@@ -48,7 +48,9 @@ class ScratchpadConfig(vf.TasksetConfig):
 
 
 class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):
-    tools = (ScratchpadToolset,)
+    @classmethod
+    def toolsets(cls, config: ScratchpadConfig) -> list[vf.Toolset]:
+        return [ScratchpadToolset(config.tools)]
 
     def load(self) -> list[ScratchpadTask]:
         return [

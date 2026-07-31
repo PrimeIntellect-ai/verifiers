@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import random
 import time
 
 from verifiers.v1.cli.dashboard import dashboard
@@ -17,8 +18,8 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode
+from verifiers.v1.taskset import SEED
 from verifiers.v1.trace import EvalRunInfo
-from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,15 @@ logger = logging.getLogger(__name__)
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.select(config.num_tasks, config.shuffle)
+    taskset = env.taskset
+    if config.num_tasks is None and taskset.INFINITE:
+        raise ValueError(
+            f"{type(taskset).__name__} is infinite - bound the run with -n"
+        )
+    selected = taskset.shuffle() if config.shuffle else taskset
+    if config.num_tasks is not None:
+        selected = selected.head(config.num_tasks)
+    tasks = list(selected)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
@@ -68,7 +77,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
 
     async def on_complete(episode: Episode) -> None:
         for trace in episode.traces:
-            trace.stamp(EvalRunInfo(id=config.uuid))
+            trace.record_run(EvalRunInfo(id=config.uuid))
         await append_episode(out, episode, write_lock)
 
     # Serving resources (shared tool servers, interception) come up once for the
@@ -78,7 +87,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
         slots = [RunSlot.finished(episode) for episode in finished] + planned
         push_state = None
         if config.push and config.rich:
-            from verifiers.v1.push import PushState
+            from verifiers.v1.utils.platform import PushState
 
             push_state = PushState()
         display = (
@@ -94,7 +103,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
             if (
                 push_state is not None
             ):  # upload off the event loop so the view keeps refreshing
-                from verifiers.v1.push import push_traces
+                from verifiers.v1.utils.platform import push_traces
 
                 push_state.started = True
                 await asyncio.to_thread(push_traces, episodes, config, push_state)
@@ -107,29 +116,40 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     import multiprocessing as mp
     from functools import partial
 
-    from verifiers.v1.configs.cli.env import pool_serve_kwargs
+    from verifiers.v1.configs.serve import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
     from verifiers.v1.utils.logging import setup_logging
 
     legacy = config.is_legacy
     server_kwargs = (
         {
-            "env_id": config.id,
-            "env_args": config.args,
-            "extra_env_kwargs": config.extra_env_kwargs,
+            "env_id": config.legacy.id,
+            "env_args": config.legacy.args,
+            "extra_env_kwargs": config.legacy.extra_env_kwargs,
         }
         if legacy
-        else {"config_data": env_config_data(config.env)}  # picklable across the spawn
+        else {
+            "config_data": env_config_data(config.env),  # picklable across the spawn
+            # `-c` seeds each worker's episode bound unless `[serve]` pins one — so a
+            # pool carries `workers * bound` episodes, as `multiplex` implies.
+            "max_concurrent": config.worker_max_concurrent,
+        }
     )
     tasks = []
     if not legacy:
-        from verifiers.v1.loaders import load_taskset
+        from verifiers.v1.utils.loaders import load_taskset
 
         # The client owns the taskset: load it here, once — the server (and its pool
         # workers) never load data, they rebuild each dispatched task from its request.
-        tasks = load_taskset(config.env.taskset).select(
-            config.num_tasks, config.shuffle
-        )
+        taskset = load_taskset(config.env.taskset)
+        if config.num_tasks is None and taskset.INFINITE:
+            raise ValueError(
+                f"{type(taskset).__name__} is infinite - bound the run with -n"
+            )
+        selected = taskset.shuffle() if config.shuffle else taskset
+        if config.num_tasks is not None:
+            selected = selected.head(config.num_tasks)
+        tasks = list(selected)
     # Spawned processes inherit no logging — hand them the main process's setup so
     # their rollout logs land in the output dir.
     level = "DEBUG" if config.verbose else "INFO"
@@ -142,7 +162,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     proc = mpctx.Process(
         target=serve_env,
         kwargs=dict(
-            **pool_serve_kwargs(config.pool),
+            **pool_serve_kwargs(config.serve.pool),
             legacy=legacy,
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
@@ -165,7 +185,10 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         if legacy:
             info = await client.info()
             group_scored = info.requires_group_scoring
-            idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
+            idxs = list(range(info.num_tasks))
+            if config.shuffle:
+                random.Random(SEED).shuffle(idxs)
+            idxs = idxs[: config.num_tasks]
             plan = [({"task_idx": idx}, config.num_rollouts) for idx in idxs]
         else:
             group_scored = False
@@ -210,7 +233,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 "running %dx%d rollouts via the env-server %s pool on %s",
                 len(plan),
                 config.num_rollouts,
-                config.pool.type,
+                config.serve.pool.type,
                 config.model,
             )
         logger.info("results: %s", out)
@@ -235,7 +258,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 )
             records = []
             for trace in traces:
-                trace.stamp(EvalRunInfo(id=config.uuid))
+                trace.record_run(EvalRunInfo(id=config.uuid))
                 await append_trace(out, trace, write_lock, env=config.env_id)
                 records.append(Episode.of(trace))
             return records
@@ -249,7 +272,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     **payload,
                 )
             for trace in episode.traces:
-                trace.stamp(EvalRunInfo(id=config.uuid))
+                trace.record_run(EvalRunInfo(id=config.uuid))
             await append_episode(out, episode, write_lock)
             return [episode]
 

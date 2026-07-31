@@ -37,7 +37,10 @@ class _GEPALog:
 
 def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
-    all_tasks = env.taskset.select(config.num_train + config.num_val, config.shuffle)
+    # Global shuffle: an infinite taskset raises here — run it with
+    # shuffle=false (there is no whole set to sample from).
+    taskset = env.taskset.shuffle() if config.shuffle else env.taskset
+    all_tasks = list(taskset.head(config.num_train + config.num_val))
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
     selected_tasks = [*train_tasks, *val_tasks]
     # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
@@ -105,7 +108,20 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
                 "skip_perfect_score": False,
                 "logger": _GEPALog(),
             }
-            return optimize(**optimize_kwargs)
+            result = optimize(**optimize_kwargs)
+            if run_dir is not None:
+                # Persist the winning prompt as a plain file so it can be handed straight to
+                # eval/train via `--env.taskset.system-prompt` (see TasksetConfig).
+                candidate = result.best_candidate
+                best = (
+                    candidate.get("system_prompt", "")
+                    if isinstance(candidate, dict)
+                    else str(candidate)
+                )
+                best_path = run_dir / "best_system_prompt.txt"
+                best_path.write_text(best, encoding="utf-8")
+                logger.info("best system prompt: %s", best_path)
+            return result
         finally:
             loop.run_until_complete(serving.__aexit__(None, None, None))
     finally:

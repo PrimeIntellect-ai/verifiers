@@ -4,6 +4,7 @@ from verifiers.v1.envs.agentic_judge.env import (
     Criterion,
     JudgeTaskConfig,
     ScoreConfig,
+    TextFile,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "Criterion",
     "JudgeTaskConfig",
     "ScoreConfig",
+    "TextFile",
 ]

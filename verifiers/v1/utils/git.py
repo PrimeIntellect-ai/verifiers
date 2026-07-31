@@ -3,7 +3,8 @@
 SWE-style tasksets call `capture_patch` from `Task.finalize` — after the harness
 finishes, while the runtime is live, before scoring mutates the repo (restoring
 test files, switching commits) — so the diff is exactly what the agent produced,
-including edits to test files (intentional: they reveal reward hacking).
+including edits to test files (intentional: they reveal reward hacking), and
+excluding whatever `snapshot_untracked` recorded before the agent started.
 
 The diff is taken against `base_commit` when the caller has one — a dataset row
 field, or a SHA recorded with `resolve_head` at setup time and kept in host
@@ -15,7 +16,10 @@ agent commits.
 from __future__ import annotations
 
 import uuid
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
+
+from verifiers.v1.errors import SandboxError
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
@@ -41,10 +45,15 @@ _CAPPED = "/tmp/vf_agent_patch"
 # tree staged, so reporting success would hide a state later scoring may trip
 # on; a failed head leaves an empty {capped} (the redirect truncates it before
 # head runs), which would read back as a silently empty patch.
+#
+# The unstage step is deliberately outside that accounting: if it fails the patch is
+# merely as wide as it used to be, which is a worse patch, not a broken rollout. The
+# `$#` test is load-bearing — `git reset -q --` with no pathspec unstages everything.
 _DIFF = (
     "rm -f {full} {capped}; "
     "git add -A; "
     "add_rc=$?; "
+    '[ "$#" -gt 0 ] && git reset -q -- "$@"; '
     'git -c core.quotepath=off diff --cached --binary "$VF_DIFF_BASE" > {full}; '
     "diff_rc=$?; "
     "git reset -q; "
@@ -74,32 +83,84 @@ async def resolve_head(runtime: Runtime, env: dict | None = None) -> str:
     return (result.stdout or "").strip()
 
 
+async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[str]:
+    """The repo's untracked files, to hand `capture_patch` as `ignore`.
+
+    Call at the end of `setup`, before the agent runs, and keep the result in host
+    memory beside `resolve_head`'s SHA. Whatever it lists came with the image, so the
+    agent cannot be credited with it, and a patch that carries it fails `git apply` in
+    a fresh container of that same image — which is what an isolated grading box is.
+
+    Sandbox snapshotting will make this free: once runtimes can snapshot and diff a
+    filesystem, the pre-agent untracked set falls out of the diff with no setup-side
+    bookkeeping in any taskset. Drop this then.
+    """
+    result = await runtime.run(
+        ["sh", "-c", "git ls-files --others --exclude-standard -z"], env or {}
+    )
+    if result.exit_code != 0:
+        return []
+    return [path for path in (result.stdout or "").split("\0") if path]
+
+
 async def capture_patch(
-    trace: Trace, runtime: Runtime, base_commit: str = "", env: dict | None = None
+    trace: Trace,
+    runtime: Runtime,
+    base_commit: str = "",
+    env: dict | None = None,
+    write_path: str | None = None,
+    ignore: list[str] | None = None,
 ) -> None:
     """Snapshot the agent's cumulative diff into `trace.info["patch"]`.
 
-    Best-effort by design: a rollout whose sandbox died or whose repo state is
-    broken records `info["patch_error"]` instead of failing the rollout —
-    scoring still runs and the error stays visible in results.
+    `ignore` names paths to leave out — pass `snapshot_untracked`'s list from setup, or
+    `git add -A` credits the agent with untracked files the image shipped. R2E-Gym boxes
+    ship three (`datasets`, `install.sh`, `run_tests.sh`), and a patch carrying them
+    fails `git apply` in a fresh container of that very image — which is what an
+    isolated grading box is.
+
+    Two failure modes, attributed differently, because they deserve different outcomes.
+
+    A non-zero exit means the box answered and git refused: a stale `index.lock` from a
+    killed agent command, a deleted `.git`, a `base_commit` the agent rewrote out of
+    existence, a disk it filled. That is the agent's own environment, so it records
+    `info["patch_error"]` and lets the rollout score — a run with no patch grades as a
+    run that changed nothing, which is the right reward.
+
+    An exception means the box never answered: the sandbox died, the exec timed out,
+    the transport dropped. Nothing there is the policy's doing, so it raises. Scoring
+    the rollout anyway would feed a zero to training that says only that our
+    infrastructure failed.
+
+    `write_path` additionally writes the patch to that path inside the box, for tasks
+    graded in a second sandbox. Point it at `vf.ARTIFACTS_DIR` (e.g.
+    `/logs/artifacts/patch.diff`) and collection picks it up with no declaration. Leave
+    it on the convention sweep rather than declaring it as an `Artifact`: a declared
+    path is collected strictly, which would turn an agent-broken repo into a rollout
+    error instead of the low score it should earn.
     """
     nonce = uuid.uuid4().hex
     full, capped = f"{_FULL}_{nonce}", f"{_CAPPED}_{nonce}"
     cmd = _DIFF.format(full=full, capped=capped, cap=PATCH_CAP_BYTES + 1)
     try:
         result = await runtime.run(
-            ["sh", "-c", cmd],
+            ["sh", "-c", cmd, "vf-capture-patch", *(ignore or [])],
             {**(env or {}), "VF_DIFF_BASE": base_commit or "HEAD"},
         )
         if result.exit_code != 0:
+            # Not every runtime raises when the box is gone — Docker returns `docker
+            # exec`'s own non-zero result, which is indistinguishable from git failing.
+            # One probe on the failure path tells the two apart before we blame anyone.
+            if (await runtime.run(["true"], {})).exit_code != 0:
+                raise SandboxError(
+                    f"patch capture failed and the box stopped answering: "
+                    f"{(result.stderr or '').strip()[-300:]}"
+                )
             trace.info["patch_error"] = (
                 f"exit={result.exit_code} {(result.stderr or '').strip()[-500:]}"
             )
             return
         raw = await runtime.read(capped)
-    except Exception as exc:  # noqa: BLE001 - capture must never fail the rollout
-        trace.info["patch_error"] = f"{type(exc).__name__}: {exc}"
-        return
     finally:
         # Unique names don't overwrite each other, so leftovers would accumulate
         # on shared-filesystem runtimes; removal is best-effort by design.
@@ -111,3 +172,7 @@ async def capture_patch(
         raw = raw[:PATCH_CAP_BYTES]
         trace.info["patch_truncated"] = True
     trace.info["patch"] = raw.decode("utf-8", errors="replace")
+    if write_path is not None:
+        parent = str(PurePosixPath(write_path).parent)
+        await runtime.run(["mkdir", "-p", parent], env or {})
+        await runtime.write(write_path, raw)

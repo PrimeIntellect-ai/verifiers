@@ -101,10 +101,13 @@ routes take precedence over deny rules, while ordinary Prime deny rules are appl
 unchanged and may block a matching route. Restricted Harbor tasks require Docker or a
 Prime VM; Prime accepts host-level entries.
 
+## Artifacts and collect hooks
+
+`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Collect hooks run in the agent's box from the task's `finalize`, which is Harbor's own ordering — after the agent phase, before collection — and declared paths plus the `/logs/artifacts/` convention dir are then carried into the grading box and restored at their original paths ("no translation", as in Harbor).
+
 ## Shortcomings
 
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
 - Switching to a different verifier-phase network policy ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
-- Shared & separate verifiers ([Harbor Docs](https://www.harborframework.com/docs/tasks#verifier-environment-shared-vs-separate))
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
