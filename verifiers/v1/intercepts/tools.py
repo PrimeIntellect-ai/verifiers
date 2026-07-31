@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, Any
 
 from verifiers.v1.decorators import intercept
 from verifiers.v1.intercepts.core import (
+    Interceptor,
     InterceptRecord,
     InterceptResult,
-    Interceptor,
     Terminate,
 )
 from verifiers.v1.judge import Judge, judge_verdict
@@ -132,7 +132,7 @@ def _blocked(reply: str, reward: float | None) -> str | Terminate:
 def disable_provider_tools(*patterns: str, priority: int = 0) -> Interceptor:
     """Remove matching provider-hosted tools while preserving client-owned tools."""
 
-    async def disable(self: Any, raw: dict, trace: "Trace", dialect: "Dialect") -> None:
+    async def disable(self: Any, raw: dict, trace: Trace, dialect: Dialect) -> None:
         matched = dialect.disable_provider_tools(
             raw, lambda name: not patterns or match_tool(name, *patterns)
         )
@@ -149,8 +149,8 @@ def disable_provider_tools(*patterns: str, priority: int = 0) -> Interceptor:
 
     disable.__name__ = "disable_provider_tools"
     policy = intercept(disable, priority=priority)
-    setattr(policy, "intercept_directions", ("request",))
-    setattr(policy, "intercept_raw", True)
+    policy.intercept_directions = ("request",)
+    policy.intercept_raw = True
     return policy
 
 
@@ -223,7 +223,7 @@ def block_web_search(
         reward=reward,
         priority=priority,
     )
-    setattr(policy, "__name__", "block_web_search")
+    policy.__name__ = "block_web_search"
     return policy
 
 
@@ -266,7 +266,7 @@ def block_with_judge(
     async def blocker(
         self: Any,
         message: Message,
-        trace: "Trace",
+        trace: Trace,
         prompt: Messages | None = None,
     ) -> InterceptResult:
         context = json.dumps(

@@ -45,9 +45,9 @@ from verifiers.v1.errors import (
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness
 from verifiers.v1.intercepts import (
+    Interceptor,
     InterceptRecord,
     InterceptResult,
-    Interceptor,
     Terminate,
     block_code_search,
     block_shell_commands,

@@ -21,9 +21,9 @@ from verifiers.v1.decorators import invoke
 from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.intercepts.core import (
     Direction,
+    Interceptor,
     InterceptOutcome,
     InterceptRecord,
-    Interceptor,
     PendingTermination,
     Terminate,
     snippet,

@@ -2,9 +2,9 @@
 
 from verifiers.v1.intercepts.core import (
     Direction,
+    Interceptor,
     InterceptRecord,
     InterceptResult,
-    Interceptor,
     Terminate,
 )
 from verifiers.v1.intercepts.tools import (

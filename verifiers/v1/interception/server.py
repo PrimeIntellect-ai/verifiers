@@ -631,7 +631,7 @@ class InterceptionServer(Interception):
             refused = await session.refused()
         except RolloutError as e:
             return self._fail(session, dialect, e)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - surface any task hook failure
             return self._fail(
                 session, dialect, TaskError(f"@stop failed: {type(e).__name__}: {e}")
             )
@@ -682,7 +682,7 @@ class InterceptionServer(Interception):
                     dialect.error_body(str(e)),
                     status=getattr(e, "status_code", 502),
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - surface as an API error
                 error = e
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
@@ -726,7 +726,7 @@ class InterceptionServer(Interception):
                                 ):
                                     parser.on_done()
                                 parser.feed(chunk)
-                            except Exception as e:
+                            except Exception as e:  # noqa: BLE001 - defer parser failure
                                 parser_error = e
                 except ConnectionResetError as e:
                     error = e
@@ -747,7 +747,7 @@ class InterceptionServer(Interception):
                     response = parser.finish()
                     if response.raw is None:
                         raise ValueError("stream parser returned no native response")
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - surface malformed streams
                     failure = ProviderError(
                         f"malformed upstream stream: {type(e).__name__}: {e}"
                     )
@@ -804,7 +804,7 @@ class InterceptionServer(Interception):
                             dialect.validate_response(response.raw)
                         ).message
                         payload = b"".join(dialect.stream_events(response.raw))
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - surface invalid rewrites
                         failure = TaskError(
                             "@intercept produced an invalid response: "
                             f"{type(e).__name__}: {e}"
