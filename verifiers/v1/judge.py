@@ -63,7 +63,7 @@ from verifiers.v1.configs.judge import (
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.scoring import parse_judge_choice
 from verifiers.v1.types import Messages, Usage
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.task import TaskData
@@ -111,7 +111,7 @@ ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)
 
 def judge_config_cls(cls: type) -> type[JudgeConfig]:
     """Resolve a judge's config specialization through its MRO, else `JudgeConfig`."""
-    return generic_type(cls, JudgeConfig) or JudgeConfig
+    return concrete_type(cls, JudgeConfig) or JudgeConfig
 
 
 class Judge(Generic[ParsedT, ConfigT]):
@@ -126,17 +126,13 @@ class Judge(Generic[ParsedT, ConfigT]):
 
     @property
     def reward_name(self) -> str:
-        fallback = re.sub(
-            r"(?<!^)(?=[A-Z])", "_", type(self).__name__.removesuffix("Judge")
-        ).lower()
+        fallback = re.sub(r"(?<!^)(?=[A-Z])", "_", type(self).__name__.removesuffix("Judge")).lower()
         return judge_key(self.config) or fallback or "judge"
 
     def build_messages(self, **fields: Any) -> str | Messages:
         template = self.prompt
         if template is None:
-            raise ValueError(
-                f"{type(self).__name__} has no `prompt`; set it or override build_messages"
-            )
+            raise ValueError(f"{type(self).__name__} has no `prompt`; set it or override build_messages")
         # Substitute only this judge's documented placeholders, in one pass over the
         # original template — str.format would crash on any literal brace in a custom
         # prompt (a JSON-shaped instruction), and sequential replaces would re-scan
@@ -182,9 +178,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         try:
             async with build_async_openai(self.config) as client:
                 if schema is not None:
-                    completion = await client.beta.chat.completions.parse(
-                        response_format=schema, **kwargs
-                    )
+                    completion = await client.beta.chat.completions.parse(response_format=schema, **kwargs)
                     choice = completion.choices[0]
                     response = JudgeResponse(
                         text=choice.message.content or "",
@@ -192,13 +186,10 @@ class Judge(Generic[ParsedT, ConfigT]):
                         usage=Usage.from_openai(completion.usage),
                     )
                     if choice.message.refusal is not None:
-                        raise RuntimeError(
-                            f"judge refused structured output: {choice.message.refusal}"
-                        )
+                        raise RuntimeError(f"judge refused structured output: {choice.message.refusal}")
                     if response.parsed is None:
                         raise RuntimeError(
-                            f"judge returned no parseable structured output "
-                            f"(finish_reason={choice.finish_reason})"
+                            f"judge returned no parseable structured output (finish_reason={choice.finish_reason})"
                         )
                 else:
                     completion = await client.chat.completions.create(**kwargs)
@@ -213,10 +204,6 @@ class Judge(Generic[ParsedT, ConfigT]):
             if trace is not None and response is not None:
                 trace.record_judge(response)
 
-    async def evaluate(
-        self, *, trace: Trace | None = None, **fields: Any
-    ) -> JudgeResponse[ParsedT]:
+    async def evaluate(self, *, trace: Trace | None = None, **fields: Any) -> JudgeResponse[ParsedT]:
         messages = self.build_messages(**fields)
-        return await self.complete(
-            messages, trace=trace, schema=self.schema, parse=self.parse
-        )
+        return await self.complete(messages, trace=trace, schema=self.schema, parse=self.parse)

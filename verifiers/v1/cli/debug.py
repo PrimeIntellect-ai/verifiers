@@ -263,7 +263,14 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.select(config.num_tasks, config.shuffle)
+    if config.num_tasks is None and taskset.INFINITE:
+        raise ValueError(
+            f"{type(taskset).__name__} is infinite - bound the run with -n"
+        )
+    selected = taskset.shuffle() if config.shuffle else taskset
+    if config.num_tasks is not None:
+        selected = selected.head(config.num_tasks)
+    tasks = list(selected)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):

@@ -33,7 +33,7 @@ from verifiers.v1.retries import run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.trace import Error, Trace
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ class Env(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
 
-        config_cls = generic_type(type(self), EnvConfig, origin=Env) or EnvConfig
+        config_cls = concrete_type(type(self), EnvConfig, origin=Env) or EnvConfig
         if not isinstance(config, config_cls):
             raise TypeError(
                 f"{type(self).__name__} declares Env[{config_cls.__name__}], "

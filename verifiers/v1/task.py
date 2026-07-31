@@ -39,7 +39,7 @@ from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, content_text
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
@@ -48,27 +48,6 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
-
-
-def _requires_runtime(fn) -> bool:
-    param = inspect.signature(fn).parameters.get("runtime")
-    # A defaulted runtime parameter can still be called offline with None.
-    return param is not None and param.default is inspect.Parameter.empty
-
-
-def _record_result(
-    trace: Trace,
-    name: str,
-    result,
-    weight: float | None = None,
-) -> None:
-    """Record a scalar or keyed scoring result."""
-    values = list(result.items()) if isinstance(result, Mapping) else [(name, result)]
-    for key, value in values:
-        if weight is None:
-            trace.record_metric(key, value)
-        else:
-            trace.record_reward(key, value, weight)
 
 
 class TaskResources(BaseModel):
@@ -149,17 +128,15 @@ ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 def task_data_cls(cls: type) -> type[TaskData]:
     """Resolve a task's `TaskData` specialization through its MRO, else `TaskData`."""
-    return generic_type(cls, TaskData) or TaskData
+    return concrete_type(cls, TaskData) or TaskData
 
 
 def task_config_cls(cls: type) -> type[TaskConfig]:
     """Resolve a task's `TaskConfig` specialization through its MRO, else `TaskConfig`."""
-    return generic_type(cls, TaskConfig) or TaskConfig
+    return concrete_type(cls, TaskConfig) or TaskConfig
 
 
-def resolve_server_config(
-    owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
-) -> BaseConfig:
+def resolve_server_config(owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True) -> BaseConfig:
     """The config a declared server class is built with, resolved off `config`'s
     fields: exact type match, else — only for a `sole` declared server — the unique
     isinstance match, else a default-constructed one. Two matching fields raise; the
@@ -239,6 +216,11 @@ class Task(Generic[DataT, StateT, ConfigT]):
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
+        def requires_runtime(fn) -> bool:
+            param = inspect.signature(fn).parameters.get("runtime")
+            # A defaulted runtime parameter can still be called offline with None.
+            return param is not None and param.default is inspect.Parameter.empty
+
         judges = self.plugged_judges()
         available = {"task": self.data, "trace": trace}
         if runtime is not None:
@@ -248,37 +230,35 @@ class Task(Generic[DataT, StateT, ConfigT]):
             metrics = discover_decorated(self, "metric")
             rewards = discover_decorated(self, "reward")
             if runtime is None:
-                skipped = [
-                    fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)
-                ] + [
-                    judge.reward_name
-                    for judge in judges
-                    if _requires_runtime(judge.score)
+                skipped = [fn.__name__ for fn in (*metrics, *rewards) if requires_runtime(fn)] + [
+                    judge.reward_name for judge in judges if requires_runtime(judge.score)
                 ]
                 if skipped:
                     logger.info(
                         "score: no runtime — skipped runtime-dependent signals: %s",
                         skipped,
                     )
-                metrics = [fn for fn in metrics if not _requires_runtime(fn)]
-                rewards = [fn for fn in rewards if not _requires_runtime(fn)]
-                judges = [
-                    judge for judge in judges if not _requires_runtime(judge.score)
-                ]
+                metrics = [fn for fn in metrics if not requires_runtime(fn)]
+                rewards = [fn for fn in rewards if not requires_runtime(fn)]
+                judges = [judge for judge in judges if not requires_runtime(judge.score)]
 
             metric_results = await invoke_all(metrics, available)
             for fn, result in zip(metrics, metric_results):
-                _record_result(trace, fn.__name__, result)
+                if isinstance(result, Mapping):
+                    trace.record_metrics(result)
+                else:
+                    trace.record_metric(fn.__name__, result)
             reward_results = await invoke_all(rewards, available)
             for fn, result in zip(rewards, reward_results):
-                _record_result(
-                    trace, fn.__name__, result, getattr(fn, "_vf_weight", 1.0)
-                )
-            judge_results = await invoke_all(
-                [judge.score for judge in judges], available
-            )
+                weight = getattr(fn, "_vf_weight", 1.0)
+                items = result.items() if isinstance(result, Mapping) else [(fn.__name__, result)]
+                for key, value in items:
+                    trace.record_reward(key, value, weight)
+            judge_results = await invoke_all([judge.score for judge in judges], available)
             for judge, result in zip(judges, judge_results):
-                _record_result(trace, judge.reward_name, result, judge.config.weight)
+                items = result.items() if isinstance(result, Mapping) else [(judge.reward_name, result)]
+                for key, value in items:
+                    trace.record_reward(key, value, judge.config.weight)
 
 
 TaskT = TypeVar("TaskT", bound=Task)
