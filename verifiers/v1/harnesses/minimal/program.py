@@ -254,6 +254,15 @@ async def connect_mcp(
                 raise ValueError(
                     f"duplicate tool name {full!r}; keep MCP tool names qualified"
                 )
+            # Evaluators choose MCP servers, so explicit annotations are their retry contract.
+            annotations = tool.annotations
+            replay_safe = bool(
+                annotations
+                and (
+                    annotations.readOnlyHint is True
+                    or annotations.idempotentHint is True
+                )
+            )
             tool_schemas.append(
                 {
                     "type": "function",
@@ -264,7 +273,7 @@ async def connect_mcp(
                     },
                 }
             )
-            dispatch[full] = (name, tool.name)
+            dispatch[full] = (name, tool.name, replay_safe)
     return tool_schemas, dispatch, servers
 
 
@@ -288,12 +297,12 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
 ) -> tuple[str | list[dict], bool]:
-    """Call once after initialization; a lost response is never replayed in this session."""
-    server, raw = dispatch[name]
+    """Call a tool, retrying it after a lost response only when repetition is safe."""
+    server, raw, replay_safe = dispatch[name]
 
     async def call():
         async with mcp_session(
-            server, servers[server], "call_tool", replay_safe=False
+            server, servers[server], "call_tool", replay_safe=replay_safe
         ) as session:
             return await session.call_tool(raw, arguments)
 
