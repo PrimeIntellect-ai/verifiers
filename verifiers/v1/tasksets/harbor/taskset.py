@@ -372,14 +372,12 @@ def parse_verifier_extras(
         effective_artifact_service,
         normalize_artifact_entries,
     )
+    from harbor.models.task.verifier_mode import task_has_any_separate_verifier
 
     verifier = parsed.verifier
-    if verifier.environment is not None:
+    if task_has_any_separate_verifier(parsed):
         raise ValueError(
-            f"{task_dir.name}: [verifier.environment] declares a separate verifier "
-            "image. Grading runs in a fresh box built from the task's own image, so "
-            "only the agent's delta has to travel; a different verifier image needs "
-            "the full working tree copied over and isn't supported yet."
+            f"{task_dir.name}: separate verifier environments are not supported"
         )
     if verifier.user is not None:
         raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
