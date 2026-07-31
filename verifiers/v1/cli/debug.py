@@ -24,12 +24,12 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.cli.debug import DebugConfig
-from verifiers.v1.decorators import invoke
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
 from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 

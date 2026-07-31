@@ -12,7 +12,6 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.loaders import load_environment
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -24,6 +23,7 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.types import SamplingConfig
+from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)
 

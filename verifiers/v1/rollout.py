@@ -26,7 +26,6 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.errors import (
     HarnessError,
@@ -53,6 +52,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages
+from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
 

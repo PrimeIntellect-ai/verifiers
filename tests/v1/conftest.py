@@ -41,8 +41,8 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.configs.cli.eval import EvalConfig
-from verifiers.v1.loaders import load_environment
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.loaders import load_environment
 
 # Fixture tasksets/envs (echo-v1, echo-agentic-v1, echo-v0, echo-multi-v0) live in
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the

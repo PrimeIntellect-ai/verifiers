@@ -24,14 +24,14 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from verifiers.v1.artifacts import Artifact, collect
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.artifacts import Artifact, collect
+from verifiers.v1.utils.decorators import reward
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"

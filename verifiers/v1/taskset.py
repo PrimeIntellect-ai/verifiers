@@ -26,10 +26,11 @@ from typing_extensions import TypeVar
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
-from verifiers.v1.utils.sampling import SEED
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
+
+SEED = 0  # fixed so `--shuffle` samples the same items every run (reproducible)
 
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
 

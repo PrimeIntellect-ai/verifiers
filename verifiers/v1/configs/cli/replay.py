@@ -50,7 +50,7 @@ class ReplayConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_taskset(cls, data):
-        from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
+        from verifiers.v1.utils.loaders import narrow_plugin_field, taskset_config_type
 
         if isinstance(data, dict) and not data.get("taskset"):
             # The base layer is usually a saved eval config, which keeps its
