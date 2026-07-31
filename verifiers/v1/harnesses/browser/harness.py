@@ -14,10 +14,7 @@ from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
-# Frames the model as a browser agent and teaches the one local tool's contract.
-# Condensed from browser-harness's own SKILL.md: the helper names, the
-# AX-tree-first workflow, and the two persistence rules a model gets wrong
-# without being told (fresh Python per call; first navigation is new_tab).
+# The helper names and persistence rules the model needs to use the local tool.
 BROWSER_SYSTEM_PROMPT = """You are a browser automation agent. Your `browser` tool executes Python code that controls a real Chromium over CDP through browser-harness; its helpers are pre-imported.
 
 Rules of the tool:
@@ -31,41 +28,28 @@ Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibi
 
 
 def state_dir(trace: Trace) -> str:
-    """The trace's state dir, relative to the program's cwd: browser profile,
-    BH_HOME, and the recorded endpoint and PIDs all live under it."""
+    """The trace-scoped browser profile, endpoint, and process state."""
     return f".vf-browser-{trace.id}"
 
 
 def teardown_argv(state: str) -> list[str]:
-    """Stop the browser-harness daemon and any browser launched for this state
-    dir, by the PID each recorded under it, then drop the dir. `browser.pid` is
-    absent when nothing was launched, so only the daemon is touched then.
-    Reusable by an environment that must run the teardown somewhere specific
-    (e.g. inside a sandbox where the recorded PIDs are valid)."""
+    """Stop processes recorded under a trace state directory."""
     script = (
-        f'for f in "{state}/browser.pid" "{state}/bh-home/runtime/bu-default.pid"; do '
+        'state="$1"; '
+        'for f in "$state/browser.pid" "$state/browser-starting.pid" '
+        '"$state/bh-home/runtime/bu-default.pid"; do '
         '[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; done; '
-        f'rm -rf "{state}" 2>/dev/null || true'
+        'rm -rf -- "$state" 2>/dev/null || true'
     )
-    return ["sh", "-c", script]
+    return ["sh", "-c", script, "browser-teardown", state]
 
 
 class BrowserHarnessConfig(HarnessConfig):
     browser: Literal["chromium", "cdp"] = "chromium"
-    """Where the model's browser comes from. `cdp` is the generic backend: it
-    attaches to any CDP-speaking browser service at `cdp_url` -- a cloud browser
-    provider, a remote grid, or one you launched yourself -- and owns nothing.
-    `chromium` (the default) launches a local headless Chromium and attaches to
-    it, which works out of the box on a browser-capable image (see
-    `docs/v1/harnesses.md`). Named values are conveniences that add session
-    creation on top of `cdp`; `browserbase` is the natural next one, deferred
-    from this PR since `cdp` already covers it by hand (paste a Browserbase
-    session's connect URL)."""
+    """`chromium` launches locally; `cdp` attaches to `cdp_url` without owning it."""
 
     cdp_url: str | None = None
-    """The CDP endpoint for `browser = "cdp"` (browser-harness's `BU_CDP_URL`,
-    e.g. `http://127.0.0.1:9222`, or a provider's connect URL). Required for
-    `cdp`, and rejected for any other `browser`."""
+    """HTTP or WebSocket CDP endpoint used with `browser = "cdp"`."""
 
     @model_validator(mode="after")
     def _require_cdp_url_iff_cdp(self) -> "BrowserHarnessConfig":
@@ -84,9 +68,7 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
-    # Executes model-authored Python (in the browser-harness daemon) and, in
-    # chromium mode, launches a browser -- neither belongs on the bare-host
-    # subprocess runtime. `validate_pairing` enforces this against subprocess.
+    # The browser tool executes model-authored Python through a third-party daemon.
     NEEDS_CONTAINER = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -106,17 +88,29 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
         system_prompt = "\n\n".join(
             p for p in (BROWSER_SYSTEM_PROMPT, system_prompt) if p
         )
+        # Default resume replays the transcript. If there was no task system
+        # prompt, that transcript already contains this harness prompt.
+        replaying_browser_prompt = (
+            data.system_prompt is None
+            and prompt is not None
+            and not isinstance(prompt, str)
+            and any(
+                message.role == "system" and message.content == BROWSER_SYSTEM_PROMPT
+                for message in prompt
+            )
+        )
         env = {**self.config.resolved_env}
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
             f"--browser={self.config.browser}",
-            f"--system-prompt={system_prompt}",
             # Trace-scoped so a resumed segment reuses the browser it launched,
             # and cleanup removes exactly what this trace created.
             f"--state-dir={state_dir(trace)}",
         ]
+        if not replaying_browser_prompt:
+            args.append(f"--system-prompt={system_prompt}")
         if self.config.cdp_url:
             args.append(f"--cdp-url={self.config.cdp_url}")
         if mcp_urls:
@@ -148,7 +142,5 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
         return await runtime.run_program([*program, *args], env)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        """Stop what this trace launched -- the browser-harness daemon, and the
-        Chromium `program.py` started, both by the PID each recorded -- and drop
-        the state dir. Idempotent and best-effort."""
+        """Stop this trace's recorded daemon and locally launched browser."""
         await runtime.run(teardown_argv(state_dir(trace)), {})
