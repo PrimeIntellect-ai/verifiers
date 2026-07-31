@@ -86,6 +86,12 @@ class TrainClientConfig(BaseClientConfig):
     """Model the tokenizer/renderer pool is built for. Pin to the base model so a LoRA
     adapter name (served only for sampling) never drives tokenizer loading. Falls back to
     the per-request model when None."""
+    multiplex: int = Field(256, ge=1)
+    """Rollouts that share one renderer. The pool warms one and grows on demand, so N
+    concurrent rollouts hold ~N/multiplex tokenizers instead of a fixed set. A renderer is
+    held only for the render itself (milliseconds) while a turn takes seconds, so one
+    absorbs many rollouts; the default keeps 2048 concurrent rollouts at 8 tokenizers.
+    Lower it when rendering is the slow part (very long prompts), at ~75-95 MB each."""
 
 
 # Discriminated union for a CLI-selectable client (`--client.type eval|train`).

@@ -9,9 +9,12 @@ needs a running vLLM engine.
 """
 
 import asyncio
+import contextlib
 import json
-import threading
-from collections.abc import Mapping
+import logging
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from openai import OpenAIError
@@ -35,6 +38,8 @@ from verifiers.v1.types import (
     TurnTokens,
     Usage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def tool_to_wire(tool: Tool) -> dict:
@@ -182,67 +187,156 @@ def _has_multimodal_content(messages) -> bool:
     return False
 
 
-RENDERER_SLOTS = 8
-"""Independent tokenizer copies per (model, renderer config), shared by every rollout in the
-process. Sized as a constant rather than a knob: a renderer is held only for the duration of
-one render call (tens of ms) while a turn takes seconds, so the rollouts rendering at any
-instant are far fewer than the rollouts in flight — a handful of slots absorbs the overlap at
-any concurrency. Each slot is a full tokenizer (~75-95 MB), so this is also the process's
-tokenizer memory bound; sharing per rollout instead would scale it with `--max-concurrent`."""
+@dataclass
+class _RendererSlot:
+    """One tokenizer, and the rollouts currently sharing it. A `size=1` pool rather than a
+    bare renderer: it carries the lock that makes concurrent renders on one tokenizer safe,
+    and `renderers` offloads its work to a thread only for a pool."""
 
-_RENDERER_POOLS: dict[tuple[str, str | None, str | None], Any] = {}
-_RENDERER_POOLS_LOCK = threading.Lock()
+    renderer: Any
+    load: int = 0
 
 
-async def shared_renderer_pool(
-    renderer_model: str,
-    config: RendererConfig | None,
-    *,
-    chat_template_kwargs: Mapping[str, Any] | None = None,
-):
-    """The process-wide `RendererPool` for this (model, config, template kwargs).
+class ElasticRendererPool:
+    """Renderers grown on demand: one warmed up front, then `multiplex` rollouts per
+    tokenizer — the renderer-side counterpart to `ElasticInterceptionPool`.
 
-    Renderers carry no rollout state — the pool hands one out per render and takes it back —
-    so a pool is shared rather than owned by a client. Building one loads `RENDERER_SLOTS`
-    tokenizers (seconds), so it happens on a thread and behind a lock: concurrent first
-    callers wait for one build instead of each loading a duplicate set."""
-    # Same key shape as v0's `RendererClient._shared_pools`: renderers owns config
-    # resolution, so we only separate pools whose construction inputs differ.
-    key = (
-        renderer_model,
-        config.model_dump_json() if config is not None else None,
-        json.dumps(dict(chat_template_kwargs), sort_keys=True)
-        if chat_template_kwargs
-        else None,
-    )
-    if (pool := _RENDERER_POOLS.get(key)) is not None:
+    Sizing a pool up front means paying for tokenizers a run may never need while every
+    rollout that arrives before the build waits on all of them. Warming one and growing
+    from there costs a single tokenizer at startup, and only a run that actually reaches
+    `multiplex` concurrent rollouts pays for a second.
+
+    Renderers carry no rollout state, so a pool is keyed by what builds it — `shared` hands
+    every client with the same (model, config, template kwargs, multiplex) the same pool.
+    With one client per rollout, owning one each would put a tokenizer behind every rollout."""
+
+    _shared: dict[tuple, "ElasticRendererPool"] = {}
+
+    def __init__(
+        self,
+        renderer_model: str,
+        config: RendererConfig | None,
+        *,
+        chat_template_kwargs: Mapping[str, Any] | None = None,
+        multiplex: int,
+    ) -> None:
+        self.renderer_model = renderer_model
+        self.config = config
+        self.chat_template_kwargs = chat_template_kwargs
+        self.multiplex = multiplex
+        self.slots: list[_RendererSlot] = []
+        self._lock = asyncio.Lock()
+        self._warm_task: asyncio.Task[_RendererSlot] | None = None
+
+    @classmethod
+    def shared(
+        cls,
+        renderer_model: str,
+        config: RendererConfig | None,
+        *,
+        chat_template_kwargs: Mapping[str, Any] | None = None,
+        multiplex: int,
+    ) -> "ElasticRendererPool":
+        """The process-wide pool for these construction inputs, warming its first renderer
+        on the way. Same key shape as v0's `RendererClient._shared_pools`: renderers owns
+        config resolution, so only pools whose build inputs differ are kept apart."""
+        key = (
+            renderer_model,
+            config.model_dump_json() if config is not None else None,
+            json.dumps(dict(chat_template_kwargs), sort_keys=True)
+            if chat_template_kwargs
+            else None,
+            multiplex,
+        )
+        pool = cls._shared.get(key)
+        if pool is None:
+            pool = cls._shared[key] = cls(
+                renderer_model,
+                config,
+                chat_template_kwargs=chat_template_kwargs,
+                multiplex=multiplex,
+            )
+        pool.warm()
         return pool
 
-    def build():
-        with _RENDERER_POOLS_LOCK:
-            if key not in _RENDERER_POOLS:
-                from renderers import create_renderer_pool
+    def warm(self) -> None:
+        """Start building the first renderer, if nothing has yet. Called when a client is
+        built so the tokenizer loads while the rollout is still provisioning, rather than
+        in front of its first turn. A no-op off the event loop (tests, sync construction) —
+        `acquire` builds on demand anyway."""
+        if self._warm_task is not None or self.slots:
+            return
+        try:
+            self._warm_task = asyncio.get_running_loop().create_task(self._grow())
+        except RuntimeError:
+            pass
 
-                pool_kwargs: dict[str, Any] = {"size": RENDERER_SLOTS}
-                if chat_template_kwargs:
-                    pool_kwargs["chat_template_kwargs"] = chat_template_kwargs
-                _RENDERER_POOLS[key] = create_renderer_pool(
-                    renderer_model, config, **pool_kwargs
-                )
-            return _RENDERER_POOLS[key]
+    async def _grow(self) -> _RendererSlot:
+        """Load one more tokenizer, on a thread — `create_renderer_pool` is seconds of
+        blocking work. Callers hold `_lock`, so exactly one grows at a time."""
+        from renderers import create_renderer_pool
 
-    return await asyncio.to_thread(build)
+        kwargs: dict[str, Any] = {"size": 1}
+        if self.chat_template_kwargs:
+            kwargs["chat_template_kwargs"] = self.chat_template_kwargs
+        renderer = await asyncio.to_thread(
+            create_renderer_pool, self.renderer_model, self.config, **kwargs
+        )
+        slot = _RendererSlot(renderer)
+        self.slots.append(slot)
+        logger.info(
+            "renderer pool: %d renderer(s), multiplex=%d",
+            len(self.slots),
+            self.multiplex,
+        )
+        return slot
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[Any]:
+        """A renderer to render this turn with, growing the pool when every one already
+        carries `multiplex` rollouts. The slot is held for the turn, so `load` counts
+        rollouts in flight rather than renders in progress."""
+        if self._warm_task is not None:
+            # Shielded: a cancelled acquire must not cancel the build every other rollout
+            # is waiting on. A failed warm falls through to growing under the lock, where
+            # the error reaches a caller instead of vanishing into a stray task.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self._warm_task)
+            self._warm_task = None
+        async with self._lock:
+            slot = next((s for s in self.slots if s.load < self.multiplex), None)
+            if slot is None:
+                slot = await self._grow()
+            slot.load += 1
+        try:
+            yield slot.renderer
+        finally:
+            slot.load -= 1
 
 
 class TrainClient(Client):
     """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine.
 
-    One client per rollout: it owns its engine connection and borrows the process-wide
-    renderer pool (`shared_renderer_pool`) for each render."""
+    One client per rollout: it owns its engine connection and takes a slot on the elastic
+    renderer pool for each turn. Building the client warms the pool's first tokenizer, so
+    the load happens while the rollout provisions rather than in front of its first turn.
+    The pool itself is shared across clients — see `ElasticRendererPool`."""
 
     def __init__(self, config: TrainClientConfig) -> None:
         self.config = config
-        self.openai = build_async_openai(config)
+        self.client = build_async_openai(config)
+        # The per-request model is only known at call time; a config that pins the renderer
+        # model can warm now, which is every training run (prime-rl always pins it).
+        if config.renderer_model_name is not None:
+            self._pool_for(config.renderer_model_name)
+
+    def _pool_for(self, renderer_model: str, chat_template_kwargs=None):
+        return ElasticRendererPool.shared(
+            renderer_model,
+            self.config.renderer,
+            chat_template_kwargs=chat_template_kwargs,
+            multiplex=self.config.multiplex,
+        )
 
     async def get_response(
         self,
@@ -288,64 +382,66 @@ class TrainClient(Client):
         )
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         sampling_params.update(raw_sampling)
-        renderer = await shared_renderer_pool(
+        pool = self._pool_for(
             self.config.renderer_model_name or model,
-            self.config.renderer,
             chat_template_kwargs=chat_template_kwargs,
         )
         bridged_turn: PendingTurn | None = None
 
-        # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
-        # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
-        can_bridge = (
-            turn is not None
-            and not _has_multimodal_content(prompt)
-            and _is_valid_incremental_tail(wire_messages)
-        )
-        previous_ids = turn.previous_token_ids() if can_bridge else None
-        if previous_ids is not None:
-            previous_prompt_ids, previous_completion_ids = previous_ids
-
-            def bridge():
-                return renderer.bridge_to_next_turn(
-                    previous_prompt_ids,
-                    previous_completion_ids,
-                    wire_messages,
-                    tools=wire_tools,
-                )
-
-            bridged = await _maybe_offload(renderer, bridge)
-            if bridged is not None:
-                prompt_ids = bridged.token_ids
-                multi_modal_data = bridged.multi_modal_data
-                prompt_attribution = bridged
-                bridged_turn = turn
-                sampling_params["routed_experts_prompt_start"] = max(
-                    len(previous_prompt_ids) + len(previous_completion_ids) - 1,
-                    0,
-                )
-
-        # Bridged prompt ids bypass rendering; only fallback needs the full wire prompt.
-        if prompt_ids is None:
-            wire_messages = [message_to_wire(m) for m in prompt]
-
-        try:
-            result = await generate(
-                client=self.openai,
-                renderer=renderer,
-                messages=wire_messages,
-                model=model,
-                prompt_ids=prompt_ids,
-                multi_modal_data=multi_modal_data,
-                prompt_attribution=prompt_attribution,
-                tools=wire_tools,
-                sampling_params=sampling_params,
-                extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
+        async with pool.acquire() as renderer:
+            # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
+            # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
+            can_bridge = (
+                turn is not None
+                and not _has_multimodal_content(prompt)
+                and _is_valid_incremental_tail(wire_messages)
             )
-        except RendererOverlongPromptError as e:
-            raise OverlongPromptError(str(e)) from e
-        except OpenAIError as e:
-            raise model_error(e) from e
+            previous_ids = turn.previous_token_ids() if can_bridge else None
+            if previous_ids is not None:
+                previous_prompt_ids, previous_completion_ids = previous_ids
+
+                def bridge():
+                    return renderer.bridge_to_next_turn(
+                        previous_prompt_ids,
+                        previous_completion_ids,
+                        wire_messages,
+                        tools=wire_tools,
+                    )
+
+                bridged = await _maybe_offload(renderer, bridge)
+                if bridged is not None:
+                    prompt_ids = bridged.token_ids
+                    multi_modal_data = bridged.multi_modal_data
+                    prompt_attribution = bridged
+                    bridged_turn = turn
+                    sampling_params["routed_experts_prompt_start"] = max(
+                        len(previous_prompt_ids) + len(previous_completion_ids) - 1,
+                        0,
+                    )
+
+            # Bridged prompt ids bypass rendering; only fallback needs the full wire prompt.
+            if prompt_ids is None:
+                wire_messages = [message_to_wire(m) for m in prompt]
+
+            try:
+                result = await generate(
+                    client=self.client,
+                    renderer=renderer,
+                    messages=wire_messages,
+                    model=model,
+                    prompt_ids=prompt_ids,
+                    multi_modal_data=multi_modal_data,
+                    prompt_attribution=prompt_attribution,
+                    tools=wire_tools,
+                    sampling_params=sampling_params,
+                    extra_headers={SESSION_ID_HEADER: session_id}
+                    if session_id
+                    else None,
+                )
+            except RendererOverlongPromptError as e:
+                raise OverlongPromptError(str(e)) from e
+            except OpenAIError as e:
+                raise model_error(e) from e
         response = response_from_generate(result, model, bridged_turn)
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
@@ -353,4 +449,4 @@ class TrainClient(Client):
         return response
 
     async def close(self) -> None:
-        await self.openai.close()
+        await self.client.close()

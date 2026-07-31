@@ -84,10 +84,6 @@ class Client(ABC):
 
 
 def resolve_client(config: BaseClientConfig) -> Client:
-    """The client for `config` — built per rollout, so each owns its own transport.
-
-    Imported locally: both clients build themselves from a config, and importing them
-    here at module scope would cycle back through this module."""
     if isinstance(config, TrainClientConfig):
         from verifiers.v1.clients.train import TrainClient
 

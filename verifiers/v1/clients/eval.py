@@ -83,7 +83,7 @@ class EvalClient(Client):
         # are no longer a shared ceiling — one client per rollout means in-flight capacity
         # scales with rollout count. Full URLs are built here (`_url`) rather than by httpx
         # base-url joining, which drops the base path for a leading-slash request path.
-        self.http = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
+        self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
 
     def _url(self, path: str) -> str:
         """Join `base_url` with a dialect path without duplicating the API version segment.
@@ -159,21 +159,15 @@ class EvalClient(Client):
         *,
         stream: bool = False,
     ) -> httpx.Response:
-        """POST `body` upstream, once. The client never retries: a failure surfaces with the
-        provider's own status so the harness SDK can retry 5xx/429 and not 4xx, and the
-        framework's own retry surfaces (`AgentConfig.retries`, the interception layer's replay
-        and coalescing) stay the only ones — a silent attempt here would hide a failure from
-        the trace and double up with theirs. An empty/HTML body (say a 404 from a base_url
-        missing `/v1`) keeps its text rather than becoming an information-free ProviderError."""
         headers.setdefault("content-type", "application/json")
-        request = self.http.build_request(
+        request = self.client.build_request(
             "POST",
             url,
             content=to_json(body, inf_nan_mode="null"),
             headers=headers,
         )
         try:
-            response = await self.http.send(request, stream=stream)
+            response = await self.client.send(request, stream=stream)
         except httpx.TimeoutException as e:
             raise model_error(str(e), status_code=504) from e
         except httpx.HTTPError as e:
@@ -253,4 +247,4 @@ class EvalClient(Client):
         return from_json(resp.content)
 
     async def close(self) -> None:
-        await self.http.aclose()
+        await self.client.aclose()
