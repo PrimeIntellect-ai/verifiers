@@ -23,6 +23,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
@@ -55,6 +56,19 @@ from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RolloutTimeouts:
+    """Per-stage rollout timeouts in seconds (None = unlimited), each bounding one
+    lifecycle stage: `setup` covers task + harness setup in `open()`, `agent` is the
+    cumulative budget the run's segments draw down across `step()`s, `finalize` and
+    `scoring` bound their `close()` stages."""
+
+    setup: float | None = None
+    agent: float | None = None
+    finalize: float | None = None
+    scoring: float | None = None
 
 
 def _as_messages(raw: Messages) -> Messages:
@@ -115,10 +129,7 @@ class RolloutRun:
         runtime_config: RuntimeConfig,
         wire_data: TaskData | None = None,
         has_user: bool = False,
-        setup_timeout: float | None = None,
-        agent_timeout: float | None = None,
-        finalize_timeout: float | None = None,
-        scoring_timeout: float | None = None,
+        timeouts: RolloutTimeouts | None = None,
         limits: RolloutLimits | None = None,
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
@@ -130,11 +141,8 @@ class RolloutRun:
         self.ctx = ctx
         self.runtime_config = runtime_config
         self._has_user = has_user
-        self._setup_timeout = setup_timeout
-        self._agent_timeout = agent_timeout
-        self._agent_time_remaining = agent_timeout
-        self._finalize_timeout = finalize_timeout
-        self._scoring_timeout = scoring_timeout
+        self._timeouts = timeouts or RolloutTimeouts()
+        self._agent_time_remaining = self._timeouts.agent
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
@@ -164,7 +172,7 @@ class RolloutRun:
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
-        `agent_timeout` budget only while its own segments run, so time awaiting
+        `timeouts.agent` budget only while its own segments run, so time awaiting
         the caller (including another interleaved agent) cannot starve it."""
 
     @property
@@ -244,8 +252,8 @@ class RolloutRun:
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
                 None
-                if self._setup_timeout is None
-                else asyncio.get_running_loop().time() + self._setup_timeout
+                if self._timeouts.setup is None
+                else asyncio.get_running_loop().time() + self._timeouts.setup
             )
             async with (
                 boundary(TaskError, "task setup"),
@@ -340,7 +348,7 @@ class RolloutRun:
                 self.fail(
                     HarnessError(
                         f"agent timeout: rollout exceeded its "
-                        f"{self._agent_timeout:g}s budget"
+                        f"{self._timeouts.agent:g}s budget"
                     )
                 )
             else:
@@ -406,7 +414,7 @@ class RolloutRun:
                         invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
                         ),
-                        self._finalize_timeout,
+                        self._timeouts.finalize,
                     )
                 now = time.time()
                 trace.timing.finalize.end = now
@@ -418,7 +426,7 @@ class RolloutRun:
                             self.task.score(trace, runtime),
                             self.harness.score(trace, runtime),
                         ),
-                        self._scoring_timeout,
+                        self._timeouts.scoring,
                     )
                 trace.timing.scoring.end = time.time()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
