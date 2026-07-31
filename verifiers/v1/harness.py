@@ -42,6 +42,8 @@ class Harness(ABC, Generic[ConfigT]):
     """Whether the program discovers SKILL.md skills — its `setup` calls
     `install_skills` with the program's fixed discovery location; configuring
     `skills` on a harness without support is rejected up front."""
+    DEFAULT_RUNTIME_IMAGE: ClassVar[str | None] = None
+    """Container image used when the agent runtime does not set one explicitly."""
     NEEDS_CONTAINER: ClassVar[bool] = True
     """Whether the program must run in a container runtime: True for every harness
     that installs and drives a third-party program — on the host (subprocess) it

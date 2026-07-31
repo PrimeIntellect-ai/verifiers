@@ -9,8 +9,6 @@ import pytest
 
 _m = pytest.mark
 
-PLAYWRIGHT_IMAGE = "mcr.microsoft.com/playwright/python:v1.61.0-noble@sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
-
 
 def _pair(a: str, b: str, id: str, *extra_marks):
     marks = [getattr(_m, a.replace("-", "_")), getattr(_m, b.replace("-", "_"))]
@@ -103,10 +101,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-v1",
         harness=harness,
-        runtime={
-            "type": harness_runtime,
-            **({"image": PLAYWRIGHT_IMAGE} if harness == "browser" else {}),
-        },
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -122,6 +117,27 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     for call in trace.calls:
         assert call.model and call.sampling is not None
         assert call.time.duration > 0
+
+
+@pytest.mark.e2e
+@pytest.mark.browser
+@pytest.mark.docker
+async def test_browser_runtime_image_override(run_v1, tmp_path):
+    """An explicit runtime image wins over the browser harness default."""
+    image = (
+        "mcr.microsoft.com/playwright/python@"
+        "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
+    )
+    (trace,) = await run_v1(
+        "echo-v1",
+        harness="browser",
+        runtime={"type": "docker", "image": image},
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert trace.ok
+    assert trace.agent is not None and trace.agent.runtime is not None
+    assert trace.agent.runtime.image == image
 
 
 @pytest.mark.e2e
