@@ -313,13 +313,19 @@ def verifier_runtime_config(
             f"got {type(config).__name__} against "
             f"{type(base_runtime_config).__name__}"
         )
-    network_config = base_runtime_config.with_task_network_policy(
-        verifier.network_allow, []
-    )
+    policy_base = base_runtime_config
+    if isinstance(policy_base, PrimeConfig) and "*" not in verifier.network_allow:
+        # Prime enforces egress policy only for VM sandboxes. Keep an unrestricted
+        # agent in its configured container, but provision its restricted verifier
+        # as the VM that policy requires.
+        policy_base = policy_base.model_copy(update={"vm": True})
+    network_config = policy_base.with_task_network_policy(verifier.network_allow, [])
     updates: dict[str, Any] = {
         "allow": network_config.allow,
         "block": network_config.block,
     }
+    if isinstance(network_config, PrimeConfig) and network_config.network_restricted:
+        updates["vm"] = True
     if not verifier.fresh_copy:
         # A declared [verifier.environment] replaces the task's environment rather than
         # extending it, so what it omits falls back to the run's policy instead of
