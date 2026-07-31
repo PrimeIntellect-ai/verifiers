@@ -138,6 +138,6 @@ class ElasticInterceptionPool(Interception):
             server = await self._server()
             secret = server.register(session)
         try:
-            yield server.base_url, secret
+            yield await server.url(), secret
         finally:
             server.unregister(secret)

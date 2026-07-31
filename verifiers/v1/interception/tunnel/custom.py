@@ -9,7 +9,12 @@ from typing import ClassVar, Literal
 
 from pydantic import Field
 
-from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
+from verifiers.v1.interception.tunnel.base import (
+    BaseTunnelConfig,
+    Endpoint,
+    FixedEndpoint,
+    Tunnel,
+)
 
 
 class CustomTunnelConfig(BaseTunnelConfig):
@@ -38,5 +43,5 @@ class CustomTunnel(Tunnel[CustomTunnelConfig]):
         return self.config.port
 
     @contextlib.asynccontextmanager
-    async def expose(self, port: int) -> AsyncIterator[str]:
-        yield self.config.url
+    async def expose(self, port: int) -> AsyncIterator[Endpoint]:
+        yield FixedEndpoint(self.config.url)

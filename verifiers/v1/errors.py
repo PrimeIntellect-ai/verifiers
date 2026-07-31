@@ -79,7 +79,8 @@ class InterceptionError(RolloutError):
 
 
 class TunnelError(InterceptionError):
-    """The `prime_tunnel` tunnel to the host interception server couldn't be established."""
+    """The `prime_tunnel` tunnel to the host interception server couldn't be established,
+    or was found dead after a harness failure (its calls hit a gone tunnel)."""
 
 
 @contextlib.asynccontextmanager

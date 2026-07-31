@@ -33,6 +33,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TaskError,
     ToolsetError,
+    TunnelError,
     boundary,
 )
 from verifiers.v1.harness import Harness
@@ -160,6 +161,7 @@ class RolloutRun:
         self._opened = False
         self._closed = False
         self._endpoint: str | None = None
+        self._base_url: str | None = None
         self._urls: dict[str, str] = {}
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
@@ -272,6 +274,7 @@ class RolloutRun:
                     self._shared_tools,
                 )
             )
+            self._base_url = base_url
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
             self._secret = secret
             self._urls = await self._stack.enter_async_context(
@@ -348,6 +351,8 @@ class RolloutRun:
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             real = self._session.error
+            if real is None and isinstance(e, HarnessError):
+                real = await self._tunnel_failure()
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
                 self.fail(real)
@@ -367,6 +372,19 @@ class RolloutRun:
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
         return self.ok and trace.num_turns > turns_before
+
+    async def _tunnel_failure(self) -> RolloutError | None:
+        """The real cause behind a harness exit when the interception tunnel was down:
+        its model calls hit a dead tunnel — infra, not the agent. Probed against THIS
+        rollout's slot URL (a concurrent acquire may already have healed at a new URL);
+        an inconclusive probe blames nothing."""
+        server = self._session.server
+        if server is None or self._base_url is None:
+            return None
+        with contextlib.suppress(Exception):
+            if not await server.healthy(self._base_url):
+                return TunnelError("interception tunnel was down while the harness ran")
+        return None
 
     async def abort(self) -> None:
         """Free everything this run holds — the entered servers and an owned

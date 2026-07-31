@@ -44,6 +44,8 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
 from verifiers.v1.interception.tunnel import (
+    Endpoint,
+    FixedEndpoint,
     PrimeTunnelConfig,
     Tunnel,
     TunnelConfig,
@@ -135,7 +137,7 @@ class InterceptionServer(Interception):
         )
         self.host = "127.0.0.1"
         self.port = 0
-        self.base_url = ""  # set by `start`
+        self.endpoint: Endpoint | None = None  # set by `start`
         self.runner: web.AppRunner | None = None
 
     @property
@@ -148,6 +150,8 @@ class InterceptionServer(Interception):
         return it."""
         secret = secrets.token_urlsafe(16)
         self.sessions[secret] = session
+        # So the rollout can ask `healthy()` after a harness failure.
+        session.server = self
         return secret
 
     def unregister(self, secret: str) -> None:
@@ -158,11 +162,24 @@ class InterceptionServer(Interception):
             # can't commit a late turn onto the concluded trace.
             session.release()
 
+    async def url(self) -> str:
+        """The server's reachable base URL right now — asked per acquire rather than
+        cached, because a healing tunnel may have re-minted at a new URL. Raises
+        `TunnelError` when the tunnel is dead and can't be re-established."""
+        assert self.endpoint is not None, "server not started"
+        return await self.endpoint.url()
+
+    async def healthy(self, url: str) -> bool:
+        """Whether the server is still reachable at `url`, the base URL a rollout's slot
+        handed out (trivially yes without a tunnel) — the failure-attribution hook for a
+        rollout whose harness just failed."""
+        return self.endpoint is None or await self.endpoint.healthy(url)
+
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
         secret = self.register(session)
         try:
-            yield self.base_url, secret
+            yield await self.url(), secret
         finally:
             self.unregister(secret)
 
@@ -212,9 +229,9 @@ class InterceptionServer(Interception):
             logger.info, "interception down: url=http://%s:%d", self.host, self.port
         )
         if self.tunnel is None:
-            self.base_url = f"http://127.0.0.1:{self.port}"
+            self.endpoint = FixedEndpoint(f"http://127.0.0.1:{self.port}")
         else:
-            self.base_url = await self.stack.enter_async_context(
+            self.endpoint = await self.stack.enter_async_context(
                 self.tunnel.expose(self.port)
             )
 
