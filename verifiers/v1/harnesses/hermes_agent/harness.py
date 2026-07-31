@@ -71,6 +71,9 @@ class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
             json.dumps(
                 {
                     "model": model,
+                    # The ACP client already approves tool requests. Avoid routing Hermes'
+                    # redundant smart-approval model calls through interception as turns.
+                    "approvals": {"mode": "off"},
                     "providers": {
                         PROVIDER: {
                             "api": endpoint,
@@ -118,10 +121,10 @@ class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
             system_prompt=system_prompt,
             session_path=f"{home}/acp-session",
         )
-        if len(trace.calls) == calls_before:
+        if not any(call.node is not None for call in trace.calls[calls_before:]):
             detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"
             raise RuntimeError(
-                "Hermes Agent completed without making a model request: " + detail
+                "Hermes Agent completed without committing a model turn: " + detail
             )
         return result
 
