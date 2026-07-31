@@ -28,6 +28,8 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
+    ToolCall,
+    ToolCallUpdate,
 )
 
 
@@ -35,8 +37,16 @@ class VerifiersClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
+        self.tool_calls: dict[str, str] = {}
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        if isinstance(update, ToolCall):
+            self.tool_calls[update.tool_call_id] = update.status or "pending"
+            return
+        if isinstance(update, ToolCallUpdate):
+            if update.status:
+                self.tool_calls[update.tool_call_id] = update.status
+            return
         if not isinstance(update, AgentMessageChunk) or not isinstance(
             update.content, TextContentBlock
         ):
@@ -168,13 +178,24 @@ async def run_client(config: dict) -> None:
             raise ValueError("ACP prompt has no content")
         client.visible_reply = ""
         client.message_id = None
+        client.tool_calls = {}
         try:
-            await connection.prompt(session_id=session_id, prompt=prompt)
+            response = await connection.prompt(session_id=session_id, prompt=prompt)
         except RequestError as error:
             detail = error.data.get("details") if isinstance(error.data, dict) else None
             raise RuntimeError(detail or str(error)) from error
-        if not client.visible_reply.strip():
-            raise RuntimeError("ACP agent produced no visible reply")
+        tool_statuses = list(client.tool_calls.values())
+        completed_tool_turn = (
+            config["allow_empty_tool_reply"]
+            and response.stop_reason == "end_turn"
+            and bool(tool_statuses)
+            and all(status in ("completed", "failed") for status in tool_statuses)
+        )
+        if not client.visible_reply.strip() and not completed_tool_turn:
+            raise RuntimeError(
+                "ACP agent produced no visible reply "
+                f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
+            )
         sys.stdout.write(client.visible_reply)
         if session_path and is_new:
             session_path.parent.mkdir(parents=True, exist_ok=True)
