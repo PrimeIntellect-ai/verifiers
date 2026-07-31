@@ -1,4 +1,4 @@
-from verifiers.v1.harnesses.browseruse.harness import (
+from verifiers.v1.harnesses.browser_use.harness import (
     BrowserUseHarness,
     BrowserUseHarnessConfig,
 )

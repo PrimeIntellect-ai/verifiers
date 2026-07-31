@@ -1,5 +1,5 @@
 from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
-from verifiers.v1.harnesses.browseruse import (
+from verifiers.v1.harnesses.browser_use import (
     BrowserUseHarness,
     BrowserUseHarnessConfig,
 )
