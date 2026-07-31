@@ -19,7 +19,9 @@ class GlossaryTaskData(vf.TaskData):
 
 
 class GlossaryTask(vf.Task[GlossaryTaskData, vf.State, GlossaryTaskConfig]):
-    tools = (GlossaryToolset,)
+    @classmethod
+    def toolsets(cls, config: GlossaryTaskConfig) -> list[vf.Toolset]:
+        return [GlossaryToolset(config.tools)]
 
     @vf.reward(weight=1.0)
     async def looked_up(self, trace: vf.Trace) -> float:

@@ -31,7 +31,7 @@ from verifiers.v1.interception import (
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.retries import run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
-from verifiers.v1.task import Task, resolve_server_config
+from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.generic import concrete_type
 from verifiers.v1.utils.memory import trim_memory_periodically
@@ -378,24 +378,17 @@ class Env(ABC, Generic[ConfigT]):
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: role
-        runtimes, live `shared` servers, and the task class's tool servers;
-        a class overriding `server_config` conservatively counts as remote."""
+        runtimes, live `shared` servers, and the task class's tool servers
+        (their configs read off the declared `tools` fields, no task needed)."""
         task_cls = type(self.taskset).task_type()
-        server_classes = [*task_cls.tools]
-        if server_classes and task_cls.server_config is not Task.server_config:
-            return True
-        sole = len({*task_cls.tools}) == 1
         configs = [
-            resolve_server_config(
-                task_cls.__name__, self.taskset.config.task, server_cls, sole=sole
-            )
-            for server_cls in server_classes
+            server.config for server in task_cls.toolsets(self.taskset.config.task)
         ]
         return requires_tunnel(self._runs_local(), configs, shared.values())
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        servers = self.taskset.tool_servers()
+        servers = self.taskset.toolsets(self.taskset.config)
         if not servers:
             yield {}
             return

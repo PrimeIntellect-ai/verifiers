@@ -258,7 +258,7 @@ class RolloutRun:
             ):
                 await self.harness.setup(runtime)
             async with boundary(ToolsetError, "building tool servers"):
-                tool_servers = self.task.tool_servers()
+                toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
             # The harness reaches the model at `{base_url}/v1`; tool servers reach this
             # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -268,7 +268,7 @@ class RolloutRun:
                     self._interception,
                     runtime,
                     self._session,
-                    tool_servers,
+                    toolsets,
                     self._shared_tools,
                 )
             )
@@ -276,7 +276,7 @@ class RolloutRun:
             self._secret = secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
-                    tool_servers,
+                    toolsets,
                     runtime,
                     shared=self._shared_tools,
                     state_secret=secret,
