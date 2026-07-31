@@ -2,6 +2,16 @@
 
 verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled `bash` harness, the CDP-driven `browser` harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
 
+## The `browser` harness
+
+The `browser` harness gives the model one tool that runs Python against a real Chromium over CDP via [browser-harness](https://github.com/browser-use/browser-harness). It is attach-only: the environment provides a running browser and keeps it alive; the harness only needs its DevTools endpoint. Point it at one with `--env.agent.harness.cdp_url`, and launch a debuggable Chromium yourself with:
+
+```bash
+chrome --remote-debugging-port=9222 --user-data-dir="$(mktemp -d)" --headless --no-first-run --no-sandbox
+```
+
+An environment that provisions its own browser (e.g. inside a sandbox) overrides `BrowserHarness.cdp_endpoint` to launch it, keep it alive across `resume`, and return its endpoint, rather than setting `cdp_url`.
+
 ## A minimal harness implementation
 
 ```python

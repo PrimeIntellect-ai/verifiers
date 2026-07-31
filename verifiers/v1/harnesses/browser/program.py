@@ -8,7 +8,7 @@
 #     "tenacity>=9,<10",
 # ]
 # ///
-"""A chat loop whose one local tool drives a real Chromium over CDP.
+"""A chat loop whose one local tool drives a browser the environment provides.
 
 The tool executes Python through browser-use's `browser-harness`
 (https://github.com/browser-use/browser-harness, MIT): each call pipes the
@@ -17,14 +17,10 @@ in a small daemon and pre-imports its page helpers. `browser-harness` is pinned
 exactly because its CLI surface is what the tool contract wraps; it pins its
 own CDP/websocket dependencies exactly in turn.
 
-The browser is resolved once at startup, in this order: an explicit
-`--cdp-url` (an already-listening DevTools HTTP endpoint, `BU_CDP_URL`
-semantics); a still-live browser a previous segment of this trace launched
-(its `DevToolsActivePort`); otherwise a dedicated headless Chromium launched
-here with `--remote-debugging-port` on loopback. The launched browser and the
-daemon outlive each tool call and each program segment on purpose -- a `resume`
-relaunches this program, and cookies, tabs, and the CDP connection are the
-state worth keeping. The runtime's teardown is what ends them.
+Attach-only. `--cdp-url` is a running Chrome DevTools endpoint the environment
+stood up and keeps alive; this program never launches, discovers, or tears down
+a browser. A `resume` re-attaches to the same endpoint. The only process this
+program owns is the browser-harness daemon, which the harness stops in cleanup.
 
 Secrets arrive through argv so the browser and the model's snippets do not
 inherit them from the environment.
@@ -34,13 +30,8 @@ import argparse
 import asyncio
 import json
 import os
-import re
-import shutil
 import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -50,9 +41,6 @@ from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
-
-BROWSER_READY_TIMEOUT = 30.0
-"""How long a freshly launched Chromium gets to open its DevTools port."""
 
 BROWSER_TOOL_TIMEOUT = 3600
 """Matches the bash harness's command timeout; helper calls inside the snippet
@@ -87,152 +75,17 @@ BROWSER_TOOL = {
 }
 
 
-def find_browser(explicit: str | None) -> str:
-    """The Chromium binary to launch, looked up where a machine keeps one.
-
-    `PLAYWRIGHT_BROWSERS_PATH` is checked before PATH because an image that
-    installs browsers through Playwright puts nothing on PATH at all.
-    """
-    if explicit:
-        return explicit
-    for key in ("BH_CHROME_PATH", "CHROME_PATH"):
-        candidate = os.environ.get(key)
-        if candidate:
-            return candidate
-    registry = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if registry:
-        # Both build layouts Playwright has shipped: chrome-linux/ and the
-        # Chrome-for-Testing chrome-linux64/.
-        builds = sorted(Path(registry).glob("chromium-*/chrome-linux*/chrome"))
-        if builds:
-            return str(builds[-1])
-    for name in (
-        "google-chrome-stable",
-        "google-chrome",
-        "chromium",
-        "chromium-browser",
-    ):
-        found = shutil.which(name)
-        if found:
-            return found
-    raise SystemExit(
-        "no Chromium/Chrome binary found: pass --browser-path, set BH_CHROME_PATH, "
-        "or install browsers where PLAYWRIGHT_BROWSERS_PATH or PATH can see them"
-    )
-
-
-def _endpoint_alive(endpoint: str, timeout: float = 1.0) -> bool:
-    try:
-        urllib.request.urlopen(
-            f"{endpoint.rstrip('/')}/json/version", timeout=timeout
-        ).close()
-        return True
-    except OSError:
-        return False
-
-
-def _remembered_endpoint(record: Path) -> str | None:
-    """The endpoint of a browser a previous segment of this trace launched, if
-    that browser is still listening. Read from a record this program wrote
-    rather than from Chrome's `DevToolsActivePort`, which headless Chrome does
-    not reliably write. A dead endpoint returns None, so the caller launches a
-    fresh browser instead of attaching to nothing."""
-    try:
-        endpoint = record.read_text().strip()
-    except OSError:
-        return None
-    return endpoint if endpoint and _endpoint_alive(endpoint) else None
-
-
-# Chrome writes this to stderr once its DevTools server is bound, in every mode
-# including headless — the canonical way to learn the port when it was asked to
-# pick one (`--remote-debugging-port=0`). Reading it back beats choosing a port
-# ourselves: there is no window between our picking a port and Chrome binding it
-# in which another process could take it, and no dependence on Chrome writing a
-# `DevToolsActivePort` file, which headless Chrome does not do reliably.
-_DEVTOOLS_LINE = re.compile(r"DevTools listening on ws://(\S+?):(\d+)/")
-
-
-def launch_browser(binary: str, profile: Path, log: Path) -> str:
-    """Launch a dedicated automation Chromium and return its DevTools endpoint.
-
-    Its own profile directory, exactly as browser-harness's install notes
-    prescribe for isolated automation: no user profile is touched and no
-    permission popup gates the CDP handshake. `--no-sandbox` because the
-    program runs in a sandboxed rollout runtime, where Chromium's own layer
-    (setuid helper or unprivileged user namespaces) is routinely unavailable
-    and its absence would otherwise kill the launch at startup.
-
-    A new session, and stderr handed off to a log file: the browser must
-    outlive this program segment for `resume`, and inheriting our pipes would
-    tie its lifetime to ours. The port comes from the line Chrome writes there.
-    """
-    profile.mkdir(parents=True, exist_ok=True)
-    with open(log, "wb") as sink:
-        browser = subprocess.Popen(
-            [
-                binary,
-                "--remote-debugging-port=0",
-                f"--user-data-dir={profile}",
-                "--headless",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=sink,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    deadline = time.time() + BROWSER_READY_TIMEOUT
-    while time.time() < deadline:
-        match = _DEVTOOLS_LINE.search(log.read_text(errors="replace"))
-        if match:
-            return f"http://{match.group(1)}:{match.group(2)}"
-        if browser.poll() is not None:
-            break
-        time.sleep(0.2)
-    # The browser is ours and unreachable, so it must not be left running when
-    # this segment gives up on it — a leaked headless Chromium would hold its
-    # port and memory for the life of the runtime.
-    with suppress(ProcessLookupError):
-        browser.terminate()
-    tail = ""
-    with suppress(OSError):
-        tail = log.read_text(errors="replace")[-2000:]
-    raise SystemExit(
-        f"browser did not announce its DevTools port within {BROWSER_READY_TIMEOUT}s "
-        f"({binary}): {tail or '<no browser output>'}"
-    )
-
-
-def resolve_endpoint(args: argparse.Namespace, state_dir: Path) -> str:
-    if args.cdp_url:
-        return args.cdp_url
-    record = state_dir / "cdp-endpoint"
-    endpoint = _remembered_endpoint(record)
-    if endpoint is not None:
-        return endpoint
-    endpoint = launch_browser(
-        find_browser(args.browser_path),
-        state_dir / "profile",
-        state_dir / "browser.log",
-    )
-    record.write_text(endpoint)
-    return endpoint
-
-
 def browser_environment(endpoint: str, state_dir: Path) -> dict[str, str]:
     """The environment every `browser-harness` invocation runs with.
 
     `BU_CDP_URL` is the documented override that makes the harness attach to
-    exactly this browser instead of discovering a local Chrome profile.
-    `BH_HOME` keeps all harness state -- daemon socket, logs, screenshots, the
-    agent-editable `agent_helpers.py` workspace -- under this trace's state
-    directory. Telemetry is disabled through its documented opt-out: the
-    rollout may have no route to the telemetry host, and phoning home per tool
-    call is not this program's to decide anyway.
+    exactly the endpoint the environment provided instead of discovering a local
+    Chrome profile. `BH_HOME` keeps all harness state -- daemon socket, logs,
+    screenshots, the agent-editable `agent_helpers.py` workspace -- under this
+    trace's state directory, so cleanup can find and remove it. Telemetry is
+    disabled through its documented opt-out: the rollout may have no route to the
+    telemetry host, and phoning home per tool call is not this program's to
+    decide anyway.
     """
     return {
         **os.environ,
@@ -399,12 +252,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--cdp-url", required=True)
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
-    parser.add_argument("--cdp-url", default="")
-    parser.add_argument("--browser-path", default="")
     return parser.parse_args()
 
 
@@ -418,8 +270,9 @@ async def main() -> None:
         initial = json.loads(payload)
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
-    endpoint = resolve_endpoint(args, state_dir)
-    tool_env = browser_environment(endpoint, state_dir)
+    # Record the endpoint attached to, so a run can be inspected after the fact.
+    (state_dir / "cdp-endpoint").write_text(args.cdp_url)
+    tool_env = browser_environment(args.cdp_url, state_dir)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     tools = [BROWSER_TOOL]

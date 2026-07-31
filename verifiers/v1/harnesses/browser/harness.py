@@ -29,22 +29,34 @@ Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibi
 
 class BrowserHarnessConfig(HarnessConfig):
     cdp_url: str | None = None
-    """An already-listening Chrome DevTools HTTP endpoint to attach to (the
-    semantics of browser-harness's `BU_CDP_URL`, e.g. `http://127.0.0.1:9222`).
-    Unset, the program launches a dedicated headless Chromium inside its own
-    runtime with `--remote-debugging-port` and attaches to that."""
-
-    browser_path: str | None = None
-    """The Chromium/Chrome binary for the launched browser. Unset, the program
-    looks where a machine keeps one: `BH_CHROME_PATH`/`CHROME_PATH`, then the
-    Playwright registry (`PLAYWRIGHT_BROWSERS_PATH`), then PATH. Ignored when
-    `cdp_url` names a browser that is already running."""
+    """The Chrome DevTools HTTP endpoint to attach to (browser-harness's
+    `BU_CDP_URL`, e.g. `http://127.0.0.1:9222`). Required: the harness attaches
+    to a browser the environment provides and keeps alive; it never launches
+    one. An environment that provisions its own browser overrides
+    `cdp_endpoint` instead of setting this."""
 
 
 class BrowserHarness(Harness[BrowserHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+
+    async def cdp_endpoint(self, runtime: Runtime, trace: Trace) -> str:
+        """The DevTools endpoint the program attaches to for this trace.
+
+        Attach-only by default: the environment provides a running browser and
+        this returns its endpoint. This is the seam an environment overrides to
+        provision a browser it owns (launch it, keep it alive across `resume`,
+        tear it down) and hand back its endpoint.
+        """
+        if not self.config.cdp_url:
+            raise ValueError(
+                "browser harness needs a running Chrome DevTools endpoint to attach "
+                "to; set --env.agent.harness.cdp_url (e.g. http://127.0.0.1:9222). "
+                "Start one with: chrome --remote-debugging-port=9222 "
+                "--user-data-dir=$(mktemp -d) --headless --no-first-run --no-sandbox"
+            )
+        return self.config.cdp_url
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
@@ -59,6 +71,7 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
+        cdp_url = await self.cdp_endpoint(runtime, trace)
         system_prompt, prompt = self.resolve_prompt(data)
         system_prompt = "\n\n".join(
             p for p in (BROWSER_SYSTEM_PROMPT, system_prompt) if p
@@ -68,15 +81,12 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
+            f"--cdp-url={cdp_url}",
             f"--system-prompt={system_prompt}",
-            # Trace-scoped so a resumed segment finds the same browser profile
-            # (and its still-running browser) instead of launching a second one.
+            # Trace-scoped so a resumed segment's daemon/BH_HOME is this trace's,
+            # and cleanup removes exactly what this trace created.
             f"--state-dir=.vf-browser-{trace.id}",
         ]
-        if self.config.cdp_url:
-            args.append(f"--cdp-url={self.config.cdp_url}")
-        if self.config.browser_path:
-            args.append(f"--browser-path={self.config.browser_path}")
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
@@ -106,20 +116,19 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
         return await runtime.run_program([*program, *args], env)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        """Tear down the browser this trace launched, once scoring is done.
+        """Stop the browser-harness daemon this trace started and drop its state.
 
-        The launched Chromium and browser-harness daemon are kept alive across
-        segments on purpose -- a `resume` reattaches to them -- so nothing but
-        this hook is the right place to end them. Idempotent and best-effort: an
-        owned runtime is torn down regardless, but a borrowed one is reused, and
-        a leaked headless Chromium would hold its port and memory until it is.
-        Scoped to the trace's own state dir, so `cdp_url` mode (which launches
-        nothing and attaches to a browser it does not own) matches nothing and
-        leaves that browser alone.
+        The daemon is the only process this harness owns; the browser belongs to
+        whoever provided the endpoint, so this never touches it. The daemon
+        records its own PID under `BH_HOME`, so cleanup kills that recorded PID
+        rather than pattern-matching. Idempotent and best-effort: a run that
+        never started a daemon leaves no PID file, and an owned runtime is torn
+        down regardless.
         """
         state = f".vf-browser-{trace.id}"
+        pid_file = f"{state}/bh-home/runtime/bu-default.pid"
         teardown = (
-            f'pkill -f "user-data-dir={state}/profile" 2>/dev/null; '
+            f'[ -f "{pid_file}" ] && kill "$(cat "{pid_file}")" 2>/dev/null; '
             f'rm -rf "{state}" 2>/dev/null || true'
         )
         await runtime.run(["sh", "-c", teardown], {})
