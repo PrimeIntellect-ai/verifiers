@@ -6,7 +6,6 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
-from verifiers.v1.harnesses.browser import launcher
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -28,6 +27,16 @@ Core helpers: new_tab(url), goto_url(url), page_info(), js(expression), click_at
 
 Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibility.getFullAXTree")["nodes"] has every element's role, name, and backendDOMNodeId — filter in Python before printing. For coordinates: q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4, then click_at_xy(x, y) and verify with a targeted js(...) or page_info() check. Fall back to js(...) over the DOM when the AX tree lacks the element."""
 
+# The daemon and the launched browser record their PIDs under the trace's state
+# dir (BH_HOME=<state>/bh-home, and program.py's browser.pid), so teardown stops
+# them by recorded PID rather than pattern-matching. `browser.pid` is absent
+# whenever nothing was launched, so nothing but the daemon is touched then.
+_TEARDOWN = (
+    'for f in "{state}/browser.pid" "{state}/bh-home/runtime/bu-default.pid"; do '
+    '[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; done; '
+    'rm -rf "{state}" 2>/dev/null || true'
+)
+
 
 class BrowserHarnessConfig(HarnessConfig):
     browser: Literal["chromium"] = "chromium"
@@ -44,14 +53,6 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
 
-    async def cdp_endpoint(self, runtime: Runtime, trace: Trace) -> str:
-        """The endpoint the program attaches to. `chromium` reuses or starts a
-        local browser for this trace (the launcher records it in the state dir,
-        so a `resume` re-attaches to the same one) and owns it until cleanup.
-        This is the seam an environment overrides to provide a browser its own
-        way -- e.g. inside a sandbox."""
-        return await launcher.ensure(runtime, f".vf-browser-{trace.id}")
-
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
 
@@ -65,7 +66,6 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        cdp_url = await self.cdp_endpoint(runtime, trace)
         system_prompt, prompt = self.resolve_prompt(data)
         system_prompt = "\n\n".join(
             p for p in (BROWSER_SYSTEM_PROMPT, system_prompt) if p
@@ -75,9 +75,9 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
-            f"--cdp-url={cdp_url}",
+            f"--browser={self.config.browser}",
             f"--system-prompt={system_prompt}",
-            # Trace-scoped so a resumed segment's daemon/BH_HOME is this trace's,
+            # Trace-scoped so a resumed segment reuses the browser it launched,
             # and cleanup removes exactly what this trace created.
             f"--state-dir=.vf-browser-{trace.id}",
         ]
@@ -110,12 +110,8 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
         return await runtime.run_program([*program, *args], env)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        """Stop what this trace owns and drop its state, by recorded PID.
-
-        Always the browser-harness daemon and the state dir; the browser too
-        when this harness launched it (fallback mode). In attach mode no browser
-        PID was recorded, so the browser -- the environment's -- is never
-        touched. Idempotent and best-effort; delegated to `launcher` so the
-        process management stays out of here.
-        """
-        await runtime.run(launcher.teardown_argv(f".vf-browser-{trace.id}"), {})
+        """Stop what this trace launched -- the browser-harness daemon, and the
+        Chromium `program.py` started, both by the PID each recorded -- and drop
+        the state dir. Idempotent and best-effort."""
+        state = f".vf-browser-{trace.id}"
+        await runtime.run(["sh", "-c", _TEARDOWN.format(state=state)], {})
