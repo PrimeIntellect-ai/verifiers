@@ -11,44 +11,43 @@ from verifiers.v1.types import SamplingConfig
 
 
 class TimeoutConfig(BaseConfig):
-    """Per-agent wall-clock timeouts per rollout stage, in seconds (None = no
-    limit); each stage falls back to the task's own `TaskTimeout` when unset. An
-    interaction's rollout budget is cumulative across its active harness segments
-    and pauses while the caller computes the next user turn."""
+    """Timeout (in seconds) for different phases of an agent's run."""
 
     setup: float | None = None  # one shared budget: task setup + provisioning
+    """Timeout (in seconds) for the task + harness setup hooks."""
     rollout: float | None = None
+    """Timeout (in seconds) for the agent's solve attempt."""
     finalize: float | None = None
+    """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None
+    """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
 
 class AgentConfig(BaseConfig):
-    """One env agent: who plays it, and its per-run caps. It pins only what
-    makes it a different actor; everything unpinned falls back — the model context
-    to the run's own, the harness to the taskset's default."""
-
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Runtime for the harness program — the policy each run provisions its box
     from; tool servers choose their placement separately."""
+
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
     client: ClientConfig | None = None
     """Endpoint override (None = the run's client)."""
     sampling: SamplingConfig | None = None
     """Sampling override (None = the run's sampling)."""
+
+    max_turns: int | None = None
+    """Max model turns per run (None = no limit)."""
+    max_input_tokens: int | None = None
+    """Max input tokens per run (None = no limit)."""
+    max_output_tokens: int | None = None
+    """Max output tokens per run (None = no limit)."""
+    max_total_tokens: int | None = None
+    """Max total tokens per run (None = no limit)."""
+
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
-    """Whole-run retries: rerun this agent's rollout while its trace ends with a
-    retryable error (never into a borrowed box)."""
-    max_turns: int | None = None
-    """Max model turns per run (None = no limit). Framework-enforced (the
-    interception server refuses turns past it), so it applies to any harness."""
-    max_input_tokens: int | None = None
-    max_output_tokens: int | None = None
-    max_total_tokens: int | None = None
-    """Token caps per run (None = no limit); framework-enforced between turns."""
 
     @model_validator(mode="before")
     @classmethod
