@@ -63,9 +63,6 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, instruction = self.resolve_text_prompt(data)
-        if ctx.client.base_url == "https://api.pinference.ai/api/v1":
-            # remove the /v1 from pinference
-            ctx.client.base_url = ctx.client.base_url.removesuffix("/v1")
         env = {
             **self.config.resolved_env,
             # Claude appends /v1/messages; give it the interception root, not the model endpoint.

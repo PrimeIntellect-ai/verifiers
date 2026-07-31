@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
@@ -64,22 +65,34 @@ _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
 class EvalClient(Client):
     """Relay native JSON to the provider and parse a copy for the trace."""
 
-    def __init__(
-        self, base_url: str, api_key: str, headers: dict[str, str] | None = None
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+    def __init__(self, config: BaseClientConfig) -> None:
+        self.base_url = config.base_url.rstrip("/")
+        self.api_key = resolve_api_key(config)
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
-        self.headers = dict(headers or {})
+        self.headers = dict(config.headers or {})
         # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
-        # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
-        # httpx base-url joining, which drops the base path for a leading-slash request path.
-        # Match V1's default concurrency while retaining HTTPX's 20-idle keepalive bound.
+        # Build full URLs ourselves (`_url`) rather than relying on httpx base-url joining,
+        # which drops the base path for a leading-slash request path.
+        # One client per rollout, so this pool serves ONE rollout: its turns are sequential,
+        # and the headroom covers a harness SDK retrying while the first attempt drains.
+        # Sizing per rollout (rather than a shared cap) makes in-flight capacity scale with
+        # rollout count instead of silently ceiling it.
         self.http = httpx.AsyncClient(
             timeout=None,
-            limits=httpx.Limits(max_connections=128, max_keepalive_connections=20),
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
         )
+
+    def _url(self, path: str) -> str:
+        """Join `base_url` with a dialect path without duplicating the API version segment.
+        An Anthropic-style absolute path (`/v1/messages`) against a base that already ends in
+        `/v1` would otherwise request `/v1/v1/messages`; a relative one (`/chat/completions`)
+        keeps the base as-is."""
+        head = path.split("/")[1] if path.startswith("/") else ""
+        base = self.base_url
+        if head and base.endswith(f"/{head}"):
+            base = base[: -len(head) - 1]
+        return base + path
 
     async def get_response(
         self,
@@ -92,7 +105,7 @@ class EvalClient(Client):
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
-            self.base_url + dialect.upstream_path,
+            self._url(dialect.upstream_path),
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
@@ -193,7 +206,7 @@ class EvalClient(Client):
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
-            self.base_url + dialect.upstream_path,
+            self._url(dialect.upstream_path),
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
             stream=True,
@@ -228,7 +241,7 @@ class EvalClient(Client):
     ) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
-            self.base_url + route,
+            self._url(route),
             body,
             self._headers(dialect, headers, None),
         )

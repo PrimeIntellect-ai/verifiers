@@ -23,8 +23,8 @@ import zmq.asyncio
 from pydantic import ValidationError
 
 from verifiers.v1 import graph
-from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.client import ClientConfig, TrainClientConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (

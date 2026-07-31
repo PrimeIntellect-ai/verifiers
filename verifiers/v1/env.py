@@ -13,7 +13,7 @@ from typing import (
 )
 
 from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
-from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.env import (
     EnvConfig,
@@ -138,8 +138,6 @@ class Env(ABC, Generic[ConfigT]):
         # Serving resources, live only inside `serving()`; the env's agents borrow them.
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
-        # Clients for endpoint-pinning roles, cached by config, closed with serving().
-        self._agent_clients: dict[str, Client] = {}
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
 
@@ -203,7 +201,9 @@ class Env(ABC, Generic[ConfigT]):
         gate = asyncio.Semaphore(limit) if limit else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
-            # Unpinned fields fall back to the run's ctx / the taskset's harness.
+            # Unpinned fields fall back to the run's ctx / the taskset's harness. The
+            # endpoint resolves as config, not a live client: each of the seat's rollouts
+            # builds its own from it.
             resolved = spec.model_copy(
                 update={
                     "harness": spec.harness
@@ -213,13 +213,11 @@ class Env(ABC, Generic[ConfigT]):
                     "sampling": spec.sampling
                     if spec.sampling is not None
                     else ctx.sampling,
+                    "client": spec.client if spec.client is not None else ctx.client,
                 }
             )
             return _EpisodeAgent(
                 resolved,
-                client=self._client_for(spec.client)
-                if spec.client is not None
-                else ctx.client,
                 interception=self._interception,
                 name=name,
                 shared_tools=self._shared_tools,
@@ -233,13 +231,6 @@ class Env(ABC, Generic[ConfigT]):
 
         agents = Agents(self.config, make)
         return agents
-
-    def _client_for(self, config: ClientConfig) -> Client:
-        """Resolve (and cache by config) an agent-pinned endpoint's client."""
-        key = config.model_dump_json()
-        if key not in self._agent_clients:
-            self._agent_clients[key] = resolve_client(config)
-        return self._agent_clients[key]
 
     async def run_episode(
         self,
@@ -371,10 +362,6 @@ class Env(ABC, Generic[ConfigT]):
                     finally:
                         self._shared_tools = {}
                         self._interception = None
-                        clients, self._agent_clients = self._agent_clients, {}
-                        for client in clients.values():
-                            with contextlib.suppress(Exception):
-                                await client.close()
 
     def _runs_local(self) -> bool:
         """Whether every role's runtime policy is local (any remote role means tunnels)."""

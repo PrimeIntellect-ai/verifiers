@@ -5,6 +5,11 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    ClientConfig,
+    TrainClientConfig,
+)
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
@@ -78,10 +83,30 @@ class Client(ABC):
         pass
 
 
+def resolve_client(config: BaseClientConfig) -> Client:
+    """The client for `config` — built per rollout, so each owns its own transport.
+
+    Imported locally: both clients build themselves from a config, and importing them
+    here at module scope would cycle back through this module."""
+    if isinstance(config, TrainClientConfig):
+        # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
+        from verifiers.v1.clients.train import TrainClient
+
+        return TrainClient(config)
+    # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
+    from verifiers.v1.clients.eval import EvalClient
+
+    return EvalClient(config)
+
+
 @dataclass(frozen=True)
 class ModelContext:
-    """Client, model, and sampling settings for one rollout."""
+    """What a run samples with: model, sampling settings, and the endpoint.
+
+    `client` is the endpoint *config*, not a live client — every rollout builds (and closes)
+    its own from it, so no transport, connection pool, or mutable client state is shared
+    between rollouts. The live client lives on the rollout's `RolloutSession`."""
 
     model: str
-    client: Client
+    client: ClientConfig
     sampling: Sampling = field(default_factory=Sampling)

@@ -15,10 +15,8 @@ from dataclasses import dataclass
 from typing import Self
 
 from verifiers.v1.clients import (
-    Client,
     EvalClientConfig,
     ModelContext,
-    resolve_client,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
 from verifiers.v1.harness import Harness
@@ -227,10 +225,10 @@ class Interaction:
 class Agent:
     """A configured harness + model + runtime policy, runnable on any task.
 
-    Built from an `AgentConfig` alone; `client=`/`interception=` inject live
-    resources to borrow — agents on one endpoint should share one `Client`, and a
-    live `Interception`'s owner keeps its lifecycle. The config's `runtime` is a
-    *policy*: each `run` provisions a fresh box from it, resolved
+    Built from an `AgentConfig` alone; `interception=` injects a live resource to
+    borrow — its owner keeps the lifecycle. The endpoint stays config: each rollout
+    builds and closes its own `Client`, so an agent holds no transport. The config's
+    `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
     per task; `run(runtime=...)` places the run into an existing box instead
     (borrowed boxes are never started or torn down by the run)."""
 
@@ -238,7 +236,6 @@ class Agent:
         self,
         config: AgentConfig,
         *,
-        client: Client | None = None,
         interception: Interception | None = None,
     ) -> None:
         from verifiers.v1.utils.loaders import harness_config_type, load_harness
@@ -258,12 +255,9 @@ class Agent:
             config = config.model_copy(update={"sampling": Sampling()})
         self.config = config
         self.harness = load_harness(config.harness)
-        self._owns_client = client is None
-        if self._owns_client:
-            client = resolve_client(config.client or EvalClientConfig())
         self.ctx = ModelContext(
             model=config.model,
-            client=client,
+            client=config.client or EvalClientConfig(),
             sampling=config.sampling,
         )
         self._closed = False
@@ -305,22 +299,14 @@ class Agent:
                 # A failed __aenter__ gets no __aexit__ from `async with`: unwind
                 # here, or the agent stays "already entered" forever.
                 self._entered, self._server = False, None
-                if self._owns_client:
-                    self._closed = True
-                    await self.ctx.client.close()
                 raise
         return self
 
     async def __aexit__(self, *exc) -> None:
         self._entered = False
         server, self._server = self._server, None
-        try:
-            if server is not None:
-                await server.__aexit__(*exc)
-        finally:
-            if self._owns_client:
-                self._closed = True
-                await self.ctx.client.close()
+        if server is not None:
+            await server.__aexit__(*exc)
 
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping
@@ -593,7 +579,6 @@ class _EpisodeAgent(Agent):
         self,
         config: AgentConfig,
         *,
-        client: Client,
         interception: Interception | None,
         name: str,
         shared_tools: Mapping[str, SharedToolServer],
@@ -604,7 +589,7 @@ class _EpisodeAgent(Agent):
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
     ) -> None:
-        super().__init__(config, client=client, interception=interception)
+        super().__init__(config, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name
@@ -701,12 +686,11 @@ class _EpisodeAgent(Agent):
 def make_agent(
     config: AgentConfig,
     *,
-    client: Client | None = None,
     interception: Interception | None = None,
 ) -> Agent:
-    """The agent for a config; `client`/`interception` inject live resources to
-    borrow, everything else comes from the config."""
-    return Agent(config, client=client, interception=interception)
+    """The agent for a config; `interception` injects a live resource to borrow,
+    everything else comes from the config."""
+    return Agent(config, interception=interception)
 
 
 MakeAgent = Callable[[str, AgentConfig], Agent]

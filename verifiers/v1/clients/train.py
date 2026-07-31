@@ -8,15 +8,18 @@ reuses the chat client's wire translation (message/tool shapes are the same), an
 needs a running vLLM engine.
 """
 
+import asyncio
 import json
+import threading
 from collections.abc import Mapping
 from typing import Any
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, RendererConfig
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
+from verifiers.v1.configs.client import TrainClientConfig, build_async_openai
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
@@ -179,41 +182,79 @@ def _has_multimodal_content(messages) -> bool:
     return False
 
 
+_RENDERER_SLOTS = 8
+"""Independent tokenizer copies per (model, renderer config), shared by every rollout in the
+process. Sized as a constant rather than a knob: a renderer is held only for the duration of
+one render call (tens of ms) while a turn takes seconds, so the rollouts rendering at any
+instant are far fewer than the rollouts in flight — a handful of slots absorbs the overlap at
+any concurrency. Each slot is a full tokenizer (~75-95 MB), so this is also the process's
+tokenizer memory bound; sharing per rollout instead would scale it with `--max-concurrent`."""
+
+_RENDERER_POOLS: dict[str, Any] = {}
+_RENDERER_POOLS_LOCK = threading.Lock()
+
+
+async def shared_renderer_pool(
+    renderer_model: str,
+    config: RendererConfig | None,
+    *,
+    chat_template_kwargs: Mapping[str, Any] | None = None,
+):
+    """The process-wide `RendererPool` for this (model, config, template kwargs).
+
+    Renderers carry no rollout state — the pool hands one out per render and takes it back —
+    so a pool is shared rather than owned by a client. Building one loads `_RENDERER_SLOTS`
+    tokenizers (seconds), so it happens on a thread and behind a lock: concurrent first
+    callers wait for one build instead of each loading a duplicate set."""
+    key = json.dumps(
+        [
+            renderer_model,
+            config.model_dump(mode="json") if config is not None else None,
+            dict(chat_template_kwargs) if chat_template_kwargs else None,
+        ],
+        sort_keys=True,
+        default=str,
+    )
+    if (pool := _RENDERER_POOLS.get(key)) is not None:
+        return pool
+
+    def build():
+        with _RENDERER_POOLS_LOCK:
+            if key not in _RENDERER_POOLS:
+                from renderers import create_renderer_pool
+
+                pool_kwargs: dict[str, Any] = {"size": _RENDERER_SLOTS}
+                if chat_template_kwargs:
+                    pool_kwargs["chat_template_kwargs"] = chat_template_kwargs
+                _RENDERER_POOLS[key] = create_renderer_pool(
+                    renderer_model, config, **pool_kwargs
+                )
+            return _RENDERER_POOLS[key]
+
+    return await asyncio.to_thread(build)
+
+
 class TrainClient(Client):
-    """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine."""
+    """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine.
 
-    def __init__(
-        self,
-        openai: AsyncOpenAI,
-        pool_size: int = 1,
-        config: RendererConfig | None = None,
-        renderer_model_name: str | None = None,
-    ) -> None:
-        self.openai = openai
-        self.pool_size = pool_size
+    One client per rollout: it owns its engine connection and borrows the process-wide
+    renderer pool (`shared_renderer_pool`) for each render."""
+
+    def __init__(self, config: TrainClientConfig) -> None:
         self.config = config
-        self.renderer_model_name = renderer_model_name
-        self._pool = None
+        self.openai = build_async_openai(config)
 
-    def _renderer_pool(
+    async def _renderer_pool(
         self,
         model: str,
         *,
         chat_template_kwargs: Mapping[str, Any] | None = None,
     ):
-        renderer_model = self.renderer_model_name or model
-        if self._pool is None:
-            from renderers import create_renderer_pool
-
-            pool_kwargs: dict[str, Any] = {"size": self.pool_size}
-            if chat_template_kwargs:
-                pool_kwargs["chat_template_kwargs"] = chat_template_kwargs
-            self._pool = create_renderer_pool(
-                renderer_model,
-                self.config,
-                **pool_kwargs,
-            )
-        return self._pool
+        return await shared_renderer_pool(
+            self.config.renderer_model_name or model,
+            self.config.renderer,
+            chat_template_kwargs=chat_template_kwargs,
+        )
 
     async def get_response(
         self,
@@ -259,7 +300,7 @@ class TrainClient(Client):
         )
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         sampling_params.update(raw_sampling)
-        renderer = self._renderer_pool(
+        renderer = await self._renderer_pool(
             model,
             chat_template_kwargs=chat_template_kwargs,
         )
