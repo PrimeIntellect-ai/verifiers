@@ -46,6 +46,7 @@ from verifiers.v1.types import (
 )
 from verifiers.v1.utils.compile import (
     cap_remote_agent_timeout,
+    resolve_harness_runtime_config,
     resolve_runtime_config,
     validate_pairing,
 )
@@ -513,7 +514,9 @@ class Agent:
             run_is_local = runtime.is_local
         else:
             runtime_config = resolve_runtime_config(
-                self.runtime_config, task, self._warned_resources
+                resolve_harness_runtime_config(self.runtime_config, self.harness),
+                task,
+                self._warned_resources,
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
@@ -558,10 +561,11 @@ class Agent:
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given; share it via `run(..., runtime=box)`."""
+        base = resolve_harness_runtime_config(self.runtime_config, self.harness)
         config = (
-            resolve_runtime_config(self.runtime_config, task, self._warned_resources)
+            resolve_runtime_config(base, task, self._warned_resources)
             if task is not None
-            else self.runtime_config
+            else base
         )
         runtime = make_runtime(config)
         try:

@@ -17,6 +17,20 @@ from verifiers.v1.task import Task
 logger = logging.getLogger(__name__)
 
 
+def resolve_harness_runtime_config(
+    base: RuntimeConfig, harness: Harness
+) -> RuntimeConfig:
+    """Apply a harness image default without overriding an explicitly configured image."""
+    image = harness.DEFAULT_RUNTIME_IMAGE
+    if (
+        image is None
+        or "image" not in type(base).model_fields
+        or "image" in base.model_fields_set
+    ):
+        return base
+    return base.model_copy(update={"image": image})
+
+
 def resolve_runtime_config(
     base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
 ) -> RuntimeConfig:
