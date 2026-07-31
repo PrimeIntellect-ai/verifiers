@@ -20,7 +20,7 @@ from verifiers.v1.configs.env import (
     _declared_agent_configs,
     default_agent_harness,
 )
-from verifiers.v1.episode import Episode
+from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import (
@@ -257,7 +257,7 @@ class Env(ABC, Generic[ConfigT]):
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
         retry mints a replacement)."""
-        episode = Episode(env=self.config.env_id)
+        episode = Episode(env=EnvInfo(id=self.config.env_id))
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):

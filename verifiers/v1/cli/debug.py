@@ -123,16 +123,16 @@ def record_debug_error(
     action_timeout: float | None,
 ) -> None:
     now = time.time()
-    for span in (trace.timing.boot, trace.timing.setup, trace.timing.generation):
+    for span in (trace.timing.boot, trace.timing.setup, trace.timing.agent):
         if span.start and not span.end:
             span.end = now
-    in_action = bool(trace.timing.generation.start)
+    in_action = bool(trace.timing.agent.start)
     stage = (
         "debug action" if in_action else "setup" if trace.timing.setup.start else "boot"
     )
     timeout = action_timeout if in_action else setup_timeout
     error_start = (
-        trace.timing.generation.start
+        trace.timing.agent.start
         if in_action
         else trace.timing.setup.start or trace.timing.boot.start
     )
@@ -234,9 +234,9 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         await runtime.prepare_execution([])
         trace.timing.setup.end = time.time()
 
-        trace.timing.generation.start = time.time()
+        trace.timing.agent.start = time.time()
         debug.update(await run_action(runtime, config))
-        trace.timing.generation.end = time.time()
+        trace.timing.agent.end = time.time()
         if not debug.get("ok"):
             record_action_failure(trace, debug)
         trace.stop(str(debug["reason"]))
@@ -246,7 +246,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     except Exception as e:  # noqa: BLE001 - persist any framework failure on the trace
         record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
     finally:
-        trace.split_generation()
+        trace.split_agent_time()
         trace.info["debug"] = debug
         try:
             await runtime.stop()

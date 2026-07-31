@@ -297,7 +297,7 @@ class RolloutRun:
             raise
         now = time.time()
         self.trace.timing.setup.end = now
-        self.trace.timing.generation.start = now
+        self.trace.timing.agent.start = now
         return True
 
     async def step(self, messages: Messages | None = None) -> bool:
@@ -397,8 +397,8 @@ class RolloutRun:
             try:
                 await self._stack.aclose()
             finally:
-                if trace.timing.generation.start and not trace.timing.generation.end:
-                    trace.timing.generation.end = time.time()
+                if trace.timing.agent.start and not trace.timing.agent.end:
+                    trace.timing.agent.end = time.time()
             if not self._failed and self._opened:
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
@@ -430,13 +430,13 @@ class RolloutRun:
             for span in (
                 trace.timing.boot,
                 trace.timing.setup,
-                trace.timing.generation,
+                trace.timing.agent,
                 trace.timing.finalize,
                 trace.timing.scoring,
             ):
                 if span.start and not span.end:
                     span.end = now
-            trace.split_generation()
+            trace.split_agent_time()
             if runtime is not None:
                 try:
                     await self.harness.cleanup(trace, runtime)

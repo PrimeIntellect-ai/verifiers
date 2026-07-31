@@ -62,7 +62,7 @@ from verifiers.v1.configs.judge import (
 )
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.scoring import parse_judge_choice
-from verifiers.v1.types import Messages, StrictBaseModel, Usage
+from verifiers.v1.types import Messages, Usage
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
@@ -72,7 +72,7 @@ if TYPE_CHECKING:
 ParsedT = TypeVar("ParsedT")
 
 
-class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
+class JudgeResponse(BaseModel, Generic[ParsedT]):
     text: str
     parsed: ParsedT | None = None
     usage: Usage | None = None
@@ -197,8 +197,7 @@ class Judge(Generic[ParsedT, ConfigT]):
                         )
                     if response.parsed is None:
                         raise RuntimeError(
-                            f"judge returned no parseable structured output "
-                            f"(finish_reason={choice.finish_reason})"
+                            f"judge returned no parseable structured output (finish_reason={choice.finish_reason})"
                         )
                 else:
                     completion = await client.chat.completions.create(**kwargs)

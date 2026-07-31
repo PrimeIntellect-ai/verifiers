@@ -8,9 +8,7 @@ import uuid
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
-from pydantic import Field
-
-from verifiers.v1.types import StrictBaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
@@ -25,7 +23,7 @@ MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 agent's image, so the repo is already there and only its output has to travel."""
 
 
-class Artifact(StrictBaseModel):
+class Artifact(BaseModel):
     """One path to restore at the same location in another runtime."""
 
     source: str

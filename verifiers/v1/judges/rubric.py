@@ -9,13 +9,13 @@ from functools import cached_property
 from pathlib import Path
 from typing import cast
 
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import ID, StrictBaseModel
+from verifiers.v1.types import ID
 
 RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
     encoding="utf-8"
@@ -56,7 +56,7 @@ def first_verdicts_object(text: str) -> dict | None:
     return None
 
 
-class Criterion(StrictBaseModel):
+class Criterion(BaseModel):
     name: str
     """Key for the criterion's metric (`<judge name>/<name>`) and its `weights` override."""
     text: str
@@ -109,13 +109,13 @@ class RubricJudgeConfig(JudgeConfig):
     handle either. Transient HTTP failures are already retried by the OpenAI client."""
 
 
-class CriterionVerdict(StrictBaseModel):
+class CriterionVerdict(BaseModel):
     name: str
     reason: str
     verdict: str
 
 
-class RubricVerdicts(StrictBaseModel):
+class RubricVerdicts(BaseModel):
     verdicts: list[CriterionVerdict]
 
 

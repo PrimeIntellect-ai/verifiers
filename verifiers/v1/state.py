@@ -4,14 +4,13 @@ Tool servers synchronize it through the interception state channel. It is exclud
 from serialized traces.
 """
 
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
-from verifiers.v1.types import StrictBaseModel
 from verifiers.v1.utils.generic import concrete_type
 
 
-class State(StrictBaseModel):
+class State(BaseModel):
     model_config = ConfigDict(ser_json_inf_nan="constants")
     artifacts: dict[str, bytes] = Field(default_factory=dict)
 

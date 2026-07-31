@@ -30,7 +30,7 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, Self
 
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
@@ -39,7 +39,7 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
-from verifiers.v1.types import Messages, StrictBaseModel, content_text
+from verifiers.v1.types import Messages, content_text
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class TaskResources(StrictBaseModel):
+class TaskResources(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     cpu: float | None = None
@@ -64,7 +64,7 @@ class TaskResources(StrictBaseModel):
     """Disk in GB (enforced by prime; advisory on docker/modal)."""
 
 
-class TaskTimeout(StrictBaseModel):
+class TaskTimeout(BaseModel):
     """Optional per-task timeout overrides, in seconds."""
 
     model_config = ConfigDict(frozen=True)
@@ -75,7 +75,7 @@ class TaskTimeout(StrictBaseModel):
     scoring: float | None = None
 
 
-class TaskData(StrictBaseModel):
+class TaskData(BaseModel):
     """The task's wire half: one row's pure data, a frozen pydantic model. Subclass
     per dataset to add typed task-specific fields next to the base fields; behavior
     lives on `Task`, which wraps this (`self.data`)."""
