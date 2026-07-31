@@ -119,6 +119,26 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.browser_use
+@pytest.mark.docker
+async def test_browser_use(run_v1, tmp_path):
+    """The browser_use harness runs in an explicitly browser-capable runtime."""
+    image = (
+        "mcr.microsoft.com/playwright/python:v1.61.0-noble@"
+        "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
+    )
+    (trace,) = await run_v1(
+        "echo-v1",
+        harness="browser_use",
+        runtime={"type": "docker", "image": image},
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert trace.ok
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
 @pytest.mark.parametrize("harness_runtime", USER_RUNTIMES, indirect=True)
 async def test_user(run_v1, harness_runtime, tmp_path):
     """Multi-turn, driven by a scripted user — an interaction loop in the env's

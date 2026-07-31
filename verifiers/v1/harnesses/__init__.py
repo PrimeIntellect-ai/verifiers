@@ -1,4 +1,8 @@
 from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
+from verifiers.v1.harnesses.browser_use import (
+    BrowserUseHarness,
+    BrowserUseHarnessConfig,
+)
 from verifiers.v1.harnesses.claude_code import (
     ClaudeCodeHarness,
     ClaudeCodeHarnessConfig,
@@ -18,6 +22,8 @@ from verifiers.v1.harnesses.terminus_2 import Terminus2Harness, Terminus2Harness
 __all__ = [
     "BashHarness",
     "BashHarnessConfig",
+    "BrowserUseHarness",
+    "BrowserUseHarnessConfig",
     "ClaudeCodeHarness",
     "ClaudeCodeHarnessConfig",
     "CodexHarness",
