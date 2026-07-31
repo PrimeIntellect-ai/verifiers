@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.types import (
     AssistantMessage,
@@ -213,6 +214,7 @@ async def test_anthropic_merges_consecutive_tool_results_into_single_user_messag
 async def test_anthropic_from_native_response_extracts_usage():
     anthropic = pytest.importorskip("anthropic")
     from anthropic.types import Message as AnthropicMessage
+
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
@@ -265,6 +267,7 @@ async def test_anthropic_tool_call_round_trips_thinking_blocks():
     pytest.importorskip("anthropic")
     from anthropic.types import Message as AnthropicMessage
     from anthropic.types import Usage as AnthropicUsage
+
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
