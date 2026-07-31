@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 class HermesAgentHarnessConfig(HarnessConfig):
     version: str = Field(default="0.19.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Hermes Agent release to install, pinned for reproducibility."""
+    use_bundled_skill: bool = False
+    """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
 
 
 class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
@@ -81,6 +83,11 @@ class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
                 }
             ).encode(),
         )
+        if not self.config.use_bundled_skill:
+            await runtime.write(
+                f"{home}/.no-bundled-skills",
+                b"Verifiers supplies evaluation skills explicitly.\n",
+            )
 
         if self.config.skills:
             skill_home = f"{home}/skills"

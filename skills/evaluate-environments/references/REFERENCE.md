@@ -293,6 +293,7 @@ currently support `disabled_tools`.
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `version` | `str` | `"0.19.0"` | Hermes Agent release to install, pinned. |
+| `use_bundled_skill` | `bool` | `false` | Enable Hermes Agent's bundled skill catalog in addition to uploaded harness skills. |
 
 #### `RLMHarnessConfig` — `id: "rlm"`
 
