@@ -312,9 +312,10 @@ def serve_env(
             if (
                 "config" in server_kwargs
             ):  # dict-ify for the workers (config_data is picklable)
-                server_kwargs = {
-                    "config_data": env_config_data(server_kwargs["config"])
-                }
+                server_kwargs = {**server_kwargs}
+                server_kwargs["config_data"] = env_config_data(
+                    server_kwargs.pop("config")
+                )
             pool = EnvServerPool(
                 server_kwargs,
                 max_workers,
@@ -335,9 +336,10 @@ def serve_env(
             ):  # rebuild the env config for an in-process server
                 from verifiers.v1.loaders import resolve_env_config
 
-                server_kwargs = {
-                    "config": resolve_env_config(server_kwargs["config_data"])
-                }
+                server_kwargs = {**server_kwargs}
+                server_kwargs["config"] = resolve_env_config(
+                    server_kwargs.pop("config_data")
+                )
             cls = LegacyEnvServer if legacy else EnvServer
             cls.run_server(
                 address=address, address_queue=address_queue, **server_kwargs

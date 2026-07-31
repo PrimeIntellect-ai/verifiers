@@ -62,8 +62,8 @@ from verifiers.v1.configs.judge import (
 )
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.scoring import parse_judge_choice
-from verifiers.v1.types import Messages, StrictBaseModel, Usage
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.types import Messages, Usage
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.task import TaskData
@@ -72,7 +72,7 @@ if TYPE_CHECKING:
 ParsedT = TypeVar("ParsedT")
 
 
-class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
+class JudgeResponse(BaseModel, Generic[ParsedT]):
     text: str
     parsed: ParsedT | None = None
     usage: Usage | None = None
@@ -111,18 +111,18 @@ ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)
 
 def judge_config_cls(cls: type) -> type[JudgeConfig]:
     """Resolve a judge's config specialization through its MRO, else `JudgeConfig`."""
-    return generic_type(cls, JudgeConfig) or JudgeConfig
+    return concrete_type(cls, JudgeConfig) or JudgeConfig
 
 
 class Judge(Generic[ParsedT, ConfigT]):
     prompt: str | None = None
-    """Default prompt template, overridden by config."""
+    """Default prompt template, overridden by a config `prompt` file."""
     schema: type[BaseModel] | None = None
 
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = cast(ConfigT, config or judge_config_cls(type(self))())
-        if self.config.prompt_file is not None:
-            self.prompt = self.config.prompt_file.read_text(encoding="utf-8")
+        if self.config.prompt is not None:
+            self.prompt = self.config.prompt.read_text()
 
     @property
     def reward_name(self) -> str:
@@ -132,7 +132,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         return judge_key(self.config) or fallback or "judge"
 
     def build_messages(self, **fields: Any) -> str | Messages:
-        template = self.config.prompt or self.prompt
+        template = self.prompt
         if template is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
@@ -197,8 +197,7 @@ class Judge(Generic[ParsedT, ConfigT]):
                         )
                     if response.parsed is None:
                         raise RuntimeError(
-                            f"judge returned no parseable structured output "
-                            f"(finish_reason={choice.finish_reason})"
+                            f"judge returned no parseable structured output (finish_reason={choice.finish_reason})"
                         )
                 else:
                     completion = await client.chat.completions.create(**kwargs)

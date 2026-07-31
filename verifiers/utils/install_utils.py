@@ -4,6 +4,7 @@ import importlib
 import logging
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -66,26 +67,10 @@ def is_installed(env_name: str, version: Optional[str] = None) -> bool:
         True if installed (and version matches if specified)
     """
     try:
-        pkg_name = normalize_package_name(env_name)
-        result = subprocess.run(
-            _uv_pip_cmd("show", pkg_name),
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            return False
-
-        if version and version != "latest":
-            for line in result.stdout.splitlines():
-                if line.startswith("Version:"):
-                    installed_version = line.split(":", 1)[1].strip()
-                    return installed_version == version
-            return False
-
-        return True
-    except Exception:
+        installed_version = package_version(normalize_package_name(env_name))
+    except PackageNotFoundError:
         return False
+    return not version or version == "latest" or installed_version == version
 
 
 def check_hub_env_installed(env_id: str) -> bool:

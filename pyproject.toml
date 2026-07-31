@@ -51,7 +51,7 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers>=0.1.8",
+    "renderers>=0.1.9.dev9",
     "typing_extensions>=4.12.2",
 ]
 
@@ -136,8 +136,10 @@ kuhn-poker-v1 = { path = "environments/kuhn_poker_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.
-ruff = "2026-07-27"
-ty = "2026-07-27"
+# Full UTC timestamps: bare dates resolve to local-tz midnight and churn the
+# lockfile across timezones.
+ruff = "2026-07-28T00:00:00Z"
+ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
 prime-sandboxes = false
@@ -232,6 +234,7 @@ markers = [
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
     "null: v1 e2e cases on the null harness",
     "bash: v1 e2e cases on the bash harness",
+    "browser_use: v1 e2e cases on the browser_use harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",
     "pi: v1 e2e cases on the pi harness",

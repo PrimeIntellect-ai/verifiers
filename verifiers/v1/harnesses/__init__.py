@@ -1,9 +1,17 @@
 from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
+from verifiers.v1.harnesses.browser_use import (
+    BrowserUseHarness,
+    BrowserUseHarnessConfig,
+)
 from verifiers.v1.harnesses.claude_code import (
     ClaudeCodeHarness,
     ClaudeCodeHarnessConfig,
 )
 from verifiers.v1.harnesses.codex import CodexHarness, CodexHarnessConfig
+from verifiers.v1.harnesses.hermes_agent import (
+    HermesAgentHarness,
+    HermesAgentHarnessConfig,
+)
 from verifiers.v1.harnesses.kimi_code import KimiCodeHarness, KimiCodeHarnessConfig
 from verifiers.v1.harnesses.mini_swe_agent import (
     MiniSWEAgentHarness,
@@ -19,10 +27,14 @@ from verifiers.v1.harnesses.terminus_2 import Terminus2Harness, Terminus2Harness
 __all__ = [
     "BashHarness",
     "BashHarnessConfig",
+    "BrowserUseHarness",
+    "BrowserUseHarnessConfig",
     "ClaudeCodeHarness",
     "ClaudeCodeHarnessConfig",
     "CodexHarness",
     "CodexHarnessConfig",
+    "HermesAgentHarness",
+    "HermesAgentHarnessConfig",
     "KimiCodeHarness",
     "KimiCodeHarnessConfig",
     "MiniSWEAgentHarness",

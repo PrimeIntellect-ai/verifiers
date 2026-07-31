@@ -27,10 +27,11 @@ from verifiers.v1.cli.output import (
     save_config,
     write_config,
 )
+from verifiers.v1.cli.resolve import narrow_taskset_config
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.configs.cli.replay import ReplayConfig
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task, WireTaskData, task_data_cls
+from verifiers.v1.task import Task, WireTaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
@@ -49,14 +50,7 @@ def _narrow(config_path: Path) -> type[ReplayConfig]:
     data = tomllib.loads(config_path.read_text())
     taskset = data.get("taskset") or (data.get("env") or {}).get("taskset") or {}
     taskset_id = taskset.get("id")
-    if not taskset_id:
-        return ReplayConfig
-    ftype = vf.taskset_config_type(taskset_id)
-    return type(
-        "ReplayConfig",
-        (ReplayConfig,),
-        {"__annotations__": {"taskset": ftype}, "taskset": ftype(id=taskset_id)},
-    )
+    return narrow_taskset_config(ReplayConfig, taskset_id)
 
 
 def output_dir(config: ReplayConfig) -> Path:
@@ -82,7 +76,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
             "score() — multi-agent runs don't support replay"
         )
     task_cls = vf.task_type(config.taskset.id)
-    data_cls = task_data_cls(task_cls)
+    data_cls = task_cls.data_type()
     # `WireTaskData` reads any taskset's saved task without importing its Task type.
     # An episode may hold no traces (its env hooks failed before any agent ran);
     # there's nothing to re-score, so it drops out in the flatten. Each kept trace
@@ -90,7 +84,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     episodes = read_episodes(
         source, Trace[WireTaskData, state_cls(task_cls), WireAgentConfig]
     )
-    sourced = [(trace, e.env) for e in episodes for trace in e.traces]
+    sourced = [(trace, e.env.id) for e in episodes for trace in e.traces]
     if config.num_traces is not None:
         sourced = sourced[: config.num_traces]
     traces = [trace for trace, _ in sourced]
@@ -171,7 +165,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__
-                    trace.capture_error(exc)
+                    trace.record_error(exc)
                     if not config.rich:
                         logger.warning(
                             "replay: scoring failed for task %s",

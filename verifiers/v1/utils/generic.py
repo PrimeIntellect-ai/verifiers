@@ -39,7 +39,7 @@ def deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
-def generic_type(
+def concrete_type(
     cls: type, bound: type[T], *, origin: type | None = None
 ) -> type[T] | None:
     """Find a concrete bounded type through `cls`'s MRO, most-derived first."""

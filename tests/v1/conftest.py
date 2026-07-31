@@ -26,7 +26,7 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
 harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `pool` / `openclaw` / `codex` /
-`claude_code`.
+`claude_code` / `hermes_agent`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
 combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
 prime/modal provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only.
@@ -70,7 +70,8 @@ def tool_runtime(request) -> dict:
 
 
 # Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
-# `kimi-code` / `openclaw` / `codex` / `claude-code`) install their dependencies at rollout.
+# `kimi-code` / `openclaw` / `codex` / `claude-code` / `hermes-agent`) install their
+# dependencies at rollout.
 # `compact` (an example harness) and `terminus-2` (drives the host tmux) are excluded from e2e.
 @pytest.fixture
 def harness(request) -> str:
@@ -136,10 +137,6 @@ def _eval_config(
     `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
     harness one); `model` overrides the default text model (e.g. a VLM for an image task).
 
-    `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
-    not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
-    risks truncating the reasoning before the answer (which tanks the reward).
-
     `harness=None` leaves every seat on its own story — the multi-agent case: there
     is no run-level harness, so a single-agent test's `harness` lands on the `agent`
     seat and a multi-agent test pins its seats through `env` role fields instead."""
@@ -176,12 +173,11 @@ def _eval_config(
         num_rollouts=n,
         sampling={
             "max_tokens": max_tokens,
-            "temperature": 0,
             "reasoning_effort": reasoning_effort,
         },
         rich=False,
         output_dir=output_dir,
-        **({"pool": pool} if pool else {}),
+        **({"serve": {"pool": pool}} if pool else {}),
         **({"model": model} if model else {}),
     )
 
@@ -220,8 +216,8 @@ def run_v1_server():
 
 @pytest.fixture
 async def live_ctx():
-    """A live `ModelContext` (the e2e default model + endpoint, greedy) for driving
-    `Agent` directly — the agent-surface counterpart of `run_v1`."""
+    """A live `ModelContext` (the e2e default model + endpoint, provider-default
+    sampling) for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
     from verifiers.v1.clients import EvalClientConfig, ModelContext, resolve_client
     from verifiers.v1.types import SamplingConfig
 
@@ -230,7 +226,7 @@ async def live_ctx():
         yield ModelContext(
             model="deepseek/deepseek-v4-flash",
             client=client,
-            sampling=SamplingConfig(max_tokens=2048, temperature=0),
+            sampling=SamplingConfig(max_tokens=2048),
         )
     finally:
         await client.close()
@@ -238,7 +234,7 @@ async def live_ctx():
 
 @pytest.fixture
 def run_v0():
-    """Run a legacy v0 env through the v1 bridge (the eval CLI's `--id` path)."""
+    """Run a legacy v0 env through the v1 bridge (the eval CLI's `--legacy.id` path)."""
     from verifiers.v1.legacy import run_legacy_eval
 
     async def _run(
@@ -250,11 +246,10 @@ def run_v0():
         args: dict | None = None,
     ) -> list[Trace]:
         config = EvalConfig(
-            id=env_id,
-            args=args or {},
+            legacy={"id": env_id, "args": args or {}},
             num_tasks=1,
             num_rollouts=n,
-            sampling={"max_tokens": max_tokens, "temperature": 0},
+            sampling={"max_tokens": max_tokens},
             rich=False,
             output_dir=output_dir,
         )

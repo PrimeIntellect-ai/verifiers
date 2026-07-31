@@ -45,7 +45,7 @@ from verifiers.v1.types import (
     UserMessage,
 )
 from verifiers.v1.utils.compile import (
-    cap_remote_harness_timeout,
+    cap_remote_agent_timeout,
     resolve_runtime_config,
     validate_pairing,
 )
@@ -276,9 +276,9 @@ class Agent:
             max_total_tokens=config.max_total_tokens,
         )
         self.timeout = config.timeout
-        # Env episode agents replace this with the eval concurrency semaphore.
-        # Interactions acquire it only around active lifecycle work, never while
-        # awaiting the caller between segments.
+        # Env episode agents replace this with the episode's agent semaphore
+        # (`--env.max-concurrent-agents`). Interactions acquire it only around active
+        # lifecycle work, never while awaiting the caller between segments.
         self._gate: asyncio.Semaphore | None = None
         # Env-owned standing, not config: `Env.setup` marks fixed agents
         # untrainable and traces are stamped from here; inert outside an env.
@@ -335,7 +335,7 @@ class Agent:
         if self._server is None:
             return None
         if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not type(task).tools
+            run_is_local and not shared_tools and not task.toolsets(task.config)
         ):
             return self._server
         return None
@@ -390,7 +390,7 @@ class Agent:
                 attempt + 1,
                 retry.max_retries,
                 delay,
-                trace.error.type if trace.error else "?",
+                trace.last_error.type if trace.last_error else "?",
             )
             await asyncio.sleep(delay)
         if history:
@@ -419,8 +419,8 @@ class Agent:
             # close() never runs — free the run's servers and owned runtime first.
             await run.abort()
             raise
-        if trace.runtime is not None:
-            trace.runtime.borrowed = runtime is not None
+        if trace.agent.runtime is not None:
+            trace.agent.runtime.borrowed = runtime is not None
         return trace
 
     @asynccontextmanager
@@ -482,8 +482,8 @@ class Agent:
             opened = await run.open()
             if not opened:
                 trace = await run.close()
-                if trace.runtime is not None:
-                    trace.runtime.borrowed = runtime is not None
+                if trace.agent.runtime is not None:
+                    trace.agent.runtime.borrowed = runtime is not None
         if not opened:
             failure = run.failure
             if failure is None:  # `open()` returning False always captures one.
@@ -499,8 +499,8 @@ class Agent:
             raise
         finally:
             trace = run.trace if run.closed else await interaction.close()
-            if trace.runtime is not None:
-                trace.runtime.borrowed = runtime is not None
+            if trace.agent.runtime is not None:
+                trace.agent.runtime.borrowed = runtime is not None
 
     def _rollout_params(
         self, task: Task, runtime: Runtime | None, shared_tools: dict
@@ -517,13 +517,16 @@ class Agent:
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
-            self.harness, type(task), runtime_config, shared_tools=shared_tools
+            self.harness,
+            type(task),
+            runtime_config,
+            tools=[*task.toolsets(task.config), *shared_tools.values()],
         )
         # Timeout precedence: agent-level wins, else the task's, else no limit.
-        harness_timeout = (
+        agent_timeout = (
             self.timeout.rollout
             if self.timeout.rollout is not None
-            else task.data.timeout.harness
+            else task.data.timeout.agent
         )
         return {
             "agent_config": self.config,
@@ -535,8 +538,8 @@ class Agent:
                 if self.timeout.setup is not None
                 else task.data.timeout.setup
             ),
-            "harness_timeout": cap_remote_harness_timeout(
-                harness_timeout, runtime_config, task
+            "agent_timeout": cap_remote_agent_timeout(
+                agent_timeout, runtime_config, task
             ),
             "finalize_timeout": (
                 self.timeout.finalize
@@ -578,9 +581,9 @@ class _EpisodeAgent(Agent):
     bundle of references — expensive resources are env-owned and borrowed, so no
     state spans concurrent episodes): traces get their agent standing the moment
     they're created, finished ones land in `completed` (the episode's traces),
-    each run takes the eval's gate. The taskset's shared tool servers ride only
-    its own tasks — on an env-minted task they'd wrongly put MCP in play
-    (`tools=` overrides)."""
+    each run takes one of the episode's agent permits. The taskset's shared tool
+    servers ride only its own tasks — on an env-minted task they'd wrongly put MCP
+    in play (`tools=` overrides)."""
 
     def __init__(
         self,
@@ -664,8 +667,9 @@ class _EpisodeAgent(Agent):
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
         `Env.run` stays crash-safe. Setup, each active segment, and close acquire
-        the eval gate independently; the interaction holds no permit while awaiting
-        its caller, so peer interactions can interleave even at concurrency one."""
+        an agent permit independently; the interaction holds no permit while awaiting
+        its caller, so peer interactions still interleave where an episode plays one
+        agent at a time."""
         trace: Trace | None = None
 
         def remember(current: Trace) -> None:

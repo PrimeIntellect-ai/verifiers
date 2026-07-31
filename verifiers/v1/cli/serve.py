@@ -12,12 +12,12 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.configs.cli.env import pool_serve_kwargs
 from verifiers.v1.configs.cli.serve import ServeConfig
+from verifiers.v1.configs.serve import pool_serve_kwargs
 from verifiers.v1.serve import serve_env
 from verifiers.v1.utils.logging import setup_logging
 
-USAGE = "usage: uv run serve [<taskset-id>] [--env.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
+USAGE = "usage: uv run serve [<taskset-id>] [--env.id <id>] [--legacy.id <env-id> (v0)] [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -29,11 +29,12 @@ def main(argv: list[str] | None = None) -> None:
         with plugin_errors():
             cli(narrow_config(ServeConfig, argv))
         return
-    legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
-    # An env-block flag (or a retired flat axis) skips the usage gate so the typed
-    # parse renders its did-you-mean / pointer to the new flags instead of a bare
-    # usage line.
-    typed_axis = any(a.startswith(("--env.", "--taskset.", "--harness.")) for a in argv)
+    legacy_id = any(a == "--legacy.id" or a.startswith("--legacy.id=") for a in argv)
+    # An env-block flag (or a since-moved flat axis) skips the usage gate so the typed
+    # parse renders its did-you-mean instead of a bare usage line.
+    typed_axis = any(
+        a.startswith(("--env.", "--taskset.", "--harness.", "--serve.")) for a in argv
+    )
     if (
         not extract_id(argv, "env.taskset")
         and not legacy_id
@@ -42,7 +43,7 @@ def main(argv: list[str] | None = None) -> None:
     ):
         raise SystemExit(
             USAGE
-        )  # need a taskset (positional / --env.taskset.id), a legacy --id, or @ file.toml
+        )  # need a taskset (positional / --env.taskset.id), a v0 --legacy.id, or @ file.toml
 
     with plugin_errors():
         config_type = narrow_config(ServeConfig, argv)
@@ -60,17 +61,19 @@ def main(argv: list[str] | None = None) -> None:
     # in each one.
     server_kwargs = (
         {
-            "env_id": config.id,
-            "env_args": config.args,
-            "extra_env_kwargs": config.extra_env_kwargs,
+            "env_id": config.legacy.id,
+            "env_args": config.legacy.args,
+            "extra_env_kwargs": config.legacy.extra_env_kwargs,
         }
         if config.is_legacy
-        else {"config": config.env}
+        # `--serve.max-concurrent` is each v1 worker's episode bound; the legacy
+        # bridge has never had one.
+        else {"config": config.env, "max_concurrent": config.serve.max_concurrent}
     )
     serve_env(
-        **pool_serve_kwargs(config.pool),
+        **pool_serve_kwargs(config.serve.pool),
         legacy=config.is_legacy,
-        address=config.address,
+        address=config.serve.address,
         log_setup=partial(setup_logging, level),
         **server_kwargs,
     )
