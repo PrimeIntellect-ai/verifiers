@@ -47,7 +47,13 @@ class ToolResponseImageTask(
         return 0.0
 
 
-class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfig]):
+class ToolResponseImageConfig(vf.TasksetConfig):
+    task: ToolResponseImageTaskConfig = ToolResponseImageTaskConfig()
+
+
+class ToolResponseImageTaskset(
+    vf.Taskset[ToolResponseImageTask, ToolResponseImageConfig]
+):
     def load(self) -> list[ToolResponseImageTask]:
         return [
             ToolResponseImageTask(
