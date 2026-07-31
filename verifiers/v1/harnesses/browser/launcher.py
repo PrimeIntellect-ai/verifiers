@@ -42,7 +42,7 @@ if [ -z "$bin" ]; then
   done
 fi
 if [ -z "$bin" ]; then
-  echo "no Chromium/Chrome found; set BH_CHROME_PATH or install one on PATH / under PLAYWRIGHT_BROWSERS_PATH" >&2
+  echo "no Chromium/Chrome found for self-launch mode; run on a browser-capable image (e.g. mcr.microsoft.com/playwright/python, or the recipe in assets/templates/browser/Dockerfile), set BH_CHROME_PATH, or pass cdp_url to attach to a browser you provide" >&2
   exit 3
 fi
 nohup "$bin" --remote-debugging-port=0 --user-data-dir="$profile" --headless \

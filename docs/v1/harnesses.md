@@ -4,13 +4,12 @@ verifiers supports a range of harnesses out of the box, including Claude Code, C
 
 ## The `browser` harness
 
-The `browser` harness gives the model one tool that runs Python against a real Chromium over CDP via [browser-harness](https://github.com/browser-use/browser-harness). It is attach-only: the environment provides a running browser and keeps it alive; the harness only needs its DevTools endpoint. Point it at one with `--env.agent.harness.cdp_url`, and launch a debuggable Chromium yourself with:
+The `browser` harness gives the model one tool that runs Python against a real Chromium over CDP via [browser-harness](https://github.com/browser-use/browser-harness). Two modes, chosen by whether `cdp_url` is set:
 
-```bash
-chrome --remote-debugging-port=9222 --user-data-dir="$(mktemp -d)" --headless --no-first-run --no-sandbox
-```
+- **Attach** (`--env.agent.harness.cdp_url http://127.0.0.1:9222`): the harness attaches to a browser you run and keep alive, and needs no special runtime image. Launch a debuggable Chromium yourself with `chrome --remote-debugging-port=9222 --user-data-dir="$(mktemp -d)" --headless --no-first-run --no-sandbox`.
+- **Self-launch** (no `cdp_url`): the harness starts a Chromium of its own for the run and tears it down after. This needs a browser in the runtime image — use a browser-capable one such as the official Playwright image (`mcr.microsoft.com/playwright/python:v1.61.0-noble`) via `--env.agent.runtime.image`; `assets/templates/browser/Dockerfile` is a minimal recipe for publishing your own.
 
-An environment that provisions its own browser (e.g. inside a sandbox) overrides `BrowserHarness.cdp_endpoint` to launch it, keep it alive across `resume`, and return its endpoint, rather than setting `cdp_url`.
+An environment that provisions its browser a bespoke way (e.g. inside a sandbox) overrides `BrowserHarness.cdp_endpoint` to return its endpoint instead of using either path.
 
 ## A minimal harness implementation
 
