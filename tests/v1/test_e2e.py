@@ -9,8 +9,6 @@ import pytest
 
 _m = pytest.mark
 
-PLAYWRIGHT_IMAGE = "mcr.microsoft.com/playwright/python:v1.61.0-noble@sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
-
 
 def _pair(a: str, b: str, id: str, *extra_marks):
     marks = [getattr(_m, a.replace("-", "_")), getattr(_m, b.replace("-", "_"))]
@@ -24,7 +22,6 @@ def _pair(a: str, b: str, id: str, *extra_marks):
 CHAT_PLACEMENTS = [
     _pair("null", "subprocess", "null-harness-in-subprocess"),
     _pair("bash", "docker", "bash-harness-in-docker"),
-    _pair("browser", "docker", "browser-harness-in-docker"),
     _pair("rlm", "docker", "rlm-harness-in-docker"),
     _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
@@ -103,10 +100,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-v1",
         harness=harness,
-        runtime={
-            "type": harness_runtime,
-            **({"image": PLAYWRIGHT_IMAGE} if harness == "browser" else {}),
-        },
+        runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -122,6 +116,26 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     for call in trace.calls:
         assert call.model and call.sampling is not None
         assert call.time.duration > 0
+
+
+@pytest.mark.e2e
+@pytest.mark.browseruse
+@pytest.mark.docker
+async def test_browseruse(run_v1, tmp_path):
+    """The browseruse harness runs in an explicitly browser-capable runtime."""
+    image = (
+        "mcr.microsoft.com/playwright/python:v1.61.0-noble@"
+        "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
+    )
+    (trace,) = await run_v1(
+        "echo-v1",
+        harness="browseruse",
+        runtime={"type": "docker", "image": image},
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert trace.ok
+    assert trace.reward == 1.0
 
 
 @pytest.mark.e2e
