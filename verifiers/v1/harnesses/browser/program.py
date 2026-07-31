@@ -34,8 +34,8 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -144,10 +144,13 @@ def _remembered_endpoint(record: Path) -> str | None:
     return endpoint if endpoint and _endpoint_alive(endpoint) else None
 
 
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+# Chrome writes this to stderr once its DevTools server is bound, in every mode
+# including headless — the canonical way to learn the port when it was asked to
+# pick one (`--remote-debugging-port=0`). Reading it back beats choosing a port
+# ourselves: there is no window between our picking a port and Chrome binding it
+# in which another process could take it, and no dependence on Chrome writing a
+# `DevToolsActivePort` file, which headless Chrome does not do reliably.
+_DEVTOOLS_LINE = re.compile(r"DevTools listening on ws://(\S+?):(\d+)/")
 
 
 def launch_browser(binary: str, profile: Path, log: Path) -> str:
@@ -160,17 +163,16 @@ def launch_browser(binary: str, profile: Path, log: Path) -> str:
     (setuid helper or unprivileged user namespaces) is routinely unavailable
     and its absence would otherwise kill the launch at startup.
 
-    A new session, and stdio handed off to a log file: the browser must
+    A new session, and stderr handed off to a log file: the browser must
     outlive this program segment for `resume`, and inheriting our pipes would
-    tie its lifetime to ours.
+    tie its lifetime to ours. The port comes from the line Chrome writes there.
     """
     profile.mkdir(parents=True, exist_ok=True)
-    port = _free_port()
-    with open(log, "ab") as sink:
-        subprocess.Popen(
+    with open(log, "wb") as sink:
+        browser = subprocess.Popen(
             [
                 binary,
-                f"--remote-debugging-port={port}",
+                "--remote-debugging-port=0",
                 f"--user-data-dir={profile}",
                 "--headless",
                 "--no-first-run",
@@ -178,22 +180,29 @@ def launch_browser(binary: str, profile: Path, log: Path) -> str:
                 "--disable-dev-shm-usage",
                 "--no-sandbox",
             ],
-            stdout=sink,
+            stdout=subprocess.DEVNULL,
             stderr=sink,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
-    endpoint = f"http://127.0.0.1:{port}"
     deadline = time.time() + BROWSER_READY_TIMEOUT
     while time.time() < deadline:
-        if _endpoint_alive(endpoint):
-            return endpoint
+        match = _DEVTOOLS_LINE.search(log.read_text(errors="replace"))
+        if match:
+            return f"http://{match.group(1)}:{match.group(2)}"
+        if browser.poll() is not None:
+            break
         time.sleep(0.2)
+    # The browser is ours and unreachable, so it must not be left running when
+    # this segment gives up on it — a leaked headless Chromium would hold its
+    # port and memory for the life of the runtime.
+    with suppress(ProcessLookupError):
+        browser.terminate()
     tail = ""
     with suppress(OSError):
         tail = log.read_text(errors="replace")[-2000:]
     raise SystemExit(
-        f"browser did not open its DevTools port within {BROWSER_READY_TIMEOUT}s "
+        f"browser did not announce its DevTools port within {BROWSER_READY_TIMEOUT}s "
         f"({binary}): {tail or '<no browser output>'}"
     )
 
