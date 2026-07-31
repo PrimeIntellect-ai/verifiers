@@ -520,8 +520,7 @@ class Agent:
             self.harness,
             type(task),
             runtime_config,
-            task_tools=task.toolsets(task.config),
-            shared_tools=shared_tools,
+            tools=[*task.toolsets(task.config), *shared_tools.values()],
         )
         # Timeout precedence: agent-level wins, else the task's, else no limit.
         agent_timeout = (
