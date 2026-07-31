@@ -284,6 +284,7 @@ def message_hash(message: Message) -> str:
     elif isinstance(message, ToolMessage):
         add("tool_call_id")
         add(message.tool_call_id)
+        add("error" if message.is_error else "success")
     return digest.hexdigest()
 
 

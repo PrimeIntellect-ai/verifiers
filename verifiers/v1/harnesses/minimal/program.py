@@ -24,6 +24,7 @@ from tenacity import (
 )
 
 SERPER_URL = "https://google.serper.dev/search"
+TOOL_ERROR_KEY = "_vf_is_error"
 
 MCP_CALL_ATTEMPTS = 6
 MCP_CANCELLED_CLOSE_GRACE = 1.0  # then re-cancel a hung stateful-session DELETE
@@ -286,7 +287,7 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
 
 async def call_mcp(
     servers: dict, dispatch: dict, name: str, arguments: dict
-) -> str | list[dict]:
+) -> tuple[str | list[dict], bool]:
     """Call once after initialization; a lost response is never replayed in this session."""
     server, raw = dispatch[name]
 
@@ -297,7 +298,7 @@ async def call_mcp(
             return await session.call_tool(raw, arguments)
 
     result = await with_retry(call)
-    return mcp_content_to_chat_content(result.content)
+    return mcp_content_to_chat_content(result.content), result.isError
 
 
 BASH_TOOL = {
@@ -460,7 +461,10 @@ async def chat(
     client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
 ):
     completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
+        model=model,
+        messages=messages,
+        tools=tools or None,
+        extra_body={"messages": messages},  # preserve private fields for interception
     )
     return completion.choices[0].message
 
@@ -548,8 +552,9 @@ async def main() -> None:
                     }
                 )
                 continue
+            is_error = False
             if name in dispatch:
-                content = await call_mcp(servers, dispatch, name, tool_args)
+                content, is_error = await call_mcp(servers, dispatch, name, tool_args)
             elif name == "bash" and args.bash:
                 content = await asyncio.to_thread(
                     run_bash, tool_args.get("command", "")
@@ -570,9 +575,10 @@ async def main() -> None:
                 )
             else:
                 content = f"error: unknown tool {name!r}"
-            messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": content}
-            )
+            message = {"role": "tool", "tool_call_id": call.id, "content": content}
+            if is_error:
+                message[TOOL_ERROR_KEY] = True
+            messages.append(message)
 
 
 if __name__ == "__main__":
