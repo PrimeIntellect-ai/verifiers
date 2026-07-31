@@ -174,7 +174,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return True
 
     def scoring_runtime(
-        self, runtime: Runtime, runtime_policy: RuntimeConfig
+        self, runtime: Runtime, base_runtime_config: RuntimeConfig
     ) -> AbstractAsyncContextManager[Runtime] | None:
         """A box to score this task in, instead of the one the agent worked in.
 
@@ -186,9 +186,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
         Whatever has to survive the move is the task's problem: carry it with
         `collect`/`restore` while the agent's box is still up, inside the context
-        manager. `runtime_policy` is the agent's resolved runtime config, to derive the
-        new box's from — `runtime.config` alone can't tell a task-declared resource from
-        a cli override.
+        manager. `base_runtime_config` is the resolved run-level config, before the
+        current task's overrides, so the new box can distinguish task-declared resources
+        from CLI overrides; `runtime.config` alone cannot.
 
         Only `score` moves. `finalize` and the harness's own scoring stay on `runtime`,
         which is what they describe."""

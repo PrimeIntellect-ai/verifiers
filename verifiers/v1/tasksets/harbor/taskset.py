@@ -187,11 +187,13 @@ class HarborTask(Task[HarborData]):
         trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
     def scoring_runtime(
-        self, runtime: Runtime, runtime_policy: RuntimeConfig
+        self, runtime: Runtime, base_runtime_config: RuntimeConfig
     ) -> AbstractAsyncContextManager[Runtime] | None:
         if self.data.verifier is None:
             return None
-        config = verifier_runtime_config(runtime, runtime_policy, self.data.verifier)
+        config = verifier_runtime_config(
+            runtime, base_runtime_config, self.data.verifier
+        )
         return self._verifier_box(runtime, config)
 
     @asynccontextmanager
@@ -243,7 +245,15 @@ class HarborTask(Task[HarborData]):
         if self.data.verifier is None:
             await self._stage_tests(runtime)
         await runtime.run(
-            ["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self.data)
+            [
+                "sh",
+                "-c",
+                (
+                    "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt"
+                    " && cd /tests && bash test.sh"
+                ),
+            ],
+            verifier_env(self.data),
         )
         scores = await self._reward_json(runtime)
         if scores is not None:
@@ -279,32 +289,33 @@ class HarborTask(Task[HarborData]):
             )
         ):
             scores = {key: float(value) for key, value in data.items()}
-            return scores.get("reward", scores)
+            return scores
         return None
 
 
 def verifier_runtime_config(
-    runtime: Runtime, runtime_policy: RuntimeConfig, verifier: VerifierConfig
+    runtime: Runtime, base_runtime_config: RuntimeConfig, verifier: VerifierConfig
 ) -> RuntimeConfig:
     """The verifier box's config, derived from the agent box's."""
     config = runtime.config
     if not isinstance(config, DockerConfig | PrimeConfig) or type(
-        runtime_policy
+        base_runtime_config
     ) is not type(config):
         raise TaskError(
             "a separate verifier needs a container runtime matching the run's policy; "
-            f"got {type(config).__name__} against {type(runtime_policy).__name__}"
+            f"got {type(config).__name__} against "
+            f"{type(base_runtime_config).__name__}"
         )
     updates: dict[str, Any] = {
         "allow": verifier.network_allow,
-        "block": runtime_policy.block,
+        "block": base_runtime_config.block,
     }
     if not verifier.fresh_copy:
         # A declared [verifier.environment] replaces the task's environment rather than
         # extending it, so what it omits falls back to the run's policy instead of
         # inheriting the agent box's task-derived resources.
         updates |= {
-            field: getattr(runtime_policy, field)
+            field: getattr(base_runtime_config, field)
             for field in ("workdir", "cpu", "memory", "gpu", "disk")
         }
     if verifier.image is not None:
@@ -442,9 +453,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
 
     harbor_task = HarborModelTask(task_dir)
     parsed = harbor_task.config
-    artifacts, hooks, verifier = parse_verifier_extras(
-        task_dir, parsed, harbor_config
-    )
+    artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
     environment = parsed.environment
     network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
     task, meta = parsed.task, parsed.metadata
@@ -630,8 +639,8 @@ def parse_verifier_environment(
     if environment.os != TaskOS.LINUX or unsupported:
         raise ValueError(
             f"{task_dir.name}: verifier environment declares "
-            f"{unsupported or environment.os}, which a single-container runtime "
-            "can't honor"
+            f"{unsupported or environment.os}, which verifiers' verifier-runtime "
+            "integration cannot honor"
         )
 
     mode = parsed.verifier.network_mode or environment.network_mode
@@ -646,15 +655,11 @@ def parse_verifier_environment(
                 cpu=environment.cpus * harbor_config.resource_multiplier
                 if environment.cpus
                 else None,
-                memory=environment.memory_mb
-                / 1024
-                * harbor_config.resource_multiplier
+                memory=environment.memory_mb / 1024 * harbor_config.resource_multiplier
                 if environment.memory_mb
                 else None,
                 gpu=str(environment.gpus) if environment.gpus else None,
-                disk=environment.storage_mb
-                / 1024
-                * harbor_config.resource_multiplier
+                disk=environment.storage_mb / 1024 * harbor_config.resource_multiplier
                 if environment.storage_mb
                 else None,
             )
