@@ -292,6 +292,17 @@ Installs the Codex CLI into the runtime and runs `codex exec`.
 | --- | --- | --- | --- |
 | `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
+#### `HermesAgentHarnessConfig` — `id: "hermes-agent"`
+
+Installs Hermes Agent and runs its native ACP server. Supports image prompts,
+task MCP servers, resumable sessions, and SKILL.md skills. Hermes ACP does not
+currently support `disabled_tools`.
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `version` | `str` | `"0.19.0"` | Hermes Agent release to install, pinned. |
+| `use_bundled_skill` | `bool` | `false` | Enable Hermes Agent's bundled skill catalog in addition to uploaded harness skills. |
+
 #### `RLMHarnessConfig` — `id: "rlm"`
 
 Installs the rlm CLI and runs it. Knobs map onto `RLM_*` env vars; base `HarnessConfig.env` passes any other `RLM_*` var through verbatim.

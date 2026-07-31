@@ -37,6 +37,7 @@ AGENTIC_PLACEMENTS = [
     _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("codex", "docker", "codex-harness-in-docker"),
     _pair("claude-code", "docker", "claude-code-harness-in-docker"),
+    _pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]
@@ -54,6 +55,7 @@ USER_RUNTIMES = [
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus one remote placement for the sandbox/tunnel boundary.
 ACP_RESUME_PLACEMENTS = [
+    _pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
     _pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
     _pair("pi", "docker", "pi-acp-in-docker"),
     _pair("pool", "docker", "pool-acp-in-docker"),
