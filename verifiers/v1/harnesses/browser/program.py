@@ -181,9 +181,13 @@ def ensure_chromium(state_dir: Path) -> str:
     )
 
 
-def resolve_endpoint(browser: str, state_dir: Path) -> str:
+def resolve_endpoint(browser: str, cdp_url: str, state_dir: Path) -> str:
     if browser == "chromium":
         return ensure_chromium(state_dir)
+    if browser == "cdp":
+        if not cdp_url:
+            raise SystemExit("browser=cdp requires --cdp-url")
+        return cdp_url
     raise SystemExit(f"unsupported browser {browser!r}")
 
 
@@ -356,6 +360,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--browser", default="chromium")
+    parser.add_argument("--cdp-url", default="")
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
@@ -373,7 +378,7 @@ async def main() -> None:
         initial = json.loads(payload)
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
-    endpoint = resolve_endpoint(args.browser, state_dir)
+    endpoint = resolve_endpoint(args.browser, args.cdp_url, state_dir)
     tool_env = browser_environment(endpoint, state_dir)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Literal
 
+from pydantic import model_validator
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
@@ -49,19 +51,43 @@ def teardown_argv(state: str) -> list[str]:
 
 
 class BrowserHarnessConfig(HarnessConfig):
-    browser: Literal["chromium"] = "chromium"
-    """Where the browser the model drives comes from. `chromium` launches a
-    local headless Chromium and attaches to it over CDP -- it works out of the
-    box on a browser-capable image (see `docs/v1/harnesses.md`) and needs no
-    endpoint wiring. (A `browserbase` value that creates a hosted session over
-    the Browserbase API is the planned follow-up; until then, point
-    browser-harness's own `BU_CDP_URL` at a remote browser to use one.)"""
+    browser: Literal["chromium", "cdp"] = "chromium"
+    """Where the model's browser comes from. `cdp` is the generic backend: it
+    attaches to any CDP-speaking browser service at `cdp_url` -- a cloud browser
+    provider, a remote grid, or one you launched yourself -- and owns nothing.
+    `chromium` (the default) launches a local headless Chromium and attaches to
+    it, which works out of the box on a browser-capable image (see
+    `docs/v1/harnesses.md`). Named values are conveniences that add session
+    creation on top of `cdp`; `browserbase` is the natural next one, deferred
+    from this PR since `cdp` already covers it by hand (paste a Browserbase
+    session's connect URL)."""
+
+    cdp_url: str | None = None
+    """The CDP endpoint for `browser = "cdp"` (browser-harness's `BU_CDP_URL`,
+    e.g. `http://127.0.0.1:9222`, or a provider's connect URL). Required for
+    `cdp`, and rejected for any other `browser`."""
+
+    @model_validator(mode="after")
+    def _require_cdp_url_iff_cdp(self) -> "BrowserHarnessConfig":
+        if self.browser == "cdp" and not self.cdp_url:
+            raise ValueError(
+                "browser='cdp' needs cdp_url set to a CDP endpoint to attach to"
+            )
+        if self.browser != "cdp" and self.cdp_url:
+            raise ValueError(
+                f"cdp_url is only valid with browser='cdp', not browser={self.browser!r}"
+            )
+        return self
 
 
 class BrowserHarness(Harness[BrowserHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    # Executes model-authored Python (in the browser-harness daemon) and, in
+    # chromium mode, launches a browser -- neither belongs on the bare-host
+    # subprocess runtime. `validate_pairing` enforces this against subprocess.
+    NEEDS_CONTAINER = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
@@ -91,6 +117,8 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
             # and cleanup removes exactly what this trace created.
             f"--state-dir={state_dir(trace)}",
         ]
+        if self.config.cdp_url:
+            args.append(f"--cdp-url={self.config.cdp_url}")
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
