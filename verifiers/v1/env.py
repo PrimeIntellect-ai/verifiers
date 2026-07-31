@@ -379,7 +379,7 @@ class Env(ABC, Generic[ConfigT]):
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: role
         runtimes, live `shared` servers, and the task class's tool servers
-        (their configs read off the declared `tools` fields, no task needed)."""
+        (`Task.toolsets` is a classmethod, so no task instance is needed)."""
         task_cls = type(self.taskset).task_type()
         configs = [
             server.config for server in task_cls.toolsets(self.taskset.config.task)
