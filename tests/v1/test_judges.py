@@ -291,6 +291,22 @@ async def test_reference_question_field(fake_judge_model):
         await judge.score(task, trace)
 
 
+async def test_reference_judges_withheld_prompt(fake_judge_model):
+    # The user-sim shape: the prompt is off the wire, so the default question follows it
+    # to `withheld_prompt` — a plugged judge grades the conversation against the scenario
+    # with no per-taskset configuration.
+    withheld = vf.Task(QAData(idx=0, prompt="Capital of France?", answer="Paris"))
+    data = withheld.without_prompt().data
+    assert data.prompt is None
+    trace = make_trace()
+    assert await vf.ReferenceJudge().score(data, trace) == 1.0
+    assert "Capital of France?" in fake_judge_model[0]
+
+    # A task with no question anywhere is a misconfigured judge, not a silent zero.
+    with pytest.raises(ValueError, match="no question"):
+        await vf.ReferenceJudge().score(QAData(idx=0, answer="Paris"), trace)
+
+
 def full_trace_fixture() -> vf.Trace:
     """A multi-turn trace: user -> assistant (reasoning + tool call) -> tool -> final reply."""
     from verifiers.v1.types import ToolCall, ToolMessage

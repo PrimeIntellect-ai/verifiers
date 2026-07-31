@@ -448,8 +448,9 @@ class Agent:
         the first `turn(message)`; a prompted task speaks first — take its opening
         reply with a bare `turn()` before answering. A prompt that belongs to the
         USER side (a scenario the caller pursues, not the assistant's seed) is the
-        caller's to withhold: hand the interaction `task.without_prompt()` and keep
-        the scenario on a scoring-side field (the user-sim env's contract).
+        caller's to withhold: hand the interaction `task.without_prompt()`, which
+        moves the prompt to `data.withheld_prompt` — off the wire, still scored
+        against (the user-sim env's shape).
 
         `runtime` and `tools` borrow live resources from their owners, just as
         they do for `run()`; an env supplies its taskset's shared tools

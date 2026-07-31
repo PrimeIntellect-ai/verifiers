@@ -65,6 +65,13 @@ class TaskTimeout(BaseModel):
     """Timeout (in seconds) for the task's scoring."""
 
 
+def _prompt_text(prompt: str | Messages | None) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    texts = [content_text(message.content) for message in prompt or []]
+    return "\n\n".join(text for text in texts if text)
+
+
 class TaskData(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -77,6 +84,11 @@ class TaskData(BaseModel):
 
     prompt: str | Messages | None = None
     """Initial user prompt; unset if the user opens the conversation."""
+    withheld_prompt: str | Messages | None = None
+    """The prompt `Task.without_prompt()` took off the wire, kept on the row for
+    scoring: the run is opened by its user, so the question reaches the assistant
+    through conversation instead (the user-sim scenario). Never sampled into a
+    request — like an `answer` field, it rides the row for graders only."""
     system_prompt: str | None = None
     """Optional system prompt to prepend to the user prompt."""
 
@@ -105,10 +117,13 @@ class TaskData(BaseModel):
 
     @property
     def prompt_text(self) -> str:
-        if isinstance(self.prompt, str):
-            return self.prompt
-        texts = [content_text(message.content) for message in self.prompt or []]
-        return "\n\n".join(text for text in texts if text)
+        return _prompt_text(self.prompt)
+
+    @property
+    def withheld_prompt_text(self) -> str:
+        """`withheld_prompt` as text — what a grader reads when the wire carried no
+        prompt because the run's user held the question."""
+        return _prompt_text(self.withheld_prompt)
 
 
 class WireTaskData(TaskData):
@@ -137,9 +152,18 @@ class Task(Generic[DataT, StateT, ConfigT]):
         run is opened by its user (`agent.interaction()`). For a prompt that belongs
         to the USER side — a scenario the caller pursues rather than the assistant's
         seed (the user-sim env) — the assistant plays this copy and learns the goal
-        only through conversation. Scoring runs on the withheld row, so keep rewards
-        and judges on non-prompt fields."""
-        return self._with_data(prompt=None)
+        only through conversation.
+
+        The prompt moves to `data.withheld_prompt` rather than vanishing: scoring
+        runs on this row, and a grader still needs the question it grades against
+        (plugged judges read it automatically). Hand-written rewards that want it
+        should read `withheld_prompt_text`, since `prompt_text` reports the wire.
+
+        Idempotent: withholding an already-withheld task keeps the scenario."""
+        return self._with_data(
+            prompt=None,
+            withheld_prompt=self.data.prompt or self.data.withheld_prompt,
+        )
 
     def _with_data(self, **updates) -> Self:
         # Copy rather than reconstruct: `data` is frozen, but subclass instance state

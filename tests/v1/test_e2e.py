@@ -516,6 +516,8 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
     (user,) = [t for t in traces if t.agent.name == "user"]
     assert assistant.ok and user.ok
     assert assistant.task.data.prompt is None  # the scenario stayed off the wire
+    # ...but stayed on the row, so a judge/reward still has a question to grade against.
+    assert assistant.task.data.withheld_prompt_text
     assert user.num_turns >= 1  # the modeled user actually drove the exchange
     assert assistant.rewards["echoed"].score == 1.0  # the tool ran, mid-conversation
     # The tool was advertised to the prompt-withheld chat exactly as to any run.
