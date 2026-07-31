@@ -1,21 +1,4 @@
-"""A rollout: one trajectory — drive a harness segment by segment and score its trace.
-
-A rollout's exchange is a sequence of SEGMENTS: the harness program runs until it
-yields (= exits), the run's user answers its final message, and the next segment
-resumes the exchange with that answer (`Harness.resume` — a relaunch on the accreted
-conversation by default, a native continuation for harnesses with their own session
-state). The user loop lives between segments, at the exchange's natural turn
-granularity — never inside the model boundary, so a harness's own tool loop can
-never race or amputate it.
-
-`Rollout` is the engine, a staged lifecycle: `open()` boots the world, each
-`step()` runs one segment, `close()` finalizes, scores, and tears the world down —
-each stage under its own timeout. `Agent` is its only driver: `Agent.run` is the
-one-call single-segment form, `Agent.interaction` holds the run open and lets the
-caller supply each user turn, one `turn()` per segment — who answers the program
-(an env's control flow, a simulator agent, a game engine, a human) is the caller's
-business, never this module's.
-"""
+"""Lifecycle of one agent rollout."""
 
 import asyncio
 import contextlib
