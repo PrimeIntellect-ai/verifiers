@@ -25,7 +25,7 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.retries import backoff, trace_should_retry
-from verifiers.v1.rollout import RolloutRun, _as_messages
+from verifiers.v1.rollout import RolloutRun, RolloutTimeouts, _as_messages
 from verifiers.v1.runtimes import (
     NetworkPolicyConfig,
     Runtime,
@@ -533,23 +533,23 @@ class Agent:
             "harness": self.harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
-            "setup_timeout": (
-                self.timeout.setup
-                if self.timeout.setup is not None
-                else task.data.timeout.setup
-            ),
-            "agent_timeout": cap_remote_agent_timeout(
-                agent_timeout, runtime_config, task
-            ),
-            "finalize_timeout": (
-                self.timeout.finalize
-                if self.timeout.finalize is not None
-                else task.data.timeout.finalize
-            ),
-            "scoring_timeout": (
-                self.timeout.scoring
-                if self.timeout.scoring is not None
-                else task.data.timeout.scoring
+            "timeouts": RolloutTimeouts(
+                setup=(
+                    self.timeout.setup
+                    if self.timeout.setup is not None
+                    else task.data.timeout.setup
+                ),
+                agent=cap_remote_agent_timeout(agent_timeout, runtime_config, task),
+                finalize=(
+                    self.timeout.finalize
+                    if self.timeout.finalize is not None
+                    else task.data.timeout.finalize
+                ),
+                scoring=(
+                    self.timeout.scoring
+                    if self.timeout.scoring is not None
+                    else task.data.timeout.scoring
+                ),
             ),
             "limits": self.limits,
             "shared_tools": shared_tools,
