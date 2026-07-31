@@ -20,7 +20,7 @@ class GlossaryTaskData(vf.TaskData):
 
 class GlossaryTask(vf.Task[GlossaryTaskData, vf.State, GlossaryTaskConfig]):
     @classmethod
-    def tool_servers(cls, config: GlossaryTaskConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: GlossaryTaskConfig) -> list[vf.Toolset]:
         return [GlossaryToolset(config.tools)]
 
     @vf.reward(weight=1.0)

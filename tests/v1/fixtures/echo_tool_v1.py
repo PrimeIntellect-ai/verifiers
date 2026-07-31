@@ -30,7 +30,7 @@ class EchoToolTaskConfig(vf.TaskConfig):
 
 class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
     @classmethod
-    def tool_servers(cls, config: EchoToolTaskConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: EchoToolTaskConfig) -> list[vf.Toolset]:
         return [EchoToolset(config.tools)]
 
     @vf.reward(weight=1.0)

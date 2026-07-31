@@ -46,7 +46,7 @@ class WikiSearchConfig(vf.TasksetConfig):
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
     @classmethod
-    def tool_servers(cls, config: WikiSearchConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: WikiSearchConfig) -> list[vf.Toolset]:
         return [WikiSearchToolset(config.tools)]
 
     def load(self) -> list[TriviaTask]:

@@ -73,7 +73,7 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool) -> str:
         task_config_fields += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
         task_decls += (
             "\n\n    @classmethod"
-            f"\n    def tool_servers(cls, config: {prefix}TaskConfig) -> list[vf.Toolset]:"
+            f"\n    def toolsets(cls, config: {prefix}TaskConfig) -> list[vf.Toolset]:"
             f"\n        return [{prefix}Toolset(config.tools)]"
             "\n"
         )
@@ -183,7 +183,7 @@ def _readme(dash: str, pkg: str, *, add_tool: bool, add_harness: bool) -> str:
     ]
     if add_tool:
         layout.append(
-            f"- `{pkg}/servers/tool.py` — a `vf.Toolset` tool server, constructed in `Task.tool_servers`."
+            f"- `{pkg}/servers/tool.py` — a `vf.Toolset` tool server, constructed in `Task.toolsets`."
         )
     if add_harness:
         layout.append(

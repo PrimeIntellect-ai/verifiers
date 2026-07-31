@@ -98,13 +98,13 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         return concrete_type(cls, Task, origin=Taskset) or Task
 
     @classmethod
-    def tool_servers(cls, config: TasksetConfigT) -> list[Toolset]:
+    def toolsets(cls, config: TasksetConfigT) -> list[Toolset]:
         """Tool servers shared by all tasks in the taskset (one global instance
         per server, reused across an environment worker's rollouts), each
         constructed with its config off `config` — override and wire explicitly:
 
             @classmethod
-            def tool_servers(cls, config: MyConfig) -> list[vf.Toolset]:
+            def toolsets(cls, config: MyConfig) -> list[vf.Toolset]:
                 return [SearchToolset(config.tools)]
         """
         return []

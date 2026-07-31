@@ -222,12 +222,12 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return [load_judge(config) for config in self.config.judges]
 
     @classmethod
-    def tool_servers(cls, config: ConfigT) -> list[Toolset]:
+    def toolsets(cls, config: ConfigT) -> list[Toolset]:
         """Tool servers launched per rollout, each constructed with its config off
         `config` — override and wire explicitly:
 
             @classmethod
-            def tool_servers(cls, config: MyTaskConfig) -> list[vf.Toolset]:
+            def toolsets(cls, config: MyTaskConfig) -> list[vf.Toolset]:
                 return [SearchToolset(config.tools)]
 
         A classmethod so consumers can size placement (tunnels) off the class

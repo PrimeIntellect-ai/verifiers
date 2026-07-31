@@ -34,7 +34,7 @@ class ToolResponseImageTask(
     vf.Task[vf.TaskData, vf.State, ToolResponseImageTaskConfig]
 ):
     @classmethod
-    def tool_servers(cls, config: ToolResponseImageTaskConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: ToolResponseImageTaskConfig) -> list[vf.Toolset]:
         return [VisionToolset(config.tools)]
 
     @vf.reward(weight=1.0)

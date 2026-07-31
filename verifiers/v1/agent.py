@@ -335,7 +335,7 @@ class Agent:
         if self._server is None:
             return None
         if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not task.tool_servers(task.config)
+            run_is_local and not shared_tools and not task.toolsets(task.config)
         ):
             return self._server
         return None
@@ -520,7 +520,7 @@ class Agent:
             self.harness,
             type(task),
             runtime_config,
-            task_tools=task.tool_servers(task.config),
+            task_tools=task.toolsets(task.config),
             shared_tools=shared_tools,
         )
         # Timeout precedence: agent-level wins, else the task's, else no limit.

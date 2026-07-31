@@ -162,7 +162,7 @@ class SearchConfig(vf.TasksetConfig):
 
 class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
     @classmethod
-    def tool_servers(cls, config: SearchConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: SearchConfig) -> list[vf.Toolset]:
         return [SearchToolset(config.tools)]
 ```
 

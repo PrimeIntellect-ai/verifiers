@@ -29,7 +29,7 @@ class ACPResumeConfig(vf.TasksetConfig):
 
 class ACPResumeTask(vf.Task[vf.TaskData, vf.State, ACPResumeTaskConfig]):
     @classmethod
-    def tool_servers(cls, config: ACPResumeTaskConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: ACPResumeTaskConfig) -> list[vf.Toolset]:
         return [ResumeToolset(config.tools)]
 
     @vf.reward(weight=1.0)

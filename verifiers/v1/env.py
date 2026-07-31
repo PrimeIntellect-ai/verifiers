@@ -382,13 +382,13 @@ class Env(ABC, Generic[ConfigT]):
         (their configs read off the declared `tools` fields, no task needed)."""
         task_cls = type(self.taskset).task_type()
         configs = [
-            server.config for server in task_cls.tool_servers(self.taskset.config.task)
+            server.config for server in task_cls.toolsets(self.taskset.config.task)
         ]
         return requires_tunnel(self._runs_local(), configs, shared.values())
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        servers = self.taskset.tool_servers(self.taskset.config)
+        servers = self.taskset.toolsets(self.taskset.config)
         if not servers:
             yield {}
             return

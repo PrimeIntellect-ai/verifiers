@@ -27,7 +27,7 @@ class DeepWikiTaskData(vf.TaskData):
 
 class DeepWikiTask(vf.Task[DeepWikiTaskData, vf.State, DeepWikiTaskConfig]):
     @classmethod
-    def tool_servers(cls, config: DeepWikiTaskConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: DeepWikiTaskConfig) -> list[vf.Toolset]:
         return [DeepWikiToolset(config.tools)]
 
     @vf.reward(weight=1.0)

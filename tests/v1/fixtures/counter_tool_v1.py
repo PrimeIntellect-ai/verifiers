@@ -25,7 +25,7 @@ class CounterTaskConfig(vf.TaskConfig):
 
 class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
     @classmethod
-    def tool_servers(cls, config: CounterTaskConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: CounterTaskConfig) -> list[vf.Toolset]:
         return [CounterToolset(config.tools)]
 
     @vf.reward(weight=1.0)
