@@ -11,6 +11,7 @@ from verifiers.v1.harnesses.browser.harness import (
     BrowserHarnessConfig,
     teardown_argv,
 )
+from verifiers.v1.loaders import harness_class, harness_config_type
 from verifiers.v1.runtimes import DockerConfig, ProgramResult, SubprocessConfig
 from verifiers.v1.task import Task, TaskData
 from verifiers.v1.types import SystemMessage, UserMessage
@@ -35,6 +36,11 @@ class FakeRuntime:
 
 def harness(**config) -> BrowserHarness:
     return BrowserHarness(BrowserHarnessConfig(id="browser", **config))
+
+
+def test_browser_harness_resolves_from_loader():
+    assert harness_class("browser") is BrowserHarness
+    assert harness_config_type("browser") is BrowserHarnessConfig
 
 
 def test_browser_config_requires_exactly_the_cdp_pair():
