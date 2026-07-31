@@ -60,15 +60,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RolloutTimeouts:
-    """Per-stage rollout timeouts in seconds (None = unlimited), each bounding one
-    lifecycle stage: `setup` covers task + harness setup in `open()`, `agent` is the
-    cumulative budget the run's segments draw down across `step()`s, `finalize` and
-    `scoring` bound their `close()` stages."""
+    """Per-stage rollout timeouts, each bounding one rollout stage."""
 
     setup: float | None = None
+    """Timeout (in seconds) for the task + harness setup hooks."""
     agent: float | None = None
+    """Timeout (in seconds) for the agent's solve attempt."""
     finalize: float | None = None
+    """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = None
+    """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
 
 def _as_messages(raw: Messages) -> Messages:
