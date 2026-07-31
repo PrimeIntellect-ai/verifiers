@@ -7,12 +7,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from verifiers.v1.types import StrictBaseModel
+from pydantic import BaseModel
 
 Direction = Literal["request", "response"]
 
 
-class Terminate(StrictBaseModel):
+class Terminate(BaseModel):
     """End the rollout immediately with an ordinary reward."""
 
     reason: str = "intercepted"
@@ -23,7 +23,7 @@ InterceptResult = str | Terminate | None
 Interceptor = Callable[..., InterceptResult | Awaitable[InterceptResult]]
 
 
-class InterceptRecord(StrictBaseModel):
+class InterceptRecord(BaseModel):
     """One action an interceptor took on a model exchange."""
 
     direction: Direction

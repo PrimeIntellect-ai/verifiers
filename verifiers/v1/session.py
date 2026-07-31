@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, get_args, get_type_hints
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.decorators import invoke
 from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.intercepts.core import (
     Direction,
@@ -34,6 +33,7 @@ from verifiers.v1.types import (
     Messages,
     ToolMessage,
 )
+from verifiers.v1.utils.decorators import invoke
 
 if TYPE_CHECKING:
     from verifiers.v1.dialects import Dialect

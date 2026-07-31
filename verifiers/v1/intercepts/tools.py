@@ -7,7 +7,6 @@ import re
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from verifiers.v1.decorators import intercept
 from verifiers.v1.intercepts.core import (
     Interceptor,
     InterceptRecord,
@@ -24,6 +23,7 @@ from verifiers.v1.types import (
     ToolMessage,
     UserMessage,
 )
+from verifiers.v1.utils.decorators import intercept
 
 if TYPE_CHECKING:
     from verifiers.v1.dialects import Dialect
