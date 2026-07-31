@@ -53,6 +53,25 @@ Just like tasksets and harnesses, an `Env` can be user-defined for full expressi
 | `best-of-n` | `agent` | `n` independent attempts per episode; its metrics mark the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
 | `agentic-judge` | `solver`, `judge` | the solver plays the task; a code-executing judge agent verifies the finished attempt with real execution. |
 
+## Grading artifacts
+
+Use artifacts to carry files between runtimes. Files written to
+`/logs/artifacts/` are collected implicitly; declare other paths on the task data:
+
+```python
+class MyData(vf.TaskData):
+    artifacts: list[vf.Artifact] = [
+        vf.Artifact(source="/work/report", exclude=[".git"])
+    ]
+
+
+class MyTask(vf.Task[MyData]):
+    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        trace.state.artifacts = await vf.collect(runtime, self.data.artifacts)
+```
+
+Declared paths must exist when collected. The implicit directory is optional.
+
 ## Concurrency
 
 Write independent agents as independent (`asyncio.gather`, a `TaskGroup`) — how many actually run at once is the run's call, not the env's. Two knobs bound it, and the **episode is the unit** at the outer one:

@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
+from verifiers.v1.artifacts import Artifact
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
@@ -102,6 +103,11 @@ class TaskData(BaseModel):
     """Execution-time destinations denied by this task and combined with runtime
     blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
     framework routes take precedence; ordinary Prime deny rules pass through unchanged."""
+    artifacts: list[Artifact] = Field(default_factory=list)
+    """Paths collected from one runtime and restored at the same locations in another,
+    on top of the implicitly collected `/logs/artifacts/` convention dir. Declare
+    runtime outputs that must cross that boundary. A declared path that is missing at
+    collection time fails the rollout."""
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 

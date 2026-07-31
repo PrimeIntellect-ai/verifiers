@@ -1,14 +1,16 @@
-"""agentic-judge: a solver plays the task, a judge verifies it in the same box.
+"""agentic-judge: a solver plays the task, then a judge verifies the work.
 
-A reusable env (`--env.id agentic-judge` over any taskset): the box is
-provisioned from the solver's runtime policy, the solver plays the task in it,
-and a code-executing judge then inspects the work as the agent left it, with
-the solver's full trace record uploaded at `/tmp/trace.json`. The judge grades
+A reusable env (`--env.id agentic-judge` over any taskset). The solver plays the
+task in a container provisioned from its runtime policy; the judge then grades
 rubric criteria (`[env.task]`: policy prompt, criteria file) and writes its
-verdicts to `/tmp/verdict.json`; `finalize()` validates them strictly onto the
-solver's trace — `judge/<name>` metrics plus a weighted-mean `judge` reward,
-composed with the taskset's own rewards via `[env.score]` (judge-only by
-default).
+verdicts to `/tmp/verdict.json`, with the solver's full trace record uploaded at
+`/tmp/trace.json`. `finalize()` validates them strictly onto the solver's trace —
+`judge/<name>` metrics plus a weighted-mean `judge` reward, composed with the
+taskset's own rewards via `[env.score]` (judge-only by default).
+
+`--env.share-runtime` controls whether the judge uses the solver's runtime. It is
+enabled by default. When disabled, the judge gets a fresh runtime containing the
+task's collected artifacts.
 """
 
 import json
@@ -20,6 +22,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.compile import validate_pairing
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
@@ -96,19 +99,31 @@ def _render(template: str, **fields: str) -> str:
     return pattern.sub(lambda m: fields[m.group(1)], template)
 
 
-SANDBOX_NOTE = f"""\
+_RECORD_NOTE = f"""\
+The agent's raw trace record (JSON: messages, tool calls, and its `info`
+artifacts) is written by the harness — not the agent — at `{TRACE_FILE}`. The
+record can be very large — never dump it whole; peek selectively (list its
+keys, then slice out specific fields with python or jq) and pull only what you
+need. It is complete — it may also carry the task's own scores/metrics and
+reference material (a gold answer, a reference solution, held-out tests). Those
+are context, not your standard: recorded scores can be wrong and references can
+be narrower than the task; do not over-index on how a reference solves it. Your
+verdict is what YOU verified by execution."""
+
+SHARED_WORKSPACE_NOTE = f"""\
 ## Your workspace
 
-Your sandbox is the SAME box the graded agent worked in, in the state the agent
-left it — its edits (and any scoring side effects) are applied. The agent's raw
-trace record (JSON: messages, tool calls, and its `info` artifacts) is uploaded
-at `{TRACE_FILE}`. The record can be very large — never dump it whole; peek
-selectively (list its keys, then slice out specific fields with python or jq)
-and pull only what you need. It is complete — it may also carry the task's own
-scores/metrics and reference material (a gold answer, a reference solution,
-held-out tests). Those are context, not your standard: recorded scores can be
-wrong and references can be narrower than the task; do not over-index on how a
-reference solves it. Your verdict is what YOU verified by execution."""
+The graded agent worked in this sandbox. Its edits and any scoring side effects
+are present. {_RECORD_NOTE}"""
+
+ISOLATED_WORKSPACE_NOTE = f"""\
+## Your workspace
+
+This is a fresh sandbox built from the task's image. The task's published
+artifacts were restored at their original paths; other changes made by the
+graded agent are not present. The usual artifact location is
+`{vf.ARTIFACTS_DIR}/` (for code tasks, typically a patch to read or apply), plus
+any task-declared paths. {_RECORD_NOTE}"""
 
 HINT_SECTION = """\
 ## Hints
@@ -124,13 +139,30 @@ class JudgeTask(vf.Task):
 
     NEEDS_CONTAINER = True
 
-    def __init__(self, data: vf.TaskData, files: dict[str, bytes]) -> None:
+    def __init__(
+        self,
+        data: vf.TaskData,
+        files: dict[str, bytes],
+        artifacts: dict[str, bytes],
+    ) -> None:
         super().__init__(data)
         self.files = files
+        self.artifacts = artifacts
 
     @classmethod
-    def from_trace(cls, solution: vf.Trace, config: "JudgeTaskConfig") -> "JudgeTask":
-        """Mint the judge's task from the solver's finished trace."""
+    def from_trace(
+        cls,
+        solution: vf.Trace,
+        config: "JudgeTaskConfig",
+        share_runtime: bool = True,
+    ) -> "JudgeTask":
+        """Mint the judge's task from the solver's finished trace.
+
+        `share_runtime` selects both the workspace note and artifact transport. In
+        the solver's box the published artifacts are already on disk, so none
+        travel; a fresh box gets the collected set, restored by `setup` at the
+        paths they had.
+        """
         solved = solution.task.data
         files = {TRACE_FILE: json.dumps(solution.to_record()).encode()}
         template = config.build_prompt()
@@ -138,7 +170,10 @@ class JudgeTask(vf.Task):
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
-        sections = [body, _verdict_section(config.criteria()), SANDBOX_NOTE]
+        workspace_note = (
+            SHARED_WORKSPACE_NOTE if share_runtime else ISOLATED_WORKSPACE_NOTE
+        )
+        sections = [body, _verdict_section(config.criteria()), workspace_note]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
         prompt = "\n\n".join(sections)
@@ -151,9 +186,11 @@ class JudgeTask(vf.Task):
                 resources=solved.resources,
             ),
             files=files,
+            artifacts={} if share_runtime else solution.state.artifacts,
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        await vf.restore(runtime, self.artifacts)
         # The solver had this box first: a pre-seeded verdict must never read as
         # the judge's own, and a file (or planted symlink) at an upload path must
         # never survive it — a symlinked TRACE_FILE would redirect the write onto
@@ -176,34 +213,53 @@ class JudgeTask(vf.Task):
         trace.info["verdict"] = json.loads(raw)
 
 
+class TextFile(vf.BaseConfig):
+    """An explicit file-backed text value for config formats without `Path` values."""
+
+    path: Path
+
+
+TextSource = str | Path | TextFile
+
+
 class JudgeTaskConfig(vf.BaseConfig):
     """The judge's minted task: the grading policy and what lands in its box."""
 
-    prompt: Path | None = None
-    """Grading-policy file. Replaces only the policy body — the verdict contract
-    and workspace note are always appended. May reference `{prompt}` (the solver
-    task's prompt); if it doesn't, the task statement is appended after."""
-    hint: Path | None = None
-    """Optional hints file injected as their own section: task-family pointers
-    into the trace or box — e.g. for math, where the reference answer lives in
-    the record; for SWE, to diff the repo or read `info.patch`."""
+    prompt: TextSource | None = None
+    """Grading policy: a string is inline text; a `Path` in Python or
+    `{ path = "policy.md" }` in config reads a file. Replaces only the policy
+    body — the verdict contract and workspace note are always appended. May
+    reference `{prompt}` (the solver task's prompt); if it doesn't, the task
+    statement is appended after."""
+    hint: TextSource | None = None
+    """Optional hints, with the same explicit inline/file forms as `prompt`,
+    injected as their own section: task-family pointers into the trace or box —
+    e.g. for math, where the reference answer lives in the record; for SWE, to
+    diff the repo or read `info.patch`."""
     rubric: Path | None = None
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
     files work for both. None grades the single built-in `solved` criterion."""
 
+    @staticmethod
+    def _resolve(value: TextSource) -> str:
+        if isinstance(value, str):
+            return value
+        path = value if isinstance(value, Path) else value.path
+        return path.read_text(encoding="utf-8")
+
     def build_prompt(self) -> str:
         if self.prompt is None:
             return GRADE_PROMPT + "\n\n" + TASK_SECTION
-        return self.prompt.read_text()
+        return self._resolve(self.prompt)
 
     def build_hint(self) -> str | None:
-        return self.hint.read_text() if self.hint is not None else None
+        return self._resolve(self.hint) if self.hint is not None else None
 
     def criteria(self) -> list[Criterion]:
         if self.rubric is None:
             return [SOLVED]
-        text = self.rubric.read_text()
+        text = self.rubric.read_text(encoding="utf-8")
         data = (
             tomllib.loads(text)
             if self.rubric.suffix.lower() == ".toml"
@@ -240,23 +296,23 @@ class ScoreConfig(vf.BaseConfig):
 
 class AgenticJudgeEnvConfig(vf.EnvConfig):
     solver: vf.AgentConfig = vf.AgentConfig()
-    """The solver agent. It owns the shared box, so its runtime must be a
-    container: `--env.solver.runtime.type docker|prime`."""
+    """The solver agent. Its runtime must be a container:
+    `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. It plays in the solver's box; its own runtime policy is
-    ignored (overwritten with the solver's)."""
+    """The judge agent. Its runtime is ignored when `share_runtime` is enabled;
+    otherwise it must be a container."""
+    share_runtime: bool = True
+    """Whether the judge grades in the solver's runtime."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        # The judge plays in the solver's box, so its effective runtime IS the
-        # solver's policy — aligning the config keeps the base env's subprocess
-        # warning and the runtime stamped on the judge's trace truthful.
-        config.judge = config.judge.model_copy(
-            update={"runtime": config.solver.runtime}
-        )
+        if config.share_runtime:
+            config.judge = config.judge.model_copy(
+                update={"runtime": config.solver.runtime}
+            )
         super().__init__(config)
         self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
@@ -270,30 +326,42 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         judge = self._harnesses["judge"]
         if not judge.EXECUTES_CODE:
             raise ValueError(
-                "agentic-judge plays a code-executing judge in its own sandbox, but "
+                "agentic-judge requires a judge harness that can execute code, but "
                 f"harness {judge.config.id!r} is a tool-less chat loop — a verdict "
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
         if isinstance(self.config.solver.runtime, vf.SubprocessConfig):
             raise TypeError(
-                "agentic-judge plays its judge in the solver's box, but the solver "
-                "(which provisions it) resolves to the subprocess runtime; use "
+                "agentic-judge requires the solver to run in a container, but it "
+                "resolves to the subprocess runtime; use "
                 "--env.solver.runtime.type docker or prime"
             )
+        validate_pairing(judge, JudgeTask, self.config.judge.runtime)
 
     async def setup(self, agents: vf.Agents) -> None:
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        async with agents.solver.provision(task) as box:
-            solution = await agents.solver.run(task, runtime=box)
-            judge_task = JudgeTask.from_trace(solution, self.config.task)
-            await agents.judge.run(judge_task, runtime=box)
+        if self.config.share_runtime:
+            async with agents.solver.provision(task) as box:
+                solution = await agents.solver.run(task, runtime=box)
+                judge_task = JudgeTask.from_trace(solution, self.config.task)
+                await agents.judge.run(judge_task, runtime=box)
+            return
+
+        solution = await agents.solver.run(task)
+        if not solution.ok:
+            return
+        await agents.judge.run(
+            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
+        )
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent.name: t for t in episode.traces}
+        if "judge" not in by_agent:
+            return
         solution, verdict = by_agent["solver"], by_agent["judge"]
         data = verdict.info.get("verdict")
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
