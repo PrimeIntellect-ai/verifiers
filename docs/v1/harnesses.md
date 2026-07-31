@@ -1,6 +1,14 @@
 # Harnesses
 
-verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled `bash` harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
+verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled `bash` harness, the CDP-driven `browser` harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
+
+## The `browser` harness
+
+The `browser` harness gives the model one tool that runs Python against a real Chromium over CDP via [browser-harness](https://github.com/browser-use/browser-harness). One config field, `--env.agent.harness.browser`, picks where the browser comes from:
+
+- `chromium` (default): the harness launches a local headless Chromium and attaches to it, then tears it down after the run. This needs a browser in the runtime image, which the default `python:3.11-slim` lacks — run it on a browser-capable image such as the official Playwright image via `--env.agent.runtime.image mcr.microsoft.com/playwright/python:v1.61.0-noble` (verified against its Python 3.12, digest `sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69`). The missing-browser error names this image.
+
+A `browserbase` value (a hosted session over the Browserbase API) is the planned follow-up; until then, point browser-harness's own `BU_CDP_URL` at a remote browser to use one.
 
 ## A minimal harness implementation
 
