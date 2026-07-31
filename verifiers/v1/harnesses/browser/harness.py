@@ -104,3 +104,22 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
             PROGRAM_SOURCE, self.config.resolved_env
         )
         return await runtime.run_program([*program, *args], env)
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        """Tear down the browser this trace launched, once scoring is done.
+
+        The launched Chromium and browser-harness daemon are kept alive across
+        segments on purpose -- a `resume` reattaches to them -- so nothing but
+        this hook is the right place to end them. Idempotent and best-effort: an
+        owned runtime is torn down regardless, but a borrowed one is reused, and
+        a leaked headless Chromium would hold its port and memory until it is.
+        Scoped to the trace's own state dir, so `cdp_url` mode (which launches
+        nothing and attaches to a browser it does not own) matches nothing and
+        leaves that browser alone.
+        """
+        state = f".vf-browser-{trace.id}"
+        teardown = (
+            f'pkill -f "user-data-dir={state}/profile" 2>/dev/null; '
+            f'rm -rf "{state}" 2>/dev/null || true'
+        )
+        await runtime.run(["sh", "-c", teardown], {})
