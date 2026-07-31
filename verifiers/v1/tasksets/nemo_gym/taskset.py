@@ -14,7 +14,6 @@ from urllib.parse import urljoin
 import httpx
 from pydantic import Field
 
-from verifiers.v1.decorators import reward
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
@@ -25,6 +24,7 @@ from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import AssistantMessage, ToolMessage
+from verifiers.v1.utils.decorators import reward
 
 NEMO_GYM_INSTALL_HINT = "uv sync --python 3.12 --extra nemo-gym"
 
