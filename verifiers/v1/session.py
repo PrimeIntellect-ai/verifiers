@@ -62,8 +62,6 @@ class RolloutLimits:
 class RolloutSession:
     ctx: ModelContext
     client: Client
-    """This rollout's own client, built and closed by the rollout — the server calls it to
-    serve each intercepted turn. One per rollout, so no transport is shared between them."""
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)

@@ -182,7 +182,7 @@ def _has_multimodal_content(messages) -> bool:
     return False
 
 
-_RENDERER_SLOTS = 8
+RENDERER_SLOTS = 8
 """Independent tokenizer copies per (model, renderer config), shared by every rollout in the
 process. Sized as a constant rather than a knob: a renderer is held only for the duration of
 one render call (tens of ms) while a turn takes seconds, so the rollouts rendering at any
@@ -190,7 +190,7 @@ instant are far fewer than the rollouts in flight — a handful of slots absorbs
 any concurrency. Each slot is a full tokenizer (~75-95 MB), so this is also the process's
 tokenizer memory bound; sharing per rollout instead would scale it with `--max-concurrent`."""
 
-_RENDERER_POOLS: dict[str, Any] = {}
+_RENDERER_POOLS: dict[tuple[str, str | None, str | None], Any] = {}
 _RENDERER_POOLS_LOCK = threading.Lock()
 
 
@@ -203,17 +203,17 @@ async def shared_renderer_pool(
     """The process-wide `RendererPool` for this (model, config, template kwargs).
 
     Renderers carry no rollout state — the pool hands one out per render and takes it back —
-    so a pool is shared rather than owned by a client. Building one loads `_RENDERER_SLOTS`
+    so a pool is shared rather than owned by a client. Building one loads `RENDERER_SLOTS`
     tokenizers (seconds), so it happens on a thread and behind a lock: concurrent first
     callers wait for one build instead of each loading a duplicate set."""
-    key = json.dumps(
-        [
-            renderer_model,
-            config.model_dump(mode="json") if config is not None else None,
-            dict(chat_template_kwargs) if chat_template_kwargs else None,
-        ],
-        sort_keys=True,
-        default=str,
+    # Same key shape as v0's `RendererClient._shared_pools`: renderers owns config
+    # resolution, so we only separate pools whose construction inputs differ.
+    key = (
+        renderer_model,
+        config.model_dump_json() if config is not None else None,
+        json.dumps(dict(chat_template_kwargs), sort_keys=True)
+        if chat_template_kwargs
+        else None,
     )
     if (pool := _RENDERER_POOLS.get(key)) is not None:
         return pool
@@ -223,7 +223,7 @@ async def shared_renderer_pool(
             if key not in _RENDERER_POOLS:
                 from renderers import create_renderer_pool
 
-                pool_kwargs: dict[str, Any] = {"size": _RENDERER_SLOTS}
+                pool_kwargs: dict[str, Any] = {"size": RENDERER_SLOTS}
                 if chat_template_kwargs:
                     pool_kwargs["chat_template_kwargs"] = chat_template_kwargs
                 _RENDERER_POOLS[key] = create_renderer_pool(
@@ -243,18 +243,6 @@ class TrainClient(Client):
     def __init__(self, config: TrainClientConfig) -> None:
         self.config = config
         self.openai = build_async_openai(config)
-
-    async def _renderer_pool(
-        self,
-        model: str,
-        *,
-        chat_template_kwargs: Mapping[str, Any] | None = None,
-    ):
-        return await shared_renderer_pool(
-            self.config.renderer_model_name or model,
-            self.config.renderer,
-            chat_template_kwargs=chat_template_kwargs,
-        )
 
     async def get_response(
         self,
@@ -300,8 +288,9 @@ class TrainClient(Client):
         )
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         sampling_params.update(raw_sampling)
-        renderer = await self._renderer_pool(
-            model,
+        renderer = await shared_renderer_pool(
+            self.config.renderer_model_name or model,
+            self.config.renderer,
             chat_template_kwargs=chat_template_kwargs,
         )
         bridged_turn: PendingTurn | None = None

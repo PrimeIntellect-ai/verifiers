@@ -23,6 +23,7 @@ import zmq.asyncio
 from pydantic import ValidationError
 
 from verifiers.v1 import graph
+from verifiers.v1.clients.train import RENDERER_SLOTS
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.client import ClientConfig, TrainClientConfig
 from verifiers.v1.episode import Episode
@@ -406,7 +407,7 @@ class LegacyEnvServer(EnvServer):
                     client_type="renderer",
                     renderer_config=client_config.renderer,
                     renderer_model_name=renderer_model,
-                    renderer_pool_size=client_config.pool_size,
+                    renderer_pool_size=RENDERER_SLOTS,
                     api_base_url=client_config.base_url,
                     api_key_var=client_config.api_key_var,
                     extra_headers=dict(client_config.headers or {}),

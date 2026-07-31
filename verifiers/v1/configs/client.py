@@ -13,6 +13,7 @@ import os
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
+import httpx
 from openai import AsyncOpenAI
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
@@ -21,6 +22,15 @@ from renderers import RendererConfig
 from verifiers.utils.client_utils import load_prime_config
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
+
+# Transport settings shared by every client, mirroring the OpenAI SDK's own defaults so a
+# rollout behaves the same whether its turns are relayed (eval) or rendered (train) — and
+# the same as the SDK the harness itself is using on the other side of the interception.
+DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=600.0, write=600.0, pool=600.0)
+DEFAULT_LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100)
+MAX_RETRIES = 0
+"""No client-side retries: a failed call surfaces to the harness SDK and the trace instead of
+being silently reattempted, so the framework's retry surfaces stay the only ones."""
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
 
@@ -105,4 +115,7 @@ def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
         base_url=config.base_url,
         api_key=resolve_api_key(config),
         default_headers=config.headers or None,
+        timeout=DEFAULT_TIMEOUT,
+        max_retries=MAX_RETRIES,
+        http_client=httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS),
     )

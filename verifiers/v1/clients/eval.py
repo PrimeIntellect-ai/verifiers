@@ -20,7 +20,12 @@ from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
-from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
+from verifiers.v1.configs.client import (
+    DEFAULT_LIMITS,
+    DEFAULT_TIMEOUT,
+    BaseClientConfig,
+    resolve_api_key,
+)
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
@@ -58,6 +63,8 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         "signature-input",
     }
 )
+
+
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
 
@@ -71,17 +78,12 @@ class EvalClient(Client):
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = dict(config.headers or {})
-        # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
-        # Build full URLs ourselves (`_url`) rather than relying on httpx base-url joining,
-        # which drops the base path for a leading-slash request path.
-        # One client per rollout, so this pool serves ONE rollout: its turns are sequential,
-        # and the headroom covers a harness SDK retrying while the first attempt drains.
-        # Sizing per rollout (rather than a shared cap) makes in-flight capacity scale with
-        # rollout count instead of silently ceiling it.
-        self.http = httpx.AsyncClient(
-            timeout=None,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
-        )
+        # Timeout and limits mirror the OpenAI SDK's defaults (see configs.client), so relayed
+        # and rendered turns behave alike and match the SDK on the harness's side. The limits
+        # are no longer a shared ceiling — one client per rollout means in-flight capacity
+        # scales with rollout count. Full URLs are built here (`_url`) rather than by httpx
+        # base-url joining, which drops the base path for a leading-slash request path.
+        self.http = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
 
     def _url(self, path: str) -> str:
         """Join `base_url` with a dialect path without duplicating the API version segment.
@@ -157,6 +159,12 @@ class EvalClient(Client):
         *,
         stream: bool = False,
     ) -> httpx.Response:
+        """POST `body` upstream, once. The client never retries: a failure surfaces with the
+        provider's own status so the harness SDK can retry 5xx/429 and not 4xx, and the
+        framework's own retry surfaces (`AgentConfig.retries`, the interception layer's replay
+        and coalescing) stay the only ones — a silent attempt here would hide a failure from
+        the trace and double up with theirs. An empty/HTML body (say a 404 from a base_url
+        missing `/v1`) keeps its text rather than becoming an information-free ProviderError."""
         headers.setdefault("content-type", "application/json")
         request = self.http.build_request(
             "POST",
@@ -176,9 +184,6 @@ class EvalClient(Client):
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                # relay the provider's status (and body) so the harness SDK retries 5xx/429 and not
-                # 4xx; an empty/HTML body (e.g. a 404 from a base_url missing `/v1`) would otherwise
-                # make an information-free ProviderError
                 raise model_error(
                     f"upstream {e.response.status_code}: {e.response.text}",
                     status_code=e.response.status_code,

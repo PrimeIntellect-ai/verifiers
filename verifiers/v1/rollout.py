@@ -164,9 +164,6 @@ class RolloutRun:
         )
         if on_trace is not None:
             on_trace(self.trace)
-        # This rollout's own client, closed with the rollout: its connection pool serves
-        # exactly one trajectory, so capacity scales with rollouts in flight and neither
-        # connection state nor an aborted rollout's sockets leak into anyone else's.
         self.client = resolve_client(ctx.client)
         self._session = RolloutSession(
             ctx,
@@ -482,8 +479,6 @@ class RolloutRun:
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
-            # The rollout's own transport: nothing outside it holds a reference, and
-            # scoring is done, so the connection pool goes with the trajectory.
             try:
                 await self.client.close()
             except Exception:
