@@ -133,6 +133,9 @@ class InterceptionServer(Interception):
         self.state_sessions: dict[str, RolloutSession] = {}
         self.state_routes: dict[str, RolloutSession] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
+        # Holds in-flight transport releases: the loop keeps only weak references, so an
+        # untracked release can be collected before it closes its connections.
+        self.release_tasks: set[asyncio.Task] = set()
         self.config = config or InterceptionServerConfig()
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
@@ -165,12 +168,17 @@ class InterceptionServer(Interception):
             # (aiohttp keeps them alive past client death) so a slow upstream call
             # can't commit a late turn onto the concluded trace.
             session.release()
-            # Free the rollout's transport. Best-effort: teardown must not block, and a
-            # failed aclose on a dead connection is not actionable.
-            task = asyncio.create_task(
-                session.ctx.client.release_session(session.trace.id)
-            )
-            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            # Free the rollout's transport without blocking teardown.
+            task = asyncio.create_task(self._release_transport(session))
+            self.release_tasks.add(task)
+            task.add_done_callback(self.release_tasks.discard)
+
+    async def _release_transport(self, session: RolloutSession) -> None:
+        """Free the concluded rollout's client transport. A failed close on a connection
+        the provider already dropped is not actionable, so it is suppressed here rather
+        than surfacing as an unretrieved task exception."""
+        with contextlib.suppress(Exception):
+            await session.ctx.client.release_session(session.trace.id)
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
