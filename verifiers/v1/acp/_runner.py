@@ -146,16 +146,30 @@ async def run_client(config: dict) -> None:
         else:
             session_id = session_path.read_text().strip()
             session_capabilities = capabilities and capabilities.session_capabilities
-            if session_capabilities and session_capabilities.resume is not None:
-                await connection.resume_session(
-                    cwd=os.getcwd(), session_id=session_id, mcp_servers=mcp_servers
-                )
-            elif capabilities and capabilities.load_session:
+            can_resume = bool(
+                session_capabilities and session_capabilities.resume is not None
+            )
+            can_load = bool(capabilities and capabilities.load_session)
+            if not can_resume and not can_load:
+                raise RuntimeError("ACP agent does not support resuming sessions")
+            try:
+                if can_resume:
+                    await connection.resume_session(
+                        cwd=os.getcwd(), session_id=session_id, mcp_servers=mcp_servers
+                    )
+                else:
+                    await connection.load_session(
+                        cwd=os.getcwd(), session_id=session_id, mcp_servers=mcp_servers
+                    )
+            except RequestError:
+                if not (can_resume and can_load):
+                    raise
+                # Some agents (e.g. OpenClaw) advertise resume but only track sessions
+                # created by the same agent process; session/load replays the exchange
+                # from the agent's persisted store instead.
                 await connection.load_session(
                     cwd=os.getcwd(), session_id=session_id, mcp_servers=mcp_servers
                 )
-            else:
-                raise RuntimeError("ACP agent does not support resuming sessions")
 
         messages = config["messages"]
         if not is_new:
