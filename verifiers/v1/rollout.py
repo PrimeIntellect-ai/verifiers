@@ -44,7 +44,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task, TaskData
+from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.decorators import discover_decorated, invoke
@@ -77,7 +77,6 @@ class Rollout:
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
-        wire_data: TaskData | None = None,
         has_user: bool = False,
         timeouts: RolloutTimeouts,
         limits: RolloutLimits,
@@ -100,7 +99,7 @@ class Rollout:
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
-                data=task.data if wire_data is None else wire_data,
+                data=task.data,
             ),
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent

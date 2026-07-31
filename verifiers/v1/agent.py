@@ -187,8 +187,8 @@ class Interaction:
         if message is not None and prompted:
             raise ValueError(
                 "the task's prompt opens this exchange: take its first reply with "
-                "a bare turn() before answering (or mask the prompt with "
-                "interaction(mask_prompt=True) to open the conversation yourself)"
+                "a bare turn() before answering (or hand the interaction a task "
+                "with `prompt=None` to open the conversation yourself)"
             )
         messages: Messages | None = None
         if isinstance(message, str):
@@ -435,7 +435,6 @@ class Agent:
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
-        mask_prompt: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
@@ -447,11 +446,10 @@ class Agent:
 
         The task's shape says who speaks first: a prompt-less task is opened by
         the first `turn(message)`; a prompted task speaks first — take its opening
-        reply with a bare `turn()` before answering. `mask_prompt` says a prompted
-        task's prompt belongs to the USER side (a scenario the caller pursues, not
-        the assistant's seed): the wire hides it — the caller opens — while the
-        task object keeps the full row, so its hooks, rewards, and judges score
-        the real question (the user-sim env's contract).
+        reply with a bare `turn()` before answering. A prompt that belongs to the
+        USER side (a scenario the caller pursues, not the assistant's seed) is the
+        caller's to hide: hand the interaction a task whose `data.prompt` is None
+        and keep the scenario on a scoring-side field (the user-sim env's contract).
 
         `runtime` and `tools` borrow live resources from their owners, just as
         they do for `run()`; an env supplies its taskset's shared tools
@@ -467,17 +465,9 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
-        if mask_prompt and task.data.prompt is None:
-            raise ValueError(
-                "mask_prompt hides a prompt the task doesn't have; a prompt-less "
-                "task is already opened by the first turn()"
-            )
         params = self._rollout_params(task, runtime, dict(tools or {}))
         run = Rollout(
             task=task,
-            wire_data=(
-                task.data.model_copy(update={"prompt": None}) if mask_prompt else None
-            ),
             has_user=True,
             on_trace=on_trace,
             **params,
@@ -666,7 +656,6 @@ class _EpisodeAgent(Agent):
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
-        mask_prompt: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
@@ -688,7 +677,6 @@ class _EpisodeAgent(Agent):
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
-                mask_prompt=mask_prompt,
                 on_trace=self._watch(remember),
             ) as interaction:
                 yield interaction

@@ -479,10 +479,10 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     assert user.agent.trainable is False
     assert user.num_turns >= 1  # the modeled user actually spoke
     assert assistant.metrics["user_turns"] >= 1
-    # `mask_prompt`: the scenario is hidden from the assistant's harness (the run's
-    # visible data) while the task's own rewards still scored the real row. The
-    # masked view is what persists (provenance is the row's idx); both sides land
-    # as ONE durable episode.
+    # The env nulls the assistant task's prompt: the scenario is hidden from the
+    # assistant's harness while the task's rewards score off non-prompt fields
+    # (`answer`). The nulled row is what persists (provenance is the row's idx);
+    # both sides land as ONE durable episode.
     assert assistant.task.data.prompt is None
     assert "echoed" in assistant.rewards
     from verifiers.v1.cli.output import read_episodes
