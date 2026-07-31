@@ -67,21 +67,7 @@ class RolloutTimeouts:
 
 
 class Rollout:
-    """One rollout held open segment by segment.
-
-    `open()` boots the world (runtime, setup, interception, tool servers); each
-    `step()` runs ONE harness segment — a program run to its exit — resuming the
-    exchange with the user turn(s) it's given; `close()` finalizes, scores, and
-    tears the world down, returning the finished trace. Expected `RolloutError`s
-    are captured onto the trace (a bad rollout is data, not a crash): `open` and
-    `step` report continuability as a bool, and `close` always returns the trace.
-
-    `wire_data` is the run's recorded view of the task — what `trace.task.data`
-    says the harness saw (`Agent.interaction(mask_prompt=True)` masks the prompt here
-    while the `task` object keeps the full row for its hooks and judges).
-    `runtime` is a live box to run in instead of provisioning one; a borrowed
-    runtime is neither started nor stopped here. `on_trace` observes the run's
-    trace the moment it's minted, before any I/O."""
+    """Manages one rollout's lifecycle (open, step, close)."""
 
     def __init__(
         self,
@@ -93,8 +79,8 @@ class Rollout:
         runtime_config: RuntimeConfig,
         wire_data: TaskData | None = None,
         has_user: bool = False,
-        timeouts: RolloutTimeouts | None = None,
-        limits: RolloutLimits | None = None,
+        timeouts: RolloutTimeouts,
+        limits: RolloutLimits,
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
         runtime: Runtime | None = None,
@@ -105,7 +91,7 @@ class Rollout:
         self.ctx = ctx
         self.runtime_config = runtime_config
         self._has_user = has_user
-        self._timeouts = timeouts or RolloutTimeouts()
+        self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
         self._shared_tools = shared_tools or {}
         self._interception = interception
@@ -124,7 +110,7 @@ class Rollout:
         if on_trace is not None:
             on_trace(self.trace)
         self._session = RolloutSession(
-            ctx, self.trace, discover_decorated(task, "stop"), limits or RolloutLimits()
+            ctx, self.trace, discover_decorated(task, "stop"), limits
         )
         self._stack = AsyncExitStack()
         self._failed = False
