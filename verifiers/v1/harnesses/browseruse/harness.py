@@ -27,7 +27,7 @@ Core helpers: new_tab(url), goto_url(url), page_info(), js(expression), click_at
 Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibility.getFullAXTree")["nodes"] has every element's role, name, and backendDOMNodeId — filter in Python before printing. For coordinates: q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4, then click_at_xy(x, y) and verify with a targeted js(...) or page_info() check. Fall back to js(...) over the DOM when the AX tree lacks the element."""
 
 
-class BrowserHarnessConfig(HarnessConfig):
+class BrowserUseHarnessConfig(HarnessConfig):
     browser: Literal["chromium", "cdp"] = "chromium"
     """`chromium` launches locally; `cdp` attaches to `cdp_url` without owning it."""
 
@@ -35,7 +35,7 @@ class BrowserHarnessConfig(HarnessConfig):
     """Rollout-scoped HTTP or WebSocket endpoint used with `browser = "cdp"`."""
 
     @model_validator(mode="after")
-    def _require_cdp_url_iff_cdp(self) -> "BrowserHarnessConfig":
+    def _require_cdp_url_iff_cdp(self) -> "BrowserUseHarnessConfig":
         if self.browser == "cdp" and not self.cdp_url:
             raise ValueError(
                 "browser='cdp' needs cdp_url set to a CDP endpoint to attach to"
@@ -47,7 +47,7 @@ class BrowserHarnessConfig(HarnessConfig):
         return self
 
 
-class BrowserHarness(Harness[BrowserHarnessConfig]):
+class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
