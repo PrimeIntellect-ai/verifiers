@@ -54,7 +54,7 @@ class ValidateConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_taskset(cls, data):
-        from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
+        from verifiers.v1.utils.loaders import narrow_plugin_field, taskset_config_type
 
         narrow_plugin_field(data, "taskset", taskset_config_type)
         return data

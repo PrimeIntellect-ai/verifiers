@@ -24,7 +24,6 @@ from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.retries import backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun, RolloutTimeouts, _as_messages
 from verifiers.v1.runtimes import (
     NetworkPolicyConfig,
@@ -49,6 +48,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
+from verifiers.v1.utils.retries import backoff, trace_should_retry
 
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
@@ -241,7 +241,7 @@ class Agent:
         client: Client | None = None,
         interception: Interception | None = None,
     ) -> None:
-        from verifiers.v1.loaders import harness_config_type, load_harness
+        from verifiers.v1.utils.loaders import harness_config_type, load_harness
 
         if config.model is None:
             raise ValueError(

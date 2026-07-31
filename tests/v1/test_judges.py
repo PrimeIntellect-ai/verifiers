@@ -11,8 +11,8 @@ from pydantic import Field
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
-from verifiers.v1.loaders import judge_class, judge_config_type, load_judge
 from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.utils.loaders import judge_class, judge_config_type, load_judge
 
 RUBRIC_TOML = """
 [[criteria]]

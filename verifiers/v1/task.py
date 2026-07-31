@@ -18,12 +18,12 @@ from typing import TYPE_CHECKING, ClassVar, Generic, Self
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
-from verifiers.v1.artifacts import Artifact
 from verifiers.v1.configs.task import TaskConfig
-from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, content_text
+from verifiers.v1.utils.artifacts import Artifact
+from verifiers.v1.utils.decorators import discover_decorated, invoke_all
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
@@ -217,7 +217,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return concrete_type(cls, TaskConfig) or TaskConfig
 
     def plugged_judges(self) -> list[Judge]:
-        from verifiers.v1.loaders import load_judge
+        from verifiers.v1.utils.loaders import load_judge
 
         return [load_judge(config) for config in self.config.judges]
 

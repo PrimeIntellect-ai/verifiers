@@ -33,7 +33,7 @@ def judge_key(config: JudgeConfig) -> str:
 
 
 def resolve_judges(entries: Sequence[Any]) -> list[JudgeConfig]:
-    from verifiers.v1.loaders import judge_config_type
+    from verifiers.v1.utils.loaders import judge_config_type
 
     resolved = []
     for entry in entries:

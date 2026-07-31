@@ -10,12 +10,12 @@ from pydantic import Field, model_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.decorators import metric
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.decorators import metric
 
 logger = logging.getLogger(__name__)
 

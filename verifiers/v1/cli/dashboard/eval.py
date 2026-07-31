@@ -29,7 +29,7 @@ from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 
 if TYPE_CHECKING:
-    from verifiers.v1.push import PushState
+    from verifiers.v1.utils.platform import PushState
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -160,7 +160,7 @@ def _warning(config: EvalConfig) -> Text | None:
     """A local-runtime caution when any code-running seat resolves to the subprocess
     runtime (the tool-less chat loops are exempt), shown above the overview rather
     than as a row in it."""
-    from verifiers.v1.loaders import harness_class
+    from verifiers.v1.utils.loaders import harness_class
 
     if any(
         getattr(config.env, role).runtime.type == "subprocess"
