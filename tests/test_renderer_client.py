@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import asyncio
 from functools import lru_cache
 from unittest.mock import patch

@@ -7,7 +7,7 @@ from collections.abc import Collection
 
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
-    DockerConfig,
+    NetworkPolicyConfig,
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
@@ -38,26 +38,20 @@ def resolve_runtime_config(
     if (
         task.data.workdir is not None
         and workdir_spec is not None
-        and getattr(config, "workdir") == workdir_spec.default
+        and config.workdir == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
     task_network_policy = "*" not in task.data.network_allow or bool(
         task.data.network_block
     )
     if task_network_policy:
-        if not isinstance(config, DockerConfig):
+        if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
-                f"task {task.data.idx!r} requires a URL network policy, but the "
-                f"{config.type} runtime does not support framework-aware URL policies"
+                f"task {task.data.idx!r} requires a network policy, but the "
+                f"{config.type} runtime does not support framework-aware policies"
             )
-        if "*" not in task.data.network_allow:
-            updates["allow"] = (
-                task.data.network_allow
-                if "*" in config.allow
-                else list(dict.fromkeys([*task.data.network_allow, *config.allow]))
-            )
-        updates["block"] = list(
-            dict.fromkeys([*task.data.network_block, *config.block])
+        config = config.with_task_network_policy(
+            task.data.network_allow, task.data.network_block
         )
     for resource, value in task.data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(resource)
@@ -106,33 +100,33 @@ def validate_pairing(
         raise ValueError(
             f"Harness {harness.config.id!r} needs a container runtime "
             "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
-            "use --env.agent.harness.runtime.type docker or prime."
+            "use --env.agent.runtime.type docker or prime."
         )
     if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
             "this run resolves to the subprocess runtime; use "
-            "--env.<agent>.harness.runtime.type docker or prime."
+            "--env.<agent>.runtime.type docker or prime."
         )
 
 
-def cap_remote_harness_timeout(
-    harness_timeout: float | None, runtime_config: RuntimeConfig, task: Task
+def cap_remote_agent_timeout(
+    agent_timeout: float | None, runtime_config: RuntimeConfig, task: Task
 ) -> float | None:
-    """Remote sandboxes live at most 24 hours: cap the harness timeout there (with a
+    """Remote sandboxes live at most 24 hours: cap the agent timeout there (with a
     warning) so a long run times out cleanly instead of the provider killing the box
     mid-run."""
     if (
-        harness_timeout is not None
-        and harness_timeout > 24 * 60 * 60
+        agent_timeout is not None
+        and agent_timeout > 24 * 60 * 60
         and not runtime_is_local(runtime_config)
     ):
         logger.warning(
-            "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
+            "task %r resolves to a %.1f-hour agent timeout, but %s sandboxes have a "
             "maximum lifetime of 24 hours; capping it at 24 hours",
             task.data.idx,
-            harness_timeout / (60 * 60),
+            agent_timeout / (60 * 60),
             runtime_config.type,
         )
         return 24 * 60 * 60
-    return harness_timeout
+    return agent_timeout

@@ -1,44 +1,31 @@
-"""Task data, configuration, behavior, and scoring.
+"""Task data + behavior.
 
-`TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
-row IS — the base fields plus your typed, task-specific fields. It rides on
-`trace.task.data`, is what `traces.jsonl` stores, and what tool servers receive
-over the `/task` channel. Subclass it per dataset.
+`TaskData` is the wire half: a frozen pydantic model carrying the data which
+initializes a task instance. Rides on `trace.task.data` in `traces.jsonl`.
 
-`Task` is the behavior half: runtime prep (`setup`/`finalize`), server declarations
-(`tools`), well-formedness (`validate`), and per-trace judgement
-(`@reward`/`@metric` methods plus the plugged judges from `config.judges`, run by
-`score`). Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]`
-(all three default); judgement that compares sibling traces lives on
-`Env.finalize` instead.
-
-A Task instance is shared across its rollouts (`-r n` runs hold the same instance),
-so hooks must not stash per-rollout state on `self` — that lives on the trace
-(`trace.state`).
-
-On the wire only the data travels (plus the producing class's name,
-`trace.task.type`): a saved row reads back as `WireTaskData` without importing the
-taskset; a re-scoring consumer (`replay`) rebuilds the declared `TaskData` type and
-wraps it in the declared `Task` — one task type per taskset.
+`Task` is the behavior half: runtime prep (`setup`/`finalize`), tool declarations
+(`tools`), and scoring (`@reward`/`@metric`) methods.
 """
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic
+from typing import TYPE_CHECKING, ClassVar, Generic, Self
 
-from pydantic import ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
+from verifiers.v1.artifacts import Artifact
+from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.judge import Judges, check_judges, resolve_judges
 from verifiers.v1.state import StateT
-from verifiers.v1.types import Messages, StrictBaseModel, content_text
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.types import Messages, content_text
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
@@ -49,28 +36,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _requires_runtime(fn) -> bool:
-    param = inspect.signature(fn).parameters.get("runtime")
-    # A defaulted runtime parameter can still be called offline with None.
-    return param is not None and param.default is inspect.Parameter.empty
+class TaskResources(BaseModel):
+    """Optional resource limits for the task."""
 
-
-def _record_result(
-    trace: Trace,
-    name: str,
-    result,
-    weight: float | None = None,
-) -> None:
-    """Record a scalar or keyed scoring result."""
-    values = list(result.items()) if isinstance(result, Mapping) else [(name, result)]
-    for key, value in values:
-        if weight is None:
-            trace.record_metric(key, value)
-        else:
-            trace.record_reward(key, value, weight)
-
-
-class TaskResources(StrictBaseModel):
     model_config = ConfigDict(frozen=True)
 
     cpu: float | None = None
@@ -83,68 +51,56 @@ class TaskResources(StrictBaseModel):
     """Disk in GB (enforced by prime; advisory on docker/modal)."""
 
 
-class TaskTimeout(StrictBaseModel):
+class TaskTimeout(BaseModel):
     """Optional per-task timeout overrides, in seconds."""
 
     model_config = ConfigDict(frozen=True)
 
     setup: float | None = None
-    harness: float | None = None
+    """Timeout (in seconds) for the task's setup hook."""
+    agent: float | None = None
+    """Timeout (in seconds) for the agent's solve attempt."""
     finalize: float | None = None
+    """Timeout (in seconds) for the task's finalize hook."""
     scoring: float | None = None
+    """Timeout (in seconds) for the task's scoring."""
 
 
-class TaskConfig(BaseConfig):
-    """Run-time knobs read by `Task` behavior.
-
-    Subclass for server placement, judge, or scoring settings. Every field needs a
-    default because constructing a task without a config builds the declared config type.
-    Load-time dataset settings belong on `TasksetConfig` instead.
-    """
-
-    judges: Judges = []
-    """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_judges(cls, data):
-        if isinstance(data, dict) and data.get("judges"):
-            data["judges"] = resolve_judges(data["judges"])
-        return data
-
-    @model_validator(mode="after")
-    def _check_judges(self) -> TaskConfig:
-        check_judges(self.judges)
-        return self
-
-
-class TaskData(StrictBaseModel):
-    """The task's wire half: one row's pure data, a frozen pydantic model. Subclass
-    per dataset to add typed task-specific fields next to the base fields; behavior
-    lives on `Task`, which wraps this (`self.data`)."""
-
+class TaskData(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     idx: int | None = None
-    """Dataset row index — set by tasksets (selection, resume, and grouping key
-    on the eval path); `None` for ad-hoc tasks minted in scripts."""
+    """Taskset-autogenerated index."""
     name: str | None = None
+    """Optional human-readable task name."""
     description: str | None = None
+    """Optional human-readable task description."""
+
     prompt: str | Messages | None = None
-    """Initial user prompt; `None` means the user opens the conversation — run the
-    task through `agent.interaction()`, whose first `turn(message)` speaks first. (A
-    default, not just optional: the wire drops `None`s — `traces.jsonl` rows for
-    prompt-less tasks must read back.)"""
+    """Initial user prompt; unset if the user opens the conversation."""
     system_prompt: str | None = None
+    """Optional system prompt to prepend to the user prompt."""
+
     image: str | None = None
+    """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
     workdir: str | None = None
-    network_allow: list[str] = ["*"]
+    """Optional working directory to use for the task. Only relevant for tasks that run in a container."""
+
+    network_allow: list[str] = Field(default_factory=lambda: ["*"])
     """Execution-time destinations requested by this task. `*` leaves the runtime
-    allowlist unchanged; a concrete list replaces a wildcard or combines with
-    existing entries."""
-    network_block: list[str] = []
+    allowlist unchanged; a concrete list replaces a wildcard or combines with existing
+    entries. Prime runtimes accept host-level entries and require `vm=true`."""
+    network_block: list[str] = Field(default_factory=list)
     """Execution-time destinations denied by this task and combined with runtime
-    blocks."""
+    blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
+    framework routes take precedence; ordinary Prime deny rules pass through unchanged."""
+
+    artifacts: list[Artifact] = Field(default_factory=list)
+    """Paths collected from one runtime and restored at the same locations in another,
+    on top of the implicitly collected `/logs/artifacts/` convention dir. Declare
+    runtime outputs that must cross that boundary. A declared path that is missing at
+    collection time fails the rollout."""
+
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()
 
@@ -162,21 +118,8 @@ class WireTaskData(TaskData):
     model_config = ConfigDict(extra="allow")
 
 
-# No `default=`: an unparameterized `Trace`'s `task` field must serialize duck-typed
-# (a defaulted TypeVar narrows pydantic's serialization to the base `TaskData`, silently
-# dropping subclass fields from the wire).
 DataT = TypeVar("DataT", bound=TaskData)
 ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
-
-
-def task_data_cls(cls: type) -> type[TaskData]:
-    """Resolve a task's `TaskData` specialization through its MRO, else `TaskData`."""
-    return generic_type(cls, TaskData) or TaskData
-
-
-def task_config_cls(cls: type) -> type[TaskConfig]:
-    """Resolve a task's `TaskConfig` specialization through its MRO, else `TaskConfig`."""
-    return generic_type(cls, TaskConfig) or TaskConfig
 
 
 def resolve_server_config(
@@ -205,38 +148,19 @@ def resolve_server_config(
 
 
 class Task(Generic[DataT, StateT, ConfigT]):
-    """Behavior, lifecycle, servers, and scoring for one `TaskData` row.
-
-    Parameterize as `Task[MyData, MyState, MyConfig]`. Construction accepts the row
-    and an optional config; omitting config builds the declared config type. One task
-    instance is shared across a rollout group, so per-rollout state belongs on the trace.
-    """
-
     NEEDS_CONTAINER: ClassVar[bool] = False
+    """Whether the task needs a containerized environment (isolated filesystem, ...)."""
 
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
-        self.config = config if config is not None else task_config_cls(type(self))()
+        self.config = config if config is not None else self.config_type()()
 
-    def plugged_judges(self) -> list[Judge]:
-        from verifiers.v1.loaders import load_judge
-
-        return [load_judge(config) for config in self.config.judges]
-
-    def server_config(self, server_cls: type) -> BaseConfig:
-        """The config a declared server class (`tools`) is built with (see
-        `resolve_server_config`). Override to pair explicitly."""
-        return resolve_server_config(
-            type(self).__name__,
-            self.config,
-            server_cls,
-            sole=len(set(type(self).tools)) == 1,
-        )
-
-    def tool_servers(self) -> list[Toolset]:
-        return [cls(self.server_config(cls)) for cls in type(self).tools]
+    def with_system_prompt(self, system_prompt: str) -> Self:
+        clone = copy.copy(self)
+        clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
+        return clone
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
@@ -252,6 +176,11 @@ class Task(Generic[DataT, StateT, ConfigT]):
         trace: Trace,
         runtime: Runtime | None = None,
     ) -> None:
+        def requires_runtime(fn) -> bool:
+            param = inspect.signature(fn).parameters.get("runtime")
+            # A defaulted runtime parameter can still be called offline with None.
+            return param is not None and param.default is inspect.Parameter.empty
+
         judges = self.plugged_judges()
         available = {"task": self.data, "trace": trace}
         if runtime is not None:
@@ -262,36 +191,74 @@ class Task(Generic[DataT, StateT, ConfigT]):
             rewards = discover_decorated(self, "reward")
             if runtime is None:
                 skipped = [
-                    fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)
+                    fn.__name__ for fn in (*metrics, *rewards) if requires_runtime(fn)
                 ] + [
                     judge.reward_name
                     for judge in judges
-                    if _requires_runtime(judge.score)
+                    if requires_runtime(judge.score)
                 ]
                 if skipped:
                     logger.info(
                         "score: no runtime — skipped runtime-dependent signals: %s",
                         skipped,
                     )
-                metrics = [fn for fn in metrics if not _requires_runtime(fn)]
-                rewards = [fn for fn in rewards if not _requires_runtime(fn)]
+                metrics = [fn for fn in metrics if not requires_runtime(fn)]
+                rewards = [fn for fn in rewards if not requires_runtime(fn)]
                 judges = [
-                    judge for judge in judges if not _requires_runtime(judge.score)
+                    judge for judge in judges if not requires_runtime(judge.score)
                 ]
 
             metric_results = await invoke_all(metrics, available)
             for fn, result in zip(metrics, metric_results):
-                _record_result(trace, fn.__name__, result)
+                if isinstance(result, Mapping):
+                    trace.record_metrics(result)
+                else:
+                    trace.record_metric(fn.__name__, result)
             reward_results = await invoke_all(rewards, available)
             for fn, result in zip(rewards, reward_results):
-                _record_result(
-                    trace, fn.__name__, result, getattr(fn, "_vf_weight", 1.0)
+                weight = getattr(fn, "_vf_weight", 1.0)
+                items = (
+                    result.items()
+                    if isinstance(result, Mapping)
+                    else [(fn.__name__, result)]
                 )
+                for key, value in items:
+                    trace.record_reward(key, value, weight)
             judge_results = await invoke_all(
                 [judge.score for judge in judges], available
             )
             for judge, result in zip(judges, judge_results):
-                _record_result(trace, judge.reward_name, result, judge.config.weight)
+                items = (
+                    result.items()
+                    if isinstance(result, Mapping)
+                    else [(judge.reward_name, result)]
+                )
+                for key, value in items:
+                    trace.record_reward(key, value, judge.config.weight)
+
+    @classmethod
+    def data_type(cls) -> type[TaskData]:
+        return concrete_type(cls, TaskData) or TaskData
+
+    @classmethod
+    def config_type(cls) -> type[TaskConfig]:
+        return concrete_type(cls, TaskConfig) or TaskConfig
+
+    def plugged_judges(self) -> list[Judge]:
+        from verifiers.v1.loaders import load_judge
+
+        return [load_judge(config) for config in self.config.judges]
+
+    def server_config(self, server_cls: type) -> BaseConfig:
+        return resolve_server_config(
+            type(self).__name__,
+            self.config,
+            server_cls,
+            sole=len(set(type(self).tools)) == 1,
+        )
+
+    def tool_servers(self) -> list[Toolset]:
+        return [cls(self.server_config(cls)) for cls in type(self).tools]
 
 
 TaskT = TypeVar("TaskT", bound=Task)

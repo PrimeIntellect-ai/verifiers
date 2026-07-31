@@ -10,13 +10,13 @@ from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.clients.train import TrainClient
 
 __all__ = [
-    "Client",
-    "ModelContext",
     "BaseClientConfig",
+    "Client",
     "ClientConfig",
+    "EvalClient",
     "EvalClientConfig",
+    "ModelContext",
+    "TrainClient",
     "TrainClientConfig",
     "resolve_client",
-    "EvalClient",
-    "TrainClient",
 ]

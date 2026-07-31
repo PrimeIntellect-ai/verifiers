@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Tier-1 end-to-end tests for the renderer → RendererClient → Environment path.
 
 Exercises the full TITO wire protocol with a scripted stand-in for vLLM:

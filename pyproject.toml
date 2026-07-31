@@ -35,7 +35,7 @@ dependencies = [
     "openai>=2.9.0",
     "openai-agents>=0.8.2",
     "prime-tunnel>=0.1.8",
-    "prime-sandboxes>=0.2.31",
+    "prime-sandboxes>=0.2.33",
     "pydantic>=2.12.3",
     "requests",
     "rich>=11.0.0",
@@ -51,15 +51,15 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers>=0.1.8",
+    "renderers>=0.1.9.dev9",
     "typing_extensions>=4.12.2",
 ]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.9.0",
+    "ruff>=0.16.0",
     "pre-commit>=2.19.0",
-    "ty>=0.0.1a29,<0.0.22",
+    "ty>=0.0.63",
     "pytest>=7.0.0,<9.1.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
@@ -96,7 +96,7 @@ browser = [
 ]
 harbor = [
     # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
-    "harbor==0.14.0; python_version >= '3.12'",
+    "harbor==0.20.0; python_version >= '3.12'",
 ]
 modal = [
     "modal>=1.4.0",
@@ -135,6 +135,11 @@ scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
 kuhn-poker-v1 = { path = "environments/kuhn_poker_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
+# Bounded cutoffs for the explicitly requested tool upgrades.
+# Full UTC timestamps: bare dates resolve to local-tz midnight and churn the
+# lockfile across timezones.
+ruff = "2026-07-28T00:00:00Z"
+ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
 prime-sandboxes = false

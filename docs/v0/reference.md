@@ -71,6 +71,7 @@ Generation parameters passed to the inference server (e.g., `temperature`, `top_
 SystemPrompt = PromptInput | SystemPromptConfig | None
 SystemPromptStrategy = Literal["HT", "TH", "H_OR_T", "T_OR_H", "H", "T", "REJECT"]
 
+
 class SystemPromptConfig:
     path: str | None = None
     messages: list[JsonData] = []
@@ -147,9 +148,9 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 
 ```python
 class RolloutInput(TypedDict):
-    prompt: Messages        # Required
-    answer: str             # Optional
-    info: Info              # Optional
+    prompt: Messages  # Required
+    answer: str  # Optional
+    info: Info  # Optional
 ```
 
 ### RolloutOutput
@@ -214,8 +215,12 @@ class TrajectoryStepTokens(TypedDict):
     overlong_prompt: bool
     is_truncated: bool
     routed_experts: RoutedExpertsPayload | None
-    multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
-    prompt_attribution: NotRequired[Any]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
+    multi_modal_data: NotRequired[
+        Any
+    ]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
+    prompt_attribution: NotRequired[
+        Any
+    ]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
 ```
 
 Token-level data for training.
@@ -225,8 +230,9 @@ Token-level data for training.
 ```python
 class TimeSpan(CustomBaseModel):
     """A timed span. duration = end - start."""
-    start: float = 0.0   # Unix timestamp (seconds since epoch)
-    end: float = 0.0     # Unix timestamp (seconds since epoch)
+
+    start: float = 0.0  # Unix timestamp (seconds since epoch)
+    end: float = 0.0  # Unix timestamp (seconds since epoch)
     # duration: float    (computed_field)
 ```
 
@@ -235,6 +241,7 @@ class TimeSpan(CustomBaseModel):
 ```python
 class TimeSpans(CustomBaseModel):
     """A list of TimeSpan with aggregate duration (sum)."""
+
     spans: list[TimeSpan] = []
     # duration: float    (computed_field)
 ```
@@ -244,12 +251,13 @@ class TimeSpans(CustomBaseModel):
 ```python
 class RolloutTiming(CustomBaseModel):
     """Rollout-level timing. All values in seconds."""
-    start_time: float                       # wall-clock at rollout start
-    setup: TimeSpan = TimeSpan()            # setup_state() span
-    generation: TimeSpan = TimeSpan()       # full generation phase
-    scoring: TimeSpan = TimeSpan()          # rubric.score_*() span
-    model: TimeSpans = TimeSpans()          # all model-call spans
-    env: TimeSpans = TimeSpans()            # all env-response spans
+
+    start_time: float  # wall-clock at rollout start
+    setup: TimeSpan = TimeSpan()  # setup_state() span
+    generation: TimeSpan = TimeSpan()  # full generation phase
+    scoring: TimeSpan = TimeSpan()  # rubric.score_*() span
+    model: TimeSpans = TimeSpans()  # all model-call spans
+    env: TimeSpans = TimeSpans()  # all env-response spans
     # total, overhead: float                (computed_fields)
 ```
 
@@ -300,6 +308,7 @@ class VersionInfo(TypedDict):
     env_version: str | None
     env_commit: str | None
 
+
 class GenerateMetadata(TypedDict):
     env_id: str
     name: NotRequired[str]
@@ -338,6 +347,7 @@ class GenerateMetadata(TypedDict):
 class RolloutScore(TypedDict):
     reward: float
     metrics: dict[str, float]
+
 
 class RolloutScores(TypedDict):
     reward: list[float]
@@ -580,7 +590,7 @@ No-agent debugger for sandbox-backed `SandboxTaskSet` instances. It creates the 
 ```python
 env_group = vf.EnvGroup(
     envs=[env1, env2, env3],
-    env_names=["math", "code", "qa"]  # optional
+    env_names=["math", "code", "qa"],  # optional
 )
 ```
 
@@ -685,9 +695,8 @@ def my_reward(
     state: State | None = None,
     parser: Parser | None = None,  # if rubric has parser
     info: Info | None = None,
-    **kwargs
-) -> float:
-    ...
+    **kwargs,
+) -> float: ...
 ```
 
 **Group reward function signature:**
@@ -698,9 +707,8 @@ def my_group_reward(
     answers: list[str],
     states: list[State],
     # ... plural versions of individual args
-    **kwargs
-) -> list[float]:
-    ...
+    **kwargs,
+) -> list[float]: ...
 ```
 
 #### JudgeRubric
@@ -779,6 +787,7 @@ class Response(BaseModel):
     model: str
     usage: Usage | None
     message: ResponseMessage
+
 
 class ResponseMessage(BaseModel):
     content: str | None
@@ -931,8 +940,7 @@ class PrimeCLIPlugin:
 
     def build_module_command(
         self, module_name: str, args: Sequence[str] | None = None
-    ) -> list[str]:
-        ...
+    ) -> list[str]: ...
 ```
 
 `build_module_command` returns a subprocess command list for `python -m <module> ...`.
@@ -940,8 +948,7 @@ class PrimeCLIPlugin:
 ### get_plugin
 
 ```python
-def get_plugin() -> PrimeCLIPlugin:
-    ...
+def get_plugin() -> PrimeCLIPlugin: ...
 ```
 
 Returns the plugin instance consumed by `prime`.
@@ -958,9 +965,9 @@ async def my_condition(self, state: State) -> bool:
     """Return True to end the rollout."""
     ...
 
+
 @vf.stop(priority=10)  # Higher priority runs first
-async def early_check(self, state: State) -> bool:
-    ...
+async def early_check(self, state: State) -> bool: ...
 ```
 
 Mark a method as a stop condition. All stop conditions are checked by `is_completed()`.
@@ -973,9 +980,9 @@ async def my_cleanup(self, state: State) -> None:
     """Called after each rollout completes."""
     ...
 
+
 @vf.cleanup(priority=10)
-async def early_cleanup(self, state: State) -> None:
-    ...
+async def early_cleanup(self, state: State) -> None: ...
 ```
 
 Mark a method as a rollout cleanup handler. Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully to ensure cleanup completes even when resources are in unexpected states.
@@ -988,9 +995,9 @@ async def my_teardown(self) -> None:
     """Called when environment is destroyed."""
     ...
 
+
 @vf.teardown(priority=10)
-async def early_teardown(self) -> None:
-    ...
+async def early_teardown(self) -> None: ...
 ```
 
 Mark a method as an environment teardown handler.

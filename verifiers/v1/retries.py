@@ -18,8 +18,6 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from pydantic import Field
-from pydantic_config import BaseConfig
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -28,6 +26,8 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential_jitter,
 )
+
+from verifiers.v1.configs.retries import RetryConfig
 
 if TYPE_CHECKING:
     from verifiers.v1.episode import Episode
@@ -71,19 +71,6 @@ def retrying(
         before_sleep=_log,
         reraise=True,
     )
-
-
-class RetryConfig(BaseConfig):
-    """Retry a whole rollout when it ends with a captured error. `include`/`exclude`
-    name exception classes (e.g. ``ProviderError``, ``SandboxError``)."""
-
-    max_retries: int = Field(0, ge=0)
-    """Whole-rollout retries beyond the first attempt. Off by default — the SDKs
-    already retry transient per-call faults; rerunning a whole trajectory is opt-in."""
-    include: list[str] = []
-    """Only retry errors whose type is listed. Empty = retry anything not excluded."""
-    exclude: list[str] = []
-    """Never retry errors whose type is listed (wins over `include`)."""
 
 
 def _retryable(error: Error | None, retry: RetryConfig) -> bool:
@@ -130,7 +117,9 @@ async def run_episode_with_retry(
         final = await run()
         if attempt == retry.max_retries or not episode_should_retry(final, retry):
             break
-        cause = final.error or next((t.error for t in final.traces if t.error), None)
+        cause = final.error or next(
+            (t.last_error for t in final.traces if t.last_error), None
+        )
         history.extend(final.errors)
         for trace in final.traces:
             history.extend(trace.errors)

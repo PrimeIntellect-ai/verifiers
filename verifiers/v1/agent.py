@@ -9,28 +9,25 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
-from typing import AsyncIterator
-
-from pydantic import SerializeAsAny, model_validator
-from pydantic_config import BaseConfig
+from typing import Self
 
 from verifiers.v1.clients import (
     Client,
-    ClientConfig,
     EvalClientConfig,
     ModelContext,
     resolve_client,
 )
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.retries import RetryConfig, backoff, trace_should_retry
+from verifiers.v1.retries import backoff, trace_should_retry
 from verifiers.v1.rollout import RolloutRun, _as_messages
 from verifiers.v1.runtimes import (
-    DockerConfig,
+    NetworkPolicyConfig,
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
@@ -44,67 +41,18 @@ from verifiers.v1.types import (
     AssistantMessage,
     Messages,
     Sampling,
-    SamplingConfig,
     ToolMessage,
     UserMessage,
 )
 from verifiers.v1.utils.compile import (
-    cap_remote_harness_timeout,
+    cap_remote_agent_timeout,
     resolve_runtime_config,
     validate_pairing,
 )
 
+__all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
+
 logger = logging.getLogger(__name__)
-
-
-class TimeoutConfig(BaseConfig):
-    """Per-agent wall-clock timeouts per rollout stage, in seconds (None = no
-    limit); each stage falls back to the task's own `TaskTimeout` when unset. An
-    interaction's rollout budget is cumulative across its active harness segments
-    and pauses while the caller computes the next user turn."""
-
-    setup: float | None = None  # one shared budget: task setup + provisioning
-    rollout: float | None = None
-    finalize: float | None = None
-    scoring: float | None = None
-
-
-class AgentConfig(BaseConfig):
-    """One env agent: who plays it, and its per-run caps. It pins only what
-    makes it a different actor; everything unpinned falls back — the model context
-    to the run's own, the harness to the taskset's default."""
-
-    harness: SerializeAsAny[HarnessConfig] | None = None
-    """The agent's program + runtime policy (None = the taskset's default harness)."""
-    model: str | None = None
-    """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
-    client: ClientConfig | None = None
-    """Endpoint override (None = the run's client)."""
-    sampling: SamplingConfig | None = None
-    """Sampling override (None = the run's sampling)."""
-    timeout: TimeoutConfig = TimeoutConfig()
-    retries: RetryConfig = RetryConfig()
-    """Whole-run retries: rerun this agent's rollout while its trace ends with a
-    retryable error (never into a borrowed box)."""
-    max_turns: int | None = None
-    """Max model turns per run (None = no limit). Framework-enforced (the
-    interception server refuses turns past it), so it applies to any harness."""
-    max_input_tokens: int | None = None
-    max_output_tokens: int | None = None
-    max_total_tokens: int | None = None
-    """Token caps per run (None = no limit); framework-enforced between turns."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_harness(cls, data):
-        """Narrow a pinned `harness` to its concrete config type by `id` (absent
-        stays None = the taskset's default). The lazy import keeps class-body
-        `AgentConfig()` defaults constructible while this module initializes."""
-        if isinstance(data, dict) and data.get("harness") is not None:
-            from verifiers.v1.loaders import harness_config_type, narrow_plugin_field
-
-            narrow_plugin_field(data, "harness", harness_config_type, "bash")
-        return data
 
 
 def _check_borrowed_placement(
@@ -114,20 +62,26 @@ def _check_borrowed_placement(
     be honored. Reject requirements that cannot be applied to the running box; an
     image mismatch on a container only warns, since sharing its world is the point."""
     task_policy = "*" not in task.data.network_allow or bool(task.data.network_block)
-    base_docker = base_config if isinstance(base_config, DockerConfig) else None
-    if task_policy or (base_docker is not None and base_docker.network_isolated):
+    base_policy = base_config if isinstance(base_config, NetworkPolicyConfig) else None
+    if task_policy or (base_policy is not None and base_policy.network_restricted):
         config = runtime.config
-        if not isinstance(config, DockerConfig):
+        if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
-                f"task {task.data.idx!r} requires a Docker URL network policy, but "
-                f"borrowed runtime {runtime.name!r} is not Docker-backed; use "
+                f"task {task.data.idx!r} requires a framework-aware network policy, "
+                f"but borrowed runtime {runtime.name!r} does not support one; use "
                 "agent.provision(task)"
             )
-        policy_base = (
-            base_docker if base_docker is not None else DockerConfig(allow=["*"])
+        if base_policy is not None and type(config) is not type(base_policy):
+            raise ValueError(
+                f"the configured {base_policy.type} network policy cannot be applied "
+                f"to borrowed {config.type} runtime {runtime.name!r}; use "
+                "agent.provision(task)"
+            )
+        policy_base = base_policy or config.model_copy(
+            update={"allow": ["*"], "block": []}
         )
         expected = resolve_runtime_config(policy_base, task)
-        assert isinstance(expected, DockerConfig)
+        assert isinstance(expected, NetworkPolicyConfig)
         # Do not inherit extra destinations from a box provisioned for another task.
         if set(config.allow) != set(expected.allow) or set(config.block) != set(
             expected.block
@@ -141,7 +95,7 @@ def _check_borrowed_placement(
     if task.data.image is None:
         return
     if isinstance(runtime.config, SubprocessConfig):
-        raise ValueError(
+        raise TypeError(
             f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
             "borrowed runtime is subprocess-backed (no container); borrow a container "
             "box (e.g. agent.provision(task)) or drop the task's image"
@@ -215,9 +169,8 @@ class Interaction:
         prompted task speaks FIRST: take its opening reply with a bare `turn()`
         before answering. A `terminated` segment means the run ended instead of
         answering (the message went unconsumed)."""
-        async with self._lock:
-            async with self._gate or nullcontext():
-                return await self._turn(message)
+        async with self._lock, self._gate or nullcontext():
+            return await self._turn(message)
 
     async def _turn(self, message: str | Messages | None) -> Segment:
         if self._run.closed:
@@ -265,11 +218,10 @@ class Interaction:
     async def close(self) -> Trace:
         """End the exchange and finish the rollout (idempotent): scoring and hooks
         run, then the finished trace returns (also on `interaction.trace`)."""
-        async with self._lock:
-            async with self._gate or nullcontext():
-                if not self._run.closed and self._run.ok:
-                    self.trace.stop("user_closed")
-                return await self._run.close()
+        async with self._lock, self._gate or nullcontext():
+            if not self._run.closed and self._run.ok:
+                self.trace.stop("user_closed")
+            return await self._run.close()
 
 
 class Agent:
@@ -277,8 +229,8 @@ class Agent:
 
     Built from an `AgentConfig` alone; `client=`/`interception=` inject live
     resources to borrow — agents on one endpoint should share one `Client`, and a
-    live `Interception`'s owner keeps its lifecycle. The harness config's
-    `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
+    live `Interception`'s owner keeps its lifecycle. The config's `runtime` is a
+    *policy*: each `run` provisions a fresh box from it, resolved
     per task; `run(runtime=...)` places the run into an existing box instead
     (borrowed boxes are never started or torn down by the run)."""
 
@@ -296,21 +248,26 @@ class Agent:
                 "AgentConfig.model is unset; an Agent needs a pinned model "
                 "(inside an env the run's own model fills it in)"
             )
-        harness_config = config.harness
-        if harness_config is None:
-            harness_config = harness_config_type("bash")(id="bash")
+        # Resolve the unpinned identity fields into the config: it is the agent's
+        # full identity — what stamps onto every trace (`AgentInfo.config`).
+        if config.harness is None:
+            config = config.model_copy(
+                update={"harness": harness_config_type("bash")(id="bash")}
+            )
+        if config.sampling is None:
+            config = config.model_copy(update={"sampling": Sampling()})
         self.config = config
-        self.harness = load_harness(harness_config)
+        self.harness = load_harness(config.harness)
         self._owns_client = client is None
         if self._owns_client:
             client = resolve_client(config.client or EvalClientConfig())
         self.ctx = ModelContext(
             model=config.model,
             client=client,
-            sampling=config.sampling if config.sampling is not None else Sampling(),
+            sampling=config.sampling,
         )
         self._closed = False
-        self.runtime_config: RuntimeConfig = self.harness.config.runtime
+        self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
             max_turns=config.max_turns,
@@ -319,9 +276,9 @@ class Agent:
             max_total_tokens=config.max_total_tokens,
         )
         self.timeout = config.timeout
-        # Env episode agents replace this with the eval concurrency semaphore.
-        # Interactions acquire it only around active lifecycle work, never while
-        # awaiting the caller between segments.
+        # Env episode agents replace this with the episode's agent semaphore
+        # (`--env.max-concurrent-agents`). Interactions acquire it only around active
+        # lifecycle work, never while awaiting the caller between segments.
         self._gate: asyncio.Semaphore | None = None
         # Env-owned standing, not config: `Env.setup` marks fixed agents
         # untrainable and traces are stamped from here; inert outside an env.
@@ -330,7 +287,7 @@ class Agent:
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
 
-    async def __aenter__(self) -> "Agent":
+    async def __aenter__(self) -> Self:
         if self._entered:
             raise RuntimeError("Agent is already entered; enter it once and share it")
         if self._closed:
@@ -433,7 +390,7 @@ class Agent:
                 attempt + 1,
                 retry.max_retries,
                 delay,
-                trace.error.type if trace.error else "?",
+                trace.last_error.type if trace.last_error else "?",
             )
             await asyncio.sleep(delay)
         if history:
@@ -462,8 +419,8 @@ class Agent:
             # close() never runs — free the run's servers and owned runtime first.
             await run.abort()
             raise
-        if trace.runtime is not None:
-            trace.runtime.borrowed = runtime is not None
+        if trace.agent.runtime is not None:
+            trace.agent.runtime.borrowed = runtime is not None
         return trace
 
     @asynccontextmanager
@@ -525,8 +482,8 @@ class Agent:
             opened = await run.open()
             if not opened:
                 trace = await run.close()
-                if trace.runtime is not None:
-                    trace.runtime.borrowed = runtime is not None
+                if trace.agent.runtime is not None:
+                    trace.agent.runtime.borrowed = runtime is not None
         if not opened:
             failure = run.failure
             if failure is None:  # `open()` returning False always captures one.
@@ -542,8 +499,8 @@ class Agent:
             raise
         finally:
             trace = run.trace if run.closed else await interaction.close()
-            if trace.runtime is not None:
-                trace.runtime.borrowed = runtime is not None
+            if trace.agent.runtime is not None:
+                trace.agent.runtime.borrowed = runtime is not None
 
     def _rollout_params(
         self, task: Task, runtime: Runtime | None, shared_tools: dict
@@ -563,38 +520,39 @@ class Agent:
             self.harness, type(task), runtime_config, shared_tools=shared_tools
         )
         # Timeout precedence: agent-level wins, else the task's, else no limit.
-        harness_timeout = (
+        agent_timeout = (
             self.timeout.rollout
             if self.timeout.rollout is not None
-            else task.data.timeout.harness
+            else task.data.timeout.agent
         )
-        return dict(
-            harness=self.harness,
-            ctx=self.ctx,
-            runtime_config=runtime_config,
-            setup_timeout=(
+        return {
+            "agent_config": self.config,
+            "harness": self.harness,
+            "ctx": self.ctx,
+            "runtime_config": runtime_config,
+            "setup_timeout": (
                 self.timeout.setup
                 if self.timeout.setup is not None
                 else task.data.timeout.setup
             ),
-            harness_timeout=cap_remote_harness_timeout(
-                harness_timeout, runtime_config, task
+            "agent_timeout": cap_remote_agent_timeout(
+                agent_timeout, runtime_config, task
             ),
-            finalize_timeout=(
+            "finalize_timeout": (
                 self.timeout.finalize
                 if self.timeout.finalize is not None
                 else task.data.timeout.finalize
             ),
-            scoring_timeout=(
+            "scoring_timeout": (
                 self.timeout.scoring
                 if self.timeout.scoring is not None
                 else task.data.timeout.scoring
             ),
-            limits=self.limits,
-            shared_tools=shared_tools,
-            interception=self._interception_for(run_is_local, task, shared_tools),
-            runtime=runtime,
-        )
+            "limits": self.limits,
+            "shared_tools": shared_tools,
+            "interception": self._interception_for(run_is_local, task, shared_tools),
+            "runtime": runtime,
+        }
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
@@ -620,9 +578,9 @@ class _EpisodeAgent(Agent):
     bundle of references — expensive resources are env-owned and borrowed, so no
     state spans concurrent episodes): traces get their agent standing the moment
     they're created, finished ones land in `completed` (the episode's traces),
-    each run takes the eval's gate. The taskset's shared tool servers ride only
-    its own tasks — on an env-minted task they'd wrongly put MCP in play
-    (`tools=` overrides)."""
+    each run takes one of the episode's agent permits. The taskset's shared tool
+    servers ride only its own tasks — on an env-minted task they'd wrongly put MCP
+    in play (`tools=` overrides)."""
 
     def __init__(
         self,
@@ -706,8 +664,9 @@ class _EpisodeAgent(Agent):
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
         `Env.run` stays crash-safe. Setup, each active segment, and close acquire
-        the eval gate independently; the interaction holds no permit while awaiting
-        its caller, so peer interactions can interleave even at concurrency one."""
+        an agent permit independently; the interaction holds no permit while awaiting
+        its caller, so peer interactions still interleave where an episode plays one
+        agent at a time."""
         trace: Trace | None = None
 
         def remember(current: Trace) -> None:
@@ -758,10 +717,8 @@ class Agents:
     field becomes an `Agent` under the field's name (`agents.solver`)."""
 
     def __init__(self, config, make: MakeAgent | None = None) -> None:
-        if make is None:
-            make = lambda _, spec: make_agent(spec)  # noqa: E731
         self._agents: dict[str, Agent] = {
-            name: make(name, value)
+            name: make_agent(value) if make is None else make(name, value)
             for name, value in agent_config_fields(config).items()
         }
 

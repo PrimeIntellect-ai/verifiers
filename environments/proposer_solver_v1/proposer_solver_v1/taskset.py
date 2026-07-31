@@ -13,7 +13,7 @@ Seats are deliberately heterogeneous: point the proposer at a code-running harne
 in a real sandbox and keep the solvers on a cheap tool-less chat loop —
 
     uv run eval proposer-solver-v1 -n 4 \
-      --env.proposer.harness.id codex --env.proposer.harness.runtime.type prime \
+      --env.proposer.harness.id codex --env.proposer.runtime.type prime \
       --env.solver.harness.id null
 
 Train-side, the seats flip independently per run (`--env.train_solver false`
@@ -25,6 +25,7 @@ per-agent knob.
 import asyncio
 import json
 import re
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -102,7 +103,7 @@ class SolveTask(vf.Task[SolveData]):
             )
         answer = proposed["answer"]
         if not isinstance(answer, int) or isinstance(answer, bool):
-            raise ValueError(
+            raise TypeError(
                 f"proposer's contract answer is not a JSON integer: {answer!r}"
             )
         return cls(
@@ -149,10 +150,12 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
 
     @staticmethod
     def _solve_rate(traces: list[vf.Trace]) -> float:
-        solves = [t for t in traces if t.agent_name == "solver"]
+        solves = [t for t in traces if t.agent.name == "solver"]
         if not solves:
             return 0.0
-        return sum(t.rewards.get("correct", 0.0) for t in solves) / len(solves)
+        return sum(
+            r.score if (r := t.rewards.get("correct")) else 0.0 for t in solves
+        ) / len(solves)
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """The proposer is judged by what its problem DOES to the solvers:
@@ -160,13 +163,13 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
         the problem, 0 when it's trivial or impossible for them (4p(1-p))."""
         rate = self._solve_rate(episode.traces)
         for trace in episode.traces:
-            if trace.agent_name == "proposer":
+            if trace.agent.name == "proposer":
                 trace.record_metric("solve_rate", rate)
                 trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
 
 
 class ProposerSolverTaskset(vf.Taskset[ProposeTask, vf.TasksetConfig]):
-    TOPICS = [
+    TOPICS: ClassVar = [
         "rates and mixtures",
         "number theory",
         "combinatorics",

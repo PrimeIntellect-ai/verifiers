@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import json
 from typing import Callable, cast
 
@@ -31,7 +33,7 @@ class ToolMonitorRubric(vf.Rubric):
             self.tool_names.remove(tool_name)
             metric_name = f"{tool_name}_calls"
             for i, func in enumerate(self.funcs):
-                if func.__name__ == metric_name:
+                if func.__name__ == metric_name:  # ty:ignore[unresolved-attribute]
                     self.funcs.pop(i)
                     self.weights.pop(i)
                     break

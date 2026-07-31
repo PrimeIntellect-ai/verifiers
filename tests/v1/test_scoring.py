@@ -10,13 +10,11 @@ def test_compare_stdout_results_keeps_numeric_tolerance() -> None:
 
 
 def test_parse_pytest_outcomes_strips_xfail_xpass_reasons() -> None:
-    output = "\n".join(
-        [
-            "XFAIL tests/test_mod.py::test_xfail - known bug - still tracked",
-            "XPASS tests/test_mod.py::test_xpass - always xfail - unexpectedly passed",
-            "FAILED tests/test_mod.py::test_param[a - b] - assert left - right",
-            "PASSED tests/test_mod.py::test_ok",
-        ]
+    output = (
+        "XFAIL tests/test_mod.py::test_xfail - known bug - still tracked\n"
+        "XPASS tests/test_mod.py::test_xpass - always xfail - unexpectedly passed\n"
+        "FAILED tests/test_mod.py::test_param[a - b] - assert left - right\n"
+        "PASSED tests/test_mod.py::test_ok"
     )
 
     assert vf.parse_pytest_outcomes(output) == {

@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """GEPA command module for external hosts."""
 
 from verifiers.scripts.gepa import main

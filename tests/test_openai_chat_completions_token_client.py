@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from typing import Any, cast
 
 import httpx

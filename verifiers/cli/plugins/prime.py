@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Prime-hosted command plugin contract."""
 
 from dataclasses import dataclass

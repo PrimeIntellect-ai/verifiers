@@ -8,8 +8,13 @@ states explicitly is pre-narrowed — never to a type a config file could contra
 """
 
 import contextlib
+from typing import TypeVar
+
+from pydantic import BaseModel, create_model
 
 import verifiers.v1 as vf
+
+ConfigT = TypeVar("ConfigT", bound=BaseModel)
 
 
 @contextlib.contextmanager
@@ -68,7 +73,19 @@ def extract_id(argv: list[str], field: str, default: str = "") -> str:
     return found[0] if found else default
 
 
-def narrow_config(base: type, argv: list[str]) -> type:
+def narrow_taskset_config(base: type[ConfigT], taskset_id: str | None) -> type[ConfigT]:
+    """Narrow a CLI config's taskset field to the selected plugin config."""
+    if not taskset_id:
+        return base
+    taskset_type = vf.taskset_config_type(taskset_id)
+    return create_model(
+        base.__name__,
+        __base__=base,
+        taskset=(taskset_type, taskset_type(id=taskset_id)),
+    )
+
+
+def narrow_config(base: type[ConfigT], argv: list[str]) -> type[ConfigT]:
     """`base` with its `env` field narrowed to the config class of the env the CLI
     names (`--env.id`, else the taskset's own env, else the single-agent env),
     including its `taskset` sub-field. Ids a config file may set are left to the
@@ -81,18 +98,10 @@ def narrow_config(base: type, argv: list[str]) -> type:
     env_type = vf.env_config_type(taskset_id, env_id)
     if taskset_id:
         # Nested narrowing: `--env.taskset.<knob>` parses typed and renders in -h.
-        taskset_type = vf.taskset_config_type(taskset_id)
-        env_type = type(
-            env_type.__name__,
-            (env_type,),
-            {
-                "__annotations__": {"taskset": taskset_type},
-                "taskset": taskset_type(id=taskset_id),
-            },
-        )
+        env_type = narrow_taskset_config(env_type, taskset_id)
     default = env_type(id=env_id) if env_id else env_type()
-    return type(
+    return create_model(
         base.__name__,
-        (base,),
-        {"__annotations__": {"env": env_type}, "env": default},
+        __base__=base,
+        env=(env_type, default),
     )

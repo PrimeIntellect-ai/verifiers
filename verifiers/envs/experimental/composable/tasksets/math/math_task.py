@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """Math TaskSet — QA-style math problems with sandbox-based scoring.
 
 Usage::

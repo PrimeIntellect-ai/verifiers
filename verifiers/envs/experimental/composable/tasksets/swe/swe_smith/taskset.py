@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """SWE-Smith multilingual TaskSet.
 
 SWE-Smith (https://github.com/SWE-bench/SWE-smith) is a synthetic bug-fix

@@ -30,13 +30,13 @@ from verifiers.envs.experimental.composable.harnesses.opencode import opencode_h
 from verifiers.envs.experimental.composable import ComposableEnv
 
 # Create a taskset
-taskset = R2EGymTaskSet()                 # 4578 SWE instances
+taskset = R2EGymTaskSet()  # 4578 SWE instances
 
 # Explore instances
-task = taskset[0]                          # one Task
-task.prompt                                # the problem statement
-task.sandbox_spec                          # SandboxSpec(image=..., cpu=4, ...)
-task.sandbox_spec.image                    # per-instance docker image
+task = taskset[0]  # one Task
+task.prompt  # the problem statement
+task.sandbox_spec  # SandboxSpec(image=..., cpu=4, ...)
+task.sandbox_spec.image  # per-instance docker image
 
 # Slice and filter
 small = taskset.take(100)
@@ -46,9 +46,9 @@ filtered = taskset.filter(lambda ex: ...)
 results = await taskset.validate(
     concurrency=50,
     out_path="outputs/validate.jsonl",
-    max_retries=2,       # retry on vf.InfraError
+    max_retries=2,  # retry on vf.InfraError
     sandbox_client_max_workers=100,  # optional sandbox client worker cap override
-    resume=True,         # skip indices already in out_path
+    resume=True,  # skip indices already in out_path
 )
 
 # Run with an agent
@@ -135,7 +135,9 @@ class MySWERubric(vf.Rubric):
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
         # Run tests in the sandbox
-        test_output = await self.taskset._run_tests(sandbox_client, sandbox_id, state, ...)
+        test_output = await self.taskset._run_tests(
+            sandbox_client, sandbox_id, state, ...
+        )
         return float(self.taskset._calculate_reward(test_output, info))
 
     @vf.cleanup

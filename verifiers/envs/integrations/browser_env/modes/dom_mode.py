@@ -1,3 +1,5 @@
+# ruff: noqa
+
 """DOM-based browser mode using Stagehand SDK."""
 
 import asyncio

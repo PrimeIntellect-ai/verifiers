@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp", "httpx", "tenacity"]
+# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
 # ///
 """Secrets arrive through argv so local tool subprocesses do not inherit them."""
 
@@ -129,17 +129,21 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         response.raise_for_status()
         organic = response.json().get("organic") or []
         return format_results(organic[:num_results], query)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"search failed ({e}). Try again or rephrase the query."
 
 
 def run_bash(command: str) -> str:
     try:
         result = subprocess.run(
-            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
+            ["bash", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            check=False,
         )
         return result.stdout + result.stderr
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
 
@@ -161,14 +165,14 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
     # error as a tool result instead of letting it abort the chat loop.
     try:
         content = filepath.read_text()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: could not read {path}: {e}"
     count = content.count(old_str)
     if count != 1:
         return f"error: old_str must appear exactly once in {path} (found {count})"
     try:
         filepath.write_text(content.replace(old_str, new_str, 1))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: could not write {path}: {e}"
     return f"Edited {path}"
 

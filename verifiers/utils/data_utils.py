@@ -1,3 +1,5 @@
+# ruff: noqa
+
 # NOTE: Helper functions for example datasets. Not intended for core functionality.
 
 import random

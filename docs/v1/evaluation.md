@@ -21,7 +21,7 @@ id = "primeintellect/terminal-bench-2"
 id = "codex"
 version = "0.116.0"
 
-[env.agent.harness.runtime]
+[env.agent.runtime]
 type = "docker"
 ```
 
@@ -36,13 +36,17 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
+- `env.taskset.system_prompt` — file whose text overrides each task's
+  `TaskData.system_prompt` on iteration (e.g. a GEPA `best_system_prompt.txt`)
 - `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
 - `num_rollouts` — rollouts per task
-- `max_concurrent` — caps how many rollouts are in flight at once
+- `max_concurrent` — caps how many episodes are in flight at once; `env.max_concurrent_agents` caps the agent runs inside one episode (1 by default — see [The Env § Concurrency](env.md#concurrency))
+- `[serve]` — how the env is hosted under `--server`: `serve.pool` (worker pool), `serve.address`, and `serve.max_concurrent` (a per-worker episode bound; unset takes `max_concurrent`)
+- `[legacy]` — run a classic (v0) environment through the bridge instead of `[env]`: `legacy.id`, `legacy.args`
 - `verbose` — log at debug instead of info
-- `shuffle` — randomizes the order of tasks (fixed seed); a no-op on an infinite taskset
+- `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
 
 ## Resuming evaluations
 
@@ -72,9 +76,37 @@ Setting `skills` on a harness without native skill support fails up front.
 
 ## Runtime network policies
 
-Prime and Modal expose provider-native `network_access` switches. Docker instead uses
-URL-level `allow` and `block` lists, with a trusted setup phase before enforcement; the
-same policy vocabulary can extend to other runtimes when their sandbox APIs support it.
+Modal exposes a provider-native `network_access` switch. Prime and Docker use `allow`
+and `block` lists after a trusted setup phase; Prime enforces host-level rules in the
+platform, while Docker supports URL-level rules through a host-side proxy.
+
+### Prime host policies
+
+Prime VM sandboxes (`vm = true`) take either a host-level `allow` list or a `block`
+list:
+
+```toml
+[env.agent.runtime]
+type = "prime"
+vm = true
+allow = ["*.wikipedia.org", "1.1.1.1"]
+```
+
+Entries are exact hostnames, leftmost-label `*.` wildcards, IPv4 addresses, or IPv4
+CIDRs; schemes, ports, paths, and IPv6 are not supported. The default `allow = ["*"]`
+keeps egress unrestricted. An empty `allow` list permits only the interception and MCP
+route hosts, which Verifiers adds automatically before enforcement.
+
+Setup stays online. Immediately before the agent starts, Verifiers replaces the
+sandbox's policy and waits up to 60 seconds for the platform to report it applied; the
+rollout fails closed if that acknowledgement never arrives. The provider policy governs
+new connections and does not revoke connections already established during trusted
+setup. Filtered Prime runtimes are therefore single-rollout.
+
+Prime's API accepts only one effective policy mode: a non-empty concrete `allow` list
+cannot be combined with `block`. Framework hosts are folded into allowlist modes.
+`block = ["*"]` is normalized to the empty framework-only allowlist; ordinary denylists
+are applied unchanged and may block a matching interception or MCP route host.
 
 ### Docker URL policies
 
@@ -82,20 +114,22 @@ Docker harnesses can keep trusted setup online, then restrict the agent to decla
 HTTP(S) destinations:
 
 ```toml
-[env.agent.harness.runtime]
+[env.agent.runtime]
 type = "docker"
 allow = ["https://*.wikipedia.org"]
-block = ["https://upload.wikimedia.org"]
 ```
 
-Docker is deny-by-default: an empty `allow` list permits only the interception URL and
-every MCP URL, which are added automatically before user entries. A bare `"*"` with no
-block entries opts out of filtering and keeps Docker's host-network behavior; adding a
-block entry enables filtering and narrows the wildcard. User block rules win over user
-allow rules; framework interception and MCP routes always remain reachable. Under every
-filtered policy, non-global destinations—including host-loopback, private, and link-local
-addresses—are reserved for framework routes, so user `allow` rules cannot expose host/LAN
-services or cloud metadata endpoints.
+Docker uses the same mutually exclusive modes as Prime. It defaults to unrestricted with
+`allow = ["*"]` and no block entries. A concrete `allow` list enables deny-by-default
+filtering; the interception URL and every MCP URL are added before user entries. A
+non-empty `block` list with the default wildcard instead enables default-allow denylist
+filtering. Framework routes take precedence over matching deny rules. Any block list
+containing `*` is normalized to framework-only access. Non-empty concrete `allow` and
+`block` lists cannot otherwise be combined.
+
+Under every filtered policy, non-global destinations—including host-loopback, private,
+and link-local addresses—are reserved for recognized framework routes, so user `allow`
+rules cannot expose host/LAN services or cloud metadata endpoints.
 
 Filtered Docker runtimes are single-rollout. Reusing one would require reopening trusted
 setup networking to processes left by the previous agent, so each rollout gets a fresh box.
@@ -108,15 +142,15 @@ port. Both the CONNECT authority and the TLS ClientHello SNI must satisfy the po
 
 The enforcement shape follows
 [Docker Sandboxes network isolation](https://docs.docker.com/ai/sandboxes/security/isolation/):
-HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed. As in
-[Docker's policy evaluation](https://docs.docker.com/ai/sandboxes/governance/concepts/),
-user deny rules win over user allows.
+HTTP(S) leaves through a policy proxy and direct non-HTTP egress is removed.
 
 Per-task `TaskData.network_allow` and `TaskData.network_block` entries are merged into
-the Docker runtime lists. The task's default `network_allow=["*"]` is neutral and leaves
-the evaluator policy intact. A concrete list replaces an evaluator wildcard; two
-concrete lists are combined, all block entries are retained, and block entries win. Any
-non-wildcard task URL policy requires Docker's framework-aware policy support.
+Docker or Prime runtime lists. The task's default `network_allow=["*"]` is neutral and
+leaves the evaluator policy intact. Concrete task/runtime allowlists combine, as do
+task/runtime blocklists. A framework-only policy on either side takes precedence. Docker
+and Prime reject a combination that would otherwise require both an allowlist and a
+blocklist; Prime additionally requires `vm = true` and accepts only host-level entries.
+Other runtimes reject non-neutral task network policies.
 
 The restriction begins after task and harness setup and remains active through agent
 execution, finalization, and scoring. Debug actions apply it after task setup as well.

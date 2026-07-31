@@ -8,6 +8,8 @@ num_tasks = 10
 id = "harbor"
 dataset = "terminal-bench/terminal-bench-2"
 
+[env.agent]
+runtime = { type = "docker" }
+
 [env.agent.harness]
 id = "bash"
-runtime = { type = "docker" }

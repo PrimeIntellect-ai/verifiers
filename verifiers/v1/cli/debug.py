@@ -18,17 +18,18 @@ import verifiers.v1 as vf
 from verifiers.v1.cli.output import append_trace, save_config
 from verifiers.v1.cli.resolve import (
     extract_id,
+    narrow_taskset_config,
     plugin_errors,
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.configs.debug import DebugConfig
+from verifiers.v1.configs.cli.debug import DebugConfig
 from verifiers.v1.decorators import invoke
-from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Error, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
+from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
@@ -43,15 +44,7 @@ USAGE = (
 
 def _narrow(argv: list[str]) -> type[DebugConfig]:
     """`DebugConfig` with `taskset` narrowed to the config type of the id on the CLI."""
-    taskset_id = extract_id(argv, "taskset")
-    if not taskset_id:
-        return DebugConfig
-    ftype = vf.taskset_config_type(taskset_id)
-    return type(
-        DebugConfig.__name__,
-        (DebugConfig,),
-        {"__annotations__": {"taskset": ftype}, "taskset": ftype(id=taskset_id)},
-    )
+    return narrow_taskset_config(DebugConfig, extract_id(argv, "taskset"))
 
 
 def output_path(config: DebugConfig) -> Path:
@@ -108,9 +101,9 @@ def error_info(
 
 
 def capture_trace_error(trace: Trace, error: BaseException) -> None:
-    # CancelledError is a BaseException; Trace.capture_error accepts Exception.
+    # CancelledError is a BaseException; Trace.record_error accepts Exception.
     if isinstance(error, Exception):
-        trace.capture_error(error)
+        trace.record_error(error)
         return
     trace.errors.append(
         Error(
@@ -130,16 +123,16 @@ def record_debug_error(
     action_timeout: float | None,
 ) -> None:
     now = time.time()
-    for span in (trace.timing.boot, trace.timing.setup, trace.timing.generation):
+    for span in (trace.timing.boot, trace.timing.setup, trace.timing.agent):
         if span.start and not span.end:
             span.end = now
-    in_action = bool(trace.timing.generation.start)
+    in_action = bool(trace.timing.agent.start)
     stage = (
         "debug action" if in_action else "setup" if trace.timing.setup.start else "boot"
     )
     timeout = action_timeout if in_action else setup_timeout
     error_start = (
-        trace.timing.generation.start
+        trace.timing.agent.start
         if in_action
         else trace.timing.setup.start or trace.timing.boot.start
     )
@@ -165,7 +158,7 @@ async def run_timed(
     start = time.time()
     try:
         result = await asyncio.wait_for(action, config.timeout.total)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - report any debug action failure
         return error_info(e, start, config.timeout.total, "debug action")
     return result_info(result, start)
 
@@ -202,6 +195,14 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     trace = Trace(
         task=TraceTask(type=type(task).__name__, data=task.data),
         state=state_cls(type(task))(),
+        # No agent plays here (no model, no harness): the seat records the
+        # runtime policy, and the provisioned box lands on it below (id, resolved
+        # type, cache status).
+        agent=AgentInfo(
+            config=vf.AgentConfig(runtime=config.runtime),
+            name="debug",
+            trainable=False,
+        ),
     )
     debug = {
         "task": task_info(task),
@@ -214,7 +215,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         resolve_runtime_config(config.runtime, task),
         name=f"debug-{task.data.idx}-{uuid4().hex[:8]}",
     )
-    trace.runtime = runtime.info
+    trace.agent.runtime = runtime.info
     setup_timeout = (
         config.timeout.setup
         if config.timeout.setup is not None
@@ -233,19 +234,19 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         await runtime.prepare_execution([])
         trace.timing.setup.end = time.time()
 
-        trace.timing.generation.start = time.time()
+        trace.timing.agent.start = time.time()
         debug.update(await run_action(runtime, config))
-        trace.timing.generation.end = time.time()
+        trace.timing.agent.end = time.time()
         if not debug.get("ok"):
             record_action_failure(trace, debug)
         trace.stop(str(debug["reason"]))
     except asyncio.CancelledError as e:
         cancelled = True
         record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - persist any framework failure on the trace
         record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
     finally:
-        trace.split_generation()
+        trace.split_agent_time()
         trace.info["debug"] = debug
         try:
             await runtime.stop()
@@ -262,7 +263,14 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.select(config.num_tasks, config.shuffle)
+    if config.num_tasks is None and taskset.INFINITE:
+        raise ValueError(
+            f"{type(taskset).__name__} is infinite - bound the run with -n"
+        )
+    selected = taskset.shuffle() if config.shuffle else taskset
+    if config.num_tasks is not None:
+        selected = selected.head(config.num_tasks)
+    tasks = list(selected)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):

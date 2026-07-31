@@ -11,10 +11,12 @@ import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import ClassVar
+from typing import ClassVar, Self
 
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,48 @@ def cleanup_at_exit() -> None:
             runtime.cleanup()
 
 
+class NetworkPolicyConfig(BaseConfig):
+    """Shared execution-time policy surface for runtimes that support it."""
+
+    allow: list[str] = Field(default_factory=lambda: ["*"])
+    """Destinations allowed during execution; `*` is unrestricted and `[]` is
+    framework-only."""
+    block: list[str] = Field(default_factory=list)
+    """Destinations denied during execution; any `*` makes the policy framework-only."""
+
+    @model_validator(mode="after")
+    def _validate_network_policy(self) -> Self:
+        if not self.allow or "*" in self.block:
+            # Empty allowlists and wildcard blocks both mean framework-only access.
+            self.allow = []
+            self.block = ["*"]
+        elif self.allow != ["*"] and self.block:
+            raise ValueError(
+                "non-empty concrete allow and block egress lists are mutually exclusive"
+            )
+        return self
+
+    @property
+    def network_restricted(self) -> bool:
+        return "*" not in self.allow or bool(self.block)
+
+    def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
+        values = self.model_dump()
+        if not allow or not self.allow or "*" in block:
+            # Framework-only access is absorbing; composition cannot widen either side.
+            return type(self).model_validate({**values, "allow": [], "block": ["*"]})
+        if "*" not in allow:
+            allow = (
+                allow
+                if "*" in self.allow
+                else list(dict.fromkeys([*allow, *self.allow]))
+            )
+        else:
+            allow = self.allow
+        block = list(dict.fromkeys([*block, *self.block]))
+        return type(self).model_validate({**values, "allow": allow, "block": block})
+
+
 class BaseRuntimeInfo(BaseConfig):
     id: str | None = None
     borrowed: bool = False
@@ -113,6 +157,7 @@ class Runtime(ABC):
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
+        self._setup_claimed = False
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -151,6 +196,16 @@ class Runtime(ABC):
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         pass
+
+    async def alive(self) -> bool:
+        """Whether the box still executes anything. Not every runtime raises when
+        the box is gone — some surface it as `exec`'s own non-zero result,
+        indistinguishable from the command failing. One probe on the failure path
+        tells the two apart before we blame anyone."""
+        try:
+            return (await self.run(["true"], {})).exit_code == 0
+        except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
+            return False
 
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
@@ -244,15 +299,26 @@ class Runtime(ABC):
 
     async def prepare_setup(self) -> None:
         """Claim the runtime for trusted setup; restricted runtimes may reject reuse."""
+        if not self.network_restricted:
+            return
+        if self._setup_claimed:
+            raise SandboxError(
+                f"network-filtered {self.type} runtimes are single-rollout; "
+                "provision a fresh runtime instead of reusing this one"
+            )
+        self._setup_claimed = True
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
-        their policy here while keeping the interception and MCP `routes` reachable."""
+        their policy here; `routes` identifies the interception and MCP endpoints."""
 
     @property
-    def network_isolated(self) -> bool:
+    def network_restricted(self) -> bool:
         """Whether the agent phase uses filtered networking (see `prepare_execution`)."""
-        return False
+        return (
+            isinstance(self.config, NetworkPolicyConfig)
+            and self.config.network_restricted
+        )
 
     @property
     def published_port(self) -> int | None:

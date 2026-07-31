@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias

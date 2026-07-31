@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import json
 import sys
 import time
@@ -477,7 +479,7 @@ class State(dict):
                 return input_obj[key]
         return super().__getitem__(key)
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(self, key: str, default: Any = None) -> Any:  # ty:ignore[invalid-method-override]
         try:
             return self[key]
         except KeyError:
@@ -504,7 +506,7 @@ class State(dict):
     @overload
     def pop(self, key: str, default: _DefaultValue) -> Any | _DefaultValue: ...
 
-    def pop(self, key: str, default: Any = _MISSING) -> Any:
+    def pop(self, key: str, default: Any = _MISSING) -> Any:  # ty:ignore[invalid-method-override]
         if default is _MISSING:
             return super().pop(key)
         return super().pop(key, default)

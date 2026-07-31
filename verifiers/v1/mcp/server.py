@@ -6,13 +6,14 @@ import functools
 import inspect
 import logging
 import os
-from typing import TYPE_CHECKING, Callable, ClassVar, Generic, TypeVar
+from collections.abc import Callable
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.state import State, StateT, state_cls
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from httpx import AsyncClient, Response
@@ -246,7 +247,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         # before setup so an expensive setup does not block port discovery.
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((host, int(os.environ.get("MCP_PORT", 0))))
+        sock.bind((host, int(os.environ.get("MCP_PORT", "0"))))
         port_file = os.environ.get("MCP_PORT_FILE")
         if port_file:
             Path(port_file).write_text(str(sock.getsockname()[1]))
@@ -285,7 +286,7 @@ class ServerBase(Generic[ConfigT, StateT]):
     @classmethod
     def _config_cls(cls) -> type[BaseConfig]:
         """Resolve the server's config specialization through its MRO."""
-        if config_cls := generic_type(cls, BaseConfig):
+        if config_cls := concrete_type(cls, BaseConfig):
             return config_cls
         raise TypeError(
             f"{cls.__name__} must parameterize its config, e.g. Toolset[MyConfig]"

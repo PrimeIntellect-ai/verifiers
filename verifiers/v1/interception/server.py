@@ -310,7 +310,7 @@ class InterceptionServer(Interception):
             body = await session.ctx.client.prepare_request_body(dialect, body)
         except RolloutError as e:
             return self._fail(session, dialect, e)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - ingress boundary surfaces every prep failure
             return self._fail(
                 session,
                 dialect,
@@ -395,7 +395,7 @@ class InterceptionServer(Interception):
                 refused = await session.refused()
             except RolloutError as e:
                 return self._fail(session, dialect, e)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - surface any task hook failure
                 return self._fail(
                     session,
                     dialect,
@@ -469,7 +469,7 @@ class InterceptionServer(Interception):
                         dialect.error_body(str(e)),
                         status=getattr(e, "status_code", 502),
                     )
-                except Exception as e:  # surface to the program as an API error
+                except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
                     logger.warning(
                         "model call failed: id=%s %s: %s",
@@ -528,7 +528,7 @@ class InterceptionServer(Interception):
             refused = await session.refused()
         except RolloutError as e:
             return self._fail(session, dialect, e)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - surface any task hook failure
             return self._fail(
                 session, dialect, TaskError(f"@stop failed: {type(e).__name__}: {e}")
             )
@@ -576,7 +576,7 @@ class InterceptionServer(Interception):
                 return web.json_response(
                     dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
                 )
-            except Exception as e:  # surface to the program as an API error
+            except Exception as e:  # noqa: BLE001 - surface as an API error
                 error = e
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
@@ -629,7 +629,7 @@ class InterceptionServer(Interception):
                                 if on_done is not None and is_sse_done_event(chunk):
                                     on_done()
                                 feed_event(chunk)
-                            except Exception as e:
+                            except Exception as e:  # noqa: BLE001 - defer parser failure
                                 parser_error = e
                         # forwarded after the turn is committed, below
                         deferred.append(chunk)
@@ -638,7 +638,7 @@ class InterceptionServer(Interception):
                     if parser_error is None:
                         try:
                             feed_event(chunk)
-                        except Exception as e:
+                        except Exception as e:  # noqa: BLE001 - defer parser failure
                             parser_error = e
             except ConnectionResetError as e:
                 # The harness went away mid-stream; the provider exchange still happened.
@@ -713,7 +713,7 @@ class InterceptionServer(Interception):
             return web.json_response(
                 dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - surface auxiliary relay failures
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
         return web.json_response(result)

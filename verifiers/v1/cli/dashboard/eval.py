@@ -12,11 +12,10 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from verifiers.utils.pricing_utils import format_cost_usd
 from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
-from verifiers.v1.utils.install import env_name
-from verifiers.v1.utils.interrupt import cleaning_up
-from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import RunSlot
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
@@ -26,7 +25,8 @@ from verifiers.v1.utils.format import (
     format_override,
     format_time,
 )
-from verifiers.utils.pricing_utils import format_cost_usd
+from verifiers.v1.utils.install import env_name
+from verifiers.v1.utils.interrupt import cleaning_up
 
 if TYPE_CHECKING:
     from verifiers.v1.push import PushState
@@ -73,7 +73,7 @@ _MARK = {
 def _seat_value(config: EvalConfig, read):
     """A cap as the overview shows it: the declared seats' shared value, the
     string 'per-seat' when they disagree (caps live on the seats)."""
-    from verifiers.v1.env import _declared_agent_configs
+    from verifiers.v1.configs.env import _declared_agent_configs
 
     values = {read(spec) for spec in _declared_agent_configs(config.env).values()}
     return values.pop() if len(values) == 1 else "per-seat"
@@ -95,7 +95,7 @@ def _limits(config: EvalConfig) -> list[str]:
             toks.append(f"{label}≤{v}")
     turns = _seat_value(config, lambda spec: spec.max_turns)
     return [
-        f"≤{config.max_concurrent} concurrent"
+        f"≤{config.max_concurrent} episodes"
         if config.max_concurrent
         else "no concurrency cap",
         "per-seat turn caps"
@@ -163,8 +163,9 @@ def _warning(config: EvalConfig) -> Text | None:
     from verifiers.v1.loaders import harness_class
 
     if any(
-        h.runtime.type == "subprocess" and harness_class(h.id).EXECUTES_CODE
-        for h in config.env.agent_harnesses().values()
+        getattr(config.env, role).runtime.type == "subprocess"
+        and harness_class(h.id).EXECUTES_CODE
+        for role, h in config.env.agent_harnesses().items()
     ):
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
@@ -185,7 +186,7 @@ def overrides(
     `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
     `model_fields_set` would flag them all. `default` is the reference instance, threaded through
     recursion so a pinned nested default (`taskset.task.tools`) reads as
-    unchanged. `skip` holds dotted paths (`harness.runtime.type`)."""
+    unchanged. `skip` holds dotted paths (`runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
     for field in sorted(fields):
@@ -237,9 +238,11 @@ def Overview(config: EvalConfig) -> Table:
         env_label = f"{env_name(config.env.id)}+{env_label}"
     # One seat story when every seat resolves the same way (the common case); one
     # row per seat when they diverge (a judge on its own harness/runtime).
+    runtimes = {role: getattr(config.env, role).runtime.type for role in seats}
     stories = list(
         dict.fromkeys(
-            f"{h.name} harness  ·  {h.runtime.type} runtime" for h in seats.values()
+            f"{h.name} harness  ·  {runtimes[role]} runtime"
+            for role, h in seats.items()
         )
     )
     if len(stories) == 1:
@@ -247,19 +250,23 @@ def Overview(config: EvalConfig) -> Table:
     else:
         grid.add_row("env", env_label)
         for role, h in seats.items():
-            grid.add_row(f"  {role}", f"{h.name} harness  ·  {h.runtime.type} runtime")
+            grid.add_row(f"  {role}", f"{h.name} harness  ·  {runtimes[role]} runtime")
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
     # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
     # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
-    # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
-    # here), but only for the harness — `taskset.task.tools.runtime.type` has no other display.
+    # parsed as styling and dropped. `id` is in the `env` row; the seat's `runtime.type` too
+    # (hidden here), but only for the seat — `taskset.task.tools.runtime.type` has no other display.
     if taskset_over := overrides(taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
     for role, h in seats.items():
-        if harness_over := overrides(h, skip=frozenset({"id", "runtime.type"})):
+        if harness_over := overrides(h, skip=frozenset({"id"})):
             label = f"{role}.harness" if len(seats) > 1 else "harness"
             grid.add_row(label, escape("  ·  ".join(harness_over)))
+        runtime = getattr(config.env, role).runtime
+        if runtime_over := overrides(runtime, skip=frozenset({"type"})):
+            label = f"{role}.runtime" if len(seats) > 1 else "runtime"
+            grid.add_row(label, escape("  ·  ".join(runtime_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
@@ -295,7 +302,7 @@ def Progress(
     # run, a modeled user) are `trainable=False` and carry no rewards, so counting
     # them dilutes every mean with structural zeros. An all-untrainable run (every
     # role frozen) falls back to all traces rather than showing nothing.
-    scored = [t for t in done_traces if t.trainable] or done_traces
+    scored = [t for t in done_traces if t.agent.trainable] or done_traces
     total = len(slots)
     # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
     # the global avg (errored count as 0) in parens. `err` is the share of episodes that
@@ -334,11 +341,17 @@ def _score_segments(traces: list[Trace], source: str) -> str | None:
         return None
     segments = []
     for name in names:
-        mean = format_mean(
-            traces, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
-        )
+        mean = format_mean(traces, lambda t, n=name, s=source: _score(t, s, n))
         segments.append(f"{name} {mean}")
     return "  ·  ".join(segments)
+
+
+def _score(trace: Trace, source: str, name: str) -> float:
+    """Rewards carry raw score + weight; the breakdown shows the raw score."""
+    if source == "rewards":
+        reward = trace.rewards.get(name)
+        return reward.score if reward is not None else 0.0
+    return trace.metrics.get(name, 0.0)
 
 
 def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
@@ -354,13 +367,13 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     # show); usage/time below still cover errored rollouts (their resources were spent regardless).
     has_clean = any(not t.has_error for t in done)
     score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
-    by_agent: dict[str | None, list[Trace]] = {}
+    by_agent: dict[str, list[Trace]] = {}
     for trace in done:
-        by_agent.setdefault(trace.agent_name, []).append(trace)
+        by_agent.setdefault(trace.agent.name, []).append(trace)
     for label, source in score_rows:
         if len(by_agent) > 1:
             segments = [
-                f"[dim]{name or '—'}:[/dim] {means}"
+                f"[dim]{name}:[/dim] {means}"
                 for name, traces in by_agent.items()
                 if (means := _score_segments(traces, source)) is not None
             ]
@@ -380,18 +393,19 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     phase_count: dict[str, int] = {}
     model_secs = harness_secs = 0.0
     for trace in done:
-        prompt, completion, cached, reasoning, _ = _tokens(trace)
-        total_in += prompt
-        total_out += completion
-        if cached is not None:
-            total_cached += cached
-            have_cached = True
-        if reasoning is not None:
-            total_reasoning += reasoning
-            have_reasoning = True
-        if trace.usage is not None and trace.usage.cost is not None:
-            total_cost += trace.usage.cost
-            have_cost = True
+        total_in += trace.num_input_tokens
+        total_out += trace.num_output_tokens
+        usage = trace.usage
+        if usage is not None:
+            if usage.cached_input_tokens is not None:
+                total_cached += usage.cached_input_tokens
+                have_cached = True
+            if usage.reasoning_tokens is not None:
+                total_reasoning += usage.reasoning_tokens
+                have_reasoning = True
+            if usage.cost is not None:
+                total_cost += usage.cost
+                have_cost = True
         # Judge / auxiliary scoring calls (off the message graph) shown separately from the agent's.
         judge = Usage.aggregate(trace.extra_usage)
         if judge is not None:
@@ -400,13 +414,13 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
             if judge.cost is not None:
                 total_judge_cost += judge.cost
             have_judge = True
-        for phase in ("boot", "setup", "generation", "finalize", "scoring"):
+        for phase in ("boot", "setup", "agent", "finalize", "scoring"):
             span = getattr(trace.timing, phase)
             if span.end:  # phase was timed for this rollout
                 phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
                 phase_count[phase] = phase_count.get(phase, 0) + 1
-        model_secs += trace.timing.generation.model.duration
-        harness_secs += trace.timing.generation.harness.duration
+        model_secs += trace.timing.agent.model.duration
+        harness_secs += trace.timing.agent.harness.duration
     if (
         total_in
         or total_out
@@ -435,12 +449,12 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
             usage.append(cost)
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = []
-    for phase in ("boot", "setup", "generation", "finalize", "scoring"):
+    for phase in ("boot", "setup", "agent", "finalize", "scoring"):
         count = phase_count.get(phase)
         if not count:
             continue
         segment = f"{phase} {format_time(phase_secs[phase] / count)}"
-        if phase == "generation":
+        if phase == "agent":
             segment += (
                 f" (model {format_time(model_secs / count)}"
                 f" + harness {format_time(harness_secs / count)})"
@@ -449,26 +463,6 @@ def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
     if time_segments:
         grid.add_row("time", "  ·  ".join(time_segments))
     return grid if grid.row_count else None
-
-
-def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
-    """Input/output tokens summed across all branches: per branch, output is every assistant
-    (completion) token generated across its turns and input is the fed-in tokens counted once
-    (system + user + tool) — the final sequence minus everything the model generated. A rollout
-    yields one training sample per branch (a linear trace is a single branch; compaction and
-    subagents add more), so the totals sum them — matching `Trace.num_input_tokens` /
-    `Trace.num_output_tokens`, whose sum is `num_total_tokens`.
-
-    Both counts come from provider-reported usage. Returns the branch count from the same derived
-    view so each dashboard tick materializes it once."""
-    usage = trace.usage
-    cached = usage.cached_input_tokens if usage else None
-    reasoning = usage.reasoning_tokens if usage else None
-    branches = trace.branches
-    nbranches = len(branches)
-    prompt = sum(b.num_input_tokens for b in branches)
-    completion = sum(b.num_output_tokens for b in branches)
-    return prompt, completion, cached, reasoning, nbranches
 
 
 def _stage(trace: Trace) -> str:
@@ -482,7 +476,7 @@ def _stage(trace: Trace) -> str:
     for stage, span in (
         ("scoring", trace.timing.scoring),
         ("finalize", trace.timing.finalize),
-        ("running", trace.timing.generation),
+        ("running", trace.timing.agent),
         ("setup", trace.timing.setup),
         ("boot", trace.timing.boot),
     ):
@@ -492,7 +486,7 @@ def _stage(trace: Trace) -> str:
         stage = "boot"  # trace minted, first span not yet opened (an instant)
     # A boot stuck on a first-use platform image build reads differently from a
     # normal boot — it can sit there for ~10 minutes (prime runtime only).
-    if stage == "boot" and getattr(trace.runtime, "image_cached", None) is False:
+    if stage == "boot" and getattr(trace.agent.runtime, "image_cached", None) is False:
         return "build"
     return stage
 
@@ -538,7 +532,9 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
             base = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
             if not slot.traces:
                 if slot.done:  # the env's rollout() itself failed before any trace
-                    error = slot.episode.error if slot.episode is not None else None
+                    error = (
+                        slot.episode.last_error if slot.episode is not None else None
+                    )
                     group_rows.append(
                         (
                             "error",
@@ -551,14 +547,14 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     group_rows.append(("pending", [f"task {base}", *[""] * 7], "", ""))
                 continue
             for t in slot.traces:
-                label = f"{base} agent={t.agent_name}" if t.agent_name else base
+                label = f"{base} agent={t.agent.name}"
                 if slot.done:  # fully scored — reward is final
                     state = "error" if t.has_error else "success"
                     # A trace that recorded nothing shows no reward: a judge or
                     # modeled-user seat's `reward=0.00` would read as a score.
                     result = (
-                        t.error.type
-                        if t.has_error
+                        t.last_error.type
+                        if t.has_error and t.last_error
                         else (f"reward={t.reward:.2f}" if t.rewards else "")
                     )
                     if t.has_error:
@@ -569,7 +565,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                             t.is_truncated
                         ):  # flag a clipped rollout next to its stop condition
                             stop = f"{stop} (truncated)".strip()
-                elif t.is_completed and (err := t.error) is not None:
+                elif t.is_completed and (err := t.last_error) is not None:
                     # An errored trace whose episode is still running its other
                     # traces (or `score()`) is already a failure — show it, don't
                     # let it sit as "scoring" until the whole episode lands.
@@ -579,12 +575,9 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                 # The trace's own stamp, not the run-level runtime: a role's harness
                 # may resolve elsewhere (the judge env's sandboxed judge on a
                 # subprocess run).
-                if t.runtime is not None:
-                    runtime = (
-                        f"{t.runtime.type}({t.runtime.id})"
-                        if t.runtime.id
-                        else t.runtime.type
-                    )
+                if t.agent.runtime is not None:
+                    rt = t.agent.runtime
+                    runtime = f"{rt.type}({rt.id})" if rt.id else rt.type
                 else:
                     runtime = runtime_type
                 turns = t.num_turns
@@ -592,7 +585,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                 end = (
                     t.timing.scoring.end
                     or t.timing.finalize.end
-                    or t.timing.generation.end
+                    or t.timing.agent.end
                     # a rollout that errored in boot/setup has only that span's end — freeze there
                     # once done, else (still running) the timer would grow off `now` forever
                     or (
@@ -602,8 +595,12 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     )
                     or now
                 )
-                prompt, completion, cached, reasoning, nbranches = _tokens(t)
-                cost = t.usage.cost if t.usage else None
+                prompt, completion = t.num_input_tokens, t.num_output_tokens
+                nbranches = t.num_branches
+                usage = t.usage
+                cached = usage.cached_input_tokens if usage else None
+                reasoning = usage.reasoning_tokens if usage else None
+                cost = usage.cost if usage else None
                 tokens = ""
                 if prompt or completion:
                     tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
@@ -622,7 +619,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     f"{nbranches} branch{'es' * (nbranches != 1)}",
                     tokens,
                     f"{format_cost_usd(cost)}" if cost is not None else "",
-                    stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
+                    stop,  # stop condition (agent_completed / max_turns / error), once done
                 ]
                 # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
                 elapsed = format_time(end - start) if start else ""
@@ -753,7 +750,8 @@ def _render(
             now,
             "/".join(
                 dict.fromkeys(
-                    h.runtime.type for h in config.env.agent_harnesses().values()
+                    getattr(config.env, role).runtime.type
+                    for role in config.env.agent_harnesses()
                 )
             )
             or "subprocess",

@@ -6,7 +6,7 @@ import os
 import shutil
 import signal
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
@@ -30,8 +30,8 @@ class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):
 
 class SubprocessRuntime(Runtime):
     # Share prepared script environments across the worker's per-rollout runtimes.
-    _interpreters: dict[str, str] = {}
-    _locks: dict[str, asyncio.Lock] = {}
+    _interpreters: ClassVar[dict[str, str]] = {}
+    _locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
     def __init__(self, config: SubprocessConfig, name: str | None = None) -> None:
         super().__init__(name)
@@ -62,7 +62,7 @@ class SubprocessRuntime(Runtime):
             stdout, stderr = await proc.communicate()
         finally:
             # If the await didn't finish, the caller cancelled it (e.g. the rollout's
-            # scoring_timeout / harness_timeout fired): communicate() leaves the process
+            # scoring_timeout / agent_timeout fired): communicate() leaves the process
             # running, so SIGKILL its whole group (start_new_session => pgid == pid) — otherwise
             # a hung child (a wedged uv/sympy verify) outlives the rollout and leaks CPU. A
             # no-op once it has exited on its own.

@@ -6,6 +6,7 @@ import json
 import re
 
 import pytest
+from pydantic import Field
 
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
@@ -35,6 +36,7 @@ def make_trace(
     task_cls: type[QAData] = QAData,
 ) -> vf.Trace:
     return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
             type="Task",
             data=task_cls(idx=0, prompt="Capital of France?", answer=answer),
@@ -72,7 +74,9 @@ def fake_judge_model(monkeypatch):
                     "reason": "cites Paris" if "Paris" in text else "no Paris",
                     "verdict": "yes" if "Paris" in text else "no",
                 }
-                for name, text in re.findall(r"^- ([^:]+): (.+)$", messages, re.M)
+                for name, text in re.findall(
+                    r"^- ([^:]+): (.+)$", messages, re.MULTILINE
+                )
             ]
             response = JudgeResponse(
                 text=json.dumps({"verdicts": verdicts}),
@@ -167,7 +171,12 @@ def test_judges_reject_shared_reward_keys():
 
     # class-level DEFAULTS are held to the same rule (they bypass the before-hook)
     class TwoDefaults(vf.TaskConfig):
-        judges: vf.Judges = [vf.ReferenceJudgeConfig(), vf.ReferenceJudgeConfig()]
+        judges: vf.Judges = Field(
+            default_factory=lambda: [
+                vf.ReferenceJudgeConfig(),
+                vf.ReferenceJudgeConfig(),
+            ]
+        )
 
     with pytest.raises(ValueError, match="share a reward key"):
         TwoDefaults()
@@ -227,7 +236,8 @@ async def test_reference_score(fake_judge_model):
 
 async def test_reference_score_messages_prompt(fake_judge_model):
     # A Messages-form prompt still reaches the judge as text (via TaskData.prompt_text).
-    from verifiers.v1.types import TextContentPart, UserMessage as UM
+    from verifiers.v1.types import TextContentPart
+    from verifiers.v1.types import UserMessage as UM
 
     task = QAData(
         idx=0,
@@ -235,6 +245,7 @@ async def test_reference_score_messages_prompt(fake_judge_model):
         answer="Paris",
     )
     trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
@@ -260,6 +271,7 @@ async def test_reference_question_field(fake_judge_model):
         answer="Paris",
     )
     trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
@@ -284,6 +296,7 @@ def full_trace_fixture() -> vf.Trace:
     from verifiers.v1.types import ToolCall, ToolMessage
 
     return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
             type="Task", data=QAData(idx=0, prompt="Capital of France?", answer="Paris")
         ),
@@ -358,32 +371,20 @@ async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
     assert all("SECRET REASONING" not in prompt for prompt in fake_judge_model)
 
 
-async def test_config_prompt_overrides_class_template(fake_judge_model):
-    judge = vf.ReferenceJudge(
-        vf.ReferenceJudgeConfig(prompt="Q:{question} A:{answer} R:{response}")
-    )
+async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model):
+    # Config `prompt` is a file path; the same {field} placeholders work.
+    file = tmp_path / "judge.txt"
+    file.write_text("Q:{question} A:{answer} R:{response}")
+    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt=file))
     assert judge.build_messages(question="q", answer="a", response="r") == "Q:q A:a R:r"
     # A template needn't use every evaluate field: score also passes {positive}/{negative},
     # which str.format ignores when the (custom) prompt doesn't reference them.
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 1.0
     assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
-
-
-async def test_prompt_file(tmp_path, fake_judge_model):
-    # The prompt template can come from a file; the same {field} placeholders work.
-    file = tmp_path / "judge.txt"
-    file.write_text("Q:{question} A:{answer} R:{response}")
-    trace = make_trace()
-    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=file))
-    assert await judge.score(trace.task.data, trace) == 1.0
-    assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
     # a bad path fails at judge construction, not mid-eval at score time
     with pytest.raises(FileNotFoundError):
-        vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=tmp_path / "missing.txt"))
-    # inline and file prompts are mutually exclusive
-    with pytest.raises(ValueError, match="not both"):
-        vf.ReferenceJudgeConfig(prompt="inline", prompt_file=file)
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt=tmp_path / "missing.txt"))
 
 
 # --- reference input/verdict knobs ------------------------------------------------------------
@@ -400,7 +401,7 @@ async def test_reference_empty_response_short_circuits(fake_judge_model):
 async def test_reference_list_answer(fake_judge_model):
     # A list-valued answer field is judged as multiple acceptable answers, one per line.
     class MultiTask(vf.TaskData):
-        aliases: list[str] = []
+        aliases: list[str] = Field(default_factory=list)
 
     task = MultiTask(idx=0, prompt="q?", aliases=["Paris", "Lutetia"])
     trace = make_trace()
@@ -453,7 +454,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
     trace = make_trace(reply="")
     await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
-    assert trace.rewards["reference"] == 0.0
+    assert trace.rewards["reference"].score == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace()
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
@@ -569,11 +570,11 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
 
 def test_rubric_choices_validation(tmp_path):
     with pytest.raises(ValueError, match="at least two"):
-        rubric_judge(
+        _ = rubric_judge(
             tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["only"]\n'
         ).criteria
     with pytest.raises(ValueError, match="duplicate options"):
-        rubric_judge(
+        _ = rubric_judge(
             tmp_path,
             body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["a", "a"]\n',
         ).criteria
@@ -623,11 +624,13 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     taskset = JudgedTaskset(cfg)
     trace = make_trace()
     await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
-    assert trace.rewards["own"] == 0.25  # decorated rewards still run
+    assert trace.rewards["own"].score == 0.25  # decorated rewards still run
+    assert trace.rewards["reference"] == vf.Reward(
+        score=1.0, weight=0.5
+    )  # raw score + weight, under the id-derived name
     assert (
-        trace.rewards["reference"] == 0.5
-    )  # 1.0 * weight 0.5, under the id-derived name
-    assert trace.rewards["quality"] == 0.75  # the rubric's aggregate, under its `name`
+        trace.rewards["quality"].score == 0.75
+    )  # the rubric's aggregate, under its `name`
     assert (
         len(trace.info["judge"]) == 2
     )  # every judge call recorded (rubric = one call)
@@ -636,4 +639,4 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
 async def test_task_without_judges_scores_as_before():
     trace = make_trace()
     await JudgedTask(trace.task.data).score(trace, runtime=None)
-    assert trace.rewards == {"own": 0.25}
+    assert trace.rewards == {"own": vf.Reward(score=0.25)}

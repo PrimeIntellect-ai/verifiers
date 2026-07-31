@@ -10,6 +10,7 @@ deliberately uses the harness runtime image. Tasks without an environment also u
 image unless ``require_image`` is set.
 """
 
+import asyncio
 import hashlib
 import io
 import shutil
@@ -17,19 +18,20 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import tomllib
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
+from verifiers.v1.artifacts import Artifact, collect
+from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
-from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.types import StrictBaseModel
+from verifiers.v1.taskset import Taskset
+from verifiers.v1.trace import Trace
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
@@ -70,9 +72,16 @@ class HarborConfig(TasksetConfig):
     has what the task needs (e.g. you've pointed the runtime at the right image)."""
 
 
-class Author(StrictBaseModel):
+class Author(BaseModel):
     name: str | None = None
     email: str | None = None
+
+
+class CollectHook(BaseModel):
+    """One `[[verifier.collect]]` command, run in the agent's box by `finalize`."""
+
+    command: str
+    timeout_sec: float = 600.0
 
 
 class HarborData(TaskData):
@@ -82,21 +91,53 @@ class HarborData(TaskData):
     name, and description. The remaining fields mirror Harbor metadata.
     """
 
-    keywords: list[str] = []
-    authors: list[Author] = []
+    keywords: list[str] = Field(default_factory=list)
+    authors: list[Author] = Field(default_factory=list)
     difficulty: str | None = None
     category: str | None = None
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     task_dir: str = ""
     """Host path to the task dir; used to stage tests/ to verify."""
-    verifier_env: dict[str, str] = {}
+    verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
     verifier that needs judge API keys or configuration actually receives them."""
+    collect: list[CollectHook] = Field(default_factory=list)
+    """`[[verifier.collect]]` blocks: commands that snapshot runtime state into files
+    after the agent stops, so the files can travel to a grading box as artifacts."""
 
 
 class HarborTask(Task[HarborData]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
+
+    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
+        """Run Harbor's collect hooks while the agent's box is still alive.
+
+        Harbor runs these after the agent phase and before artifact collection, which
+        is exactly what `finalize` means here, so the hook maps onto the existing
+        lifecycle rather than needing a stage of its own.
+
+        Strict, unlike `harbor run`, which logs a failed hook and carries on: there the
+        output is observability, here it is a grading input, and a silently absent file
+        makes the verifier score a stale state instead of failing loudly.
+        """
+        for hook in self.data.collect:
+            try:
+                result = await asyncio.wait_for(
+                    runtime.run(["sh", "-c", hook.command], {}),
+                    hook.timeout_sec,
+                )
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"collect hook timed out after {hook.timeout_sec}s: {hook.command}"
+                ) from exc
+            if result.exit_code:
+                detail = (result.stderr or result.stdout).strip()[-500:]
+                raise RuntimeError(
+                    f"collect hook failed (exit {result.exit_code}): "
+                    f"{hook.command}\n{detail}"
+                )
+        trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime) -> float:
@@ -213,7 +254,7 @@ def dataset_dir(config: HarborConfig) -> Path:
 
 def resolve_image(
     task_dir: Path,
-    config: dict,
+    image: str | None,
     require_image: bool,
     ignore_dockerfile: bool = False,
 ) -> str | None:
@@ -223,9 +264,8 @@ def resolve_image(
     fallback for tasks with no environment, but would score a Dockerfile task in
     the wrong environment unless the user explicitly opts in.
     """
-    declared = config.get("environment", {}).get("docker_image")
-    if declared:
-        return declared
+    if image:
+        return image
     if (task_dir / "environment" / "Dockerfile").exists():
         if ignore_dockerfile:
             return None
@@ -242,90 +282,139 @@ def resolve_image(
     return None
 
 
-def size_to_mb(size: str | int | float) -> float:
-    """A Harbor size in MB, from either schema: current integer-MB fields or the
-    legacy schema-1.0 size strings ("8G", "512M", "64K")."""
-    if not isinstance(size, str):
-        return float(size)
-    scale = {"G": 1024.0, "M": 1.0, "K": 1 / 1024}.get(size.strip().upper()[-1:])
-    if scale is None:
-        raise ValueError(
-            f"invalid Harbor size {size!r}: expected a number of MB or a "
-            "'<number>[G|M|K]' string"
-        )
-    return float(size.strip()[:-1]) * scale
-
-
-def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
-    # Harbor's current schema reports memory/storage as integer-MB fields; the
-    # legacy schema 1.0 used size strings under `memory`/`storage`, which Harbor
-    # still migrates (datasets like senior-swe-bench are authored against it).
-    # TaskResources stores GB. A zero GPU count means no GPU request rather than
-    # the string "0".
-    memory = env.get("memory_mb") or env.get("memory")
-    disk = env.get("storage_mb") or env.get("storage")
-    return TaskResources(
-        cpu=env["cpus"] * multiplier if env.get("cpus") else None,
-        memory=size_to_mb(memory) / 1024 * multiplier if memory else None,
-        gpu=str(env["gpus"]) if env.get("gpus") else None,
-        disk=size_to_mb(disk) / 1024 * multiplier if disk else None,
-    )
-
-
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
-    # Harbor is optional, so importing its schema is deferred until a Harbor task loads.
-    from harbor.models.task.config import NetworkMode, TaskConfig as HarborTaskConfig
+    # Harbor is optional, so imports stay deferred until a Harbor task loads.
+    from harbor.models.task.config import NetworkMode
+    from harbor.models.task.task import Task as HarborModelTask
 
-    config = tomllib.loads((task_dir / "task.toml").read_text())
-    parsed = HarborTaskConfig.model_validate(config)
-    network = (
-        parsed.agent.explicit_phase_policy() or parsed.environment.resolve_baseline()
+    harbor_task = HarborModelTask(task_dir)
+    parsed = harbor_task.config
+    artifacts, collect = parse_verifier_extras(task_dir, parsed)
+    environment = parsed.environment
+    network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
+    task, meta = parsed.task, parsed.metadata
+    authors = (
+        [Author(name=author.name, email=author.email) for author in task.authors]
+        if task
+        else []
     )
-    task, meta = config.get("task", {}), config.get("metadata", {})
-    authors = [Author(**a) for a in task.get("authors", [])]
     # Older registry entries stored one author in [metadata].
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
     if harbor_config.ignore_timeouts:
-        harness_timeout = scoring_timeout = None
+        agent_timeout = scoring_timeout = None
     else:
-        harness_timeout = config.get("agent", {}).get("timeout_sec")
-        scoring_timeout = config.get("verifier", {}).get("timeout_sec")
+        agent_timeout = (
+            parsed.agent.timeout_sec
+            if "timeout_sec" in parsed.agent.model_fields_set
+            else None
+        )
+        scoring_timeout = (
+            parsed.verifier.timeout_sec
+            if "timeout_sec" in parsed.verifier.model_fields_set
+            else None
+        )
     return HarborData(
         idx=idx,
-        name=task.get("name") or task_dir.name,
-        description=task.get("description"),
-        prompt=(task_dir / "instruction.md").read_text().strip(),
+        name=harbor_task.name,
+        description=task.description if task else None,
+        prompt=harbor_task.instruction.strip(),
         image=resolve_image(
             task_dir,
-            config,
+            environment.docker_image,
             harbor_config.require_image,
             harbor_config.ignore_dockerfile,
         ),
+        workdir=environment.workdir,
         network_allow=(
             ["*"]
             if network.network_mode == NetworkMode.PUBLIC
             else list(network.allowed_hosts)
         ),
         timeout=TaskTimeout(
-            harness=harness_timeout * harbor_config.timeout_multiplier
-            if harness_timeout is not None
+            agent=agent_timeout * harbor_config.timeout_multiplier
+            if agent_timeout is not None
             else None,
             scoring=scoring_timeout * harbor_config.timeout_multiplier
             if scoring_timeout is not None
             else None,
         ),
-        resources=parse_resources(
-            config.get("environment", {}), harbor_config.resource_multiplier
+        resources=TaskResources(
+            cpu=environment.cpus * harbor_config.resource_multiplier
+            if environment.cpus
+            else None,
+            memory=environment.memory_mb / 1024 * harbor_config.resource_multiplier
+            if environment.memory_mb
+            else None,
+            gpu=str(environment.gpus) if environment.gpus else None,
+            disk=environment.storage_mb / 1024 * harbor_config.resource_multiplier
+            if environment.storage_mb
+            else None,
         ),
-        keywords=task.get("keywords", []),
+        keywords=task.keywords if task else [],
         authors=authors,
         difficulty=meta.get("difficulty"),
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
-        verifier_env=config.get("verifier", {}).get("env", {}),
+        verifier_env=parsed.verifier.env,
+        artifacts=artifacts,
+        collect=collect,
     )
+
+
+def parse_verifier_extras(
+    task_dir: Path, parsed
+) -> tuple[list[Artifact], list[CollectHook]]:
+    """Parse supported artifact and collect-hook settings."""
+    from harbor.constants import MAIN_SERVICE_NAME
+    from harbor.models.task.artifacts import (
+        effective_artifact_service,
+        normalize_artifact_entries,
+    )
+
+    verifier = parsed.verifier
+    if verifier.environment is not None:
+        raise ValueError(
+            f"{task_dir.name}: [verifier.environment] declares a separate verifier "
+            "image. Grading runs in a fresh box built from the task's own image, so "
+            "only the agent's delta has to travel; a different verifier image needs "
+            "the full working tree copied over and isn't supported yet."
+        )
+    if verifier.user is not None:
+        raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
+
+    artifacts: list[Artifact] = []
+    for entry in normalize_artifact_entries(parsed.artifacts):
+        if effective_artifact_service(entry) != MAIN_SERVICE_NAME:
+            raise ValueError(
+                f"{task_dir.name}: artifact {entry.source!r} targets additional "
+                f"service {entry.service!r}; verifiers currently supports artifacts "
+                "from the main service only"
+            )
+        # `destination` positions a file in Harbor's host trial directory. Verifiers has
+        # no such directory (the trace is the record) and Harbor never lets destination
+        # affect verifier-side placement, so it cannot change any grading outcome.
+        artifacts.append(
+            Artifact(source=entry.source, exclude=list(entry.exclude or []))
+        )
+
+    hooks: list[CollectHook] = []
+    for hook in verifier.collect:
+        if hook.service != MAIN_SERVICE_NAME:
+            raise ValueError(
+                f"{task_dir.name}: collect hook targets additional service "
+                f"{hook.service!r}; verifiers currently supports collect hooks for "
+                "the main service only"
+            )
+        if hook.user is not None:
+            raise ValueError(
+                f"{task_dir.name}: collect hook `user` is not supported "
+                "(commands run as the runtime's default user)"
+            )
+        hooks.append(CollectHook(command=hook.command, timeout_sec=hook.timeout_sec))
+
+    return artifacts, hooks
 
 
 def verifier_env(task: HarborData) -> dict[str, str]:

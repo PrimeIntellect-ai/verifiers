@@ -6,7 +6,8 @@ import shlex
 
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -29,10 +30,12 @@ ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [
     "sh",
     "-c",
-    f'export {HOME_VAR}="$HOME"; '
-    'PI_CODING_AGENT_DIR="$PWD/$PI_CODING_AGENT_DIR"; '
-    'export PI_CODING_AGENT_DIR HOME="$PI_CODING_AGENT_DIR"; '
-    f'export PATH="{PI_DIR}/node/bin:$PATH"; exec {ACP_BIN}',
+    (
+        f'export {HOME_VAR}="$HOME"; '
+        'PI_CODING_AGENT_DIR="$PWD/$PI_CODING_AGENT_DIR"; '
+        'export PI_CODING_AGENT_DIR HOME="$PI_CODING_AGENT_DIR"; '
+        f'export PATH="{PI_DIR}/node/bin:$PATH"; exec {ACP_BIN}'
+    ),
 ]
 
 INSTALL = r"""

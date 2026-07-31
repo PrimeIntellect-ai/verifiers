@@ -9,17 +9,17 @@ thread, so a Ctrl-C unwinds straight through `optimize()` into the runner's tear
 """
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from gepa.core.adapter import EvaluationBatch
 from pydantic_core import to_jsonable_python
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import Env
-from verifiers.v1.task import Task
 from verifiers.v1.episode import Episode
+from verifiers.v1.task import Task
 
 Candidate = dict[str, str]
 
@@ -68,14 +68,10 @@ class GEPAAdapter:
         )
 
     async def _run_batch(self, batch: list[int], system_prompt: str) -> list[Episode]:
-        # Inject the candidate by rebuilding each Task around a data row with the new
-        # system_prompt (TaskData is frozen; behavior/config carry over unchanged).
-        tasks = [
-            type(t)(
-                t.data.model_copy(update={"system_prompt": system_prompt}), t.config
-            )
-            for t in (self.tasks[idx] for idx in batch)
-        ]
+        # Inject the candidate as a copy of each base task with its system_prompt overridden
+        # (`with_system_prompt` copies rather than reconstructs, so subclass state survives and
+        # the shared base task in `self.tasks` is left untouched for the next candidate).
+        tasks = [self.tasks[idx].with_system_prompt(system_prompt) for idx in batch]
         slots = [slot for task in tasks for slot in self.env.slots(task)]
         results = await asyncio.gather(
             *(
@@ -87,7 +83,7 @@ class GEPAAdapter:
 
     def make_reflective_dataset(
         self,
-        candidate: Candidate,  # noqa: ARG002 - required by GEPA's adapter protocol
+        candidate: Candidate,  # Required by GEPA's adapter protocol.
         eval_batch: EvaluationBatch[Episode, Episode],
         components_to_update: list[str],
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
@@ -104,10 +100,9 @@ class GEPAAdapter:
                     "completion": trace.last_reply,
                     "reward": trace.reward,
                 }
-                if trace.agent_name:
-                    record["agent"] = trace.agent_name
+                record["agent"] = trace.agent.name
                 if trace.has_error:
-                    record["error"] = str(trace.error)
+                    record["error"] = str(trace.last_error)
                 if trace.stop_condition:
                     record["stop_condition"] = trace.stop_condition
                 for column in self.reflection_columns:

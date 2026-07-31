@@ -93,7 +93,7 @@ class ACPResumeTaskset(vf.Taskset[ACPResumeTask, ACPResumeConfig]):
         ]
 
 
-__all__ = ["ACPResumeTaskset", "ACPResumeEnv"]
+__all__ = ["ACPResumeEnv", "ACPResumeTaskset"]
 
 
 if __name__ == "__main__":

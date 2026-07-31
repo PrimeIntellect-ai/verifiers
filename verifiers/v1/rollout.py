@@ -24,9 +24,8 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 
-from verifiers import __version__
-from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.errors import (
@@ -36,24 +35,24 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import (
     Interception,
     InterceptionServer,
     Slot,
     requires_tunnel,
 )
-from verifiers.v1.session import RolloutLimits, RolloutSession
+from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     make_runtime,
 )
-from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData
-from verifiers.v1.trace import AgentInfo, Trace, TraceTask, VersionInfo
+from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages
-from verifiers.v1.utils.version import verifiers_commit
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +84,8 @@ async def _serve_interception(
         shared_tools.values(),
     )
     server = InterceptionServer(requires_tunnel=tunneled)
-    async with server:
-        async with server.acquire(session) as slot:
-            yield slot
+    async with server, server.acquire(session) as slot:
+        yield slot
 
 
 class RolloutRun:
@@ -111,13 +109,14 @@ class RolloutRun:
         self,
         *,
         task: Task,
+        agent_config: AgentConfig,
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
         wire_data: TaskData | None = None,
         has_user: bool = False,
         setup_timeout: float | None = None,
-        harness_timeout: float | None = None,
+        agent_timeout: float | None = None,
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
@@ -132,7 +131,8 @@ class RolloutRun:
         self.runtime_config = runtime_config
         self._has_user = has_user
         self._setup_timeout = setup_timeout
-        self._harness_time_remaining = harness_timeout
+        self._agent_timeout = agent_timeout
+        self._agent_time_remaining = agent_timeout
         self._finalize_timeout = finalize_timeout
         self._scoring_timeout = scoring_timeout
         self._shared_tools = shared_tools or {}
@@ -145,13 +145,9 @@ class RolloutRun:
                 data=task.data if wire_data is None else wire_data,
             ),
             state=state_cls(type(task))(),
-            verifiers=VersionInfo(version=__version__, commit=verifiers_commit()),
-            # The seat's resolved identity, role overrides included.
-            agent=AgentInfo(
-                model=ctx.model,
-                sampling=ctx.sampling,
-                harness=harness.config,
-            ),
+            # The seat's resolved config, role overrides included — the agent
+            # this trace can be reproduced with.
+            agent=AgentInfo(config=agent_config),
         )
         if on_trace is not None:
             on_trace(self.trace)
@@ -168,7 +164,7 @@ class RolloutRun:
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
-        `harness_timeout` budget only while its own segments run, so time awaiting
+        `agent_timeout` budget only while its own segments run, so time awaiting
         the caller (including another interleaved agent) cannot starve it."""
 
     @property
@@ -203,7 +199,7 @@ class RolloutRun:
             logger.exception("unexpected error in rollout %s", self.trace.id)
         self._failed = True
         self._failure = error
-        self.trace.capture_error(error)
+        self.trace.record_error(error)
 
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
@@ -223,7 +219,8 @@ class RolloutRun:
                 "placed into the box"
             )
         runtime = self.runtime
-        self.trace.runtime = runtime.info
+        assert self.trace.agent is not None  # minted with the trace
+        self.trace.agent.runtime = runtime.info
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             self.trace.id,
@@ -240,7 +237,6 @@ class RolloutRun:
                 )
             if self._owns_runtime:
                 await runtime.start()
-            await runtime.prepare_setup()
             await runtime.prepare_setup()
             now = time.time()
             self.trace.timing.boot.end = now
@@ -290,7 +286,7 @@ class RolloutRun:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
         except BaseException:
@@ -301,7 +297,7 @@ class RolloutRun:
             raise
         now = time.time()
         self.trace.timing.setup.end = now
-        self.trace.timing.generation.start = now
+        self.trace.timing.agent.start = now
         return True
 
     async def step(self, messages: Messages | None = None) -> bool:
@@ -310,7 +306,8 @@ class RolloutRun:
         for an exchange the user opens, this is also the first segment, on an
         empty conversation); without, it launches on the task's own prompt.
         Returns whether the exchange can continue — a refused turn (limit, @stop),
-        a timeout, a failure, or a segment that made no progress all end it."""
+        a failure (an expired agent timeout included), or a segment that made no
+        progress all end it."""
         if not self._opened or self._closed or not self.ok:
             return False
         trace = self.trace
@@ -319,11 +316,10 @@ class RolloutRun:
         segment_start = loop.time()
         self.deadline_at = (
             None
-            if self._harness_time_remaining is None
-            else segment_start + max(0.0, self._harness_time_remaining)
+            if self._agent_time_remaining is None
+            else segment_start + max(0.0, self._agent_time_remaining)
         )
         # Prefer an intercepted model/tool error to the harness exit it caused.
-        # A timeout still scores the partial trajectory.
         try:
             async with asyncio.timeout_at(self.deadline_at):
                 await self.harness.run(
@@ -337,15 +333,20 @@ class RolloutRun:
                     messages,
                 )
         except TimeoutError as e:
-            # Only the rollout deadline reads as a clean truncation; a TimeoutError
-            # from the harness's own I/O with no expired deadline is a failure —
-            # recording it as a stop would score a broken run as a partial success.
+            # An expired rollout deadline is the agent breaking its time budget —
+            # an agent failure, never a clean stop. A TimeoutError from the
+            # harness's own I/O with no expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                trace.stop("harness_timeout")
+                self.fail(
+                    HarnessError(
+                        f"agent timeout: rollout exceeded its "
+                        f"{self._agent_timeout:g}s budget"
+                    )
+                )
             else:
                 self.fail(e)
             return False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
@@ -354,9 +355,9 @@ class RolloutRun:
                 self.fail(e)
             return False
         finally:
-            if self._harness_time_remaining is not None:
-                self._harness_time_remaining = max(
-                    0.0, self._harness_time_remaining - (loop.time() - segment_start)
+            if self._agent_time_remaining is not None:
+                self._agent_time_remaining = max(
+                    0.0, self._agent_time_remaining - (loop.time() - segment_start)
                 )
             self.deadline_at = None
         if self._session.error is not None:
@@ -396,8 +397,8 @@ class RolloutRun:
             try:
                 await self._stack.aclose()
             finally:
-                if trace.timing.generation.start and not trace.timing.generation.end:
-                    trace.timing.generation.end = time.time()
+                if trace.timing.agent.start and not trace.timing.agent.end:
+                    trace.timing.agent.end = time.time()
             if not self._failed and self._opened:
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
@@ -420,7 +421,7 @@ class RolloutRun:
                         self._scoring_timeout,
                     )
                 trace.timing.scoring.end = time.time()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
             trace.is_completed = True
@@ -429,13 +430,13 @@ class RolloutRun:
             for span in (
                 trace.timing.boot,
                 trace.timing.setup,
-                trace.timing.generation,
+                trace.timing.agent,
                 trace.timing.finalize,
                 trace.timing.scoring,
             ):
                 if span.start and not span.end:
                     span.end = now
-            trace.split_generation()
+            trace.split_agent_time()
             if runtime is not None:
                 try:
                     await self.harness.cleanup(trace, runtime)
@@ -459,6 +460,6 @@ class RolloutRun:
             self.task.data.idx,
             trace.reward,
             trace.num_turns,
-            trace.error.type if trace.error else trace.stop_condition,
+            trace.last_error.type if trace.last_error else trace.stop_condition,
         )
         return trace

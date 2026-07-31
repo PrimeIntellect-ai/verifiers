@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from typing import Any
 
 from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError

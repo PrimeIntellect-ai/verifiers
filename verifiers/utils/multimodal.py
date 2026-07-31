@@ -9,10 +9,9 @@ from typing import Any
 
 def _offload_image_url(url: object, image_dir: Path | None) -> str | None:
     try:
-        offload_image_to_run_assets = getattr(
-            import_module("renderers.mm_store"),
-            "offload_image_to_run_assets",
-        )
+        offload_image_to_run_assets = import_module(
+            "renderers.mm_store"
+        ).offload_image_to_run_assets
     except (
         ImportError,
         AttributeError,

@@ -20,14 +20,13 @@ async def main() -> None:
     async with solver:
         trace = await solver.run(task)
     print("stop:", trace.stop_condition)
-    print("error:", trace.error)
+    print("error:", trace.last_error)
     print("turns:", trace.num_turns)
     print("usage:", trace.usage)
     last = trace.assistant_messages[-1].content if trace.assistant_messages else None
     print("answer:", last)
-    assert trace.agent is not None
-    print("agent:", trace.agent.name, trace.agent.model)
-    print("runtime:", trace.runtime.type if trace.runtime else None)
+    print("agent:", trace.agent.name, trace.agent.config.model)
+    print("runtime:", trace.agent.runtime.type if trace.agent.runtime else None)
 
 
 if __name__ == "__main__":

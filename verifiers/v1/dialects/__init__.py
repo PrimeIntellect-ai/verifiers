@@ -14,11 +14,11 @@ DIALECTS: tuple[Dialect, ...] = (ChatDialect(), ResponsesDialect(), AnthropicDia
 the wire format from the route a request arrived on."""
 
 __all__ = [
-    "Dialect",
     "DIALECTS",
     "FINISH_REASONS",
     "AnthropicDialect",
     "ChatDialect",
+    "Dialect",
     "ResponsesDialect",
     "StreamParser",
     "parse_message",
