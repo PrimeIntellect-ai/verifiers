@@ -86,9 +86,9 @@ class TaskData(BaseModel):
     """Initial user prompt; unset if the user opens the conversation."""
     withheld_prompt: str | Messages | None = None
     """The prompt `Task.without_prompt()` took off the wire, kept on the row for
-    scoring: the run is opened by its user, so the question reaches the assistant
-    through conversation instead (the user-sim scenario). Never sampled into a
-    request — like an `answer` field, it rides the row for graders only."""
+    scoring — the run's user holds the question and the assistant learns it through
+    conversation (useful for user simulation + judging). Never sampled into a
+    request: like an `answer` field, it rides the row for graders only."""
     system_prompt: str | None = None
     """Optional system prompt to prepend to the user prompt."""
 
@@ -122,7 +122,7 @@ class TaskData(BaseModel):
     @property
     def withheld_prompt_text(self) -> str:
         """`withheld_prompt` as text — what a grader reads when the wire carried no
-        prompt because the run's user held the question."""
+        prompt."""
         return _prompt_text(self.withheld_prompt)
 
 
@@ -145,31 +145,23 @@ class Task(Generic[DataT, StateT, ConfigT]):
         self.config = config if config is not None else self.config_type()()
 
     def with_system_prompt(self, system_prompt: str) -> Self:
-        return self._with_data(system_prompt=system_prompt)
+        # Copy rather than reconstruct, here and below: subclass instance state survives.
+        clone = copy.copy(self)
+        clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
+        return clone
 
     def without_prompt(self) -> Self:
-        """The same task with its prompt withheld: nothing seeds the wire, so the
-        run is opened by its user (`agent.interaction()`). For a prompt that belongs
-        to the USER side — a scenario the caller pursues rather than the assistant's
-        seed (the user-sim env) — the assistant plays this copy and learns the goal
-        only through conversation.
-
-        The prompt moves to `data.withheld_prompt` rather than vanishing: scoring
-        runs on this row, and a grader still needs the question it grades against
-        (plugged judges read it automatically). Hand-written rewards that want it
-        should read `withheld_prompt_text`, since `prompt_text` reports the wire.
-
-        Idempotent: withholding an already-withheld task keeps the scenario."""
-        return self._with_data(
-            prompt=None,
-            withheld_prompt=self.data.prompt or self.data.withheld_prompt,
-        )
-
-    def _with_data(self, **updates) -> Self:
-        # Copy rather than reconstruct: `data` is frozen, but subclass instance state
-        # survives and `type(self).__init__` is never second-guessed.
+        """The same task with its prompt off the wire, kept on the row as
+        `withheld_prompt`: nothing seeds the conversation, so whoever opens it holds
+        the question, while scoring still has it to grade against (plugged judges read
+        it). Useful for user simulation + judging. Idempotent."""
         clone = copy.copy(self)
-        clone.data = self.data.model_copy(update=updates)
+        clone.data = self.data.model_copy(
+            update={
+                "prompt": None,
+                "withheld_prompt": self.data.prompt or self.data.withheld_prompt,
+            }
+        )
         return clone
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:

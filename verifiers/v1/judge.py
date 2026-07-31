@@ -84,8 +84,8 @@ JudgeView = Literal["last_reply", "full_trace"]
 def judge_question(task: TaskData, question_field: str) -> str:
     if not question_field:
         # The default is "the task's question", so follow it off the wire: a run whose
-        # user held the question (`Task.without_prompt()`, e.g. user-sim) still grades
-        # against it. Empty either way is a misconfigured judge, not a 0.
+        # user held the question (`Task.without_prompt()`) still grades against it.
+        # Empty either way is a misconfigured judge, not a 0.
         question = task.prompt_text or task.withheld_prompt_text
         if not question:
             raise ValueError(
