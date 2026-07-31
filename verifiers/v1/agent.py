@@ -335,7 +335,7 @@ class Agent:
         if self._server is None:
             return None
         if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not type(task).tools
+            run_is_local and not shared_tools and not task.tool_servers(task.config)
         ):
             return self._server
         return None
@@ -517,7 +517,11 @@ class Agent:
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
-            self.harness, type(task), runtime_config, shared_tools=shared_tools
+            self.harness,
+            type(task),
+            runtime_config,
+            task_tools=task.tool_servers(task.config),
+            shared_tools=shared_tools,
         )
         # Timeout precedence: agent-level wins, else the task's, else no limit.
         agent_timeout = (

@@ -16,7 +16,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, Self
 
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
 from verifiers.v1.artifacts import Artifact
@@ -122,36 +121,9 @@ DataT = TypeVar("DataT", bound=TaskData)
 ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 
-def resolve_server_config(
-    owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
-) -> BaseConfig:
-    """The config a declared server class is built with, resolved off `config`'s
-    fields: exact type match, else — only for a `sole` declared server — the unique
-    isinstance match, else a default-constructed one. Two matching fields raise; the
-    `server_config` methods are the explicit-pairing override. The isinstance
-    fallback is `sole`-gated because with several servers a subclass-typed field
-    could silently pair with the wrong one."""
-    cfg_cls = server_cls._config_cls()
-    values = {name: getattr(config, name) for name in type(config).model_fields}
-    matched = [name for name, v in values.items() if type(v) is cfg_cls]
-    if not matched and sole:
-        matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
-    if len(matched) > 1:
-        raise TaskError(
-            f"{owner}: ambiguous config for {server_cls.__name__} — config fields "
-            f"{matched} all match {cfg_cls.__name__}; override `server_config` to pair "
-            f"them explicitly"
-        )
-    if matched:
-        return values[matched[0]]
-    return cfg_cls()
-
-
 class Task(Generic[DataT, StateT, ConfigT]):
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether the task needs a containerized environment (isolated filesystem, ...)."""
-
-    tools: ClassVar[tuple[type[Toolset], ...]] = ()
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
@@ -249,16 +221,18 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
         return [load_judge(config) for config in self.config.judges]
 
-    def server_config(self, server_cls: type) -> BaseConfig:
-        return resolve_server_config(
-            type(self).__name__,
-            self.config,
-            server_cls,
-            sole=len(set(type(self).tools)) == 1,
-        )
+    @classmethod
+    def tool_servers(cls, config: ConfigT) -> list[Toolset]:
+        """Tool servers launched per rollout, each constructed with its config off
+        `config` — override and wire explicitly:
 
-    def tool_servers(self) -> list[Toolset]:
-        return [cls(self.server_config(cls)) for cls in type(self).tools]
+            @classmethod
+            def tool_servers(cls, config: MyTaskConfig) -> list[vf.Toolset]:
+                return [SearchToolset(config.tools)]
+
+        A classmethod so consumers can size placement (tunnels) off the class
+        before any task instance exists."""
+        return []
 
 
 TaskT = TypeVar("TaskT", bound=Task)

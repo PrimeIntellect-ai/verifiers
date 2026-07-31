@@ -29,7 +29,9 @@ class EchoToolTaskConfig(vf.TaskConfig):
 
 
 class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
-    tools = (EchoToolset,)
+    @classmethod
+    def tool_servers(cls, config: EchoToolTaskConfig) -> list[vf.Toolset]:
+        return [EchoToolset(config.tools)]
 
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:

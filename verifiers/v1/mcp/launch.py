@@ -343,7 +343,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
             name = toolset.server_name
             if name in servers:
                 raise ToolsetError(
-                    f"duplicate shared tool server name '{name}' in Taskset.tools — "
+                    f"duplicate shared tool server name '{name}' in Taskset.tool_servers — "
                     f"give one a distinct TOOL_PREFIX"
                 )
             if type(toolset).setup_task is not ServerBase.setup_task:
@@ -351,7 +351,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     "shared server %r overrides `setup_task`, but `setup_task` is NEVER "
                     "called for a taskset-scoped server (it's built once, task-agnostic) — "
                     "its per-task logic will not run. Move task-agnostic work into `setup`, "
-                    "or declare it on `Task.tools` to run it per-rollout.",
+                    "or construct it in `Task.tool_servers` to run it per-rollout.",
                     name,
                 )
             if cfg.url:  # already running remotely; nothing launched, nothing to bridge

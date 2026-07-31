@@ -161,7 +161,9 @@ class SearchConfig(vf.TasksetConfig):
 
 
 class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
-    tools = (SearchToolset,)
+    @classmethod
+    def tool_servers(cls, config: SearchConfig) -> list[vf.Toolset]:
+        return [SearchToolset(config.tools)]
 ```
 
 Taskset tools are shared by a worker's rollouts. Tools can also be set per task.
