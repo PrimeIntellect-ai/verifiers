@@ -20,13 +20,11 @@ import argparse
 import asyncio
 import json
 import os
-import queue
 import re
 import shutil
-import signal
 import subprocess
 import sys
-import threading
+import time
 import urllib.request
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
@@ -112,166 +110,65 @@ def _endpoint_alive(endpoint: str) -> bool:
         return False
 
 
-def _capture_browser_stderr(
-    stream, log: Path, endpoints: queue.Queue[str | None]
-) -> None:
-    """Drain Chromium stderr and report its first DevTools endpoint."""
-    endpoint_reported = False
-    with open(log, "wb") as sink:
-        for line in iter(stream.readline, b""):
-            sink.write(line)
-            sink.flush()
-            if not endpoint_reported and (
-                match := _DEVTOOLS_LINE.search(line.decode(errors="replace"))
-            ):
-                endpoints.put(f"http://127.0.0.1:{match.group(1)}")
-                endpoint_reported = True
-    if not endpoint_reported:
-        endpoints.put(None)
-
-
-def _stop_recorded_browser(state_dir: Path) -> None:
-    """Kill browser PIDs this trace recorded before replacing stale state."""
-    for name in ("browser.pid", "browser-starting.pid"):
-        path = state_dir / name
-        try:
-            pid = int(path.read_text())
-        except (FileNotFoundError, ValueError):
-            continue
-        with suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
-        path.unlink(missing_ok=True)
-    (state_dir / "cdp-endpoint").unlink(missing_ok=True)
-
-
 def ensure_chromium(state_dir: Path) -> str:
-    """Reuse this trace's live Chromium or replace its stale owned process."""
+    """Reuse this trace's live Chromium or launch it."""
     endpoint_file = state_dir / "cdp-endpoint"
     if endpoint_file.exists():
         endpoint = endpoint_file.read_text().strip()
         if endpoint and _endpoint_alive(endpoint):
             return endpoint
-    _stop_recorded_browser(state_dir)
 
     profile = state_dir / "profile"
     profile.mkdir(parents=True, exist_ok=True)
     log = state_dir / "browser.log"
-    browser = subprocess.Popen(
-        [
-            find_browser(),
-            "--remote-debugging-port=0",
-            f"--user-data-dir={profile}",
-            "--headless",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    starting_pid = state_dir / "browser-starting.pid"
-    starting_pid.write_text(str(browser.pid))
-    endpoints: queue.Queue[str | None] = queue.Queue(maxsize=1)
-    threading.Thread(
-        target=_capture_browser_stderr,
-        args=(browser.stderr, log, endpoints),
-        daemon=True,
-    ).start()
-    try:
-        endpoint = endpoints.get(timeout=BROWSER_READY_TIMEOUT)
-    except queue.Empty:
-        endpoint = None
-    if endpoint is not None:
-        endpoint_file.write_text(endpoint)
-        starting_pid.replace(state_dir / "browser.pid")
-        return endpoint
-
-    with suppress(ProcessLookupError):
-        browser.kill()
-    browser.wait()
-    starting_pid.unlink(missing_ok=True)
-    tail = ""
-    with suppress(OSError):
-        tail = log.read_text(errors="replace")[-2000:]
+    with open(log, "wb") as stderr:
+        browser = subprocess.Popen(
+            [
+                find_browser(),
+                "--remote-debugging-port=0",
+                f"--user-data-dir={profile}",
+                "--headless",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=stderr,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + BROWSER_READY_TIMEOUT
+        while time.monotonic() < deadline and browser.poll() is None:
+            output = log.read_text(errors="replace")
+            if match := _DEVTOOLS_LINE.search(output):
+                endpoint = f"http://127.0.0.1:{match.group(1)}"
+                endpoint_file.write_text(endpoint)
+                return endpoint
+            time.sleep(0.1)
+        if browser.poll() is None:
+            browser.kill()
+        browser.wait()
+    tail = log.read_text(errors="replace")[-2000:]
     raise SystemExit(
         f"browser did not announce a DevTools port within {BROWSER_READY_TIMEOUT}s: "
         f"{tail or '<no browser output>'}"
     )
 
 
-def resolve_endpoint(browser: str, cdp_url: str, state_dir: Path) -> str:
-    if browser == "chromium":
-        return ensure_chromium(state_dir)
-    if browser == "cdp":
-        if not cdp_url:
-            raise SystemExit("browser=cdp requires --cdp-url")
-        return cdp_url
-    raise SystemExit(f"unsupported browser {browser!r}")
-
-
-def browser_environments(
-    endpoint: str, state_dir: Path
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Return daemon and model-code environments, keeping CDP credentials out of the latter."""
-    tool_env = {
-        **{
-            key: value
-            for key, value in os.environ.items()
-            if key not in {"BU_CDP_URL", "BU_CDP_WS"}
-        },
-        "BH_HOME": str(state_dir / "bh-home"),
-        "BH_TELEMETRY": "0",
-    }
-    endpoint_key = (
-        "BU_CDP_WS" if urlsplit(endpoint).scheme in {"ws", "wss"} else "BU_CDP_URL"
-    )
-    return {**tool_env, endpoint_key: endpoint}, tool_env
-
-
-def _redact_endpoint(text: str, daemon_env: dict[str, str]) -> str:
-    for key in ("BU_CDP_URL", "BU_CDP_WS"):
-        if endpoint := daemon_env.get(key):
-            text = text.replace(endpoint, "<CDP endpoint>")
-    return text
-
-
-def run_browser(code: str, daemon_env: dict[str, str], tool_env: dict[str, str]) -> str:
+def run_browser(code: str, env: dict[str, str]) -> str:
     """Run model code through the pinned browser-harness CLI."""
     try:
-        daemon = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "from browser_harness.admin import ensure_daemon; ensure_daemon()",
-            ],
-            capture_output=True,
-            text=True,
-            env=daemon_env,
-            check=False,
-        )
-        daemon_output = _redact_endpoint(daemon.stdout + daemon.stderr, daemon_env)
-        if daemon.returncode != 0:
-            return f"error: {daemon_output or 'browser daemon failed'}"
-        daemon_log = Path(tool_env["BH_HOME"]) / "runtime" / "bu-default.log"
-        if daemon_log.exists():
-            daemon_log.write_text(
-                _redact_endpoint(daemon_log.read_text(errors="replace"), daemon_env)
-            )
         result = subprocess.run(
             [sys.executable, "-m", "browser_harness.run"],
             input=code,
             capture_output=True,
             text=True,
             timeout=BROWSER_TOOL_TIMEOUT,
-            env=tool_env,
+            env=env,
             check=False,
         )
-        return _redact_endpoint(
-            (result.stdout + result.stderr) or "(no output)", daemon_env
-        )
+        return (result.stdout + result.stderr) or "(no output)"
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
@@ -427,8 +324,17 @@ async def main() -> None:
         initial = json.loads(payload)
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
-    endpoint = resolve_endpoint(args.browser, args.cdp_url, state_dir)
-    daemon_env, tool_env = browser_environments(endpoint, state_dir)
+    endpoint = (
+        ensure_chromium(state_dir) if args.browser == "chromium" else args.cdp_url
+    )
+    browser_env = {
+        **os.environ,
+        "BH_HOME": str(state_dir / "bh-home"),
+        "BH_TELEMETRY": "0",
+        (
+            "BU_CDP_WS" if urlsplit(endpoint).scheme in {"ws", "wss"} else "BU_CDP_URL"
+        ): endpoint,
+    }
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     tools = [BROWSER_TOOL]
@@ -483,8 +389,7 @@ async def main() -> None:
                 content = await asyncio.to_thread(
                     run_browser,
                     tool_args.get("code", ""),
-                    daemon_env,
-                    tool_env,
+                    browser_env,
                 )
             else:
                 content = f"error: unknown tool {name!r}"

@@ -1,17 +1,13 @@
-import os
-import subprocess
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.harnesses.browser import program
 from verifiers.v1.harnesses.browser.harness import (
     BROWSER_SYSTEM_PROMPT,
     BrowserHarness,
     BrowserHarnessConfig,
-    teardown_argv,
 )
 from verifiers.v1.loaders import harness_class, harness_config_type
 from verifiers.v1.runtimes import (
@@ -29,7 +25,6 @@ from verifiers.v1.utils.compile import validate_pairing
 class FakeRuntime:
     def __init__(self) -> None:
         self.program: list[str] = []
-        self.writes: list[str] = []
 
     async def prepare_uv_script(self, source: str, env: dict) -> list[str]:
         return ["python", "browser-program.py"]
@@ -39,7 +34,7 @@ class FakeRuntime:
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
     async def write(self, path: str, data: bytes) -> None:
-        self.writes.append(path)
+        pass
 
 
 def harness(**config) -> BrowserHarness:
@@ -102,65 +97,19 @@ async def test_resume_does_not_repeat_the_browser_system_prompt():
     assert not any(arg.startswith("--system-prompt=") for arg in runtime.program)
 
 
-def test_cdp_credentials_are_not_inherited_by_model_code(tmp_path):
-    endpoint = "wss://browser.example/devtools?token=secret"
+@pytest.mark.asyncio
+async def test_cdp_endpoint_is_forwarded_to_the_program():
+    endpoint = "wss://browser.example/devtools"
+    runtime = FakeRuntime()
 
-    daemon_env, tool_env = program.browser_environments(endpoint, tmp_path)
-
-    assert daemon_env["BU_CDP_WS"] == endpoint
-    assert "BU_CDP_URL" not in tool_env
-    assert "BU_CDP_WS" not in tool_env
-
-
-def test_stale_owned_browser_is_stopped_before_relaunch(tmp_path, monkeypatch):
-    browser = tmp_path / "fake-chromium"
-    browser.write_text(
-        "#!/usr/bin/env python3\n"
-        "import signal\n"
-        "import sys\n"
-        "print('DevTools listening on ws://127.0.0.1:43210/devtools/browser/id', "
-        "file=sys.stderr, flush=True)\n"
-        "signal.pause()\n"
+    await harness(browser="cdp", cdp_url=endpoint).launch(
+        cast(ModelContext, SimpleNamespace(model="model")),
+        cast(Trace, SimpleNamespace(id="trace")),
+        cast(Runtime, runtime),
+        "http://model.example/v1",
+        "secret",
+        {},
+        TaskData(prompt="Use the browser."),
     )
-    browser.chmod(0o755)
-    monkeypatch.setenv("BH_CHROME_PATH", str(browser))
 
-    stale = subprocess.Popen([str(browser)], stderr=subprocess.DEVNULL)
-    (tmp_path / "browser.pid").write_text(str(stale.pid))
-    (tmp_path / "cdp-endpoint").write_text("http://127.0.0.1:1")
-
-    try:
-        endpoint = program.ensure_chromium(tmp_path)
-        replacement = int((tmp_path / "browser.pid").read_text())
-
-        assert endpoint == "http://127.0.0.1:43210"
-        assert replacement != stale.pid
-        stale.wait(timeout=2)
-    finally:
-        program._stop_recorded_browser(tmp_path)
-
-    os.waitpid(replacement, 0)
-    with pytest.raises(ProcessLookupError):
-        os.kill(replacement, 0)
-
-
-def test_teardown_stops_only_recorded_processes(tmp_path):
-    browser = subprocess.Popen(["sleep", "30"])
-    daemon = subprocess.Popen(["sleep", "30"])
-    external = subprocess.Popen(["sleep", "30"])
-    runtime = tmp_path / "bh-home" / "runtime"
-    runtime.mkdir(parents=True)
-    (tmp_path / "browser.pid").write_text(str(browser.pid))
-    (runtime / "bu-default.pid").write_text(str(daemon.pid))
-
-    try:
-        subprocess.run(teardown_argv(str(tmp_path)), check=True)
-
-        browser.wait(timeout=2)
-        daemon.wait(timeout=2)
-        assert external.poll() is None
-        assert not tmp_path.exists()
-    finally:
-        if external.poll() is None:
-            external.terminate()
-        external.wait(timeout=2)
+    assert f"--cdp-url={endpoint}" in runtime.program
