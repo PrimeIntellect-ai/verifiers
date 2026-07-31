@@ -143,7 +143,7 @@ class Interaction:
     `agent.interaction(task)` opens the rollout; `await interaction.turn("...")`
     sends one user turn and runs ONE harness segment — the
     program, resumed onto the conversation, until it yields — returning the
-    resulting `Segment`. A prompt-less (or masked) task is opened by the first
+    resulting `Segment`. A prompt-less task is opened by the first
     `turn(message)`; a prompted task speaks first — a bare `turn()` takes its
     opening reply. One consumer at a time — `turn()` is a strict
     request/response alternation, not a mailbox. `interaction.trace` is live from
@@ -187,8 +187,8 @@ class Interaction:
         if message is not None and prompted:
             raise ValueError(
                 "the task's prompt opens this exchange: take its first reply with "
-                "a bare turn() before answering (or hand the interaction a task "
-                "with `prompt=None` to open the conversation yourself)"
+                "a bare turn() before answering (or hand the interaction "
+                "`task.without_prompt()` to open the conversation yourself)"
             )
         messages: Messages | None = None
         if isinstance(message, str):
@@ -448,8 +448,8 @@ class Agent:
         the first `turn(message)`; a prompted task speaks first — take its opening
         reply with a bare `turn()` before answering. A prompt that belongs to the
         USER side (a scenario the caller pursues, not the assistant's seed) is the
-        caller's to hide: hand the interaction a task whose `data.prompt` is None
-        and keep the scenario on a scoring-side field (the user-sim env's contract).
+        caller's to withhold: hand the interaction `task.without_prompt()` and keep
+        the scenario on a scoring-side field (the user-sim env's contract).
 
         `runtime` and `tools` borrow live resources from their owners, just as
         they do for `run()`; an env supplies its taskset's shared tools

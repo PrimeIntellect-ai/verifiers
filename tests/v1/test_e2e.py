@@ -518,7 +518,7 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
     assert assistant.task.data.prompt is None  # the scenario stayed off the wire
     assert user.num_turns >= 1  # the modeled user actually drove the exchange
     assert assistant.rewards["echoed"].score == 1.0  # the tool ran, mid-conversation
-    # The tool was advertised to the masked chat exactly as to any run.
+    # The tool was advertised to the prompt-withheld chat exactly as to any run.
     assert assistant.tools
     assert any(tool.name == "echo_back" for tool in assistant.tools)
 

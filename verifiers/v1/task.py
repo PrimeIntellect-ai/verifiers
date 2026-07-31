@@ -130,8 +130,22 @@ class Task(Generic[DataT, StateT, ConfigT]):
         self.config = config if config is not None else self.config_type()()
 
     def with_system_prompt(self, system_prompt: str) -> Self:
+        return self._with_data(system_prompt=system_prompt)
+
+    def without_prompt(self) -> Self:
+        """The same task with its prompt withheld: nothing seeds the wire, so the
+        run is opened by its user (`agent.interaction()`). For a prompt that belongs
+        to the USER side — a scenario the caller pursues rather than the assistant's
+        seed (the user-sim env) — the assistant plays this copy and learns the goal
+        only through conversation. Scoring runs on the withheld row, so keep rewards
+        and judges on non-prompt fields."""
+        return self._with_data(prompt=None)
+
+    def _with_data(self, **updates) -> Self:
+        # Copy rather than reconstruct: `data` is frozen, but subclass instance state
+        # survives and `type(self).__init__` is never second-guessed.
         clone = copy.copy(self)
-        clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
+        clone.data = self.data.model_copy(update=updates)
         return clone
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:

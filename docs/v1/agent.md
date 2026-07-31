@@ -34,8 +34,8 @@ the final assistant message's text.
 A prompted task speaks first through a bare `turn()`; a prompt-less task starts
 with `turn(message)`. Leaving the context closes the exchange as `user_closed`
 and finishes scoring. To keep a scenario away from the assistant (the user-sim
-shape), hand the interaction a task whose `data.prompt` is None and score off
-non-prompt fields.
+shape), hand the interaction `task.without_prompt()` and score off non-prompt
+fields.
 
 ## Borrowed Resources
 

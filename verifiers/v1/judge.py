@@ -83,6 +83,15 @@ JudgeView = Literal["last_reply", "full_trace"]
 
 def judge_question(task: TaskData, question_field: str) -> str:
     if not question_field:
+        # A withheld prompt (`Task.without_prompt()`, e.g. under user-sim) leaves
+        # nothing to judge against; say so instead of judging an empty question.
+        if not task.prompt_text:
+            raise ValueError(
+                "judge found no question: this task's prompt is empty or withheld "
+                "from the run. Point `question_field` at the field holding the "
+                "question (`answer`-style scoring-side data), which is what a "
+                "conversation-opened task must score on"
+            )
         return task.prompt_text
     question = getattr(task, question_field, None)
     if question is None:
