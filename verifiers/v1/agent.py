@@ -21,10 +21,11 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import RolloutRun, RolloutTimeouts, _as_messages
+from verifiers.v1.rollout import RolloutRun, RolloutTimeouts
 from verifiers.v1.runtimes import (
     NetworkPolicyConfig,
     Runtime,
@@ -195,7 +196,9 @@ class Interaction:
         if isinstance(message, str):
             messages = [UserMessage(content=message)]
         elif message is not None:
-            messages = _as_messages(message)
+            # A turn's messages may arrive typed or as wire dicts (env code naturally
+            # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
+            messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
         self._started = True
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
