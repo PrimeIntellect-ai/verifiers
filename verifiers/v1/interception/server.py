@@ -173,6 +173,13 @@ class InterceptionServer(Interception):
             self.release_tasks.add(task)
             task.add_done_callback(self.release_tasks.discard)
 
+    async def _drain_releases(self) -> None:
+        """Let in-flight releases finish before the server goes away, so a concluded
+        rollout's connections close gracefully instead of at process exit. Gather snapshots
+        the set, so the done-callbacks discarding from it during the await are safe."""
+        if self.release_tasks:
+            await asyncio.gather(*self.release_tasks, return_exceptions=True)
+
     async def _release_transport(self, session: RolloutSession) -> None:
         """Free the concluded rollout's client transport. A failed close on a connection
         the provider already dropped is not actionable, so it is suppressed here rather
@@ -219,6 +226,7 @@ class InterceptionServer(Interception):
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
+        self.stack.push_async_callback(self._drain_releases)
         # Without a tunnel, local URL translation reaches an ephemeral loopback port.
         # Otherwise the tunnel determines the bind address and publishes it.
         if self.tunnel is None:
