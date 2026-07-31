@@ -1,25 +1,10 @@
-"""Task data, configuration, behavior, and scoring.
+"""Task data + behavior.
 
-`TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
-row IS — the base fields plus your typed, task-specific fields. It rides on
-`trace.task.data`, is what `traces.jsonl` stores, and what tool servers receive
-over the `/task` channel. Subclass it per dataset.
+`TaskData` is the wire half: a frozen pydantic model carrying the data which
+initializes a task instance. Rides on `trace.task.data` in `traces.jsonl`.
 
-`Task` is the behavior half: runtime prep (`setup`/`finalize`), server declarations
-(`tools`), well-formedness (`validate`), and per-trace judgement
-(`@reward`/`@metric` methods plus the plugged judges from `config.judges`, run by
-`score`). Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]`
-(all three default); judgement that compares sibling traces lives on
-`Env.finalize` instead.
-
-A Task instance is shared across its rollouts (`-r n` runs hold the same instance),
-so hooks must not stash per-rollout state on `self` — that lives on the trace
-(`trace.state`).
-
-On the wire only the data travels (plus the producing class's name,
-`trace.task.type`): a saved row reads back as `WireTaskData` without importing the
-taskset; a re-scoring consumer (`replay`) rebuilds the declared `TaskData` type and
-wraps it in the declared `Task` — one task type per taskset.
+`Task` is the behavior half: runtime prep (`setup`/`finalize`), tool declarations
+(`tools`), and scoring (`@reward`/`@metric`) methods.
 """
 
 from __future__ import annotations
