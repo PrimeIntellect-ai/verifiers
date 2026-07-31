@@ -36,8 +36,8 @@ from verifiers.v1.serve.types import (
 from verifiers.v1.task import WireTaskData
 from verifiers.v1.trace import (
     AgentInfo,
+    AgentSpan,
     Error,
-    GenerationSpan,
     ModelCall,
     Reward,
     TimeSpan,
@@ -199,7 +199,8 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
 def _timing(raw: Any) -> Timing:
     """Map the v0 timing record's generation/scoring durations onto a v1 ``Timing``
     (we only have durations, so each span is encoded as start=0, end=duration).
-    v0's per-turn ``model``/``env`` span collections carry the generation split."""
+    v0's ``generation`` duration becomes the agent span; its per-turn ``model``/``env``
+    span collections carry the model/harness split."""
 
     def _dur(node: Any) -> float:
         if isinstance(node, dict):
@@ -212,7 +213,7 @@ def _timing(raw: Any) -> Timing:
 
     raw = raw or {}
     return Timing(
-        generation=GenerationSpan(
+        agent=AgentSpan(
             start=0.0,
             end=_dur(raw.get("generation")),
             model=TimeSplit(duration=_dur(raw.get("model"))),

@@ -4,6 +4,12 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACP
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+from verifiers.v1.artifacts import (
+    ARTIFACTS_DIR,
+    Artifact,
+    collect,
+    restore,
+)
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -109,10 +115,10 @@ from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import (
     TRACE_VERSION,
     AgentInfo,
+    AgentSpan,
     Branch,
     Error,
     EvalRunInfo,
-    GenerationSpan,
     ModelCall,
     Reward,
     RunInfo,
@@ -138,7 +144,6 @@ from verifiers.v1.types import (
     Response,
     Sampling,
     SamplingConfig,
-    StrictBaseModel,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -171,7 +176,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Response",
     "Sampling",
     "SamplingConfig",
-    "StrictBaseModel",
     "SystemMessage",
     "TextContentPart",
     "Tool",
@@ -207,7 +211,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Timing",
     "TimeSpan",
     "TimeSplit",
-    "GenerationSpan",
+    "AgentSpan",
     "Error",
     # decorators
     "stop",
@@ -297,6 +301,11 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "PATCH_CAP_BYTES",
     "capture_patch",
     "resolve_head",
+    # grading artifacts
+    "ARTIFACTS_DIR",
+    "Artifact",
+    "collect",
+    "restore",
     # scoring
     "compare_stdout_results",
     "extract_boxed_answer",

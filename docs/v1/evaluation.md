@@ -37,7 +37,7 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
 - `env.taskset.system_prompt` — file whose text overrides each task's
-  `TaskData.system_prompt` at select time (e.g. a GEPA `best_system_prompt.txt`)
+  `TaskData.system_prompt` on iteration (e.g. a GEPA `best_system_prompt.txt`)
 - `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
   infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
@@ -46,7 +46,7 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `[serve]` — how the env is hosted under `--server`: `serve.pool` (worker pool), `serve.address`, and `serve.max_concurrent` (a per-worker episode bound; unset takes `max_concurrent`)
 - `[legacy]` — run a classic (v0) environment through the bridge instead of `[env]`: `legacy.id`, `legacy.args`
 - `verbose` — log at debug instead of info
-- `shuffle` — randomizes the order of tasks (fixed seed); a no-op on an infinite taskset
+- `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
 
 ## Resuming evaluations
 

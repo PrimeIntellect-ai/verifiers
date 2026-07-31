@@ -109,7 +109,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.stop_condition == "agent_completed"
     assert trace.reward == 1.0
     # The seat's resolved identity rides the trace (policy metadata for trainers).
-    assert trace.agent is not None and trace.agent.config.sampling.temperature == 0
+    assert trace.agent is not None and trace.agent.config.sampling.max_tokens == 2048
     # Every sampled turn has one per-call record, linked to its assistant node.
     sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
     assert [c.node for c in trace.calls if c.error is None] == sampled
@@ -335,6 +335,7 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
         runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=10,
+        max_tokens=8192,
     )
     assert trace.ok
     assert trace.num_turns >= 1  # ran a command, then finished
@@ -366,7 +367,7 @@ async def test_multi_agent_env(run_v1, tmp_path):
     # agent info (completion order — the gathered seats land in either order).
     (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
     row = json.loads(line)
-    assert row["env"] == "duet-v1"
+    assert row["env"] == {"id": "duet-v1"}
     by_name = {t["agent"]["name"]: t for t in row["traces"]}
     assert set(by_name) == {"a", "b"}
     assert by_name["a"]["agent"]["trainable"] is True
@@ -405,18 +406,18 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     policy.write_text("Check EMPIRICALLY that the agent echoed the word back.")
     traces = await run_v1(
         "echo-v1",
-        harness=None,  # seats pin their own harness; there is no run-level one
+        harness=None,
         env={
             "id": "agentic-judge",
-            # The solver owns the shared box, so the container is pinned here.
             "solver": {"harness": {"id": "bash"}, "runtime": {"type": "docker"}},
-            # The judge reads the trace and reasons before it writes the
-            # verdict file; the shared 2048-token run cap truncates it mid-audit.
             "judge": {
                 "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
             },
-            "task": {"prompt": str(policy)},
+            "task": {
+                "prompt": {"path": str(policy)},
+                "hint": "Do not rely on README.md",
+            },
             "score": {"task_weight": 0.5},
         },
         output_dir=tmp_path,
@@ -431,7 +432,7 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     # The task's own reward keeps its raw score; the rescale lands on the weight.
     assert solver.rewards["echoed"].score == 1.0
     assert solver.rewards["echoed"].weight == 0.5
-    assert isinstance(judge.info.get("verdict"), dict)  # scraped off the box
+    assert isinstance(judge.info.get("verdict"), dict)
     assert 0.0 <= solver.rewards["judge"].score <= 1.0
 
 
