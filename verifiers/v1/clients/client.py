@@ -74,6 +74,11 @@ class Client(ABC):
         as native JSON and return the provider JSON. Only the relay (eval) client supports it."""
         raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
 
+    async def release_session(self, session_id: str) -> None:
+        """Free per-rollout transport for `session_id` (the rollout trace id); called when
+        the rollout's session unregisters. No-op for clients with shared transport (the
+        renderer client's tokenizer pool is deliberately process-scoped)."""
+
     async def close(self) -> None:
         pass
 

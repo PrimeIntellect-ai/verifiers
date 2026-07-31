@@ -157,6 +157,12 @@ class InterceptionServer(Interception):
             # (aiohttp keeps them alive past client death) so a slow upstream call
             # can't commit a late turn onto the concluded trace.
             session.release()
+            # Free the rollout's transport. Best-effort: teardown must not block, and a
+            # failed aclose on a dead connection is not actionable.
+            task = asyncio.create_task(
+                session.ctx.client.release_session(session.trace.id)
+            )
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:

@@ -75,11 +75,15 @@ class EvalClient(Client):
         # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
         # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
         # httpx base-url joining, which drops the base path for a leading-slash request path.
-        # Match V1's default concurrency while retaining HTTPX's 20-idle keepalive bound.
+        # Session-less traffic only (aux routes); rollout turns ride per-session clients.
         self.http = httpx.AsyncClient(
             timeout=None,
             limits=httpx.Limits(max_connections=128, max_keepalive_connections=20),
         )
+        # One transport per rollout, keyed by session_id (the rollout trace id), closed when
+        # the session unregisters: in-flight capacity scales with rollout count — never a
+        # shared pool size — and rollouts can't contend on each other's connection state.
+        self._session_http: dict[str, httpx.AsyncClient] = {}
 
     async def get_response(
         self,
@@ -95,6 +99,7 @@ class EvalClient(Client):
             self.base_url + dialect.upstream_path,
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
+            session_id=session_id,
         )
         # A corrupted response (e.g. an HTML error page or a truncated body on a
         # flaky tunnel) surfaces as a JSON parse failure or a schema validation
@@ -136,6 +141,25 @@ class EvalClient(Client):
         headers.update(dialect.auth_headers(self.api_key))
         return headers
 
+    def _http_for(self, session_id: str | None) -> httpx.AsyncClient:
+        """The rollout's own client, or the shared one for session-less traffic. Rollout
+        turns are sequential (one outstanding request), so a tiny pool suffices — the
+        headroom is for harness-SDK retry overlap."""
+        if session_id is None:
+            return self.http
+        client = self._session_http.get(session_id)
+        if client is None:
+            client = self._session_http[session_id] = httpx.AsyncClient(
+                timeout=None,
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            )
+        return client
+
+    async def release_session(self, session_id: str) -> None:
+        client = self._session_http.pop(session_id, None)
+        if client is not None:
+            await client.aclose()
+
     async def _request(
         self,
         url: str,
@@ -143,16 +167,18 @@ class EvalClient(Client):
         headers: httpx.Headers,
         *,
         stream: bool = False,
+        session_id: str | None = None,
     ) -> httpx.Response:
         headers.setdefault("content-type", "application/json")
-        request = self.http.build_request(
+        http = self._http_for(session_id)
+        request = http.build_request(
             "POST",
             url,
             content=to_json(body, inf_nan_mode="null"),
             headers=headers,
         )
         try:
-            response = await self.http.send(request, stream=stream)
+            response = await http.send(request, stream=stream)
         except httpx.TimeoutException as e:
             raise model_error(str(e), status_code=504) from e
         except httpx.HTTPError as e:
@@ -197,6 +223,7 @@ class EvalClient(Client):
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
             stream=True,
+            session_id=session_id,
         )
 
         async def chunks():
@@ -236,3 +263,6 @@ class EvalClient(Client):
 
     async def close(self) -> None:
         await self.http.aclose()
+        # Sessions normally release on unregister; drain any stragglers.
+        for session_id in list(self._session_http):
+            await self.release_session(session_id)
