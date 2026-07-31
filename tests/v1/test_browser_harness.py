@@ -1,9 +1,11 @@
 import os
 import subprocess
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.harnesses.browser import program
 from verifiers.v1.harnesses.browser.harness import (
     BROWSER_SYSTEM_PROMPT,
@@ -12,8 +14,14 @@ from verifiers.v1.harnesses.browser.harness import (
     teardown_argv,
 )
 from verifiers.v1.loaders import harness_class, harness_config_type
-from verifiers.v1.runtimes import DockerConfig, ProgramResult, SubprocessConfig
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    ProgramResult,
+    Runtime,
+    SubprocessConfig,
+)
 from verifiers.v1.task import Task, TaskData
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import SystemMessage, UserMessage
 from verifiers.v1.utils.compile import validate_pairing
 
@@ -81,9 +89,9 @@ async def test_resume_does_not_repeat_the_browser_system_prompt():
     )
 
     await harness().resume(
-        SimpleNamespace(model="model"),
-        trace,
-        runtime,
+        cast(ModelContext, SimpleNamespace(model="model")),
+        cast(Trace, trace),
+        cast(Runtime, runtime),
         "http://model.example/v1",
         "secret",
         {},

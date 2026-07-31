@@ -30,6 +30,7 @@ import threading
 import urllib.request
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -276,10 +277,15 @@ def run_browser(code: str, daemon_env: dict[str, str], tool_env: dict[str, str])
 
 
 async def chat(
-    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
 ):
     completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
+        model=model,
+        messages=cast(Any, messages),
+        tools=cast(Any, tools or None),
     )
     return completion.choices[0].message
 
@@ -377,7 +383,7 @@ def mcp_content_to_chat_content(blocks) -> str | list[dict]:
     if not parts:
         return str(blocks)
     if all(part["type"] == "text" for part in parts):
-        return "\n".join(part["text"] for part in parts)
+        return "\n".join(str(part["text"]) for part in parts)
     return parts
 
 
