@@ -5,6 +5,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.browser import launcher
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -29,11 +30,11 @@ Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibi
 
 class BrowserHarnessConfig(HarnessConfig):
     cdp_url: str | None = None
-    """The Chrome DevTools HTTP endpoint to attach to (browser-harness's
-    `BU_CDP_URL`, e.g. `http://127.0.0.1:9222`). Required: the harness attaches
-    to a browser the environment provides and keeps alive; it never launches
-    one. An environment that provisions its own browser overrides
-    `cdp_endpoint` instead of setting this."""
+    """A running Chrome DevTools HTTP endpoint to attach to (browser-harness's
+    `BU_CDP_URL`, e.g. `http://127.0.0.1:9222`). Supplied, the harness attaches
+    and the environment keeps owning the browser's lifecycle. Omitted, the
+    harness starts a Chromium of its own (see `launcher`) for the run and tears
+    it down afterwards."""
 
 
 class BrowserHarness(Harness[BrowserHarnessConfig]):
@@ -42,21 +43,30 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
     SUPPORTS_RESUME = True
 
     async def cdp_endpoint(self, runtime: Runtime, trace: Trace) -> str:
-        """The DevTools endpoint the program attaches to for this trace.
+        """The endpoint the program attaches to, and the seam that picks a mode.
 
-        Attach-only by default: the environment provides a running browser and
-        this returns its endpoint. This is the seam an environment overrides to
-        provision a browser it owns (launch it, keep it alive across `resume`,
-        tear it down) and hand back its endpoint.
+        `cdp_url` set: attach, and own nothing but the daemon. Unset: start a
+        browser (kept per trace, so a `resume` re-attaches to the same one) and
+        own it until cleanup. This is the seam an environment overrides to
+        provision a browser its own way -- e.g. inside a sandbox.
         """
-        if not self.config.cdp_url:
-            raise ValueError(
-                "browser harness needs a running Chrome DevTools endpoint to attach "
-                "to; set --env.agent.harness.cdp_url (e.g. http://127.0.0.1:9222). "
-                "Start one with: chrome --remote-debugging-port=9222 "
-                "--user-data-dir=$(mktemp -d) --headless --no-first-run --no-sandbox"
-            )
-        return self.config.cdp_url
+        if self.config.cdp_url:
+            return self.config.cdp_url
+        launched = self._launched.get(trace.id)
+        if launched and await launcher.is_alive(runtime, launched["pid"]):
+            return launched["endpoint"]
+        endpoint, pid = await launcher.launch(runtime, f".vf-browser-{trace.id}")
+        self._launched[trace.id] = {"endpoint": endpoint, "pid": pid}
+        return endpoint
+
+    @property
+    def _launched(self) -> dict[str, dict[str, str]]:
+        # Per-trace {endpoint, pid} for browsers this harness started, so
+        # cleanup can stop them by recorded PID. Lazy so `__init__` stays the
+        # base's.
+        if not hasattr(self, "_launched_browsers"):
+            self._launched_browsers: dict[str, dict[str, str]] = {}
+        return self._launched_browsers
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
@@ -116,19 +126,16 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
         return await runtime.run_program([*program, *args], env)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        """Stop the browser-harness daemon this trace started and drop its state.
+        """Stop what this trace owns and drop its state, by recorded PID.
 
-        The daemon is the only process this harness owns; the browser belongs to
-        whoever provided the endpoint, so this never touches it. The daemon
-        records its own PID under `BH_HOME`, so cleanup kills that recorded PID
-        rather than pattern-matching. Idempotent and best-effort: a run that
-        never started a daemon leaves no PID file, and an owned runtime is torn
-        down regardless.
+        Always the browser-harness daemon and the state dir; the browser too
+        when this harness launched it (fallback mode). In attach mode the
+        browser is the environment's, so it is never touched. Idempotent and
+        best-effort; delegated to `launcher` so the process management stays out
+        of here.
         """
-        state = f".vf-browser-{trace.id}"
-        pid_file = f"{state}/bh-home/runtime/bu-default.pid"
-        teardown = (
-            f'[ -f "{pid_file}" ] && kill "$(cat "{pid_file}")" 2>/dev/null; '
-            f'rm -rf "{state}" 2>/dev/null || true'
+        launched = self._launched.pop(trace.id, None)
+        argv = launcher.teardown_argv(
+            f".vf-browser-{trace.id}", launched["pid"] if launched else None
         )
-        await runtime.run(["sh", "-c", teardown], {})
+        await runtime.run(argv, {})

@@ -17,10 +17,10 @@ in a small daemon and pre-imports its page helpers. `browser-harness` is pinned
 exactly because its CLI surface is what the tool contract wraps; it pins its
 own CDP/websocket dependencies exactly in turn.
 
-Attach-only. `--cdp-url` is a running Chrome DevTools endpoint the environment
-stood up and keeps alive; this program never launches, discovers, or tears down
-a browser. A `resume` re-attaches to the same endpoint. The only process this
-program owns is the browser-harness daemon, which the harness stops in cleanup.
+`--cdp-url` is the endpoint to attach to; the harness resolves it (an
+environment's own browser, or one the harness launched in fallback mode) and
+this program only ever attaches. It never launches or discovers a browser, so
+there is no process management here -- the launcher and the harness own that.
 
 Secrets arrive through argv so the browser and the model's snippets do not
 inherit them from the environment.
@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -47,9 +48,13 @@ BROWSER_TOOL_TIMEOUT = 3600
 fail much sooner on their own (the harness IPC read times out in seconds)."""
 
 TOOL_OUTPUT_LIMIT = 30_000
-"""Combined stdout+stderr cap per call. An unfiltered accessibility tree is
-megabytes; SKILL.md already tells the model to filter in Python before
-printing, so past this the middle is elided rather than the call failed."""
+"""Combined stdout+stderr kept per call. An unfiltered accessibility tree is
+megabytes, so output is streamed into a bounded head and a rolling tail and the
+middle elided -- the model is told to filter in Python before printing, and a
+runaway dump must not buffer megabytes in this process either way."""
+
+_HEAD_LIMIT = TOOL_OUTPUT_LIMIT * 2 // 3
+_TAIL_LIMIT = TOOL_OUTPUT_LIMIT - _HEAD_LIMIT
 
 BROWSER_TOOL = {
     "type": "function",
@@ -95,34 +100,68 @@ def browser_environment(endpoint: str, state_dir: Path) -> dict[str, str]:
     }
 
 
-def _elide(output: str) -> str:
-    if len(output) <= TOOL_OUTPUT_LIMIT:
-        return output
-    head, tail = TOOL_OUTPUT_LIMIT * 2 // 3, TOOL_OUTPUT_LIMIT // 3
-    return (
-        output[:head] + f"\n... [{len(output) - head - tail} characters elided; "
-        "filter in Python and print less] ...\n" + output[-tail:]
+def _drain_capped(stream) -> tuple[str, int]:
+    """Read `stream` to EOF into a bounded head plus a rolling tail, returning
+    (kept, total). Memory stays under ~TOOL_OUTPUT_LIMIT no matter how much the
+    snippet prints: once the head is full, only the last `_TAIL_LIMIT` chars are
+    retained and the middle is dropped as it streams."""
+    head = ""
+    tail = ""
+    total = 0
+    for chunk in iter(lambda: stream.read(4096), ""):
+        total += len(chunk)
+        if len(head) < _HEAD_LIMIT:
+            room = _HEAD_LIMIT - len(head)
+            head += chunk[:room]
+            chunk = chunk[room:]
+        if chunk:
+            tail = (tail + chunk)[-_TAIL_LIMIT:]
+    if total <= _HEAD_LIMIT:
+        return head, total
+    dropped = total - len(head) - len(tail)
+    if dropped <= 0:  # head and tail together already cover everything
+        return head + tail, total
+    elision = (
+        f"\n... [{dropped} characters elided; filter in Python and print less] ...\n"
     )
+    return head + elision + tail, total
 
 
 def run_browser(code: str, env: dict[str, str]) -> str:
     """One browser-harness invocation: the model's code on stdin, exactly the
     CLI's own heredoc contract. The CLI ensures the daemon, pre-imports the
     helpers, and execs the code; stdout and stderr both go back to the model
-    because tracebacks are how a wrong selector explains itself."""
+    (merged) because tracebacks are how a wrong selector explains itself. Output
+    is drained on a thread into bounded buffers so a runaway print cannot exhaust
+    memory, and the process is killed if it outlives the timeout."""
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-m", "browser_harness.run"],
-            input=code,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=BROWSER_TOOL_TIMEOUT,
             env=env,
-            check=False,
         )
-        return _elide(result.stdout + result.stderr) or "(no output)"
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
+    captured: dict[str, str] = {}
+
+    def drain() -> None:
+        captured["out"] = _drain_capped(proc.stdout)[0]
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    with suppress(Exception):
+        proc.stdin.write(code)
+        proc.stdin.close()
+    reader.join(BROWSER_TOOL_TIMEOUT)
+    if reader.is_alive():
+        proc.kill()
+        reader.join(5)
+        return (captured.get("out", "") + "\nerror: browser tool timed out").strip()
+    proc.wait()
+    return captured.get("out") or "(no output)"
 
 
 async def chat(
