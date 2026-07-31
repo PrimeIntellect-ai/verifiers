@@ -48,12 +48,16 @@ class StaticInterceptionPool(Interception):
     operator's call (it's the shape for pre-provisioned/bring-your-own endpoints)."""
 
     def __init__(
-        self, config: StaticInterceptionPoolConfig, requires_tunnel: bool = False
+        self,
+        config: StaticInterceptionPoolConfig,
+        requires_tunnel: bool = False,
+        state_service_secrets: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self.config = config
         self.servers = [
-            InterceptionServer(server, requires_tunnel) for server in config.servers
+            InterceptionServer(server, requires_tunnel, state_service_secrets)
+            for server in config.servers
         ]
 
     async def start(self) -> None:
@@ -89,10 +93,12 @@ class ElasticInterceptionPool(Interception):
         self,
         config: ElasticInterceptionPoolConfig | None = None,
         requires_tunnel: bool = False,
+        state_service_secrets: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self.config = config or ElasticInterceptionPoolConfig()
         self.requires_tunnel = requires_tunnel
+        self.state_service_secrets = state_service_secrets
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
         self._warm_task: asyncio.Task[InterceptionServer] | None = None
@@ -116,7 +122,9 @@ class ElasticInterceptionPool(Interception):
                 return server
         # Pin prime explicitly — the only tunnel kind that can be minted on demand.
         server = InterceptionServer(
-            InterceptionServerConfig(tunnel=PrimeTunnelConfig()), self.requires_tunnel
+            InterceptionServerConfig(tunnel=PrimeTunnelConfig()),
+            self.requires_tunnel,
+            self.state_service_secrets,
         )
         await self.stack.enter_async_context(server)
         self.servers.append(server)
@@ -136,8 +144,8 @@ class ElasticInterceptionPool(Interception):
         # Register under the lock so concurrent acquires see each other's load.
         async with self._lock:
             server = await self._server()
-            secret = server.register(session)
+            model_secret, state_secret = server.register(session)
         try:
-            yield server.base_url, secret
+            yield server.base_url, model_secret, state_secret
         finally:
-            server.unregister(secret)
+            server.unregister(model_secret, state_secret)
