@@ -112,7 +112,7 @@ Two deliberate differences from `harbor run`:
 
 ## Separate verifier environments
 
-`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). Only the declared artifacts cross over, and the agent's box is confirmed deleted before the verifier starts, so nothing the agent left running can reach the grader. The score is read from `/logs/verifier/reward.json` — a number, or an object of numbers where a `reward` key is the scalar and any others are recorded as separate rewards — falling back to `reward.txt`.
+`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). Only the declared artifacts and the `/logs/artifacts/` convention directory cross over, and the agent's box is confirmed deleted before the verifier starts, so nothing the agent left running can reach the grader. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers where a `reward` key is the scalar and any others are recorded as separate rewards — falling back to `reward.txt`.
 
 Which image the verifier boots from follows Harbor: a declared `[verifier.environment]` if there is one, otherwise a fresh copy of `[environment]`, which is the task's own image.
 

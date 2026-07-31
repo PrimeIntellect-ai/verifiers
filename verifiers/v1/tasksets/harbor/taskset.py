@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,15 @@ CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
 MAX_REWARD_BYTES = 1024 * 1024
+
+
+def _finite_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 class HarborConfig(TasksetConfig):
@@ -107,7 +117,7 @@ class CollectHook(BaseModel):
     timeout_sec: float = 600.0
 
 
-class VerifierConfig(StrictBaseModel):
+class VerifierConfig(BaseModel):
     """The box this task's verifier wants, when it wants one of its own.
 
     `None` on `HarborData` means shared — grade where the agent worked, which is still
@@ -276,17 +286,12 @@ class HarborTask(Task[HarborData]):
             data = json.loads(raw)
         except (SandboxError, OSError, ValueError):
             return None
-        if isinstance(data, bool):  # bool is an int; a boolean reward is malformed
-            return None
-        if isinstance(data, int | float):
+        if _finite_number(data):
             return float(data)
         if (
             isinstance(data, dict)
             and data
-            and all(
-                isinstance(value, int | float) and not isinstance(value, bool)
-                for value in data.values()
-            )
+            and all(_finite_number(value) for value in data.values())
         ):
             scores = {key: float(value) for key, value in data.items()}
             return scores
