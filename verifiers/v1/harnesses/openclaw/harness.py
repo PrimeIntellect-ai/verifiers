@@ -309,7 +309,9 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 'while kill -0 "$gateway_pid" 2>/dev/null; do sleep 0.1; done; '
                 f"rm -f {shlex.quote(pid_path)}' EXIT; "
                 f'{shlex.quote(binary)} acp --url "ws://127.0.0.1:{gateway_port}" '
-                f"--token {shlex.quote(trace.id)} --no-prefix-cwd"
+                f"--token {shlex.quote(trace.id)} "
+                f"--session {shlex.quote(f'agent:main:acp-bridge:{trace.id}')} "
+                "--no-prefix-cwd"
             ),
         ]
         # OpenClaw rejects ACP per-session MCP declarations; the isolated Gateway
