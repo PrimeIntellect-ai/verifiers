@@ -32,7 +32,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -46,15 +45,6 @@ MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client default
 BROWSER_TOOL_TIMEOUT = 3600
 """Matches the bash harness's command timeout; helper calls inside the snippet
 fail much sooner on their own (the harness IPC read times out in seconds)."""
-
-TOOL_OUTPUT_LIMIT = 30_000
-"""Combined stdout+stderr kept per call. An unfiltered accessibility tree is
-megabytes, so output is streamed into a bounded head and a rolling tail and the
-middle elided -- the model is told to filter in Python before printing, and a
-runaway dump must not buffer megabytes in this process either way."""
-
-_HEAD_LIMIT = TOOL_OUTPUT_LIMIT * 2 // 3
-_TAIL_LIMIT = TOOL_OUTPUT_LIMIT - _HEAD_LIMIT
 
 BROWSER_TOOL = {
     "type": "function",
@@ -100,68 +90,26 @@ def browser_environment(endpoint: str, state_dir: Path) -> dict[str, str]:
     }
 
 
-def _drain_capped(stream) -> tuple[str, int]:
-    """Read `stream` to EOF into a bounded head plus a rolling tail, returning
-    (kept, total). Memory stays under ~TOOL_OUTPUT_LIMIT no matter how much the
-    snippet prints: once the head is full, only the last `_TAIL_LIMIT` chars are
-    retained and the middle is dropped as it streams."""
-    head = ""
-    tail = ""
-    total = 0
-    for chunk in iter(lambda: stream.read(4096), ""):
-        total += len(chunk)
-        if len(head) < _HEAD_LIMIT:
-            room = _HEAD_LIMIT - len(head)
-            head += chunk[:room]
-            chunk = chunk[room:]
-        if chunk:
-            tail = (tail + chunk)[-_TAIL_LIMIT:]
-    if total <= _HEAD_LIMIT:
-        return head, total
-    dropped = total - len(head) - len(tail)
-    if dropped <= 0:  # head and tail together already cover everything
-        return head + tail, total
-    elision = (
-        f"\n... [{dropped} characters elided; filter in Python and print less] ...\n"
-    )
-    return head + elision + tail, total
-
-
 def run_browser(code: str, env: dict[str, str]) -> str:
     """One browser-harness invocation: the model's code on stdin, exactly the
     CLI's own heredoc contract. The CLI ensures the daemon, pre-imports the
     helpers, and execs the code; stdout and stderr both go back to the model
-    (merged) because tracebacks are how a wrong selector explains itself. Output
-    is drained on a thread into bounded buffers so a runaway print cannot exhaust
-    memory, and the process is killed if it outlives the timeout."""
+    because a wrong selector explains itself through its traceback. Uncapped,
+    like the bash harness's tool -- the system prompt tells the model to filter
+    in Python before printing rather than this imposing a per-harness limit."""
     try:
-        proc = subprocess.Popen(
+        result = subprocess.run(
             [sys.executable, "-m", "browser_harness.run"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            input=code,
+            capture_output=True,
             text=True,
+            timeout=BROWSER_TOOL_TIMEOUT,
             env=env,
+            check=False,
         )
+        return (result.stdout + result.stderr) or "(no output)"
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
-    captured: dict[str, str] = {}
-
-    def drain() -> None:
-        captured["out"] = _drain_capped(proc.stdout)[0]
-
-    reader = threading.Thread(target=drain, daemon=True)
-    reader.start()
-    with suppress(Exception):
-        proc.stdin.write(code)
-        proc.stdin.close()
-    reader.join(BROWSER_TOOL_TIMEOUT)
-    if reader.is_alive():
-        proc.kill()
-        reader.join(5)
-        return (captured.get("out", "") + "\nerror: browser tool timed out").strip()
-    proc.wait()
-    return captured.get("out") or "(no output)"
 
 
 async def chat(
@@ -309,8 +257,6 @@ async def main() -> None:
         initial = json.loads(payload)
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
-    # Record the endpoint attached to, so a run can be inspected after the fact.
-    (state_dir / "cdp-endpoint").write_text(args.cdp_url)
     tool_env = browser_environment(args.cdp_url, state_dir)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")

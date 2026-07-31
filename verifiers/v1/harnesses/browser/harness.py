@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -20,7 +21,7 @@ BROWSER_SYSTEM_PROMPT = """You are a browser automation agent. Your `browser` to
 
 Rules of the tool:
 - Each call runs in a fresh Python process: variables do NOT persist between calls. The browser does persist — tabs, cookies, and page state carry over.
-- Use print() for anything you want to see. Large dumps are elided; filter in Python before printing.
+- Use print() for anything you want to see. Filter in Python before printing; a raw AX tree or DOM dump is huge.
 - The first navigation is new_tab(url), not goto_url(url). After navigating, call wait_for_load().
 
 Core helpers: new_tab(url), goto_url(url), page_info(), js(expression), click_at_xy(x, y), type_text(text), press_key(key), fill_input(selector, text), scroll(x, y, dy), wait_for_load(), wait_for_element(selector), wait_for_network_idle(), list_tabs(), switch_tab(target), close_tab(), ensure_real_tab(), capture_screenshot(path), upload_file(selector, path), and raw cdp("Domain.method", ...).
@@ -29,12 +30,13 @@ Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibi
 
 
 class BrowserHarnessConfig(HarnessConfig):
-    cdp_url: str | None = None
-    """A running Chrome DevTools HTTP endpoint to attach to (browser-harness's
-    `BU_CDP_URL`, e.g. `http://127.0.0.1:9222`). Supplied, the harness attaches
-    and the environment keeps owning the browser's lifecycle. Omitted, the
-    harness starts a Chromium of its own (see `launcher`) for the run and tears
-    it down afterwards."""
+    browser: Literal["chromium"] = "chromium"
+    """Where the browser the model drives comes from. `chromium` launches a
+    local headless Chromium and attaches to it over CDP -- it works out of the
+    box on a browser-capable image (see `docs/v1/harnesses.md`) and needs no
+    endpoint wiring. (A `browserbase` value that creates a hosted session over
+    the Browserbase API is the planned follow-up; until then, point
+    browser-harness's own `BU_CDP_URL` at a remote browser to use one.)"""
 
 
 class BrowserHarness(Harness[BrowserHarnessConfig]):
@@ -43,30 +45,12 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
     SUPPORTS_RESUME = True
 
     async def cdp_endpoint(self, runtime: Runtime, trace: Trace) -> str:
-        """The endpoint the program attaches to, and the seam that picks a mode.
-
-        `cdp_url` set: attach, and own nothing but the daemon. Unset: start a
-        browser (kept per trace, so a `resume` re-attaches to the same one) and
-        own it until cleanup. This is the seam an environment overrides to
-        provision a browser its own way -- e.g. inside a sandbox.
-        """
-        if self.config.cdp_url:
-            return self.config.cdp_url
-        launched = self._launched.get(trace.id)
-        if launched and await launcher.is_alive(runtime, launched["pid"]):
-            return launched["endpoint"]
-        endpoint, pid = await launcher.launch(runtime, f".vf-browser-{trace.id}")
-        self._launched[trace.id] = {"endpoint": endpoint, "pid": pid}
-        return endpoint
-
-    @property
-    def _launched(self) -> dict[str, dict[str, str]]:
-        # Per-trace {endpoint, pid} for browsers this harness started, so
-        # cleanup can stop them by recorded PID. Lazy so `__init__` stays the
-        # base's.
-        if not hasattr(self, "_launched_browsers"):
-            self._launched_browsers: dict[str, dict[str, str]] = {}
-        return self._launched_browsers
+        """The endpoint the program attaches to. `chromium` reuses or starts a
+        local browser for this trace (the launcher records it in the state dir,
+        so a `resume` re-attaches to the same one) and owns it until cleanup.
+        This is the seam an environment overrides to provide a browser its own
+        way -- e.g. inside a sandbox."""
+        return await launcher.ensure(runtime, f".vf-browser-{trace.id}")
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
@@ -129,13 +113,9 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
         """Stop what this trace owns and drop its state, by recorded PID.
 
         Always the browser-harness daemon and the state dir; the browser too
-        when this harness launched it (fallback mode). In attach mode the
-        browser is the environment's, so it is never touched. Idempotent and
-        best-effort; delegated to `launcher` so the process management stays out
-        of here.
+        when this harness launched it (fallback mode). In attach mode no browser
+        PID was recorded, so the browser -- the environment's -- is never
+        touched. Idempotent and best-effort; delegated to `launcher` so the
+        process management stays out of here.
         """
-        launched = self._launched.pop(trace.id, None)
-        argv = launcher.teardown_argv(
-            f".vf-browser-{trace.id}", launched["pid"] if launched else None
-        )
-        await runtime.run(argv, {})
+        await runtime.run(launcher.teardown_argv(f".vf-browser-{trace.id}"), {})
