@@ -7,8 +7,9 @@ verifiers supports a range of harnesses out of the box, including Claude Code, C
 The `browser` harness gives the model one tool that runs Python against a real Chromium over CDP via [browser-harness](https://github.com/browser-use/browser-harness). One config field, `--env.agent.harness.browser`, picks where the browser comes from:
 
 - `chromium` (default): the harness launches a local headless Chromium and attaches to it, then tears it down after the run. This needs a browser in the runtime image, which the default `python:3.11-slim` lacks — run it on a browser-capable image such as the official Playwright image via `--env.agent.runtime.image mcr.microsoft.com/playwright/python:v1.61.0-noble` (verified against its Python 3.12, digest `sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69`). The missing-browser error names this image.
+- `cdp` (`--env.agent.harness.cdp_url <endpoint>`): the generic backend — attach to any CDP-speaking browser service (a cloud provider, a remote grid, or one you launched yourself) and own nothing. Needs no special image.
 
-A `browserbase` value (a hosted session over the Browserbase API) is the planned follow-up; until then, point browser-harness's own `BU_CDP_URL` at a remote browser to use one. An environment that provisions its browser a bespoke way (e.g. inside a sandbox) overrides `BrowserHarness.cdp_endpoint`.
+Named values are conveniences that add session creation on top of `cdp`; `browserbase` (a hosted Browserbase session) is the natural next one, deferred here since `cdp` already covers it by hand (paste a session's connect URL). Whichever mode, the model's Python runs in the browser-harness daemon alongside the program, so the harness sets `NEEDS_CONTAINER` and refuses the bare-host subprocess runtime.
 
 ## A minimal harness implementation
 
