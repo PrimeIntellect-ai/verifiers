@@ -27,6 +27,7 @@ Core helpers: new_tab(url), goto_url(url), page_info(), js(expression), click_at
 
 Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibility.getFullAXTree")["nodes"] has every element's role, name, and backendDOMNodeId — filter in Python before printing. For coordinates: q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4, then click_at_xy(x, y) and verify with a targeted js(...) or page_info() check. Fall back to js(...) over the DOM when the AX tree lacks the element."""
 
+
 def state_dir(trace: Trace) -> str:
     """The trace's state dir, relative to the program's cwd: browser profile,
     BH_HOME, and the recorded endpoint and PIDs all live under it."""
