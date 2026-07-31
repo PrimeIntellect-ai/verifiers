@@ -27,23 +27,6 @@ Core helpers: new_tab(url), goto_url(url), page_info(), js(expression), click_at
 Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibility.getFullAXTree")["nodes"] has every element's role, name, and backendDOMNodeId — filter in Python before printing. For coordinates: q = cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]; x, y = sum(q[0::2])/4, sum(q[1::2])/4, then click_at_xy(x, y) and verify with a targeted js(...) or page_info() check. Fall back to js(...) over the DOM when the AX tree lacks the element."""
 
 
-def state_dir(trace: Trace) -> str:
-    """The trace-scoped browser profile, endpoint, and process state."""
-    return f".vf-browser-{trace.id}"
-
-
-def teardown_argv(state: str) -> list[str]:
-    """Stop processes recorded under a trace state directory."""
-    script = (
-        'state="$1"; '
-        'for f in "$state/browser.pid" "$state/browser-starting.pid" '
-        '"$state/bh-home/runtime/bu-default.pid"; do '
-        '[ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; done; '
-        'rm -rf -- "$state" 2>/dev/null || true'
-    )
-    return ["sh", "-c", script, "browser-teardown", state]
-
-
 class BrowserHarnessConfig(HarnessConfig):
     browser: Literal["chromium", "cdp"] = "chromium"
     """`chromium` launches locally; `cdp` attaches to `cdp_url` without owning it."""
@@ -100,14 +83,14 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
             )
         )
         env = {**self.config.resolved_env}
+        state = f".vf-browser-{trace.id}"
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
             f"--browser={self.config.browser}",
-            # Trace-scoped so a resumed segment reuses the browser it launched,
-            # and cleanup removes exactly what this trace created.
-            f"--state-dir={state_dir(trace)}",
+            # A resumed segment reuses this trace's browser and profile.
+            f"--state-dir={state}",
         ]
         if not replaying_browser_prompt:
             args.append(f"--system-prompt={system_prompt}")
@@ -140,7 +123,3 @@ class BrowserHarness(Harness[BrowserHarnessConfig]):
             PROGRAM_SOURCE, self.config.resolved_env
         )
         return await runtime.run_program([*program, *args], env)
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        """Stop this trace's recorded daemon and locally launched browser."""
-        await runtime.run(teardown_argv(state_dir(trace)), {})
