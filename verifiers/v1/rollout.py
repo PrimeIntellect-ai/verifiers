@@ -8,7 +8,7 @@ state). The user loop lives between segments, at the exchange's natural turn
 granularity — never inside the model boundary, so a harness's own tool loop can
 never race or amputate it.
 
-`RolloutRun` is the engine, a staged lifecycle: `open()` boots the world, each
+`Rollout` is the engine, a staged lifecycle: `open()` boots the world, each
 `step()` runs one segment, `close()` finalizes, scores, and tears the world down —
 each stage under its own timeout. `Agent` is its only driver: `Agent.run` is the
 one-call single-segment form, `Agent.interaction` holds the run open and lets the
@@ -21,8 +21,8 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
@@ -35,12 +35,7 @@ from verifiers.v1.errors import (
     boundary,
 )
 from verifiers.v1.harness import Harness
-from verifiers.v1.interception import (
-    Interception,
-    InterceptionServer,
-    Slot,
-    requires_tunnel,
-)
+from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
@@ -71,37 +66,7 @@ class RolloutTimeouts:
     """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
 
-@asynccontextmanager
-async def _serve_interception(
-    interception: Interception | None,
-    runtime: Runtime,
-    session: RolloutSession,
-    servers: list,
-    shared_tools: dict[str, SharedToolServer],
-) -> AsyncIterator[Slot]:
-    """A slot on the shared interception when one was injected (its owner keeps the
-    lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
-    down — by this rollout."""
-    if interception is not None:
-        async with interception.acquire(session) as slot:
-            yield slot
-        return
-    tunneled = requires_tunnel(
-        runtime.is_local,
-        [server.config for server in servers],
-        shared_tools.values(),
-    )
-    server = InterceptionServer(
-        requires_tunnel=tunneled,
-        state_service_secrets=tuple(
-            tool.state_secret for tool in shared_tools.values() if tool.state_secret
-        ),
-    )
-    async with server, server.acquire(session) as slot:
-        yield slot
-
-
-class RolloutRun:
+class Rollout:
     """One rollout held open segment by segment.
 
     `open()` boots the world (runtime, setup, interception, tool servers); each
@@ -275,7 +240,7 @@ class RolloutRun:
                 model_secret,
                 state_secret,
             ) = await self._stack.enter_async_context(
-                _serve_interception(
+                serve_interception(
                     self._interception,
                     runtime,
                     self._session,
