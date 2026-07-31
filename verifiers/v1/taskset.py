@@ -103,8 +103,6 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         return concrete_type(cls, Task, origin=Taskset) or Task
 
     def server_config(self, server_cls: type) -> BaseConfig:
-        """The config a `tools` entry is built with, resolved off `self.config` (the
-        taskset config; see `resolve_server_config`). Override to pair explicitly."""
         return resolve_server_config(
             type(self).__name__,
             self.config,
