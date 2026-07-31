@@ -72,18 +72,10 @@ class EvalClient(Client):
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = dict(headers or {})
-        # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
-        # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
-        # httpx base-url joining, which drops the base path for a leading-slash request path.
-        # Session-less traffic only (aux routes); rollout turns ride per-session clients.
-        self.http = httpx.AsyncClient(
-            timeout=None,
-            limits=httpx.Limits(max_connections=128, max_keepalive_connections=20),
-        )
-        # One transport per rollout, keyed by session_id (the rollout trace id), closed when
-        # the session unregisters: in-flight capacity scales with rollout count — never a
-        # shared pool size — and rollouts can't contend on each other's connection state.
-        self._session_http: dict[str, httpx.AsyncClient] = {}
+        # One transport per rollout, keyed by session_id (the rollout trace id) and closed
+        # when its session unregisters: in-flight capacity scales with rollout count instead
+        # of a shared pool size, and rollouts never contend on each other's connections.
+        self._http: dict[str, httpx.AsyncClient] = {}
 
     async def get_response(
         self,
@@ -142,21 +134,22 @@ class EvalClient(Client):
         return headers
 
     def _http_for(self, session_id: str | None) -> httpx.AsyncClient:
-        """The rollout's own client, or the shared one for session-less traffic. Rollout
-        turns are sequential (one outstanding request), so a tiny pool suffices — the
-        headroom is for harness-SDK retry overlap."""
-        if session_id is None:
-            return self.http
-        client = self._session_http.get(session_id)
+        """The transport for a rollout; the empty key serves calls made outside one (aux
+        routes). The connection bound is per rollout, and generous because a harness may run
+        subagents that call in parallel. No timeout: agentic completions are slow and the
+        rollout timeout is the real backstop. Full URLs are built by the caller, so no
+        `base_url` here — httpx's joining drops the base path for a leading-slash path."""
+        key = session_id or ""
+        client = self._http.get(key)
         if client is None:
-            client = self._session_http[session_id] = httpx.AsyncClient(
+            client = self._http[key] = httpx.AsyncClient(
                 timeout=None,
-                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+                limits=httpx.Limits(max_connections=128, max_keepalive_connections=20),
             )
         return client
 
     async def release_session(self, session_id: str) -> None:
-        client = self._session_http.pop(session_id, None)
+        client = self._http.pop(session_id, None)
         if client is not None:
             await client.aclose()
 
@@ -262,7 +255,6 @@ class EvalClient(Client):
         return from_json(resp.content)
 
     async def close(self) -> None:
-        await self.http.aclose()
         # Sessions normally release on unregister; drain any stragglers.
-        for session_id in list(self._session_http):
+        for session_id in list(self._http):
             await self.release_session(session_id)
