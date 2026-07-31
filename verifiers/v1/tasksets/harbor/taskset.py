@@ -303,17 +303,22 @@ def verifier_runtime_config(
 ) -> RuntimeConfig:
     """The verifier box's config, derived from the agent box's."""
     config = runtime.config
-    if not isinstance(config, DockerConfig | PrimeConfig) or type(
-        base_runtime_config
-    ) is not type(config):
+    if (
+        not isinstance(config, DockerConfig | PrimeConfig)
+        or not isinstance(base_runtime_config, DockerConfig | PrimeConfig)
+        or type(base_runtime_config) is not type(config)
+    ):
         raise TaskError(
             "a separate verifier needs a container runtime matching the run's policy; "
             f"got {type(config).__name__} against "
             f"{type(base_runtime_config).__name__}"
         )
+    network_config = base_runtime_config.with_task_network_policy(
+        verifier.network_allow, []
+    )
     updates: dict[str, Any] = {
-        "allow": verifier.network_allow,
-        "block": base_runtime_config.block,
+        "allow": network_config.allow,
+        "block": network_config.block,
     }
     if not verifier.fresh_copy:
         # A declared [verifier.environment] replaces the task's environment rather than
@@ -648,8 +653,7 @@ def parse_verifier_environment(
             "integration cannot honor"
         )
 
-    mode = parsed.verifier.network_mode or environment.network_mode
-    hosts = list(parsed.verifier.allowed_hosts or environment.allowed_hosts or [])
+    network = parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
     return VerifierConfig(
         image=environment.docker_image if declared else None,
         # A declared environment states its own resources; what it leaves out is the
@@ -673,7 +677,11 @@ def parse_verifier_environment(
         ),
         workdir=environment.workdir if declared else None,
         fresh_copy=not declared,
-        network_allow=["*"] if mode == NetworkMode.PUBLIC else hosts,
+        network_allow=(
+            ["*"]
+            if network.network_mode == NetworkMode.PUBLIC
+            else list(network.allowed_hosts)
+        ),
     )
 
 
