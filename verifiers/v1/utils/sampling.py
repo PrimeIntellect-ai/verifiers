@@ -1,10 +1,9 @@
 """Shared sampling: an optional fixed-seed shuffle, then an optional head-slice.
 
-Every entrypoint narrows its items the same way: with `--shuffle`, a shuffle under a fixed
-seed so the sampled subset is the *same* every run (reproducible), then an optional slice to
-the first `limit`. Taskset entrypoints (eval, validate, debug, GEPA) go through
-`Taskset.select`, which shares this shuffle; the server eval path and the legacy bridge
-sample plain index lists here directly.
+With `--shuffle`, a shuffle under the fixed `SEED` so the sampled subset is the *same*
+every run (reproducible), then an optional slice to the first `limit`. Used by the paths
+that sample plain index lists (the server eval path and the legacy bridge); tasksets
+shuffle themselves (`Taskset.shuffle`, same default seed).
 """
 
 import random

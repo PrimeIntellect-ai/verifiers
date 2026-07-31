@@ -13,7 +13,7 @@ from pydantic import TypeAdapter, ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.state import State, StateT, state_cls
-from verifiers.v1.utils.generic import generic_type
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from httpx import AsyncClient, Response
@@ -286,7 +286,7 @@ class ServerBase(Generic[ConfigT, StateT]):
     @classmethod
     def _config_cls(cls) -> type[BaseConfig]:
         """Resolve the server's config specialization through its MRO."""
-        if config_cls := generic_type(cls, BaseConfig):
+        if config_cls := concrete_type(cls, BaseConfig):
             return config_cls
         raise TypeError(
             f"{cls.__name__} must parameterize its config, e.g. Toolset[MyConfig]"
