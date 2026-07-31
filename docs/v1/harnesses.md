@@ -6,10 +6,10 @@ verifiers supports a range of harnesses out of the box, including Claude Code, C
 
 The `browser` harness gives the model one tool that runs Python against a real Chromium over CDP via [browser-harness](https://github.com/browser-use/browser-harness). One config field, `--env.agent.harness.browser`, picks where the browser comes from:
 
-- `chromium` (default): the harness launches a local headless Chromium and attaches to it, then tears it down after the run. This needs a browser in the runtime image, which the default `python:3.11-slim` lacks — run it on a browser-capable image such as the official Playwright image via `--env.agent.runtime.image mcr.microsoft.com/playwright/python:v1.61.0-noble` (verified against its Python 3.12, digest `sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69`). The missing-browser error names this image.
+- `chromium` (default): launch and own a local headless Chromium. The default `python:3.11-slim` image has no browser, so select Docker and a browser-capable image, for example `--env.agent.runtime.type docker --env.agent.runtime.image mcr.microsoft.com/playwright/python:v1.61.0-noble@sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69`. This official Playwright Python image was verified with its Python 3.12, the runtime's uv bootstrap, and its installed Chromium.
 - `cdp` (`--env.agent.harness.cdp_url <endpoint>`): the generic backend — attach to any CDP-speaking browser service (a cloud provider, a remote grid, or one you launched yourself) and own nothing. Needs no special image.
 
-Named values are conveniences that add session creation on top of `cdp`; `browserbase` (a hosted Browserbase session) is the natural next one, deferred here since `cdp` already covers it by hand (paste a session's connect URL). Whichever mode, the model's Python runs in the browser-harness daemon alongside the program, so the harness sets `NEEDS_CONTAINER` and refuses the bare-host subprocess runtime.
+A future Browserbase convenience could create sessions automatically; today its connect URL works through `cdp`. Whichever mode, model-authored Python runs in the browser-harness daemon, so the harness sets `NEEDS_CONTAINER` and refuses the bare-host subprocess runtime.
 
 ## A minimal harness implementation
 
