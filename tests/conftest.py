@@ -45,6 +45,7 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "claude_code: v1 e2e cases on the claude-code harness"
     )
+    config.addinivalue_line("markers", "openclaw: v1 e2e cases on the OpenClaw harness")
     config.addinivalue_line(
         "markers", "hermes_agent: v1 e2e cases on the hermes-agent harness"
     )

@@ -292,6 +292,20 @@ Installs the Codex CLI into the runtime and runs `codex exec`.
 | --- | --- | --- | --- |
 | `version` | `str` | `"0.144.5"` | Codex release to install (the `rust-v<version>` GitHub release); pinned. |
 
+#### `OpenClawHarnessConfig` — `id: "openclaw"`
+
+Installs OpenClaw and runs its Gateway-backed ACP bridge. The harness configures the
+interception endpoint as an isolated OpenAI Responses provider and projects task MCP
+servers into the per-rollout Gateway config. ACP supplies image prompts and native
+session resume; prompts (including ones beginning with `-`) travel as ACP content rather
+than command-line arguments. Select the model with eval's normal `-m` option; no
+OpenClaw-specific model credential is needed.
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `version` | `str` | `"2026.7.1-2"` | OpenClaw npm release to install; pinned. |
+| `use_bundled_skill` | `bool` | `true` | Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills. |
+
 #### `HermesAgentHarnessConfig` — `id: "hermes-agent"`
 
 Installs Hermes Agent and runs its native ACP server. Supports image prompts,
