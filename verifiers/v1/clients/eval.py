@@ -78,11 +78,6 @@ class EvalClient(Client):
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = dict(config.headers or {})
-        # Timeout and limits mirror the OpenAI SDK's defaults (see configs.client), so relayed
-        # and rendered turns behave alike and match the SDK on the harness's side. The limits
-        # are no longer a shared ceiling — one client per rollout means in-flight capacity
-        # scales with rollout count. Full URLs are built here (`_url`) rather than by httpx
-        # base-url joining, which drops the base path for a leading-slash request path.
         self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
 
     def _url(self, path: str) -> str:
