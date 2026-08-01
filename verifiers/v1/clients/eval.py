@@ -19,7 +19,7 @@ import httpx
 from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply, join_url
 from verifiers.v1.configs.client import (
     DEFAULT_LIMITS,
     DEFAULT_TIMEOUT,
@@ -68,9 +68,6 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
 
-# An API version path segment (`v1`, `v2`, ...) — the only kind `_url` dedups.
-_VERSION_SEGMENT = re.compile(r"v\d+")
-
 
 class EvalClient(Client):
     """Relay native JSON to the provider and parse a copy for the trace."""
@@ -83,22 +80,6 @@ class EvalClient(Client):
         self.headers = dict(config.headers or {})
         self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
 
-    def _url(self, path: str) -> str:
-        """Join `base_url` with a dialect path without duplicating the API version segment.
-
-        Dialect paths keep their provider's convention — Anthropic puts the version in the
-        path (`/v1/messages`, bare-origin base), OpenAI puts it in the base (`.../v1` +
-        `/chat/completions`) — while `base_url` may be either shape. The one collision is a
-        version-in-path dialect against a version-in-base URL (`.../api/v1` + `/v1/messages`
-        would request `/v1/v1/messages`), so drop the path's version segment when the base
-        already ends with it. Only version-shaped segments dedup: a base genuinely ending in
-        `/chat` must not swallow `/chat/completions`."""
-        head = path.split("/")[1] if path.startswith("/") else ""
-        base = self.base_url
-        if _VERSION_SEGMENT.fullmatch(head) and base.endswith(f"/{head}"):
-            base = base[: -len(head) - 1]
-        return base + path
-
     async def get_response(
         self,
         dialect: Dialect,
@@ -110,7 +91,7 @@ class EvalClient(Client):
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
-            self._url(dialect.upstream_path),
+            join_url(self.base_url, dialect.upstream_path),
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
@@ -208,7 +189,7 @@ class EvalClient(Client):
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
-            self._url(dialect.upstream_path),
+            join_url(self.base_url, dialect.upstream_path),
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
             stream=True,
@@ -243,7 +224,7 @@ class EvalClient(Client):
     ) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
-            self._url(route),
+            join_url(self.base_url, route),
             body,
             self._headers(dialect, headers, None),
         )
