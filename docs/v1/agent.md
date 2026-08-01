@@ -56,6 +56,10 @@ async with InterceptionServer() as server:
 
 The caller is responsible for correctly handling the lifecycle of such borrowed resources: they must be live for every run placed on them, and the agent never tears them down.
 
+## Client
+
+The model endpoint is not a borrowed resource — it is config. Set `AgentConfig.client`; each rollout builds and closes its own `Client` from it.
+
 ```python
 solver = vf.make_agent(
     vf.AgentConfig(model="z-ai/glm-5.2", client=vf.EvalClientConfig())
