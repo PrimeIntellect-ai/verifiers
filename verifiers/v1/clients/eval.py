@@ -68,6 +68,9 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
 
+# An API version path segment (`v1`, `v2`, ...) — the only kind `_url` dedups.
+_VERSION_SEGMENT = re.compile(r"v\d+")
+
 
 class EvalClient(Client):
     """Relay native JSON to the provider and parse a copy for the trace."""
@@ -82,12 +85,17 @@ class EvalClient(Client):
 
     def _url(self, path: str) -> str:
         """Join `base_url` with a dialect path without duplicating the API version segment.
-        An Anthropic-style absolute path (`/v1/messages`) against a base that already ends in
-        `/v1` would otherwise request `/v1/v1/messages`; a relative one (`/chat/completions`)
-        keeps the base as-is."""
+
+        Dialect paths keep their provider's convention — Anthropic puts the version in the
+        path (`/v1/messages`, bare-origin base), OpenAI puts it in the base (`.../v1` +
+        `/chat/completions`) — while `base_url` may be either shape. The one collision is a
+        version-in-path dialect against a version-in-base URL (`.../api/v1` + `/v1/messages`
+        would request `/v1/v1/messages`), so drop the path's version segment when the base
+        already ends with it. Only version-shaped segments dedup: a base genuinely ending in
+        `/chat` must not swallow `/chat/completions`."""
         head = path.split("/")[1] if path.startswith("/") else ""
         base = self.base_url
-        if head and base.endswith(f"/{head}"):
+        if _VERSION_SEGMENT.fullmatch(head) and base.endswith(f"/{head}"):
             base = base[: -len(head) - 1]
         return base + path
 
