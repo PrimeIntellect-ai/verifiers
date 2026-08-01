@@ -7,9 +7,7 @@ from openai import AsyncOpenAI
 
 from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 
-# Transport settings shared by every client, mirroring the OpenAI SDK's own defaults so a
-# rollout behaves the same whether its turns are relayed (eval) or rendered (train) — and
-# the same as the SDK the harness itself is using on the other side of the interception.
+# Mirrors the OAI SDK defaults
 DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=600.0, write=600.0, pool=600.0)
 DEFAULT_LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100)
 MAX_RETRIES = 0
