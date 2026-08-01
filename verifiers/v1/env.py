@@ -201,9 +201,6 @@ class Env(ABC, Generic[ConfigT]):
         gate = asyncio.Semaphore(limit) if limit else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
-            # Unpinned fields fall back to the run's ctx / the taskset's harness. The
-            # endpoint resolves as config, not a live client: each of the seat's rollouts
-            # builds its own from it.
             resolved = spec.model_copy(
                 update={
                     "harness": spec.harness
