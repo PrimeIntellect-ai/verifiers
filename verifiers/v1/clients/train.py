@@ -15,7 +15,7 @@ import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
@@ -211,7 +211,7 @@ class ElasticRendererPool:
     every client with the same (model, config, template kwargs, multiplex) the same pool.
     With one client per rollout, owning one each would put a tokenizer behind every rollout."""
 
-    _shared: dict[tuple, "ElasticRendererPool"] = {}
+    _shared: ClassVar[dict[tuple, "ElasticRendererPool"]] = {}
 
     def __init__(
         self,
