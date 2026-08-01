@@ -262,23 +262,18 @@ class ElasticRendererPool:
                 chat_template_kwargs=chat_template_kwargs,
                 multiplex=multiplex,
             )
-        pool._warm()
+        # Warm the first renderer — the registry-shaped counterpart of the interception
+        # pool's `start()`: a client is built while its rollout is still provisioning, so
+        # the tokenizer loads now rather than in front of the first turn. A no-op off the
+        # event loop (tests, sync construction) — `acquire` builds on demand anyway.
+        if pool._warm_task is None and not pool.renderers:
+            try:
+                pool._warm_task = asyncio.get_running_loop().create_task(pool.grow())
+            except RuntimeError:
+                pass
         return pool
 
-    def _warm(self) -> None:
-        """Start building the first renderer, if nothing has yet — the registry-shaped
-        counterpart of the interception pool's `start()`, run when a client is built so
-        the tokenizer loads while the rollout is still provisioning rather than in front
-        of its first turn. A no-op off the event loop (tests, sync construction) —
-        `acquire` builds on demand anyway."""
-        if self._warm_task is not None or self.renderers:
-            return
-        try:
-            self._warm_task = asyncio.get_running_loop().create_task(self._renderer())
-        except RuntimeError:
-            pass
-
-    async def _renderer(self) -> RendererSlot:
+    async def grow(self) -> RendererSlot:
         """A renderer with spare capacity — reuse one under `multiplex`, else load one
         more tokenizer on a thread (`create_renderer_pool` is seconds of blocking work).
         Acquires hold `_lock`; the warm task runs before they reach this path."""
@@ -309,7 +304,7 @@ class ElasticRendererPool:
         rollouts in flight rather than renders in progress."""
         if self._warm_task is not None:
             # Shielded: a cancelled acquire must not cancel the build every other rollout
-            # is waiting on. A failed warm falls through to `_renderer()` under the lock,
+            # is waiting on. A failed warm falls through to `grow()` under the lock,
             # where the error reaches a caller instead of vanishing into a stray task.
             try:
                 await asyncio.shield(self._warm_task)
@@ -326,7 +321,7 @@ class ElasticRendererPool:
                 )
             self._warm_task = None
         async with self._lock:
-            slot = await self._renderer()
+            slot = await self.grow()
             slot.load += 1
         try:
             yield slot.renderer
