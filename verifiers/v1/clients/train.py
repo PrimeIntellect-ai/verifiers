@@ -302,8 +302,16 @@ class ElasticRendererPool:
             # Shielded: a cancelled acquire must not cancel the build every other rollout
             # is waiting on. A failed warm falls through to growing under the lock, where
             # the error reaches a caller instead of vanishing into a stray task.
-            with contextlib.suppress(Exception):
+            try:
                 await asyncio.shield(self._warm_task)
+            except asyncio.CancelledError:
+                # The pool outlives event loops, and a loop's shutdown cancels a warm
+                # task it never awaited — recover by rebuilding under the lock. Only
+                # re-raise when it was THIS acquire that got cancelled.
+                if not self._warm_task.cancelled():
+                    raise
+            except Exception:
+                pass
             self._warm_task = None
         async with self._lock:
             slot = next((s for s in self.slots if s.load < self.multiplex), None)
