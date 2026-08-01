@@ -18,22 +18,16 @@ from verifiers.v1.types import Response, Sampling, SamplingConfig
 logger = logging.getLogger(__name__)
 
 # An API version path segment (`v1`, `v2`, ...) — the only kind `join_url` dedups.
-_VERSION_SEGMENT = re.compile(r"v\d+")
+VERSION_SEGMENT = re.compile(r"v\d+")
 
 
 def join_url(base_url: str, path: str) -> str:
-    """Join `base_url` with a dialect path without duplicating the API version segment.
-
-    Dialect paths keep their provider's convention — Anthropic puts the version in the
-    path (`/v1/messages`, bare-origin base), OpenAI puts it in the base (`.../v1` +
-    `/chat/completions`) — while `base_url` may be either shape. The one collision is a
-    version-in-path dialect against a version-in-base URL (`.../api/v1` + `/v1/messages`
-    would request `/v1/v1/messages`), so drop the path's version segment when the base
-    already ends with it. Only version-shaped segments dedup: a base genuinely ending in
-    `/chat` must not swallow `/chat/completions`."""
+    """Join `base_url` with a dialect path without repeating the API version segment:
+    `.../api/v1` + `/v1/messages` -> `.../api/v1/messages`. Only version-shaped segments
+    dedup, so a base ending in `/chat` doesn't swallow `/chat/completions`."""
     head = path.split("/")[1] if path.startswith("/") else ""
     base = base_url.rstrip("/")
-    if _VERSION_SEGMENT.fullmatch(head) and base.endswith(f"/{head}"):
+    if VERSION_SEGMENT.fullmatch(head) and base.endswith(f"/{head}"):
         base = base[: -len(head) - 1]
     return base + path
 
