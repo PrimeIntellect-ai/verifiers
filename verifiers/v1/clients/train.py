@@ -21,8 +21,8 @@ from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, RendererConfig
 
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
-from verifiers.v1.configs.client import TrainClientConfig, build_async_openai
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, build_async_openai
+from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error

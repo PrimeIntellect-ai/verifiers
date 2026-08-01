@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 from pydantic import BaseModel
 from typing_extensions import TypeVar
 
-from verifiers.v1.configs.client import build_async_openai
+from verifiers.v1.clients.client import build_async_openai
 from verifiers.v1.configs.judge import (
     JudgeConfig,
     judge_key,

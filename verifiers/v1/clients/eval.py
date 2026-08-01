@@ -19,13 +19,15 @@ import httpx
 from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply, join_url
-from verifiers.v1.configs.client import (
+from verifiers.v1.clients.client import (
     DEFAULT_LIMITS,
     DEFAULT_TIMEOUT,
-    BaseClientConfig,
-    resolve_api_key,
+    SESSION_ID_HEADER,
+    Client,
+    RelayReply,
+    join_url,
 )
+from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
