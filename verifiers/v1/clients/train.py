@@ -21,7 +21,8 @@ from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, RendererConfig
 
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, build_async_openai
+from verifiers.v1.clients.base import build_async_openai
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
@@ -237,16 +238,17 @@ class ElasticRendererPool:
         chat_template_kwargs: Mapping[str, Any] | None = None,
         multiplex: int,
     ) -> "ElasticRendererPool":
-        """The process-wide pool for these construction inputs, warming its first renderer
-        on the way. Same key shape as v0's `RendererClient._shared_pools`: renderers owns
-        config resolution, so only pools whose build inputs differ are kept apart."""
+        """The process-wide pool for these build inputs, warming its first renderer on
+        the way. Same key shape as v0's `RendererClient._shared_pools`: renderers owns
+        config resolution, so only pools whose build inputs differ are kept apart.
+        `multiplex` is policy, not a build input — the first client's value wins, so
+        configs differing only there share one tokenizer set."""
         key = (
             renderer_model,
             config.model_dump_json() if config is not None else None,
             json.dumps(dict(chat_template_kwargs), sort_keys=True)
             if chat_template_kwargs
             else None,
-            multiplex,
         )
         pool = cls._shared.get(key)
         if pool is None:
