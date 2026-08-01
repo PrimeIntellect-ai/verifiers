@@ -9,7 +9,6 @@ needs a running vLLM engine.
 """
 
 import asyncio
-import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Mapping
@@ -311,7 +310,9 @@ class ElasticRendererPool:
                 if not self._warm_task.cancelled():
                     raise
             except Exception:
-                pass
+                logger.debug(
+                    "renderer warm failed - rebuilding under the lock", exc_info=True
+                )
             self._warm_task = None
         async with self._lock:
             slot = next((s for s in self.slots if s.load < self.multiplex), None)
