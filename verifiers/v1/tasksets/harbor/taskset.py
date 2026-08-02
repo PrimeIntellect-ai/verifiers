@@ -2,7 +2,7 @@
 
 The Harbor CLI downloads and caches each task directory. Its verifier runs in the
 same runtime the harness edited, then writes the score to
-``/logs/verifier/reward.txt``.
+``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
 not build Dockerfile-only environments, so those are rejected unless ``ignore_dockerfile``
@@ -13,6 +13,8 @@ image unless ``require_image`` is set.
 import asyncio
 import hashlib
 import io
+import json
+import math
 import shutil
 import subprocess
 import sys
@@ -35,6 +37,7 @@ from verifiers.v1.utils.decorators import reward
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
+REWARD_JSON = "/logs/verifier/reward.json"
 
 
 class HarborConfig(TasksetConfig):
@@ -140,7 +143,7 @@ class HarborTask(Task[HarborData]):
         trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
     @reward(weight=1.0)
-    async def solved(self, runtime: Runtime) -> float:
+    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         await runtime.write(
             "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
         )
@@ -153,13 +156,50 @@ class HarborTask(Task[HarborData]):
             {},
         )
         await runtime.run(
-            ["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self.data)
+            [
+                "sh",
+                "-c",
+                (
+                    "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt"
+                    " && cd /tests && bash test.sh"
+                ),
+            ],
+            verifier_env(self.data),
         )
+        scores = await self._reward_json(runtime)
+        if scores is not None:
+            if isinstance(scores, dict) and "reward" in scores:
+                trace.record_metrics(
+                    {key: value for key, value in scores.items() if key != "reward"}
+                )
+                return {"reward": scores["reward"]}
+            return scores
         try:
             reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
             return float(reward or 0)
         except (SandboxError, OSError, ValueError):
             return 0.0
+
+    async def _reward_json(self, runtime: Runtime) -> float | dict[str, float] | None:
+        """Read Harbor's scalar or keyed JSON reward, if it is valid."""
+        try:
+            data = json.loads(await runtime.read(REWARD_JSON))
+            if isinstance(data, bool):
+                return None
+            if isinstance(data, int | float):
+                return float(data) if math.isfinite(data) else None
+            if not isinstance(data, dict) or not data:
+                return None
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+                for value in data.values()
+            ):
+                return None
+            return {key: float(value) for key, value in data.items()}
+        except (SandboxError, OSError, ValueError, OverflowError):
+            return None
 
 
 def harbor_cli() -> str:
