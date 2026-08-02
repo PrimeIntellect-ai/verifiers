@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 # Repeated /samples posts append; match the Prime Evals client's request ceiling.
-_MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
+_MAX_SAMPLES_PAYLOAD_BYTES = 100 * 1024 * 1024
 
 
 @dataclass
