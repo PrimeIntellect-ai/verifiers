@@ -62,6 +62,12 @@ async def collect(
     )
     entries = ([Artifact(source=ARTIFACTS_DIR)] if sweep else []) + declared
 
+    seen: set[str] = set()
+    for artifact in entries:
+        if artifact.source in seen:
+            raise RuntimeError(f"artifact {artifact.source!r} declared more than once")
+        seen.add(artifact.source)
+
     collected: dict[str, bytes] = {}
     budget = MAX_ARTIFACT_BYTES
     for artifact in entries:
