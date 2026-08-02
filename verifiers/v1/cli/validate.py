@@ -2,10 +2,10 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 import sys
 import time
-from typing import Any
 from uuid import uuid4
 
 from pydantic_config import cli
@@ -19,11 +19,27 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
+from verifiers.v1.cli.validate_output import (
+    LOG_FILE,
+    SUMMARY_FILE,
+    ResultRow,
+    append_result,
+    identity,
+    load_results,
+    load_resume_config,
+    output_path,
+    save_run,
+    split_resume,
+    summarize,
+    validation_mode,
+    write_summary,
+)
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.interrupt import install_interrupt
@@ -33,8 +49,9 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run validate [<taskset-id>] [--only-setup | --only-gold] "
-    "[--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       runs the gold and setup-only checks per task (no model)"
+    "[-o <output-dir>] [--runtime.type subprocess] [options] [@ file.toml]\n"
+    "       uv run validate --resume <output-dir>\n"
+    "       runs persisted gold and setup-only checks per task (no model)"
 )
 
 
@@ -43,9 +60,6 @@ def _narrow(argv: list[str]) -> type[ValidateConfig]:
     the single `cli()` parse stays typed and `-h` renders the taskset's fields. Absent an id
     (a `@ file.toml` may carry it) the base type is left for the validator to resolve."""
     return narrow_taskset_config(ValidateConfig, extract_id(argv, "taskset"))
-
-
-ResultRow = dict[str, Any]
 
 
 def _classify(valid: bool, exc: BaseException | None) -> str:
@@ -217,27 +231,68 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         raise SystemExit(
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
         )
-    checks = (
-        "gold" if config.only_gold else "setup" if config.only_setup else "gold+setup"
-    )
+    mode = validation_mode(config)
+    checks = "gold+setup" if mode == "all" else mode
+    out = output_path(config)
+    selected_identities = [
+        identity(
+            position,
+            task.data.model_dump(mode="json", exclude_none=True),
+        )
+        for position, task in enumerate(tasks)
+    ]
+    if config.resume is None:
+        save_run(config, out, len(tasks))
+        rows: list[ResultRow] = []
+        owed = list(range(len(tasks)))
+    else:
+        rows, owed = load_results(out, selected_identities, mode)
+        write_summary(out, summarize(rows, len(tasks), mode))
+    owed_set = set(owed)
+    plan = [
+        (position, task, key)
+        for (position, task), (_, key) in zip(enumerate(tasks), selected_identities)
+        if position in owed_set
+    ]
     logger.info(
-        "validating %d task(s) from %s on the %s runtime (%s)",
+        "%s %d/%d task(s) from %s on the %s runtime (%s)",
+        "resuming" if config.resume is not None else "validating",
+        len(plan),
         len(tasks),
         config.name,
         config.runtime.type,
         checks,
     )
+    logger.info("results: %s", out)
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     states = [TaskProgress(idx=t.data.idx, name=t.data.name) for t in tasks]
-    state_by_idx = {s.idx: s for s in states}
+    for row in rows:
+        state = states[row["task_position"]]
+        state.state = row["reason"]
 
-    async def _one(task) -> dict:
-        st = state_by_idx[task.data.idx]
+    write_lock = asyncio.Lock()
+
+    async def _one(position: int, task: Task, key: str) -> ResultRow:
+        st = states[position]
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             st.state = "running"
             row = await _validate_task(task, config)
+        row["task_position"] = position
+        row["task_key"] = key
+
+        async def persist() -> None:
+            async with write_lock:
+                await asyncio.to_thread(append_result, out, row)
+                rows.append(row)
+                await asyncio.to_thread(
+                    write_summary,
+                    out,
+                    summarize(rows, len(tasks), mode),
+                )
+
+        await run_shielded(persist())
         st.end, st.state = time.time(), row["reason"]
         if not config.rich:  # the dashboard shows this live; otherwise log each task
             detail = f" - {row['error']}" if row["error"] else ""
@@ -257,7 +312,17 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         else contextlib.nullcontext()
     )
     async with display:
-        return await asyncio.gather(*(_one(t) for t in tasks))
+        if not plan:
+            logger.info(
+                "nothing to resume: all %d task(s) are valid or invalid", len(tasks)
+            )
+            return rows
+        await asyncio.gather(
+            *(_one(position, task, key) for position, task, key in plan)
+        )
+    rows.sort(key=lambda row: row["task_position"])
+    write_summary(out, summarize(rows, len(tasks), mode))
+    return rows
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -271,27 +336,46 @@ def main(argv: list[str] | None = None) -> None:
         with plugin_errors():
             cli(_narrow(argv))  # full option help, narrowed to the given taskset
         return
-    if not extract_id(argv, "taskset") and not references_config_file(argv):
-        raise SystemExit(
-            USAGE
-        )  # need a taskset (positional / --taskset.id) or a @ file.toml
+    resume_dir, rest = split_resume(argv)
+    if resume_dir is not None:
+        if rest:
+            raise SystemExit(
+                f"{USAGE}\n--resume replays the saved config and takes no other arguments"
+            )
+        with plugin_errors():
+            config = load_resume_config(resume_dir)
+    else:
+        if not extract_id(argv, "taskset") and not references_config_file(argv):
+            raise SystemExit(
+                USAGE
+            )  # need a taskset (positional / --taskset.id) or a @ file.toml
 
-    with plugin_errors():
-        config_type = _narrow(argv)
-        sys.argv = [
-            sys.argv[0],
-            *argv,
-        ]  # let prime-pydantic-config render help/errors
-        config = cli(config_type)
-    # Nothing is persisted, so logs are the whole output. Under `--rich` the dashboard owns the
-    # screen, so keep logs off the console (else stray records print over the UI).
-    setup_logging("DEBUG" if config.verbose else "INFO", console=not config.rich)
+        with plugin_errors():
+            config_type = _narrow(argv)
+            sys.argv = [
+                sys.argv[0],
+                *argv,
+            ]  # let prime-pydantic-config render help/errors
+            config = cli(config_type)
+    out = output_path(config)
+    setup_logging(
+        "DEBUG" if config.verbose else "INFO",
+        log_file=str(out / LOG_FILE),
+        console=not config.rich,
+    )
     if config.rich:
         logging.lastResort = None  # drop stdlib records that bypass loguru
     # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`
     # (containers/sandboxes); a second is swallowed so it can't orphan them mid-cleanup.
     install_interrupt()
-    asyncio.run(run_validate(config))
+    try:
+        asyncio.run(run_validate(config))
+    except KeyboardInterrupt:
+        print(f"interrupted; partial results: {out}", file=sys.stderr)
+        raise SystemExit(130)
+    summary = json.loads((out / SUMMARY_FILE).read_text())
+    print(f"results: {out}")
+    print(json.dumps(summary, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
