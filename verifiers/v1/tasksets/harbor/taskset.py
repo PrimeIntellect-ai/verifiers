@@ -3,8 +3,8 @@
 The Harbor CLI downloads and caches each task directory. Its verifier runs in the
 runtime the harness edited — or, when the task asks for it with
 ``[verifier].environment_mode = "separate"``, in a second box the agent never
-touched, carrying only what the task declared: the harbor env's verifier seat runs
-``HarborVerifierTask`` there (see ``env.py``). Either way the score lands in
+touched, carrying only what the task declared — the harbor env provisions and
+grades that box (see ``env.py``). Either way the score lands in
 ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
@@ -38,7 +38,7 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.artifacts import Artifact, collect, restore
+from verifiers.v1.utils.artifacts import Artifact, collect
 from verifiers.v1.utils.decorators import reward
 
 logger = logging.getLogger(__name__)
@@ -185,8 +185,8 @@ class HarborTask(Task[HarborData]):
         trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
     def graded_elsewhere(self) -> "HarborTask":
-        """A copy whose `solved` records nothing here: the harbor env's verifier
-        seat grades this task's finished work in a box of the task's choosing."""
+        """A copy whose `solved` records nothing here: the harbor env grades this
+        task's finished work in a separate box of the task's choosing."""
         clone = copy.copy(self)
         clone._graded_elsewhere = True
         return clone
@@ -226,8 +226,8 @@ class HarborTask(Task[HarborData]):
                 raise TaskError(
                     f"task {self.data.name!r} declares a separate verifier "
                     '([verifier].environment_mode = "separate"); grade it through '
-                    "the harbor env's verifier seat (this taskset's default env), "
-                    "or force shared grading with --taskset.ignore-separate-verifier"
+                    "the harbor env (this taskset's default), or force shared "
+                    "grading with --taskset.ignore-separate-verifier"
                 )
             return {}
         await self._stage_tests(runtime)
@@ -264,61 +264,29 @@ class HarborTask(Task[HarborData]):
             return None
 
 
-class HarborVerifierTask(HarborTask):
-    """The verifier seat's task: grade a solver's finished work in a box the agent
-    never touched — the one place a `[verifier].environment_mode = "separate"` task
-    is scored. Minted per episode by the harbor env from the solver's trace, never
-    loaded from a taskset. Only the solver's collected artifacts come in; `tests/`
-    is staged fresh; the inherited scoring runs `test.sh` and reads the reward."""
+def verifier_box_data(data: HarborData) -> HarborData:
+    """The verifier's box, declared as task data — the harbor env resolves the
+    grading runtime from it (image, workdir, resources, network policy), exactly
+    as the solver's box resolves from the solver task's.
 
-    NEEDS_CONTAINER = True
-
-    def __init__(self, data: HarborData, artifacts: dict[str, bytes | None]) -> None:
-        super().__init__(data)
-        self._artifacts = artifacts
-
-    @classmethod
-    def data_for(cls, data: HarborData) -> HarborData:
-        """The verifier box, declared as task data — the seat's runtime resolves
-        from it (image, workdir, resources, network policy), exactly as the
-        solver's box resolves from the solver task's.
-
-        Which box follows Harbor: a declared `[verifier.environment]` states its
-        own image, workdir, and resources, and what it omits is the run's default;
-        a fresh copy of `[environment]` keeps the task's own. The verifier's
-        network policy applies either way."""
-        verifier = data.verifier
-        if verifier is None:
-            raise TaskError(f"task {data.name!r} declares no separate verifier")
-        fresh = verifier.fresh_copy
-        return data.model_copy(
-            update={
-                "name": f"{data.name} (verifier)",
-                "prompt": "Harbor separate verifier: a deterministic grading run "
-                "with no model turns.",
-                "image": verifier.image if verifier.image is not None else data.image,
-                "workdir": data.workdir if fresh else verifier.workdir,
-                "resources": data.resources if fresh else verifier.resources,
-                "network_allow": list(verifier.network_allow),
-                "network_block": [],
-                "timeout": TaskTimeout(scoring=data.timeout.scoring),
-                "artifacts": [],
-                "collect": [],
-            }
-        )
-
-    async def setup(self, trace: Trace, runtime: Runtime) -> None:
-        # Artifacts first, tests second: an artifact entry pointing into /tests
-        # must not survive staging, which wipes and rebuilds that directory.
-        await restore(runtime, self._artifacts)
-        await self._stage_tests(runtime, wipe=True)
-
-    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
-        """Collect hooks already ran in the solver's box; nothing travels from here."""
-
-    @reward(weight=1.0)
-    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
-        return await self._graded(runtime, trace)
+    Which box follows Harbor: a declared `[verifier.environment]` states its own
+    image, workdir, and resources, and what it omits is the run's default; a
+    fresh copy of `[environment]` keeps the task's own. The verifier's network
+    policy applies either way."""
+    verifier = data.verifier
+    if verifier is None:
+        raise TaskError(f"task {data.name!r} declares no separate verifier")
+    fresh = verifier.fresh_copy
+    return data.model_copy(
+        update={
+            "name": f"{data.name} (verifier)",
+            "image": verifier.image if verifier.image is not None else data.image,
+            "workdir": data.workdir if fresh else verifier.workdir,
+            "resources": data.resources if fresh else verifier.resources,
+            "network_allow": list(verifier.network_allow),
+            "network_block": [],
+        }
+    )
 
 
 def task_resources(environment, multiplier: float) -> TaskResources:

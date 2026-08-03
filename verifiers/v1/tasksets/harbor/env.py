@@ -1,71 +1,112 @@
-"""The harbor taskset's own env: one solver seat, plus a verifier seat for tasks
-that declare ``[verifier].environment_mode = "separate"``.
+"""The harbor taskset's own env: the single solver seat, plus separate-verifier
+grading for tasks that declare ``[verifier].environment_mode = "separate"``.
 
 The default env for harbor runs (the taskset package exports it). A shared-verifier
 task runs exactly as under the single-agent env: one `agent` trace, graded in the
-box it worked in. A separate-verifier task is graded by the `verifier` seat
-instead: the solver's declared artifacts travel (collected by its `finalize` while
-its box is alive), the seat provisions a fresh box from the task's verifier
-declaration, and `finalize` records the verifier's rewards onto the solver's
-trace. The verifier seat runs no program (the `noop` harness) and never calls the
-model — grading is the task's own `tests/test.sh`.
+box it worked in. A separate-verifier task is graded by `finalize` instead: the
+solver's declared artifacts travel (collected by its task `finalize` while its box
+is alive), a fresh box is provisioned from the task's verifier declaration,
+`tests/` is staged there, and the verifier's rewards land on the solver's trace.
+No second agent is involved — the verifier is the task's own `tests/test.sh`.
 """
 
+import asyncio
+import logging
+
 import verifiers.v1 as vf
-from verifiers.v1.tasksets.harbor.taskset import HarborTask, HarborVerifierTask
-from verifiers.v1.utils.compile import resolve_runtime_config, validate_pairing
-from verifiers.v1.utils.loaders import harness_config_type
+from verifiers.v1.runtimes import RuntimeConfig, provision_runtime
+from verifiers.v1.tasksets.harbor.taskset import (
+    HarborTask,
+    verifier_box_data,
+)
+from verifiers.v1.utils.artifacts import restore
+from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1.utils.retries import backoff
+
+logger = logging.getLogger(__name__)
 
 
 class HarborEnvConfig(vf.EnvConfig):
     agent: vf.AgentConfig = vf.AgentConfig()
-    """The solver seat — the policy under evaluation/training; pin
+    """The one seat — the policy under evaluation/training; pin
     `--env.agent.harness.*` to choose its program or runtime."""
-    verifier: vf.AgentConfig = vf.AgentConfig()
-    """The verifier seat's placement: where a separate-verifier task grades.
-    Its runtime defaults to the solver's policy (`--env.verifier.runtime.*`
-    overrides — e.g. `vm true` for a network-restricted Prime verifier); its
-    harness is always the program-less `noop`, and its model is never called."""
+    verifier_runtime: RuntimeConfig | None = None
+    """Where a separate-verifier task grades. None derives the grading box from
+    the solver's runtime policy; set it (e.g. `--env.verifier-runtime.type prime
+    --env.verifier-runtime.vm true`) when the verifier needs different placement
+    than the agent."""
+    verifier_retries: int = 2
+    """Extra attempts at provisioning-and-grading the separate box before the
+    episode fails. Grading is deterministic; what these retry is the
+    infrastructure around it (image pulls, provisioning)."""
 
 
 class HarborEnv(vf.Env[HarborEnvConfig]):
-    def __init__(self, config: HarborEnvConfig) -> None:
-        # The verifier seat is not an agent: no program, no model calls. Its one
-        # configurable dimension is placement, defaulting to the solver's policy.
-        updates: dict = {"harness": harness_config_type("noop")(id="noop")}
-        if "runtime" not in config.verifier.model_fields_set:
-            updates["runtime"] = config.agent.runtime
-        config.verifier = config.verifier.model_copy(update=updates)
-        super().__init__(config)
-
-    async def setup(self, agents: vf.Agents) -> None:
-        # The verifier grades the policy; its (empty) exchange never trains it.
-        agents.verifier.trainable = False
-
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         if not isinstance(task, HarborTask) or task.data.verifier is None:
             await agents.agent.run(task)
             return
-        data = HarborVerifierTask.data_for(task.data)
         # Resolve the verifier's box before the solve, so an impossible pairing
         # (e.g. a restricted Prime verifier without vm=true) costs nothing
         # rather than a full agent run.
-        config = resolve_runtime_config(
-            agents.verifier.runtime_config, HarborTask(data)
+        self._verifier_config(task)
+        await agents.agent.run(task.graded_elsewhere())
+
+    def _verifier_config(self, task: HarborTask) -> RuntimeConfig:
+        base = (
+            self.config.verifier_runtime
+            if self.config.verifier_runtime is not None
+            else self.config.agent.runtime
         )
-        validate_pairing(self._harnesses["verifier"], HarborVerifierTask, config)
-        solution = await agents.agent.run(task.graded_elsewhere())
-        if not solution.ok:
-            return
-        await agents.verifier.run(HarborVerifierTask(data, solution.state.artifacts))
+        return resolve_runtime_config(base, HarborTask(verifier_box_data(task.data)))
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        by_agent = {t.agent.name: t for t in episode.traces}
-        verifier = by_agent.get("verifier")
-        if verifier is None:
-            # Shared grading, or the solve failed (the episode is already not ok).
+        """Grade a separate-verifier task in its own box, onto the solver's trace.
+
+        Provision a fresh box from the task's verifier declaration, restore the
+        solver's collected artifacts, stage `tests/`, run the verifier, and record
+        its rewards (and any extra reward.json keys as metrics) on the solver's
+        trace. Infrastructure failures retry per `verifier_retries`; the last one
+        fails the episode — a grading box that can't be reached must never read
+        as reward 0."""
+        if not isinstance(task, HarborTask) or task.data.verifier is None:
             return
-        solution = by_agent["agent"]
-        for name, reward in verifier.rewards.items():
-            solution.record_reward(name, reward.score, reward.weight)
-        solution.record_metrics(verifier.metrics)
+        solution = episode.traces[0]
+        if not solution.ok:
+            return
+        grader = HarborTask(verifier_box_data(task.data))
+        scores = await self._grade(self._verifier_config(task), grader, solution)
+        items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
+        for name, value in items:
+            solution.record_reward(name, value)
+
+    async def _grade(
+        self, config: RuntimeConfig, grader: HarborTask, solution: vf.Trace
+    ) -> float | dict[str, float]:
+        last: Exception | None = None
+        for attempt in range(self.config.verifier_retries + 1):
+            if attempt:
+                delay = backoff(attempt - 1)
+                logger.warning(
+                    "harbor verifier attempt %d/%d failed (%s); retrying in %.1fs",
+                    attempt,
+                    self.config.verifier_retries + 1,
+                    last,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            try:
+                async with asyncio.timeout(grader.data.timeout.scoring):
+                    async with provision_runtime(config) as box:
+                        await box.prepare_setup()
+                        # Artifacts first, tests second: an artifact entry pointing
+                        # into /tests must not survive staging, which wipes and
+                        # rebuilds that directory.
+                        await restore(box, solution.state.artifacts)
+                        await grader._stage_tests(box, wipe=True)
+                        await box.prepare_execution([])
+                        return await grader._graded(box, solution)
+            except Exception as e:  # noqa: BLE001 - each attempt's failure is retried
+                last = e
+        assert last is not None
+        raise last

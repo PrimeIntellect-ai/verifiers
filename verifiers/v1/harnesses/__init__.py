@@ -17,7 +17,6 @@ from verifiers.v1.harnesses.mini_swe_agent import (
     MiniSWEAgentHarness,
     MiniSWEAgentHarnessConfig,
 )
-from verifiers.v1.harnesses.noop import NoopHarness, NoopHarnessConfig
 from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
 from verifiers.v1.harnesses.openclaw import OpenClawHarness, OpenClawHarnessConfig
 from verifiers.v1.harnesses.pi import PiHarness, PiHarnessConfig
@@ -40,8 +39,6 @@ __all__ = [
     "KimiCodeHarnessConfig",
     "MiniSWEAgentHarness",
     "MiniSWEAgentHarnessConfig",
-    "NoopHarness",
-    "NoopHarnessConfig",
     "NullHarness",
     "NullHarnessConfig",
     "OpenClawHarness",
