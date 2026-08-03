@@ -62,7 +62,6 @@ class RolloutLimits:
 class RolloutSession:
     ctx: ModelContext
     client: Client
-    """The rollout's own live client, resolved from `ctx.client` and closed with the rollout."""
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
