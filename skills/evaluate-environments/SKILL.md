@@ -82,7 +82,7 @@ The names of these tools are set by the respective harness. Research the relevan
 The CLI help is generated from the current config classes. Include the taskset and env ids you plan to use before `--help` so their concrete config fields are loaded:
 
 ```bash
-prime eval run my-task-v1 \
+uv run eval my-task-v1 \
   --env.id best-of-n \
   --help
 ```
