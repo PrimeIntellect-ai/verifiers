@@ -385,6 +385,14 @@ class LegacyEnvServer(EnvServer):
         # are no serving resources to enter.
         return contextlib.nullcontext()
 
+    async def run(self) -> None:
+        try:
+            await super().run()
+        finally:
+            for client in self._clients.values():
+                with contextlib.suppress(Exception):
+                    await client.close()
+
     def _v0_client(self, client_config: ClientConfig, model: str):
         """Translate a v1 ``ClientConfig`` into a v0 client (cached). A renderer config
         (token-in/out, training) builds a v0 renderer client whose tokenizer is pinned to
