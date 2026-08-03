@@ -9,7 +9,6 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
-from urllib.parse import urljoin
 
 import httpx
 from pydantic import Field
@@ -259,9 +258,8 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
             raise ValueError(
                 f"unsupported NeMo Gym MCP transport: {metadata.get('transport')!r}"
             )
-        state.mcp_url = urljoin(
-            f"{state.resources_url}/", metadata.get("url_path", "/mcp")
-        )
+        mcp_path = metadata.get("url_path", "/mcp").lstrip("/")
+        state.mcp_url = f"{state.resources_url}/{mcp_path}"
         state.mcp_headers = state.headers | (metadata.get("headers") or {})
 
     @reward(weight=1.0)
