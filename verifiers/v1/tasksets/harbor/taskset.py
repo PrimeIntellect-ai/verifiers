@@ -396,7 +396,11 @@ def parse_verifier_extras(
         # no such directory (the trace is the record) and Harbor never lets destination
         # affect verifier-side placement, so it cannot change any grading outcome.
         artifacts.append(
-            Artifact(source=entry.source, exclude=list(entry.exclude or []))
+            Artifact(
+                source=entry.source,
+                exclude=list(entry.exclude or []),
+                required=False,
+            )
         )
 
     hooks: list[CollectHook] = []

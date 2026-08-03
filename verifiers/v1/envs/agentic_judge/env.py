@@ -143,7 +143,7 @@ class JudgeTask(vf.Task):
         self,
         data: vf.TaskData,
         files: dict[str, bytes],
-        artifacts: dict[str, bytes],
+        artifacts: dict[str, bytes | None],
     ) -> None:
         super().__init__(data)
         self.files = files
