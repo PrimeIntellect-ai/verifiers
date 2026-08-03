@@ -79,9 +79,7 @@ The names of these tools are set by the respective harness. Research the relevan
 
 ## Config discovery
 
-The CLI help is generated from the current config classes. Include the taskset
-and env ids you plan to use before `--help` so their concrete config fields are
-loaded:
+The CLI help is generated from the current config classes. Include the taskset and env ids you plan to use before `--help` so their concrete config fields are loaded:
 
 ```bash
 prime eval run my-task-v1 \
@@ -89,13 +87,7 @@ prime eval run my-task-v1 \
   --help
 ```
 
-For implementation details and defaults, start at
-`verifiers/v1/configs/cli/eval.py` and follow its fields into
-`verifiers/v1/configs/`. Client configs live in `verifiers/v1/clients/config.py`,
-sampling in `verifiers/v1/types.py`, and runtime- and harness-specific configs
-next to their implementations in `verifiers/v1/runtimes/` and
-`verifiers/v1/harnesses/`. Custom taskset and env config fields live next to
-those implementations.
+For implementation details and defaults, start at `verifiers/v1/configs/cli/eval.py` and follow its fields into `verifiers/v1/configs/`. Client configs live in `verifiers/v1/clients/config.py`, sampling in `verifiers/v1/types.py`, and runtime- and harness-specific configs next to their implementations in `verifiers/v1/runtimes/` and `verifiers/v1/harnesses/`. Custom taskset and env config fields live next to those implementations.
 
 ## Typed taskset overrides
 
@@ -129,8 +121,7 @@ Always research the correct sampling parameters first. This is one of the most i
 
 Your parameter selection or settings should leave room for full runs, and you should not restrict things like tokens or number of turns unless specified by the user.
 
-Leave optional settings unset unless the user asks for them. Always confirm the
-harness, runtime, and sampling parameters before running an evaluation.
+Leave optional settings unset unless the user asks for them. Always confirm the harness, runtime, and sampling parameters before running an evaluation.
 
 ## Reproducible TOML
 
