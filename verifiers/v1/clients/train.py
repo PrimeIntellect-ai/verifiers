@@ -314,15 +314,11 @@ class TrainClient(Client):
         # The per-request model is only known at call time; a config that pins the renderer
         # model can warm now, which is every training run (prime-rl always pins it).
         if config.renderer_model_name is not None:
-            self._pool_for(config.renderer_model_name).warm()
-
-    def _pool_for(self, renderer_model: str, chat_template_kwargs=None):
-        return ElasticRendererPool(
-            renderer_model,
-            self.config.renderer,
-            chat_template_kwargs=chat_template_kwargs,
-            multiplex=self.config.multiplex,
-        )
+            ElasticRendererPool(
+                config.renderer_model_name,
+                config.renderer,
+                multiplex=config.multiplex,
+            ).warm()
 
     async def get_response(
         self,
@@ -368,9 +364,11 @@ class TrainClient(Client):
         )
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         sampling_params.update(raw_sampling)
-        pool = self._pool_for(
+        pool = ElasticRendererPool(
             self.config.renderer_model_name or model,
+            self.config.renderer,
             chat_template_kwargs=chat_template_kwargs,
+            multiplex=self.config.multiplex,
         )
         bridged_turn: PendingTurn | None = None
 
