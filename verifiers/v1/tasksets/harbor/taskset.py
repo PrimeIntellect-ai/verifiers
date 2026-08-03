@@ -246,7 +246,15 @@ class HarborTask(Task[HarborData]):
                 return {"reward": scores["reward"]}
             return scores
         try:
-            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
+            reward = (
+                (
+                    await runtime.read(
+                        "/logs/verifier/reward.txt", max_bytes=MAX_REWARD_BYTES
+                    )
+                )
+                .decode()
+                .strip()
+            )
             return float(reward or 0)
         except (SandboxError, OSError, ValueError):
             return 0.0
