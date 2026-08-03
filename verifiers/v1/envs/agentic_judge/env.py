@@ -1,16 +1,17 @@
-"""agentic-judge: a solver plays the task, then a judge verifies the work.
+"""Agentic judging: a solver plays the task, then a judge verifies the work.
 
-A reusable env (`--env.id agentic-judge` over any taskset). The solver plays the
-task in a container provisioned from its runtime policy; the judge then grades
-rubric criteria (`[env.task]`: policy prompt, criteria file) and writes its
-verdicts to `/tmp/verdict.json`, with the solver's full trace record uploaded at
-`/tmp/trace.json`. `finalize()` validates them strictly onto the solver's trace —
-`judge/<name>` metrics plus a weighted-mean `judge` reward, composed with the
-taskset's own rewards via `[env.score]` (judge-only by default).
+Two reusable envs share the grading protocol. `--env.id agentic-judge` provisions
+a fresh box from the solver's runtime policy and restores only the task's collected
+artifacts; `--env.id shared-agentic-judge` explicitly runs the judge in the
+solver's box. The judge grades rubric criteria (`[env.task]`: policy prompt,
+criteria file) and writes its verdicts to `/tmp/verdict.json`, with the solver's
+full trace record uploaded at `/tmp/trace.json`. `finalize()` validates them
+strictly onto the solver's trace — `judge/<name>` metrics plus a weighted-mean
+`judge` reward, composed with the taskset's own rewards via `[env.score]`
+(judge-only by default).
 
-`--env.share-runtime` controls whether the judge uses the solver's runtime. It is
-enabled by default. When disabled, the judge gets a fresh runtime containing the
-task's collected artifacts.
+The environment id selects the runtime boundary; there is no mode boolean whose
+value can disagree with the environment's security and artifact semantics.
 """
 
 import json
@@ -260,20 +261,22 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     """The solver agent. Its runtime must be a container:
     `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. Its runtime is ignored when `share_runtime` is enabled;
-    otherwise it must be a container."""
-    share_runtime: bool = True
-    """Whether the judge grades in the solver's runtime."""
+    """The judge agent. Its runtime setting is ignored: both judging modes use the
+    solver's resolved runtime policy, either by borrowing its box or provisioning a
+    fresh equivalent one."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
+    """Common agentic-judge protocol; subclasses choose the runtime boundary."""
+
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        if config.share_runtime:
-            config.judge = config.judge.model_copy(
-                update={"runtime": config.solver.runtime}
-            )
+        # Both modes use the solver's policy. Shared judging borrows that exact box;
+        # isolated judging resolves the mirrored JudgeTask into a fresh equivalent.
+        config.judge = config.judge.model_copy(
+            update={"runtime": config.solver.runtime}
+        )
         super().__init__(config)
         self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
@@ -304,21 +307,6 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
-    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        if self.config.share_runtime:
-            async with agents.solver.provision(task) as box:
-                solution = await agents.solver.run(task, runtime=box)
-                judge_task = JudgeTask.from_trace(solution, self.config.task)
-                await agents.judge.run(judge_task, runtime=box)
-            return
-
-        solution = await agents.solver.run(task)
-        if not solution.ok:
-            return
-        await agents.judge.run(
-            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
-        )
-
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent.name: t for t in episode.traces}
         if "judge" not in by_agent:
@@ -336,3 +324,25 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         total = sum(criterion.weight for criterion in criteria)
         reward = sum(c.weight * scores[c.name] for c in criteria) / total
         solution.record_reward("judge", reward, weight=self.config.score.judge_weight)
+
+
+class SharedAgenticJudgeEnv(AgenticJudgeEnv):
+    """Judge the solver in its runtime, preserving the complete mutable workspace."""
+
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        async with agents.solver.provision(task) as box:
+            solution = await agents.solver.run(task, runtime=box)
+            judge_task = JudgeTask.from_trace(solution, self.config.task)
+            await agents.judge.run(judge_task, runtime=box)
+
+
+class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
+    """Judge only collected artifacts in a fresh box with the solver's policy."""
+
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        solution = await agents.solver.run(task)
+        if not solution.ok:
+            return
+        await agents.judge.run(
+            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
+        )
