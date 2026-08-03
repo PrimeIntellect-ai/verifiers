@@ -320,11 +320,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
-    """Named, weighted rewards. Scoring seeds every expected name with `None` before
-    invoking it, so a `None` value means the reward never produced a score; an empty
-    dict means scoring was never attempted."""
+    """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
+    preceding error)."""
     metrics: dict[str, float | None] = Field(default_factory=dict)
-    """Unweighted, named metrics; `None` and `{}` as in `rewards`."""
+    """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata."""
     state: StateT = Field(default_factory=State, exclude=True)
