@@ -23,6 +23,16 @@ class RubricGroup(Rubric):
         self.rubrics = rubrics
         self.logger.debug(f"Initialized RubricGroup with {len(rubrics)} rubrics")
 
+    @property  # type: ignore[override]
+    def training_context(self) -> dict | None:
+        return self._training_context
+
+    @training_context.setter
+    def training_context(self, value: dict | None) -> None:
+        self._training_context = value
+        for rubric in getattr(self, "rubrics", []):
+            rubric.training_context = value
+
     def _get_reward_func_names(self) -> list[str]:
         names = []
         for rubric in self.rubrics:
