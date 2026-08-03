@@ -1,16 +1,4 @@
-"""The eval client: relay the program's native request to the provider.
-
-`EvalClient` (the default) is a thin `httpx` forwarder: it sends the program's request body
-without a typed round-trip, mutating only what the eval owns (model + sampling, via the dialect's
-`apply_overrides`). Eligible end-to-end request headers are forwarded too; rollout auth, body
-framing, and connection headers are replaced. The provider response is parsed into a vf
-`Response` for the trace, while its full JSON object stays on `Response.raw` for the interception
-server to return.
-
-The transport is provider-agnostic: the dialect supplies the upstream path + auth headers, so a
-new wire format (incl. non-OpenAI providers like Anthropic) is just a new `Dialect` — no client
-change. Endpoint config (base url, api key, billing headers) comes from the client config.
-"""
+"""The eval client: proxies harness-native request to the provider."""
 
 import re
 from collections.abc import Mapping

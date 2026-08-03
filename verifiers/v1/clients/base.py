@@ -19,8 +19,6 @@ VERSION_SEGMENT = re.compile(r"v\d+")
 
 
 def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
-    """An `AsyncOpenAI` for `config` (resolved key + extra headers) — for in-env model calls
-    (e.g. a judge) and the training client's engine connection."""
     return AsyncOpenAI(
         base_url=config.base_url,
         api_key=resolve_api_key(config),
