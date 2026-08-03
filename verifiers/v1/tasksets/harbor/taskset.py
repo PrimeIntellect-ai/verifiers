@@ -13,8 +13,6 @@ image unless ``require_image`` is set.
 import asyncio
 import hashlib
 import io
-import json
-import math
 import shutil
 import subprocess
 import sys
@@ -23,8 +21,9 @@ import tempfile
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError
@@ -38,6 +37,10 @@ from verifiers.v1.utils.decorators import reward
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
+REWARD_JSON_ADAPTER = TypeAdapter(
+    float | Annotated[dict[str, float], Field(min_length=1)],
+    config=ConfigDict(strict=True, allow_inf_nan=False),
+)
 
 
 class HarborConfig(TasksetConfig):
@@ -183,22 +186,8 @@ class HarborTask(Task[HarborData]):
     async def _reward_json(self, runtime: Runtime) -> float | dict[str, float] | None:
         """Read Harbor's scalar or keyed JSON reward, if it is valid."""
         try:
-            data = json.loads(await runtime.read(REWARD_JSON))
-            if isinstance(data, bool):
-                return None
-            if isinstance(data, int | float):
-                return float(data) if math.isfinite(data) else None
-            if not isinstance(data, dict) or not data:
-                return None
-            if any(
-                isinstance(value, bool)
-                or not isinstance(value, int | float)
-                or not math.isfinite(value)
-                for value in data.values()
-            ):
-                return None
-            return {key: float(value) for key, value in data.items()}
-        except (SandboxError, OSError, ValueError, OverflowError):
+            return REWARD_JSON_ADAPTER.validate_json(await runtime.read(REWARD_JSON))
+        except (SandboxError, OSError, ValidationError):
             return None
 
 
