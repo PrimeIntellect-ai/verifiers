@@ -23,7 +23,12 @@ from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, content_text
 from verifiers.v1.utils.artifacts import Artifact
-from verifiers.v1.utils.decorators import discover_decorated, invoke_all
+from verifiers.v1.utils.decorators import (
+    discover_decorated,
+    invoke_all,
+    seed,
+    unseed,
+)
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
@@ -180,31 +185,36 @@ class Task(Generic[DataT, StateT, ConfigT]):
                     judge for judge in judges if not requires_runtime(judge.score)
                 ]
 
+            seed(trace.metrics, (fn.__name__ for fn in metrics))
+            seed(trace.rewards, (fn.__name__ for fn in rewards))
+            seed(trace.rewards, (judge.reward_name for judge in judges))
+
             metric_results = await invoke_all(metrics, available)
             for fn, result in zip(metrics, metric_results):
                 if isinstance(result, Mapping):
+                    unseed(trace.metrics, fn.__name__)
                     trace.record_metrics(result)
                 else:
                     trace.record_metric(fn.__name__, result)
             reward_results = await invoke_all(rewards, available)
             for fn, result in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)
-                items = (
-                    result.items()
-                    if isinstance(result, Mapping)
-                    else [(fn.__name__, result)]
-                )
+                if isinstance(result, Mapping):
+                    unseed(trace.rewards, fn.__name__)
+                    items = result.items()
+                else:
+                    items = [(fn.__name__, result)]
                 for key, value in items:
                     trace.record_reward(key, value, weight)
             judge_results = await invoke_all(
                 [judge.score for judge in judges], available
             )
             for judge, result in zip(judges, judge_results):
-                items = (
-                    result.items()
-                    if isinstance(result, Mapping)
-                    else [(judge.reward_name, result)]
-                )
+                if isinstance(result, Mapping):
+                    unseed(trace.rewards, judge.reward_name)
+                    items = result.items()
+                else:
+                    items = [(judge.reward_name, result)]
                 for key, value in items:
                     trace.record_reward(key, value, judge.config.weight)
 
