@@ -10,7 +10,7 @@ from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.legacy import LegacyEnvConfig
-from verifiers.v1.configs.serve import ServingConfig
+from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -19,7 +19,7 @@ class EvalConfig(BaseConfig):
     env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
     the selected env's config class by the env id, else the taskset id."""
-    serve: ServingConfig = ServingConfig()
+    serve: ServeConfig = ServeConfig()
     """How the env is hosted under `--server`: the worker pool, each worker's episode
     bound. Ignored by an in-process run."""
     legacy: LegacyEnvConfig = LegacyEnvConfig()
