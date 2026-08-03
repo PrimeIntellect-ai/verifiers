@@ -218,11 +218,7 @@ def _trace_to_nemo_response(
 
     for item in output:
         name = str(item.get("name", ""))
-        bare_name = (
-            name.rsplit("__", 1)[-1].removeprefix("_")
-            if name.startswith("mcp__")
-            else name.removeprefix("_")
-        )
+        bare_name = name.removeprefix("_")
         if item.get("type") == "function_call" and bare_name in known_names:
             item["name"] = bare_name
 
