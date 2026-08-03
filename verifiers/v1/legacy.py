@@ -23,8 +23,8 @@ import zmq.asyncio
 from pydantic import ValidationError
 
 from verifiers.v1 import graph
-from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.client import ClientConfig, TrainClientConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
@@ -385,6 +385,14 @@ class LegacyEnvServer(EnvServer):
         # are no serving resources to enter.
         return contextlib.nullcontext()
 
+    async def run(self) -> None:
+        try:
+            await super().run()
+        finally:
+            for client in self._clients.values():
+                with contextlib.suppress(Exception):
+                    await client.close()
+
     def _v0_client(self, client_config: ClientConfig, model: str):
         """Translate a v1 ``ClientConfig`` into a v0 client (cached). A renderer config
         (token-in/out, training) builds a v0 renderer client whose tokenizer is pinned to
@@ -406,7 +414,6 @@ class LegacyEnvServer(EnvServer):
                     client_type="renderer",
                     renderer_config=client_config.renderer,
                     renderer_model_name=renderer_model,
-                    renderer_pool_size=client_config.pool_size,
                     api_base_url=client_config.base_url,
                     api_key_var=client_config.api_key_var,
                     extra_headers=dict(client_config.headers or {}),

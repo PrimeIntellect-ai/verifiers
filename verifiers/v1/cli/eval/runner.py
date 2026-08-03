@@ -14,7 +14,7 @@ from verifiers.v1.cli.output import (
     output_path,
     save_config,
 )
-from verifiers.v1.clients import ModelContext, resolve_client
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
-    client = resolve_client(config.client)
     taskset = env.taskset
     if config.num_tasks is None and taskset.INFINITE:
         raise ValueError(
@@ -36,7 +35,9 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     if config.num_tasks is not None:
         selected = selected.head(config.num_tasks)
     tasks = list(selected)
-    ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
+    ctx = ModelContext(
+        client=config.client, model=config.model, sampling=config.sampling
+    )
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
@@ -107,7 +108,6 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
 
                 push_state.started = True
                 await asyncio.to_thread(push_traces, episodes, config, push_state)
-    await client.close()
     return episodes
 
 

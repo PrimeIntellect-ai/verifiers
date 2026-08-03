@@ -416,7 +416,7 @@ class InterceptionServer(Interception):
                     upstream_request = dialect.apply_overrides(
                         body, session.ctx.model, session.ctx.sampling
                     )
-                    call_response = await session.ctx.client.get_response(
+                    call_response = await session.client.get_response(
                         dialect,
                         body,
                         session.ctx.model,
@@ -543,7 +543,7 @@ class InterceptionServer(Interception):
                 upstream_request = dialect.apply_overrides(
                     body, session.ctx.model, session.ctx.sampling
                 )
-                reply = await session.ctx.client.relay(
+                reply = await session.client.relay(
                     dialect,
                     body,
                     session.ctx.model,
@@ -692,7 +692,7 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
-            result = await session.ctx.client.relay_aux(
+            result = await session.client.relay_aux(
                 dialect, route, await request.json(), headers=request.headers
             )
         except RolloutError as e:

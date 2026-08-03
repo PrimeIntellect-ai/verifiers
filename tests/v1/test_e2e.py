@@ -180,8 +180,8 @@ async def test_interaction(live_ctx):
             harness=NullHarnessConfig(id="null"),
             model=live_ctx.model,
             sampling=live_ctx.sampling,
+            client=live_ctx.client,
         ),
-        client=live_ctx.client,
     )
     task = vf.Task(
         vf.TaskData(
