@@ -12,6 +12,9 @@ No second agent is involved — the verifier is the task's own `tests/test.sh`.
 
 import asyncio
 import logging
+from contextlib import AsyncExitStack
+
+from pydantic import Field
 
 import verifiers.v1 as vf
 from verifiers.v1.runtimes import RuntimeConfig, provision_runtime
@@ -35,7 +38,7 @@ class HarborEnvConfig(vf.EnvConfig):
     the solver's runtime policy; set it (e.g. `--env.verifier-runtime.type prime
     --env.verifier-runtime.vm true`) when the verifier needs different placement
     than the agent."""
-    verifier_retries: int = 2
+    verifier_retries: int = Field(2, ge=0)
     """Extra attempts at provisioning-and-grading the separate box before the
     episode fails. Grading is deterministic; what these retry is the
     infrastructure around it (image pulls, provisioning)."""
@@ -43,7 +46,11 @@ class HarborEnvConfig(vf.EnvConfig):
 
 class HarborEnv(vf.Env[HarborEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        if not isinstance(task, HarborTask) or task.data.verifier is None:
+        if not isinstance(task, HarborTask):
+            raise TypeError(
+                f"the harbor env runs harbor tasks; got {type(task).__name__}"
+            )
+        if task.data.verifier is None:
             await agents.agent.run(task)
             return
         # Resolve the verifier's box before the solve, so an impossible pairing
@@ -96,8 +103,12 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
                 )
                 await asyncio.sleep(delay)
             try:
-                async with asyncio.timeout(grader.data.timeout.scoring):
-                    async with provision_runtime(config) as box:
+                # The scoring deadline covers provisioning and grading, but not the
+                # box's teardown: a score already in hand must not be discarded
+                # because the teardown ran out the clock.
+                async with AsyncExitStack() as boxes:
+                    async with asyncio.timeout(grader.data.timeout.scoring):
+                        box = await boxes.enter_async_context(provision_runtime(config))
                         await box.prepare_setup()
                         # Artifacts first, tests second: an artifact entry pointing
                         # into /tests must not survive staging, which wipes and
@@ -105,7 +116,8 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
                         await restore(box, solution.state.artifacts)
                         await grader._stage_tests(box, wipe=True)
                         await box.prepare_execution([])
-                        return await grader._graded(box, solution)
+                        scores = await grader._graded(box, solution)
+                    return scores
             except Exception as e:  # noqa: BLE001 - each attempt's failure is retried
                 last = e
         assert last is not None

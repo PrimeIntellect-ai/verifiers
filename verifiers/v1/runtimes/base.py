@@ -294,11 +294,18 @@ class Runtime(ABC):
         override `_read`, not this."""
         if max_bytes is None:
             return await self._read(path)
+        # Through a temp file, not a pipe: `head | base64` exits with base64's 0
+        # even when the path is missing, and a missing file must raise here just
+        # as it does from `_read`.
         result = await self.run(
             [
                 "sh",
                 "-c",
-                'head -c "$1" -- "$2" | base64',
+                (
+                    "t=$(mktemp) || exit 1; "
+                    'head -c "$1" -- "$2" > "$t" || { rm -f "$t"; exit 1; }; '
+                    'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
+                ),
                 "sh",
                 str(max_bytes + 1),
                 path,
