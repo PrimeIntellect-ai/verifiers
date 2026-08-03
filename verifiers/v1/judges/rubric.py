@@ -2,20 +2,21 @@
 
 import asyncio
 import json
-import math
 import re
 import tomllib
 from functools import cached_property
 from pathlib import Path
-from typing import cast
+from typing import Annotated, cast
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter, field_validator
 
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
+
+_CriterionWeight = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
     encoding="utf-8"
@@ -60,20 +61,64 @@ class Criterion(BaseModel):
     name: str
     """Key for the criterion's metric (`<judge name>/<name>`) and its `weights` override."""
     text: str
-    weight: float = 1.0
+    weight: _CriterionWeight = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
-    choices: list[str] = Field(default_factory=lambda: ["no", "yes"])
+    choices: list[str] = Field(default_factory=lambda: ["no", "yes"], min_length=2)
     """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
     evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
 
     @field_validator("choices")
     @classmethod
     def _check_choices(cls, v: list[str]) -> list[str]:
-        if len(v) < 2:
-            raise ValueError(f"`choices` needs at least two options, got {v}")
         if len(set(v)) != len(v):
             raise ValueError(f"`choices` has duplicate options: {v}")
         return v
+
+
+_CRITERIA_ADAPTER = TypeAdapter(
+    Annotated[
+        list[Criterion],
+        BeforeValidator(
+            lambda value: (
+                value.get("criteria", []) if isinstance(value, dict) else value
+            )
+        ),
+    ]
+)
+
+
+def _load_criteria(
+    path: Path, weights: dict[str, _CriterionWeight] | None = None
+) -> list[Criterion]:
+    """Load either supported rubric shape and apply validated config overrides."""
+    text = path.read_text(encoding="utf-8")
+    criteria = (
+        _CRITERIA_ADAPTER.validate_python(tomllib.loads(text))
+        if path.suffix.lower() == ".toml"
+        else _CRITERIA_ADAPTER.validate_json(text)
+    )
+    if not criteria:
+        raise ValueError(f"rubric file '{path}' lists no criteria")
+    names = [criterion.name for criterion in criteria]
+    if len(set(names)) != len(names):
+        raise ValueError(f"rubric file '{path}' has duplicate criterion names")
+    overrides = weights or {}
+    if unknown := set(overrides) - set(names):
+        raise ValueError(
+            f"`weights` overrides name no criterion in '{path}': {sorted(unknown)}"
+        )
+    criteria = [
+        criterion.model_copy(
+            update={"weight": overrides.get(criterion.name, criterion.weight)}
+        )
+        for criterion in criteria
+    ]
+    total = sum(criterion.weight for criterion in criteria)
+    if total == float("inf"):
+        raise ValueError(f"rubric '{path}' has a non-finite total criterion weight")
+    if total <= 0:
+        raise ValueError(f"rubric '{path}' has no positive criterion weight")
+    return criteria
 
 
 class RubricJudgeConfig(JudgeConfig):
@@ -82,7 +127,7 @@ class RubricJudgeConfig(JudgeConfig):
     path: Path
     """A `.toml` or `.json` file containing a `criteria` list. Relative paths resolve
     against the evaluation's working directory."""
-    weights: dict[str, float] = Field(default_factory=dict)
+    weights: dict[str, _CriterionWeight] = Field(default_factory=dict)
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
     question_field: str = ""
     """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
@@ -96,7 +141,7 @@ class RubricJudgeConfig(JudgeConfig):
     """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the whole
     transcript — rubric criteria typically grade the process (tool use, citations,
     intermediate steps), not just the final answer."""
-    max_criteria: int | None = None
+    max_criteria: int | None = Field(default=None, ge=1)
     """How many criteria to grade per judge call. `None` (default) grades all criteria in one
     call. `1` sends one call per criterion (n independent judges); `k` batches them k-at-a-time.
     Batches are graded concurrently and merged. Smaller batches trade more calls for focus/
@@ -119,45 +164,43 @@ class RubricVerdicts(BaseModel):
     verdicts: list[CriterionVerdict]
 
 
+def _score_verdicts(
+    verdicts: list[CriterionVerdict],
+    criteria: list[Criterion],
+    expected: str,
+) -> dict[str, float]:
+    """Validate a complete named verdict set and normalize its ordered choices."""
+    by_criterion = {criterion.name: criterion for criterion in criteria}
+    answers: dict[str, str] = {}
+    for verdict in verdicts:
+        if verdict.name in answers:
+            raise ValueError(
+                f"judge answered criterion {verdict.name!r} more than once"
+            )
+        answers[verdict.name] = verdict.verdict
+    if sorted(answers) != sorted(by_criterion):
+        raise ValueError(
+            f"judge verdicts name {sorted(answers)}, expected {expected} "
+            f"{sorted(by_criterion)}"
+        )
+    scores: dict[str, float] = {}
+    for name, answer in answers.items():
+        choices = by_criterion[name].choices
+        if answer not in choices:
+            raise ValueError(
+                f"judge answered {answer!r} for '{name}', expected one of {choices}"
+            )
+        scores[name] = normalize_choice(answer, choices)
+    return scores
+
+
 class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
     prompt = RUBRIC_PROMPT
     schema = RubricVerdicts
 
     @cached_property
     def criteria(self) -> list[Criterion]:
-        path = self.config.path
-        text = path.read_text(encoding="utf-8")
-        data = (
-            tomllib.loads(text) if path.suffix.lower() == ".toml" else json.loads(text)
-        )
-        items = data.get("criteria", []) if isinstance(data, dict) else data
-        criteria = [Criterion.model_validate(item) for item in items]
-        if not criteria:
-            raise ValueError(f"rubric file '{path}' lists no criteria")
-        names = [criterion.name for criterion in criteria]
-        if len(set(names)) != len(names):
-            raise ValueError(f"rubric file '{path}' has duplicate criterion names")
-        if unknown := set(self.config.weights) - set(names):
-            raise ValueError(
-                f"`weights` overrides name no criterion in '{path}': {sorted(unknown)}"
-            )
-        criteria = [
-            criterion.model_copy(
-                update={
-                    "weight": self.config.weights.get(criterion.name, criterion.weight)
-                }
-            )
-            for criterion in criteria
-        ]
-        if bad := [c.name for c in criteria if not 0 <= c.weight < math.inf]:
-            # A negative weight would invert a criterion (pushing the reward out of [0, 1]);
-            # NaN/inf (which json.loads accepts) would corrupt the weighted mean.
-            raise ValueError(
-                f"rubric '{path}' has negative or non-finite criterion weights: {bad}"
-            )
-        if sum(criterion.weight for criterion in criteria) <= 0:
-            raise ValueError(f"rubric '{path}' has no positive criterion weight")
-        return criteria
+        return _load_criteria(self.config.path, self.config.weights)
 
     async def grade_batch(
         self, task: TaskData, trace: Trace, batch: list[Criterion]
@@ -205,30 +248,12 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                     f"judge returned no verdicts JSON object: {result.text!r}"
                 )
             verdicts = RubricVerdicts.model_validate(obj).verdicts
-        # Exactly one verdict per criterion in the batch, matched by name — anything else is a
-        # judge failure and must error the rollout, not score the model (see `judge_verdict`).
-        by_criterion = {c.name: c for c in batch}
-        if sorted(v.name for v in verdicts) != sorted(by_criterion):
-            raise ValueError(
-                f"judge verdicts name {sorted(v.name for v in verdicts)}, expected the "
-                f"batch's {sorted(by_criterion)}"
-            )
-        scores: dict[str, float] = {}
-        for v in verdicts:
-            choices = by_criterion[v.name].choices
-            # An off-menu answer is a judge failure, not a zero score.
-            if v.verdict not in choices:
-                raise ValueError(
-                    f"judge answered {v.verdict!r} for '{v.name}', expected one of {choices}"
-                )
-            scores[v.name] = normalize_choice(v.verdict, choices)
-        return scores
+        # A malformed verdict is a judge failure and must error the rollout, not score the model.
+        return _score_verdicts(verdicts, batch, "the batch's")
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria
         k = self.config.max_criteria
-        if k is not None and k < 1:
-            raise ValueError(f"`max_criteria` must be >= 1 or None, got {k}")
         batches = (
             [criteria]
             if k is None

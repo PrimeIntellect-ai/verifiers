@@ -4,9 +4,19 @@ import json
 import logging
 import random
 import shlex
-from typing import Literal
+from typing import Annotated, Literal, NotRequired
 
-from pydantic import Field, model_validator
+from pydantic import (
+    Field,
+    FiniteFloat,
+    OnErrorOmit,
+    PositiveInt,
+    Strict,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+from typing_extensions import TypedDict
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -20,6 +30,13 @@ from verifiers.v1.utils.decorators import metric
 logger = logging.getLogger(__name__)
 
 BuiltinSkill = Literal["edit", "search"]
+
+
+class _SessionMeta(TypedDict):
+    metrics: NotRequired[dict[str, OnErrorOmit[Annotated[FiniteFloat, Strict()]]]]
+
+
+_SESSION_META_ADAPTER = TypeAdapter(_SessionMeta)
 
 RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
 # rlm writes its session under $RLM_HOME/sessions/<id>/; point it at a workdir-
@@ -38,26 +55,18 @@ class RLMHarnessConfig(HarnessConfig):
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
-    summarize_at_tokens: int | tuple[int, int] | None = None
+    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
     """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
     past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
     threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
     `None` disables auto-compaction; ints must be positive."""
 
     @model_validator(mode="after")
-    def validate_limits(self) -> "RLMHarnessConfig":
+    def validate_range(self) -> "RLMHarnessConfig":
         value = self.summarize_at_tokens
-        if isinstance(value, tuple):
-            lo, hi = value
-            if lo <= 0 or hi <= 0:
-                raise ValueError("`summarize_at_tokens` range bounds must be positive.")
-            if lo > hi:
-                raise ValueError(
-                    "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
-                )
-        elif value is not None and value <= 0:
+        if isinstance(value, tuple) and value[0] > value[1]:
             raise ValueError(
-                "`summarize_at_tokens` must be positive, or None to disable."
+                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
             )
         return self
 
@@ -157,11 +166,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         if result.exit_code != 0 or not result.stdout.strip():
             return {}
         try:
-            meta = json.loads(result.stdout)
-        except json.JSONDecodeError:
+            meta = _SESSION_META_ADAPTER.validate_json(result.stdout)
+        except ValidationError:
             return {}
-        return {
-            key: float(value)
-            for key, value in meta.get("metrics", {}).items()
-            if isinstance(value, (int, float)) and not isinstance(value, bool)
-        }
+        return meta.get("metrics", {})

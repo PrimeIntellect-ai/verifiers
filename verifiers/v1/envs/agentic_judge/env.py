@@ -14,14 +14,18 @@ task's collected artifacts.
 """
 
 import json
-import math
 import re
-import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import FiniteFloat
 
 import verifiers.v1 as vf
+from verifiers.v1.judges.rubric import (
+    Criterion,
+    RubricVerdicts,
+    _load_criteria,
+    _score_verdicts,
+)
 from verifiers.v1.utils.compile import validate_pairing
 
 VERDICT_FILE = "/tmp/verdict.json"
@@ -36,29 +40,6 @@ TASK_SECTION = """\
 ## The task the agent was given
 
 {prompt}"""
-
-
-class Criterion(BaseModel):
-    """One rubric criterion — the plugged rubric judge's format, mirrored so the
-    same `criteria` files grade both judges."""
-
-    name: str
-    """Key for the criterion's metric (`judge/<name>`)."""
-    text: str
-    weight: float = 1.0
-    """The criterion's share of the reward."""
-    choices: list[str] = Field(default_factory=lambda: ["no", "yes"])
-    """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
-    evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
-
-    @field_validator("choices")
-    @classmethod
-    def _check_choices(cls, v: list[str]) -> list[str]:
-        if len(v) < 2:
-            raise ValueError(f"`choices` needs at least two options, got {v}")
-        if len(set(v)) != len(v):
-            raise ValueError(f"`choices` has duplicate options: {v}")
-        return v
 
 
 SOLVED = Criterion(
@@ -210,7 +191,7 @@ class JudgeTask(vf.Task):
                 f"the judge wrote no verdict to {VERDICT_FILE}; its final act must "
                 'be writing {"verdicts": [{"name", "reason", "verdict"}, ...]} there'
             ) from e
-        trace.info["verdict"] = json.loads(raw)
+        trace.info["verdict"] = RubricVerdicts.model_validate_json(raw).model_dump()
 
 
 class TextFile(vf.BaseConfig):
@@ -259,38 +240,16 @@ class JudgeTaskConfig(vf.BaseConfig):
     def criteria(self) -> list[Criterion]:
         if self.rubric is None:
             return [SOLVED]
-        text = self.rubric.read_text(encoding="utf-8")
-        data = (
-            tomllib.loads(text)
-            if self.rubric.suffix.lower() == ".toml"
-            else json.loads(text)
-        )
-        items = data.get("criteria", []) if isinstance(data, dict) else data
-        criteria = [Criterion.model_validate(item) for item in items]
-        if not criteria:
-            raise ValueError(f"rubric file '{self.rubric}' lists no criteria")
-        names = [criterion.name for criterion in criteria]
-        if len(set(names)) != len(names):
-            raise ValueError(
-                f"rubric file '{self.rubric}' has duplicate criterion names"
-            )
-        if bad := [c.name for c in criteria if not 0 <= c.weight < math.inf]:
-            raise ValueError(
-                f"rubric '{self.rubric}' has negative or non-finite criterion "
-                f"weights: {bad}"
-            )
-        if sum(criterion.weight for criterion in criteria) <= 0:
-            raise ValueError(f"rubric '{self.rubric}' has no positive criterion weight")
-        return criteria
+        return _load_criteria(self.rubric)
 
 
 class ScoreConfig(vf.BaseConfig):
     """How the judge's verdict composes with the taskset's own rewards on the
     solver's trace. Judge-only by default."""
 
-    task_weight: float = 0.0
+    task_weight: FiniteFloat = 0.0
     """Scale applied to the taskset's own rewards; 1 keeps them next to the verdict."""
-    judge_weight: float = 1.0
+    judge_weight: FiniteFloat = 1.0
     """Weight of the judge's verdict in the solver's reward."""
 
 
@@ -363,37 +322,9 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         if "judge" not in by_agent:
             return
         solution, verdict = by_agent["solver"], by_agent["judge"]
-        data = verdict.info.get("verdict")
-        if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
-            raise TypeError(
-                f"no verdicts on the judge's trace (expected {VERDICT_FILE} with a "
-                '"verdicts" list)'
-            )
+        verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.criteria()
-        by_criterion = {c.name: c for c in criteria}
-        answers: dict[str, str] = {}
-        for entry in data["verdicts"]:
-            if not isinstance(entry, dict):
-                raise TypeError(f"verdict entry {entry!r} is not an object")
-            name = str(entry.get("name"))
-            if name in answers:
-                # Contradictory duplicates must not collapse to whichever came last.
-                raise ValueError(f"judge answered criterion {name!r} more than once")
-            answers[name] = str(entry.get("verdict"))
-        if sorted(answers) != sorted(by_criterion):
-            raise ValueError(
-                f"judge verdicts name {sorted(answers)}, expected the rubric's "
-                f"{sorted(by_criterion)}"
-            )
-        scores: dict[str, float] = {}
-        for name, answer in answers.items():
-            choices = by_criterion[name].choices
-            # An off-menu answer is a judge failure, not a zero score.
-            if answer not in choices:
-                raise ValueError(
-                    f"judge answered {answer!r} for '{name}', expected one of {choices}"
-                )
-            scores[name] = choices.index(answer) / (len(choices) - 1)
+        scores = _score_verdicts(verdicts, criteria, "the rubric's")
         for criterion in criteria:
             solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
         if self.config.score.task_weight != 1.0:
