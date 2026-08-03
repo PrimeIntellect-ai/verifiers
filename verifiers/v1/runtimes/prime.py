@@ -283,7 +283,7 @@ class PrimeRuntime(Runtime):
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
-    async def read(self, path: str) -> bytes:
+    async def _read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (
@@ -349,6 +349,9 @@ class PrimeRuntime(Runtime):
             await client.aclose()
 
     async def teardown_confirmed(self) -> None:
+        """`teardown`, plus polling the sandbox record until removal is proven — what
+        a separate grading box requires of the agent's box before it boots (see
+        `Runtime.teardown_confirmed`)."""
         sandbox_id = self.info.id
         if sandbox_id is None:
             return

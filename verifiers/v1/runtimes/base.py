@@ -305,16 +305,14 @@ class Runtime(ABC):
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
-    @abstractmethod
-    async def read(self, path: str) -> bytes:
-        pass
-
-    async def read_bounded(self, path: str, max_bytes: int) -> bytes:
-        """Read at most `max_bytes` from `path`, raising past the cap.
-
-        Truncating inside the box rather than after the transfer: `read` pulls the whole
-        file into host memory, and a scoring input written by something we don't control
-        has no size we can assume. Base64 because `run` returns decoded text."""
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        """Read `path` into host memory. `max_bytes` caps the transfer, raising past
+        the cap — for a file written by something we don't control, whose size we
+        can't assume. The cap is enforced inside the box rather than after the
+        transfer, and base64 because `run` returns decoded text. Framework method —
+        override `_read`, not this."""
+        if max_bytes is None:
+            return await self._read(path)
         result = await self.run(
             [
                 "sh",
@@ -332,6 +330,10 @@ class Runtime(ABC):
         if len(data) > max_bytes:
             raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
         return data
+
+    @abstractmethod
+    async def _read(self, path: str) -> bytes:
+        """Read the whole file at `path`; `read` adds the optional transfer cap."""
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:

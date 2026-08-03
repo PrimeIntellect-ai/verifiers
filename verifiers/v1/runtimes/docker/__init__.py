@@ -307,6 +307,9 @@ class DockerRuntime(Runtime):
         await super().teardown()
 
     async def teardown_confirmed(self) -> None:
+        """`teardown`, plus proof from the daemon that the container is gone — what
+        a separate grading box requires of the agent's box before it boots (see
+        `Runtime.teardown_confirmed`)."""
         proxy_error: Exception | None = None
         if self._proxy is not None:
             try:
@@ -363,7 +366,7 @@ class DockerRuntime(Runtime):
         if run.exit_code != 0:
             raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
 
-    async def read(self, path: str) -> bytes:
+    async def _read(self, path: str) -> bytes:
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
