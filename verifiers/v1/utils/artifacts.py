@@ -55,16 +55,40 @@ async def collect(
         for a in artifacts or []
     ]
     convention = PurePosixPath(ARTIFACTS_DIR)
-    sweep = all(PurePosixPath(artifact.source) != convention for artifact in declared)
-    entries = (
-        [Artifact(source=ARTIFACTS_DIR, required=False)] if sweep else []
-    ) + declared
+    declared_paths = [PurePosixPath(artifact.source) for artifact in declared]
+    if convention in declared_paths:
+        entries = declared
+    else:
+        sweep_excludes = [
+            str(path).lstrip("/")
+            for path in declared_paths
+            if path.is_relative_to(convention)
+        ]
+        entries = [
+            Artifact(
+                source=ARTIFACTS_DIR,
+                exclude=sweep_excludes,
+                required=False,
+            )
+        ]
+        for artifact, path in zip(declared, declared_paths, strict=True):
+            if convention.is_relative_to(path):
+                artifact = artifact.model_copy(
+                    update={
+                        "exclude": [
+                            *artifact.exclude,
+                            str(convention).lstrip("/"),
+                        ]
+                    }
+                )
+            entries.append(artifact)
 
     collected: dict[str, bytes | None] = {}
     budget = MAX_ARTIFACT_BYTES
     for artifact in entries:
         source = artifact.source
-        if (await runtime.run(["test", "-e", source], {})).exit_code != 0:
+        exists = f"test -e {shlex.quote(source)} || test -L {shlex.quote(source)}"
+        if (await runtime.run(["sh", "-c", exists], {})).exit_code != 0:
             if not artifact.required:
                 collected[source] = None
                 continue
