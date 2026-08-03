@@ -204,7 +204,7 @@ class RendererSlot:
 class ElasticRendererPool:
     """Process-shared renderers pool, multiplexed and auto-growing."""
 
-    _shared: ClassVar[dict[tuple, "ElasticRendererPool"]] = {}
+    _pools: ClassVar[dict[tuple, "ElasticRendererPool"]] = {}
     """Where the interception pool has an owner (the env constructs it and tears it down,
     injecting it into agents), a renderer pool has none — clients are built per rollout with
     no injection channel, and the pool must outlive event loops and clients alike. So sharing
@@ -248,9 +248,9 @@ class ElasticRendererPool:
             if chat_template_kwargs
             else None,
         )
-        pool = cls._shared.get(key)
+        pool = cls._pools.get(key)
         if pool is None:
-            pool = cls._shared[key] = cls(
+            pool = cls._pools[key] = cls(
                 renderer_model,
                 config,
                 chat_template_kwargs=chat_template_kwargs,
