@@ -117,6 +117,9 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         from mcp.types import CallToolResult, TextContent
 
+        if name not in self.state.tool_names:
+            raise ValueError(f"unknown NeMo Gym tool: {name}")
+
         if self.state.mcp_url is not None:
             async with mcp_session(
                 self.state.mcp_url,
@@ -174,7 +177,21 @@ def _trace_to_nemo_response(
                     }
                 )
             if message.content:
-                output.append({"role": "assistant", "content": message.content})
+                output.append(
+                    {
+                        "id": f"msg_{trace.id}_{len(output)}",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": message.content,
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                )
             output.extend(
                 {
                     "type": "function_call",
@@ -202,7 +219,11 @@ def _trace_to_nemo_response(
 
     for item in output:
         name = str(item.get("name", ""))
-        bare_name = name.removeprefix("_")
+        bare_name = (
+            name.rsplit("__", 1)[-1].removeprefix("_")
+            if name.startswith("mcp__")
+            else name.removeprefix("_")
+        )
         if item.get("type") == "function_call" and bare_name in known_names:
             item["name"] = bare_name
 

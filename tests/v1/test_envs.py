@@ -66,7 +66,9 @@ def test_eval(taskset: str):
         for flag in (f"--env.{seat}.max-turns", "4")
     ]
     cmd = [
-        "uv", "run", "--no-sync", "eval", taskset,
+        "uv", "run", "--no-sync", "--with-editable", str(ENVIRONMENTS.parent),
+        "--with-editable", str(ENVIRONMENTS / taskset),
+        "eval", taskset,
         *model,
         "-n", "1", "-r", "1", *caps,
         "--sampling.max-tokens", "512", "--rich", "false",

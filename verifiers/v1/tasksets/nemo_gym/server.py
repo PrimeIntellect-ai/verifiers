@@ -10,7 +10,8 @@ from nemo_gym.config_types import BaseServerConfig
 from nemo_gym.server_utils import ServerClient
 from omegaconf import OmegaConf
 
-HOST = os.environ.get("NEMO_GYM_HOST", "127.0.0.1")
+# Managed Gym servers share the evaluator host and never need a routable bind.
+HOST = "127.0.0.1"
 PORT_FILE = Path("nemo_gym.port")
 
 
