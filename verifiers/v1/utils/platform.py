@@ -72,7 +72,7 @@ def trace_to_sample(
         "timing": trace.timing.model_dump(mode="json", exclude_none=True),
         "is_completed": trace.is_completed,
         "is_truncated": trace.is_truncated,
-        "metrics": trace.metrics,
+        "metrics": {k: v for k, v in trace.metrics.items() if v is not None},
         "error": trace.last_error.model_dump(mode="json", exclude_none=True)
         if trace.last_error
         else None,
@@ -93,7 +93,8 @@ def trace_to_sample(
     # Flatten sub-rewards to top-level keys the way v0 does (raw scores, as v0's
     # per-function outputs were); env metrics stay nested.
     for name, reward in trace.rewards.items():
-        sample.setdefault(name, reward.score)
+        if reward is not None:
+            sample.setdefault(name, reward.score)
     return sample
 
 
@@ -128,8 +129,15 @@ def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
     for trace in scored:
-        scores = {name: reward.score for name, reward in trace.rewards.items()}
-        for name, value in {**scores, **trace.metrics}.items():
+        scores = {
+            name: reward.score
+            for name, reward in trace.rewards.items()
+            if reward is not None
+        }
+        metrics = {
+            name: value for name, value in trace.metrics.items() if value is not None
+        }
+        for name, value in {**scores, **metrics}.items():
             sums[name] = sums.get(name, 0.0) + value
             counts[name] = counts.get(name, 0) + 1
     n = len(scored)

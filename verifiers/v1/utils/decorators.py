@@ -2,7 +2,7 @@
 
 import asyncio
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, TypeVar, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -36,6 +36,20 @@ async def invoke_all(
 ) -> list[Any]:
     """Invoke scoring handlers concurrently, including empty and singleton lists."""
     return await asyncio.gather(*(invoke(fn, available) for fn in fns))
+
+
+def seed(scores: dict[str, Any], names: Iterable[str]) -> None:
+    """Mark every expected scoring key as unscored (`None`) before invocation, so a
+    trace records which signals should have run even when scoring fails midway."""
+    for name in names:
+        scores.setdefault(name, None)
+
+
+def unseed(scores: dict[str, Any], name: str) -> None:
+    """Drop a still-unscored seed — a handler returning keyed scores records under
+    its result's keys, not its function name."""
+    if scores.get(name) is None:
+        scores.pop(name, None)
 
 
 def mark(attr: str, **extra: Any) -> Callable[[F], F]:

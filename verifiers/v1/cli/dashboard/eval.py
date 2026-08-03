@@ -332,8 +332,8 @@ def Progress(
 
 def _score_segments(traces: list[Trace], source: str) -> str | None:
     """`name mean` segments for every reward/metric key seen across `traces`,
-    first-seen order (a trace records only the functions that ran for it, so keys
-    can vary); None when no trace recorded anything."""
+    first-seen order (a trace carries only its own task's signals — unscored ones
+    seeded as `None` — so keys can vary); None when no trace recorded anything."""
     names: list[str] = []
     for trace in traces:
         names.extend(n for n in getattr(trace, source) if n not in names)
@@ -347,11 +347,13 @@ def _score_segments(traces: list[Trace], source: str) -> str | None:
 
 
 def _score(trace: Trace, source: str, name: str) -> float:
-    """Rewards carry raw score + weight; the breakdown shows the raw score."""
+    """Rewards carry raw score + weight; the breakdown shows the raw score. A missing
+    or unscored (seeded `None`) entry reads as 0.0."""
     if source == "rewards":
         reward = trace.rewards.get(name)
         return reward.score if reward is not None else 0.0
-    return trace.metrics.get(name, 0.0)
+    value = trace.metrics.get(name)
+    return value if value is not None else 0.0
 
 
 def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:
@@ -555,7 +557,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     result = (
                         t.last_error.type
                         if t.has_error and t.last_error
-                        else (f"reward={t.reward:.2f}" if t.rewards else "")
+                        else (f"reward={t.reward:.2f}" if t.is_scored else "")
                     )
                     if t.has_error:
                         stop = ""  # error shown instead

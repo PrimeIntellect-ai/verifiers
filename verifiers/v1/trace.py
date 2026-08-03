@@ -319,10 +319,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
 
-    rewards: dict[str, Reward] = Field(default_factory=dict)
-    """Named, weighted rewards"""
-    metrics: dict[str, float] = Field(default_factory=dict)
-    """Unweighted, named metrics"""
+    rewards: dict[str, Reward | None] = Field(default_factory=dict)
+    """Named, weighted rewards. Scoring seeds every expected name with `None` before
+    invoking it, so a `None` value means the reward never produced a score; an empty
+    dict means scoring was never attempted."""
+    metrics: dict[str, float | None] = Field(default_factory=dict)
+    """Unweighted, named metrics; `None` and `{}` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata."""
     state: StateT = Field(default_factory=State, exclude=True)
@@ -346,7 +348,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def reward(self) -> float:
-        return sum(r.value for r in self.rewards.values())
+        return sum(r.value for r in self.rewards.values() if r is not None)
+
+    @property
+    def is_scored(self) -> bool:
+        """Whether any reward actually produced a score (seeded `None`s don't count)."""
+        return any(r is not None for r in self.rewards.values())
 
     @property
     def has_error(self) -> bool:
