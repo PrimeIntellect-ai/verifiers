@@ -137,7 +137,7 @@ Per-run caps (turns, tokens, stage timeouts, retries) are agent fields, not env 
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | Where the harness runs. Discriminated union — see [Runtime configs](#runtime-configs). Set with `--env.<agent>.runtime.type docker\|prime\|modal`. |
 | `model` | `str \| None` | `None` | Pin a model for this agent (None = the run's `--model`). |
 | `client` | `ClientConfig \| None` | `None` | Pin an endpoint (None = the run's `--client.*`) — route a frozen judge or user sim off the training endpoint. |
-| `sampling` | `SamplingConfig \| None` | `None` | Pin sampling (None = the run's). |
+| `sampling` | `SamplingConfig \| None` | `None` | Override sampling values; unset values inherit from the run's sampling. |
 | `timeout` | `TimeoutConfig` | `TimeoutConfig()` | Per-stage wall-clock timeouts for this agent's runs (`setup`/`rollout`/`finalize`/`scoring`; each stage falls back to the task's own). An interaction spends its rollout budget cumulatively across active harness segments; time awaiting its caller is paused. |
 | `max_turns` / `max_input_tokens` / `max_output_tokens` / `max_total_tokens` | `int \| None` | `None` | Per-agent caps (None = no limit); map onto [`RolloutLimits`](#rollout-limits), each checked between turns (soft by one turn). |
 

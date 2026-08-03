@@ -32,7 +32,7 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
-from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.generic import concrete_type, deep_merge
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 
@@ -204,15 +204,21 @@ class Env(ABC, Generic[ConfigT]):
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
+            sampling = ctx.sampling
+            if spec.sampling is not None:
+                sampling = sampling.model_copy(
+                    update=deep_merge(
+                        sampling.model_dump(exclude_unset=True),
+                        spec.sampling.model_dump(exclude_unset=True),
+                    )
+                )
             resolved = spec.model_copy(
                 update={
                     "harness": spec.harness
                     if spec.harness is not None
                     else self._default_harness,
                     "model": spec.model if spec.model is not None else ctx.model,
-                    "sampling": spec.sampling
-                    if spec.sampling is not None
-                    else ctx.sampling,
+                    "sampling": sampling,
                 }
             )
             return _EpisodeAgent(
