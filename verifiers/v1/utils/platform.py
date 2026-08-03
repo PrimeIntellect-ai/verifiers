@@ -72,7 +72,7 @@ def trace_to_sample(
         "timing": trace.timing.model_dump(mode="json", exclude_none=True),
         "is_completed": trace.is_completed,
         "is_truncated": trace.is_truncated,
-        "metrics": {k: v for k, v in trace.metrics.items() if v is not None},
+        "metrics": trace.metrics,
         "error": trace.last_error.model_dump(mode="json", exclude_none=True)
         if trace.last_error
         else None,

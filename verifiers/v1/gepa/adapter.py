@@ -120,5 +120,5 @@ def _episode_score(episode: Episode) -> float:
     """A candidate's score on one episode: the mean reward of the episode's scored
     traces. Seats that recorded no rewards (a reward-less judge) don't dilute the
     signal; an episode with no scored traces scores 0."""
-    scored = [trace.reward for trace in episode.traces if trace.is_scored]
+    scored = [trace.reward for trace in episode.traces if trace.rewards]
     return sum(scored) / len(scored) if scored else 0.0

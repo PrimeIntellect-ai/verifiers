@@ -40,9 +40,11 @@ async def invoke_all(
 
 def seed(scores: dict[str, Any], names: Iterable[str]) -> None:
     """Mark every expected scoring key as unscored (`None`) before invocation, so a
-    trace records which signals should have run even when scoring fails midway."""
+    trace records which signals should have run even when scoring fails midway.
+    Overwrites: a re-scoring attempt resets its own names, so stale values from a
+    previous attempt never read as fresh."""
     for name in names:
-        scores.setdefault(name, None)
+        scores[name] = None
 
 
 def unseed(scores: dict[str, Any], name: str) -> None:

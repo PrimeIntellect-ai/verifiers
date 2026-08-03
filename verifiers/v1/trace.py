@@ -350,11 +350,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return sum(r.value for r in self.rewards.values() if r is not None)
 
     @property
-    def is_scored(self) -> bool:
-        """Whether any reward actually produced a score (seeded `None`s don't count)."""
-        return any(r is not None for r in self.rewards.values())
-
-    @property
     def has_error(self) -> bool:
         return not self.ok
 

@@ -86,7 +86,7 @@ def test_wire_trace_round_trip():
     assert rt.num_branches == tr.num_branches == 2  # branch topology survived
     assert rt.num_turns == tr.num_turns == 2
     assert rt.reward == 1.0  # property recomputed from `rewards`, seeds contribute 0
-    assert rt.is_scored and rt.rewards["solved"] is None
+    assert rt.rewards["solved"] is None
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
     assert (

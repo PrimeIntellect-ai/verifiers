@@ -557,7 +557,7 @@ def Rows(groups: list[list[RunSlot]], now: float, runtime_type: str) -> Table:
                     result = (
                         t.last_error.type
                         if t.has_error and t.last_error
-                        else (f"reward={t.reward:.2f}" if t.is_scored else "")
+                        else (f"reward={t.reward:.2f}" if t.rewards else "")
                     )
                     if t.has_error:
                         stop = ""  # error shown instead
