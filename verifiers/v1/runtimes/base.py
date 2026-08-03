@@ -9,6 +9,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
@@ -158,6 +159,7 @@ class Runtime(ABC):
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
+        self._setup_reusable = False
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -302,11 +304,28 @@ class Runtime(ABC):
         if not self.network_restricted:
             return
         if self._setup_claimed:
+            if self._setup_reusable:
+                return
             raise SandboxError(
                 f"network-filtered {self.type} runtimes are single-rollout; "
                 "provision a fresh runtime instead of reusing this one"
             )
         self._setup_claimed = True
+
+    @contextlib.contextmanager
+    def reuse(self) -> Iterator[Self]:
+        """Allow sequential rollouts to borrow this runtime from one trusted owner.
+
+        A restricted runtime stays under its already-applied execution policy: this
+        never restores the permissive first-setup network. The opt-in only permits
+        another rollout lifecycle to use the same filesystem and process namespace.
+        """
+        previous = self._setup_reusable
+        self._setup_reusable = True
+        try:
+            yield self
+        finally:
+            self._setup_reusable = previous
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce

@@ -182,8 +182,11 @@ def environment_class(taskset_id: str, env_id: str = "") -> type[Env]:
         return SingleAgentEnv
     try:
         module = import_taskset(taskset_id)
-        return _plugin_class(module, Env, "environment")
-    except (ModuleNotFoundError, TypeError, AttributeError):
+        try:
+            return _plugin_class(module, Env, "environment")
+        except (TypeError, AttributeError):
+            return taskset_class(taskset_id).ENV or SingleAgentEnv
+    except ModuleNotFoundError:
         return SingleAgentEnv
 
 

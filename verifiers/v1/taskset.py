@@ -19,7 +19,7 @@ import itertools
 import random
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
-from typing import TYPE_CHECKING, Generic, Self
+from typing import TYPE_CHECKING, ClassVar, Generic, Self
 
 from typing_extensions import TypeVar
 
@@ -28,6 +28,7 @@ from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
+    from verifiers.v1.env import Env
     from verifiers.v1.mcp import Toolset
 
 SEED = 0  # fixed so `--shuffle` samples the same items every run (reproducible)
@@ -36,6 +37,9 @@ TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetC
 
 
 class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
+    ENV: ClassVar[type[Env] | None] = None
+    """Default environment inherited by taskset subclasses when their package does
+    not export one explicitly. Most tasksets leave this unset and use SingleAgentEnv."""
     INFINITE: bool = False
     """Whether the taskset is infinite (yields tasks forever). Class-declared;
     a `head(n)` view shadows it per instance (bounded by construction)."""
