@@ -224,6 +224,10 @@ class HarborTask(Task[HarborData]):
     async def _stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
         """Put the task package's `tests/` in `/tests`, where `test.sh` expects it.
 
+        Raises rather than scoring stale state: a leftover reward file — planted by
+        the agent or shipped in the image — must be gone before `test.sh` runs, so a
+        removal that fails must not fall through to reading it.
+
         `wipe` for a box we did not watch being built: a fresh container of the task's
         image can ship its own `/tests`, and a leftover file there would be graded as
         though it came from the package.
@@ -233,6 +237,7 @@ class HarborTask(Task[HarborData]):
         )
         stage = (
             f"{'rm -rf /tests && ' if wipe else ''}"
+            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
             "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests"
         )
         result = await runtime.run(["sh", "-c", stage], {})
@@ -247,17 +252,9 @@ class HarborTask(Task[HarborData]):
         # In separate mode the verifier box arrived staged; `runtime` is that box.
         if self.data.verifier is None:
             await self._stage_tests(runtime)
-        await runtime.run(
-            [
-                "sh",
-                "-c",
-                (
-                    "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt"
-                    " && cd /tests && bash test.sh"
-                ),
-            ],
-            verifier_env(self.data),
-        )
+        # By absolute path, in the runtime's configured workdir: Harbor execs the
+        # script the same way, and scripts do grade the agent's work at `$PWD`.
+        await runtime.run(["bash", "/tests/test.sh"], verifier_env(self.data))
         scores = await self._reward_json(runtime)
         if scores is not None:
             if isinstance(scores, dict) and "reward" in scores:
@@ -279,7 +276,7 @@ class HarborTask(Task[HarborData]):
         """
         try:
             return REWARD_JSON_ADAPTER.validate_json(
-                await runtime.read_bounded(REWARD_JSON, MAX_REWARD_BYTES)
+                await runtime.read(REWARD_JSON, max_bytes=MAX_REWARD_BYTES)
             )
         except (SandboxError, OSError, ValidationError):
             return None
@@ -296,17 +293,17 @@ def verifier_runtime_config(
         or type(base_runtime_config) is not type(config)
     ):
         raise TaskError(
-            "a separate verifier needs a container runtime matching the run's policy; "
-            f"got {type(config).__name__} against "
+            "a separate verifier needs a container runtime matching the run's "
+            f"runtime config; got {type(config).__name__} against "
             f"{type(base_runtime_config).__name__}"
         )
-    policy_base = base_runtime_config
-    if isinstance(policy_base, PrimeConfig) and "*" not in verifier.network_allow:
-        # Prime enforces egress policy only for VM sandboxes. Keep an unrestricted
-        # agent in its configured container, but provision its restricted verifier
-        # as the VM that policy requires.
-        policy_base = policy_base.model_copy(update={"vm": True})
-    network_config = policy_base.with_task_network_policy(verifier.network_allow, [])
+    network_base = base_runtime_config
+    if isinstance(network_base, PrimeConfig) and "*" not in verifier.network_allow:
+        # Prime enforces egress restrictions only for VM sandboxes. Keep an
+        # unrestricted agent in its configured container, but provision its
+        # restricted verifier as the VM those restrictions require.
+        network_base = network_base.model_copy(update={"vm": True})
+    network_config = network_base.with_task_network_policy(verifier.network_allow, [])
     updates: dict[str, Any] = {
         "allow": network_config.allow,
         "block": network_config.block,
@@ -315,7 +312,7 @@ def verifier_runtime_config(
         updates["vm"] = True
     if not verifier.fresh_copy:
         # A declared [verifier.environment] replaces the task's environment rather than
-        # extending it, so what it omits falls back to the run's policy instead of
+        # extending it, so what it omits falls back to the run's defaults instead of
         # inheriting the agent box's task-derived resources.
         updates |= {
             field: getattr(base_runtime_config, field)
@@ -327,6 +324,24 @@ def verifier_runtime_config(
     if verifier.workdir is not None:
         updates["workdir"] = verifier.workdir
     return type(config).model_validate({**config.model_dump(), **updates})
+
+
+def task_resources(environment, multiplier: float) -> TaskResources:
+    """Harbor environment resource requests, scaled, as `TaskResources`.
+
+    Harbor declares CPU counts and MB sizes; `TaskResources` wants counts and GB.
+    GPU requests are never scaled.
+    """
+    return TaskResources(
+        cpu=environment.cpus * multiplier if environment.cpus else None,
+        memory=environment.memory_mb / 1024 * multiplier
+        if environment.memory_mb
+        else None,
+        gpu=str(environment.gpus) if environment.gpus else None,
+        disk=environment.storage_mb / 1024 * multiplier
+        if environment.storage_mb
+        else None,
+    )
 
 
 def harbor_cli() -> str:
@@ -506,18 +521,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             if scoring_timeout is not None
             else None,
         ),
-        resources=TaskResources(
-            cpu=environment.cpus * harbor_config.resource_multiplier
-            if environment.cpus
-            else None,
-            memory=environment.memory_mb / 1024 * harbor_config.resource_multiplier
-            if environment.memory_mb
-            else None,
-            gpu=str(environment.gpus) if environment.gpus else None,
-            disk=environment.storage_mb / 1024 * harbor_config.resource_multiplier
-            if environment.storage_mb
-            else None,
-        ),
+        resources=task_resources(environment, harbor_config.resource_multiplier),
         keywords=task.keywords if task else [],
         authors=authors,
         difficulty=meta.get("difficulty"),
@@ -657,18 +661,7 @@ def parse_verifier_environment(
         # run's default, not the agent task's. A fresh copy is the task's environment,
         # so it keeps whatever the agent box resolved to.
         resources=(
-            TaskResources(
-                cpu=environment.cpus * harbor_config.resource_multiplier
-                if environment.cpus
-                else None,
-                memory=environment.memory_mb / 1024 * harbor_config.resource_multiplier
-                if environment.memory_mb
-                else None,
-                gpu=str(environment.gpus) if environment.gpus else None,
-                disk=environment.storage_mb / 1024 * harbor_config.resource_multiplier
-                if environment.storage_mb
-                else None,
-            )
+            task_resources(environment, harbor_config.resource_multiplier)
             if declared
             else TaskResources()
         ),
