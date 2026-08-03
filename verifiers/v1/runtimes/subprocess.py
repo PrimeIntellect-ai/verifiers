@@ -96,7 +96,7 @@ class SubprocessRuntime(Runtime):
             proc
         )  # killed in stop() — a host process won't die on its own
 
-    async def read(self, path: str) -> bytes:
+    async def _read(self, path: str) -> bytes:
         return await asyncio.to_thread((self.workdir / path).read_bytes)
 
     async def write(self, path: str, data: bytes) -> None:

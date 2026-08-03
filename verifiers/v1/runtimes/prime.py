@@ -270,7 +270,7 @@ class PrimeRuntime(Runtime):
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
-    async def read(self, path: str) -> bytes:
+    async def _read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (
