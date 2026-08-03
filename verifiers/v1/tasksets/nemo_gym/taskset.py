@@ -65,7 +65,6 @@ class NeMoGymState(State):
     mcp_url: str | None = None
     mcp_headers: dict[str, str] = Field(default_factory=dict)
     direct_tools: list[dict[str, Any]] = Field(default_factory=list)
-    tool_names: list[str] = Field(default_factory=list)
 
 
 async def _post(state: NeMoGymState, path: str, body: dict[str, Any]) -> httpx.Response:
@@ -99,25 +98,19 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
                 headers=self.state.mcp_headers,
                 timeout=self.state.request_timeout,
             ) as session:
-                tools = (await session.list_tools()).tools
-        else:
-            tools = [
-                Tool(
-                    name=spec["name"],
-                    description=spec.get("description") or None,
-                    inputSchema=spec.get("parameters") or {},
-                )
-                for spec in self.state.direct_tools
-                if spec.get("type") == "function"
-            ]
-        self.state.tool_names = [tool.name for tool in tools]
-        return tools
+                return (await session.list_tools()).tools
+        return [
+            Tool(
+                name=spec["name"],
+                description=spec.get("description") or None,
+                inputSchema=spec.get("parameters") or {},
+            )
+            for spec in self.state.direct_tools
+            if spec.get("type") == "function"
+        ]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         from mcp.types import CallToolResult, TextContent
-
-        if name not in self.state.tool_names:
-            raise ValueError(f"unknown NeMo Gym tool: {name}")
 
         if self.state.mcp_url is not None:
             async with mcp_session(
@@ -126,6 +119,12 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
                 timeout=self.state.request_timeout,
             ) as session:
                 return await session.call_tool(name, arguments)
+
+        if not any(
+            spec.get("type") == "function" and spec.get("name") == name
+            for spec in self.state.direct_tools
+        ):
+            raise ValueError(f"unknown NeMo Gym tool: {name}")
 
         response = await _post(self.state, name, arguments)
         return CallToolResult(
@@ -137,25 +136,20 @@ class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
 def _trace_to_nemo_response(
     trace: Trace,
     responses_create_params: dict[str, Any],
-    tool_names: list[str],
 ) -> dict[str, Any]:
     """Convert the one completed V1 branch into a Gym Responses object."""
 
-    if trace.num_branches != 1:
+    branches = trace.branches
+    if len(branches) != 1:
         raise ValueError(
-            f"NeMo Gym scoring requires exactly one trace branch, got {trace.num_branches}"
+            f"NeMo Gym scoring requires exactly one trace branch, got {len(branches)}"
         )
 
-    known_names = set(tool_names) | {
-        spec["name"]
-        for spec in responses_create_params.get("tools") or []
-        if spec.get("type") == "function" and isinstance(spec.get("name"), str)
-    }
     response_item_types = {"reasoning", "message", "function_call"}
     output: list[dict[str, Any]] = []
     started = False
 
-    for node in trace.nodes:
+    for node in branches[0].nodes:
         message = node.message
         if isinstance(message, AssistantMessage) and node.sampled:
             started = True
@@ -216,15 +210,9 @@ def _trace_to_nemo_response(
                 }
             )
 
-    for item in output:
-        name = str(item.get("name", ""))
-        bare_name = name.removeprefix("_")
-        if item.get("type") == "function_call" and bare_name in known_names:
-            item["name"] = bare_name
-
     return {
         "id": f"resp_{trace.id}",
-        "created_at": trace.nodes[-1].timestamp,
+        "created_at": branches[0].nodes[-1].timestamp,
         "model": str(responses_create_params.get("model") or "verifiers"),
         "object": "response",
         "output": output,
@@ -264,7 +252,6 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         response_body = _trace_to_nemo_response(
             trace,
             self.data.row["responses_create_params"],
-            state.tool_names,
         )
         response = await _post(
             state, "verify", {**self.data.row, "response": response_body}
@@ -347,8 +334,9 @@ class NeMoGymEnv(SingleAgentEnv):
             for _ in range(60):
                 try:
                     port = int((await runtime.read("nemo_gym.port")).decode())
-                    config.resources_url = f"http://127.0.0.1:{port}"
-                    if (await client.get(config.resources_url)).is_success:
+                    resources_url = f"http://127.0.0.1:{port}"
+                    if (await client.get(resources_url)).is_success:
+                        config.resources_url = resources_url
                         return
                 except (FileNotFoundError, ValueError, httpx.HTTPError):
                     pass
