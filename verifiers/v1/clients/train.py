@@ -202,14 +202,22 @@ class RendererSlot:
 
 
 class ElasticRendererPool:
-    """Process-shared renderers pool, multiplexed and auto-growing."""
+    """Process-shared renderers, multiplexed and auto-growing. A pool object is a cheap
+    per-client view: the renderers themselves are the shared state, keyed by what builds
+    them, so every client with the same build inputs works one list."""
 
-    _pools: ClassVar[dict[tuple, "ElasticRendererPool"]] = {}
-    """Where the interception pool has an owner (the env constructs it and tears it down,
-    injecting it into agents), a renderer pool has none — clients are built per rollout with
-    no injection channel, and the pool must outlive event loops and clients alike. So sharing
-    is a registry on the type (v0's `RendererClient._shared_pools`, the same shape) and there
-    is no `start`/`stop`: a renderer is pure memory, nothing holds a socket or tunnel."""
+    _renderers: ClassVar[dict[tuple, list[RendererSlot]]] = {}
+    """The process's renderers, keyed by build inputs. Where the interception pool has an
+    owner (the env constructs it and tears it down, injecting it into agents), renderers
+    have none — clients are built per rollout with no injection channel, and the tokenizers
+    must outlive event loops and clients alike. So the shared state lives on the type (v0's
+    `RendererClient._shared_pools`, the same shape) and there is no `start`/`stop`: a
+    renderer is pure memory, nothing holds a socket or tunnel."""
+
+    _locks: ClassVar[dict[tuple, tuple[asyncio.AbstractEventLoop, asyncio.Lock]]] = {}
+    """Per-key single-flight lock for `grow`. An asyncio lock binds to the loop that first
+    awaits it while the renderers outlive loops, so each key keeps (loop, lock) and a loop
+    change mints a fresh lock — nothing from a dead loop can still hold it."""
 
     def __init__(
         self,
@@ -223,102 +231,69 @@ class ElasticRendererPool:
         self.config = config
         self.chat_template_kwargs = chat_template_kwargs
         self.multiplex = multiplex
-        self.renderers: list[RendererSlot] = []
-        self._lock = asyncio.Lock()
-        self._warm_task: asyncio.Task[RendererSlot] | None = None
-
-    @classmethod
-    def shared(
-        cls,
-        renderer_model: str,
-        config: RendererConfig | None,
-        *,
-        chat_template_kwargs: Mapping[str, Any] | None = None,
-        multiplex: int,
-    ) -> "ElasticRendererPool":
-        """The process-wide pool for these build inputs, warming its first renderer on
-        the way. Same key shape as v0's `RendererClient._shared_pools`: renderers owns
-        config resolution, so only pools whose build inputs differ are kept apart.
-        `multiplex` is policy, not a build input — the first client's value wins, so
-        configs differing only there share one tokenizer set."""
-        key = (
+        self.key = (
             renderer_model,
             config.model_dump_json() if config is not None else None,
             json.dumps(dict(chat_template_kwargs), sort_keys=True)
             if chat_template_kwargs
             else None,
         )
-        pool = cls._pools.get(key)
-        if pool is None:
-            pool = cls._pools[key] = cls(
-                renderer_model,
-                config,
-                chat_template_kwargs=chat_template_kwargs,
-                multiplex=multiplex,
-            )
-        # Warm the first renderer — the registry-shaped counterpart of the interception
-        # pool's `start()`: a client is built while its rollout is still provisioning, so
-        # the tokenizer loads now rather than in front of the first turn. A no-op off the
-        # event loop (tests, sync construction) — `acquire` builds on demand anyway.
-        if pool._warm_task is None and not pool.renderers:
-            try:
-                pool._warm_task = asyncio.get_running_loop().create_task(pool.grow())
-            except RuntimeError:
-                pass
-        return pool
+        self.renderers = self._renderers.setdefault(self.key, [])
+
+    def warm(self) -> None:
+        """Start building the first renderer if none exists — the counterpart of the
+        interception pool's `start()`: a client is built while its rollout is still
+        provisioning, so the tokenizer loads now rather than in front of the first
+        turn. A no-op off the event loop (tests, sync construction) — `acquire`
+        builds on demand anyway."""
+        if self.renderers:
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(self.grow())
+        except RuntimeError:
+            return
+        # A failed warm is not an event: acquire retries the build and surfaces the error.
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
     async def grow(self) -> RendererSlot:
         """A renderer with spare capacity — reuse one under `multiplex`, else load one
-        more tokenizer on a thread (`create_renderer_pool` is seconds of blocking work).
-        Acquires hold `_lock`; the warm task runs before they reach this path."""
-        for slot in self.renderers:
-            if slot.load < self.multiplex:
-                return slot
-        from renderers import create_renderer
-        from renderers.base import load_tokenizer
+        more tokenizer on a thread (`create_renderer` is seconds of blocking work).
+        Single-flight per key: every caller serializes on the key's lock, so concurrent
+        cold acquires (and warms) wait for one build instead of stacking tokenizers."""
+        loop = asyncio.get_running_loop()
+        bound = self._locks.get(self.key)
+        if bound is None or bound[0] is not loop:
+            bound = self._locks[self.key] = (loop, asyncio.Lock())
+        async with bound[1]:
+            for slot in self.renderers:
+                if slot.load < self.multiplex:
+                    return slot
+            from renderers import create_renderer
+            from renderers.base import load_tokenizer
 
-        def build():
-            return create_renderer(
-                load_tokenizer(self.renderer_model),
-                self.config,
-                chat_template_kwargs=self.chat_template_kwargs,
+            def build():
+                return create_renderer(
+                    load_tokenizer(self.renderer_model),
+                    self.config,
+                    chat_template_kwargs=self.chat_template_kwargs,
+                )
+
+            slot = RendererSlot(await asyncio.to_thread(build))
+            self.renderers.append(slot)
+            logger.info(
+                "renderer pool: %d renderer(s), multiplex=%d",
+                len(self.renderers),
+                self.multiplex,
             )
-
-        slot = RendererSlot(await asyncio.to_thread(build))
-        self.renderers.append(slot)
-        logger.info(
-            "renderer pool: %d renderer(s), multiplex=%d",
-            len(self.renderers),
-            self.multiplex,
-        )
-        return slot
+            return slot
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[RendererSlot]:
         """A renderer to render this turn with, growing the pool when every one already
         carries `multiplex` rollouts. The slot is held for the turn, so `load` counts
         rollouts in flight rather than renders in progress."""
-        if self._warm_task is not None:
-            # Shielded: a cancelled acquire must not cancel the build every other rollout
-            # is waiting on. A failed warm falls through to `grow()` under the lock,
-            # where the error reaches a caller instead of vanishing into a stray task.
-            try:
-                await asyncio.shield(self._warm_task)
-            except asyncio.CancelledError:
-                # Unlike the interception pool's warm task (cancelled by its owner's
-                # `stop()`), this one can outlive its event loop — a loop shutdown
-                # cancels it unawaited. Rebuild under the lock; re-raise only when it
-                # was THIS acquire that got cancelled.
-                if not self._warm_task.cancelled():
-                    raise
-            except Exception:
-                logger.debug(
-                    "renderer warm failed - rebuilding under the lock", exc_info=True
-                )
-            self._warm_task = None
-        async with self._lock:
-            slot = await self.grow()
-            slot.load += 1
+        slot = await self.grow()
+        slot.load += 1
         try:
             yield slot
         finally:
@@ -339,10 +314,10 @@ class TrainClient(Client):
         # The per-request model is only known at call time; a config that pins the renderer
         # model can warm now, which is every training run (prime-rl always pins it).
         if config.renderer_model_name is not None:
-            self._pool_for(config.renderer_model_name)
+            self._pool_for(config.renderer_model_name).warm()
 
     def _pool_for(self, renderer_model: str, chat_template_kwargs=None):
-        return ElasticRendererPool.shared(
+        return ElasticRendererPool(
             renderer_model,
             self.config.renderer,
             chat_template_kwargs=chat_template_kwargs,
