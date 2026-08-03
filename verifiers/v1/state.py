@@ -9,7 +9,7 @@ from verifiers.v1.utils.generic import concrete_type
 class State(BaseModel):
     model_config = ConfigDict(ser_json_inf_nan="constants")
 
-    artifacts: dict[str, bytes] = Field(default_factory=dict)
+    artifacts: dict[str, bytes | None] = Field(default_factory=dict)
 
 
 StateT = TypeVar("StateT", bound=State, default=State)

@@ -29,11 +29,12 @@ class Artifact(BaseModel):
     source: str
     exclude: list[str] = Field(default_factory=list)
     """`tar --exclude` patterns, applied when `source` is a directory."""
+    required: bool = True
 
 
 async def collect(
     runtime: Runtime, artifacts: list[Artifact] | None = None
-) -> dict[str, bytes]:
+) -> dict[str, bytes | None]:
     """Tar the convention dir and every declared path out of `runtime`.
 
     Keyed by source path; the values are tar archives. Insertion order is the order
@@ -54,20 +55,31 @@ async def collect(
         for a in artifacts or []
     ]
     convention = PurePosixPath(ARTIFACTS_DIR)
-    sweep = not any(
-        (p := PurePosixPath(a.source)) == convention
-        or p.is_relative_to(convention)
-        or convention.is_relative_to(p)
-        for a in declared
-    )
-    entries = ([Artifact(source=ARTIFACTS_DIR)] if sweep else []) + declared
+    sweep = True
+    for artifact in declared:
+        source = PurePosixPath(artifact.source)
+        overlaps = (
+            source == convention
+            or source.is_relative_to(convention)
+            or convention.is_relative_to(source)
+        )
+        if overlaps and (
+            artifact.required
+            or (await runtime.run(["test", "-e", artifact.source], {})).exit_code == 0
+        ):
+            sweep = False
+            break
+    entries = (
+        [Artifact(source=ARTIFACTS_DIR, required=False)] if sweep else []
+    ) + declared
 
-    collected: dict[str, bytes] = {}
+    collected: dict[str, bytes | None] = {}
     budget = MAX_ARTIFACT_BYTES
     for artifact in entries:
         source = artifact.source
         if (await runtime.run(["test", "-e", source], {})).exit_code != 0:
-            if sweep and source == ARTIFACTS_DIR:
+            if not artifact.required:
+                collected[source] = None
                 continue
             raise RuntimeError(
                 f"declared artifact {source!r} does not exist in the runtime"
@@ -80,7 +92,7 @@ async def collect(
     return collected
 
 
-async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
+async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     """Extract `collected` in `runtime` at the original absolute paths."""
     if not collected:
         return
@@ -97,6 +109,8 @@ async def restore(runtime: Runtime, collected: dict[str, bytes]) -> None:
     roots = " ".join(shlex.quote(root) for root in collected)
     await _run(runtime, f"rm -rf -- {roots}", "clear artifact roots")
     for root, archive in collected.items():
+        if archive is None:
+            continue
         path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
         await runtime.write(path, archive)
         await _run(
