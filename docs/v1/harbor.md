@@ -112,7 +112,7 @@ Two deliberate differences from `harbor run`:
 
 ## Separate verifier environments
 
-`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). Only the declared artifacts and the `/logs/artifacts/` convention directory cross over, and the agent's box is confirmed deleted before the verifier starts, so nothing the agent left running can reach the grader. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers where a `reward` key is the scalar and any others are recorded as separate rewards — falling back to `reward.txt`.
+`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). Only the declared artifacts and the `/logs/artifacts/` convention directory cross over, and the agent's box is confirmed deleted before the verifier starts, so nothing the agent left running can reach the grader. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
 
 Which image the verifier boots from follows Harbor: a declared `[verifier.environment]` if there is one, otherwise a fresh copy of `[environment]`, which is the task's own image.
 
@@ -125,6 +125,6 @@ A declared `[verifier.environment]` needs a pullable `docker_image`. Without one
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
 - Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
-- Building a verifier image from `tests/Dockerfile`
+- Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
 - Sidecar services, and the sidecar artifacts and collect hooks that go with them ([Harbor Docs](https://www.harborframework.com/docs/tasks#sidecar-artifacts-and-collect-hooks))
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
