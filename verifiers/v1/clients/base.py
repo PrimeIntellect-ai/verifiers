@@ -11,8 +11,8 @@ from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=600.0, write=600.0, pool=600.0)
 DEFAULT_LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100)
 MAX_RETRIES = 0
-"""No client-side retries: a failed call surfaces to the harness SDK and the trace instead of
-being silently reattempted, so the framework's retry surfaces stay the only ones."""
+"""No client-side retries: failures surface to the harness SDK and the trace instead of
+being silently reattempted."""
 
 # An API version path segment (`v1`, `v2`, ...) — the only kind `join_url` dedups.
 VERSION_SEGMENT = re.compile(r"v\d+")

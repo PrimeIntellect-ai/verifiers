@@ -57,7 +57,7 @@ class EvalClient(Client):
     """Relay native JSON to the provider and parse a copy for the trace."""
 
     def __init__(self, config: BaseClientConfig) -> None:
-        self.base_url = config.base_url.rstrip("/")
+        self.base_url = config.base_url
         self.api_key = resolve_api_key(config)
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
@@ -101,12 +101,9 @@ class EvalClient(Client):
         incoming: Mapping[str, str] | None,
         session_id: str | None,
     ) -> httpx.Headers:
-        """Build provider headers from the intercepted request.
-
-        Preserve provider feature headers such as `openai-beta` / `anthropic-beta`,
-        discard localhost auth and transport framing, then apply endpoint-configured headers,
-        session routing, and real provider auth.
-        """
+        """Provider headers from the intercepted request: keep feature headers
+        (`openai-beta`, `anthropic-beta`), discard localhost auth and framing, then apply
+        endpoint headers, session routing, and real provider auth."""
         headers = httpx.Headers(incoming)
         connection = headers.pop("connection", "")
         for name in _BLOCKED_REQUEST_HEADERS | set(

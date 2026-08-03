@@ -77,11 +77,10 @@ class TrainClientConfig(BaseClientConfig):
     adapter name (served only for sampling) never drives tokenizer loading. Falls back to
     the per-request model when None."""
     multiplex: int = Field(256, ge=1)
-    """Rollouts that share one renderer. The pool warms one and grows on demand, so N
-    concurrent rollouts hold ~N/multiplex tokenizers instead of a fixed set. A renderer is
-    held only for the render itself (milliseconds) while a turn takes seconds, so one
-    absorbs many rollouts; the default keeps 2048 concurrent rollouts at 8 tokenizers.
-    Lower it when rendering is the slow part (very long prompts), at ~75-95 MB each."""
+    """Rollouts that share one renderer (~75-95 MB each): the pool warms one and grows on
+    demand, so N concurrent rollouts hold ~N/multiplex tokenizers. A renderer is only busy
+    for the render itself (ms against a multi-second turn), so one absorbs many rollouts;
+    lower this when rendering is the slow part (very long prompts, frequent bridge misses)."""
 
 
 # Discriminated union for a CLI-selectable client (`--client.type eval|train`).

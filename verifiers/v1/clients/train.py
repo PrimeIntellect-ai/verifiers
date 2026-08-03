@@ -1,4 +1,4 @@
-"""Train client: intercepts + renders prompts to tokens for training using `renderers`."""
+"""Train client: renders prompts to token ids and calls a vLLM generate endpoint."""
 
 import asyncio
 import json
@@ -184,10 +184,9 @@ def _has_multimodal_content(messages) -> bool:
 
 @dataclass
 class RendererSlot:
-    """One renderer, the rollouts currently holding it, and the lock that makes it safe:
-    encoding mutates a fast tokenizer's truncation/padding state, so `run` serializes the
-    slot's encode-side work (render, bridge) on a thread. Decode-side work (`generate`'s
-    response parsing) is a pure read and needs neither the lock nor the hop."""
+    """One renderer and the rollouts currently holding it. Encoding mutates a fast
+    tokenizer's state, so `run` serializes encode-side work (render, bridge) on a thread;
+    decode-side work is a pure read and needs neither the lock nor the hop."""
 
     renderer: Renderer
     load: int = 0
@@ -207,17 +206,14 @@ class ElasticRendererPool:
     them, so every client with the same build inputs works one list."""
 
     _renderers: ClassVar[dict[tuple, list[RendererSlot]]] = {}
-    """The process's renderers, keyed by build inputs. Where the interception pool has an
-    owner (the env constructs it and tears it down, injecting it into agents), renderers
-    have none — clients are built per rollout with no injection channel, and the tokenizers
-    must outlive event loops and clients alike. So the shared state lives on the type (v0's
-    `RendererClient._shared_pools`, the same shape) and there is no `start`/`stop`: a
-    renderer is pure memory, nothing holds a socket or tunnel."""
+    """The process's renderers, keyed by build inputs. Unlike the owned interception pool,
+    renderers have no owner to inject them (clients are built per rollout) and must outlive
+    loops and clients, so the shared state lives on the type — and needs no `start`/`stop`:
+    a renderer is pure memory."""
 
     _locks: ClassVar[dict[tuple, tuple[asyncio.AbstractEventLoop, asyncio.Lock]]] = {}
-    """Per-key single-flight lock for `grow`. An asyncio lock binds to the loop that first
-    awaits it while the renderers outlive loops, so each key keeps (loop, lock) and a loop
-    change mints a fresh lock — nothing from a dead loop can still hold it."""
+    """Per-key single-flight lock for `grow`, minted fresh on a loop change: an asyncio
+    lock binds to the loop that first awaits it, while renderers outlive loops."""
 
     def __init__(
         self,
@@ -241,11 +237,9 @@ class ElasticRendererPool:
         self.renderers = self._renderers.setdefault(self.key, [])
 
     def warm(self) -> None:
-        """Start building the first renderer if none exists — the counterpart of the
-        interception pool's `start()`: a client is built while its rollout is still
-        provisioning, so the tokenizer loads now rather than in front of the first
-        turn. A no-op off the event loop (tests, sync construction) — `acquire`
-        builds on demand anyway."""
+        """Start building the first renderer if none exists, so the tokenizer loads while
+        the rollout provisions rather than in front of its first turn. A no-op off the
+        event loop — `acquire` builds on demand anyway."""
         if self.renderers:
             return
         try:
@@ -257,9 +251,8 @@ class ElasticRendererPool:
 
     async def grow(self) -> RendererSlot:
         """A renderer with spare capacity — reuse one under `multiplex`, else load one
-        more tokenizer on a thread (`create_renderer` is seconds of blocking work).
-        Single-flight per key: every caller serializes on the key's lock, so concurrent
-        cold acquires (and warms) wait for one build instead of stacking tokenizers."""
+        more tokenizer on a thread. Single-flight per key: concurrent cold acquires wait
+        for one build instead of stacking tokenizers."""
         loop = asyncio.get_running_loop()
         bound = self._locks.get(self.key)
         if bound is None or bound[0] is not loop:
@@ -303,10 +296,8 @@ class ElasticRendererPool:
 class TrainClient(Client):
     """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine.
 
-    One client per rollout: it owns its engine connection and takes a slot on the elastic
-    renderer pool for each turn. Building the client warms the pool's first tokenizer, so
-    the load happens while the rollout provisions rather than in front of its first turn.
-    The pool itself is shared across clients — see `ElasticRendererPool`."""
+    One client per rollout: it owns its engine connection and takes a slot on the shared
+    `ElasticRendererPool` for each turn."""
 
     def __init__(self, config: TrainClientConfig) -> None:
         self.config = config
