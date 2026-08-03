@@ -16,22 +16,18 @@ from pydantic import Field
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
-from verifiers.v1.mcp.launch import mcp_session
 from verifiers.v1.runtimes import SubprocessConfig, make_runtime
-from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, ToolMessage
 from verifiers.v1.utils.decorators import reward
+
+from .response import trace_to_nemo_response
+from .toolset import NeMoGymState, NeMoGymToolset, _post
 
 NEMO_GYM_INSTALL_HINT = "uv sync --python 3.12 --extra nemo-gym"
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-    from mcp.types import CallToolResult
-    from mcp.types import Tool as MCPTool
-
     from verifiers.v1.runtimes import Runtime
 
 
@@ -43,184 +39,20 @@ class NeMoGymTaskConfig(TaskConfig):
     """Headers added to seed, direct-tool, MCP, and verification requests."""
 
     request_timeout: float = Field(60.0, gt=0)
+    """Per-request timeout for this task's Gym HTTP and MCP calls."""
 
 
 class NeMoGymConfig(TasksetConfig):
-    dataset_path: Path
+    dataset: Path
     """JSONL rows containing ``responses_create_params`` and verifier metadata."""
 
+    tools: SharedToolsetConfig = SharedToolsetConfig()
     task: NeMoGymTaskConfig = NeMoGymTaskConfig()
 
 
 class NeMoGymData(TaskData):
     row: dict[str, Any]
     """The exact source row sent back to ``/seed_session`` and ``/verify``."""
-
-
-class NeMoGymState(State):
-    resources_url: str = ""
-    headers: dict[str, str] = Field(default_factory=dict)
-    request_timeout: float = 60.0
-    cookies: dict[str, str] = Field(default_factory=dict)
-    mcp_url: str | None = None
-    mcp_headers: dict[str, str] = Field(default_factory=dict)
-    direct_tools: list[dict[str, Any]] = Field(default_factory=list)
-
-
-async def _post(state: NeMoGymState, path: str, body: dict[str, Any]) -> httpx.Response:
-    """POST to Gym while carrying the rollout's cookie session forward."""
-    async with httpx.AsyncClient(
-        headers=state.headers,
-        cookies=state.cookies,
-        timeout=state.request_timeout,
-    ) as client:
-        response = await client.post(f"{state.resources_url}/{path}", json=body)
-    state.cookies.update(response.cookies)
-    return response
-
-
-class _NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
-    """Bridge rollout-specific Gym tools into the standard V1 MCP boundary."""
-
-    TOOL_PREFIX = None
-
-    def _register(self, mcp: FastMCP) -> None:
-        server = mcp._mcp_server
-        server.list_tools()(self._with_state(self.list_tools))
-        server.call_tool(validate_input=False)(self._with_state(self.call_tool))
-
-    async def list_tools(self) -> list[MCPTool]:
-        from mcp.types import Tool
-
-        if self.state.mcp_url is not None:
-            async with mcp_session(
-                self.state.mcp_url,
-                headers=self.state.mcp_headers,
-                timeout=self.state.request_timeout,
-            ) as session:
-                return (await session.list_tools()).tools
-        return [
-            Tool(
-                name=spec["name"],
-                description=spec.get("description") or None,
-                inputSchema=spec.get("parameters") or {},
-            )
-            for spec in self.state.direct_tools
-            if spec.get("type") == "function"
-        ]
-
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
-        from mcp.types import CallToolResult, TextContent
-
-        if self.state.mcp_url is not None:
-            async with mcp_session(
-                self.state.mcp_url,
-                headers=self.state.mcp_headers,
-                timeout=self.state.request_timeout,
-            ) as session:
-                return await session.call_tool(name, arguments)
-
-        if not any(
-            spec.get("type") == "function" and spec.get("name") == name
-            for spec in self.state.direct_tools
-        ):
-            raise ValueError(f"unknown NeMo Gym tool: {name}")
-
-        response = await _post(self.state, name, arguments)
-        return CallToolResult(
-            content=[TextContent(type="text", text=response.text)],
-            isError=not response.is_success,
-        )
-
-
-def _trace_to_nemo_response(
-    trace: Trace,
-    responses_create_params: dict[str, Any],
-) -> dict[str, Any]:
-    """Convert the one completed V1 branch into a Gym Responses object."""
-
-    branches = trace.branches
-    if len(branches) != 1:
-        raise ValueError(
-            f"NeMo Gym scoring requires exactly one trace branch, got {len(branches)}"
-        )
-
-    response_item_types = {"reasoning", "message", "function_call"}
-    output: list[dict[str, Any]] = []
-    started = False
-
-    for node in branches[0].nodes:
-        message = node.message
-        if isinstance(message, AssistantMessage) and node.sampled:
-            started = True
-            if message.provider_state and all(
-                item.get("type") in response_item_types
-                for item in message.provider_state
-            ):
-                output.extend(dict(item) for item in message.provider_state)
-                continue
-            if message.reasoning_content:
-                output.append(
-                    {
-                        "id": f"rs_{trace.id}_{len(output)}",
-                        "type": "reasoning",
-                        "summary": [
-                            {"type": "summary_text", "text": message.reasoning_content}
-                        ],
-                    }
-                )
-            if message.content:
-                output.append(
-                    {
-                        "id": f"msg_{trace.id}_{len(output)}",
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": message.content,
-                                "annotations": [],
-                            }
-                        ],
-                    }
-                )
-            output.extend(
-                {
-                    "type": "function_call",
-                    "call_id": call.id,
-                    "name": call.name,
-                    "arguments": call.arguments,
-                }
-                for call in message.tool_calls or []
-            )
-        elif started and isinstance(message, ToolMessage):
-            content = (
-                message.content
-                if isinstance(message.content, str)
-                else json.dumps(
-                    [part.model_dump(mode="json") for part in message.content]
-                )
-            )
-            output.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id,
-                    "output": content,
-                }
-            )
-
-    return {
-        "id": f"resp_{trace.id}",
-        "created_at": branches[0].nodes[-1].timestamp,
-        "model": str(responses_create_params.get("model") or "verifiers"),
-        "object": "response",
-        "output": output,
-        "parallel_tool_calls": responses_create_params.get("parallel_tool_calls", True),
-        "tool_choice": responses_create_params.get("tool_choice", "auto"),
-        "tools": responses_create_params.get("tools") or [],
-        "status": "completed",
-    }
 
 
 class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
@@ -249,7 +81,7 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
     @reward(weight=1.0)
     async def nemo_gym(self, trace: Trace) -> float:
         state = trace.state
-        response_body = _trace_to_nemo_response(
+        response_body = trace_to_nemo_response(
             trace,
             self.data.row["responses_create_params"],
         )
@@ -278,28 +110,31 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
     resource_server: ClassVar[str | None] = None
     """Import reference for a package-provided resource server, if managed."""
 
-    tools = (_NeMoGymToolset,)
+    @classmethod
+    def toolsets(cls, config: NeMoGymConfig) -> list[Toolset]:
+        return [NeMoGymToolset(config.tools)]
 
     def load(self) -> Iterator[NeMoGymTask]:
-        path = self.config.dataset_path.expanduser().resolve()
+        path = self.config.dataset.expanduser().resolve()
         dialect = ResponsesDialect()
-        count = 0
+        found = False
 
-        with path.open(encoding="utf-8") as dataset:
-            for count, line in enumerate(filter(str.strip, dataset), start=1):
+        with path.open(encoding="utf-8") as lines:
+            for idx, line in enumerate(filter(str.strip, lines)):
+                found = True
                 row = json.loads(line)
                 prompt, _ = dialect.parse_request(row["responses_create_params"])
                 yield NeMoGymTask(
                     NeMoGymData(
-                        idx=count - 1,
-                        name=f"{path.stem}:{count - 1}",
+                        idx=idx,
+                        name=f"{path.stem}:{idx}",
                         prompt=prompt,
                         row=row,
                     ),
                     self.config.task,
                 )
 
-        if not count:
+        if not found:
             raise ValueError(f"NeMo Gym dataset is empty: {path}")
 
 
@@ -350,7 +185,3 @@ class NeMoGymEnv(SingleAgentEnv):
         runtime, self._nemo_runtime = self._nemo_runtime, None
         cast(NeMoGymTaskset, self.taskset).config.task.resources_url = None
         await runtime.stop()
-
-
-if __name__ == "__main__":
-    _NeMoGymToolset.run()

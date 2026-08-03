@@ -65,6 +65,7 @@ def test_eval(taskset: str):
         for seat in SEATS.get(taskset, ("agent",))
         for flag in (f"--env.{seat}.max-turns", "4")
     ]
+    # Install the example dynamically while keeping its verifiers dependency on this checkout.
     cmd = [
         "uv", "run", "--no-sync", "--with-editable", str(ENVIRONMENTS.parent),
         "--with-editable", str(ENVIRONMENTS / taskset),

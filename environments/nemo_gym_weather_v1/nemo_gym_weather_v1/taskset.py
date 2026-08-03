@@ -11,7 +11,7 @@ from verifiers.v1.tasksets.nemo_gym import (
 
 
 class NeMoGymWeatherConfig(NeMoGymConfig):
-    dataset_path: Path = Path(__file__).with_name("example.jsonl")
+    dataset: Path = Path(__file__).with_name("example.jsonl")
 
 
 class NeMoGymWeatherTaskset(
