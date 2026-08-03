@@ -55,20 +55,7 @@ async def collect(
         for a in artifacts or []
     ]
     convention = PurePosixPath(ARTIFACTS_DIR)
-    sweep = True
-    for artifact in declared:
-        source = PurePosixPath(artifact.source)
-        overlaps = (
-            source == convention
-            or source.is_relative_to(convention)
-            or convention.is_relative_to(source)
-        )
-        if overlaps and (
-            artifact.required
-            or (await runtime.run(["test", "-e", artifact.source], {})).exit_code == 0
-        ):
-            sweep = False
-            break
+    sweep = all(PurePosixPath(artifact.source) != convention for artifact in declared)
     entries = (
         [Artifact(source=ARTIFACTS_DIR, required=False)] if sweep else []
     ) + declared
