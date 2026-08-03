@@ -306,38 +306,6 @@ class DockerRuntime(Runtime):
             await self._proxy.stop()
         await super().teardown()
 
-    async def teardown_confirmed(self) -> None:
-        """`teardown`, plus proof from the daemon that the container is gone — what
-        a separate grading box requires of the agent's box before it boots (see
-        `Runtime.teardown_confirmed`)."""
-        proxy_error: Exception | None = None
-        if self._proxy is not None:
-            try:
-                await self._proxy.stop()
-            except Exception as exc:  # noqa: BLE001 - remove and confirm before surfacing
-                proxy_error = exc
-        # Do not call `self.teardown()`: a proxy failure there would skip container
-        # removal, but confirmed teardown's caller needs proof the agent box is gone.
-        await super().teardown()
-        if self._container is None:
-            if proxy_error is not None:
-                raise proxy_error
-            return
-        # `docker rm --force` is suppressed in `cleanup`, so ask the daemon rather than
-        # trusting it: an empty listing is the only proof the container is really gone.
-        check = await docker(
-            "ps", "--all", "--quiet", "--filter", f"name=^{self._container}$"
-        )
-        if check.exit_code:
-            raise SandboxError(
-                f"docker: could not confirm {self._container} was removed: "
-                f"{check.stderr.strip()[-500:]}"
-            )
-        if check.stdout.strip():
-            raise SandboxError(f"docker: container {self._container} is still present")
-        if proxy_error is not None:
-            raise proxy_error
-
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         env = {**env, **(self._proxy_env() if self._cut else {})}
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]

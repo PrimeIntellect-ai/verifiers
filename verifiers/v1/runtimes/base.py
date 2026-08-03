@@ -181,25 +181,6 @@ class Runtime(ABC):
         self.stopped = True  # before the await: no new borrows once teardown begins
         await run_shielded(self.teardown())
 
-    async def stop_confirmed(self) -> None:
-        """Free the provisioned resource, raising unless its removal is confirmed.
-
-        `teardown` is best-effort: a resource that outlives us is a billing problem, and
-        failing the rollout over one would be worse than leaking it. This is the variant
-        for a caller that needs the box *gone* before it does the next thing — an agent
-        can leave a background process running past its final turn, so a grading box
-        provisioned while the agent's box is still up is not isolated from it."""
-        self.stopped = True  # before the await: no new borrows once teardown begins
-        await run_shielded(self.teardown_confirmed())
-
-    async def teardown_confirmed(self) -> None:
-        """Free the provisioned resource and verify it is gone, or raise. Unlike
-        `teardown` this is neither best-effort nor optional to implement: a runtime that
-        cannot prove removal cannot host the agent side of an isolated grading run."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support confirmed teardown"
-        )
-
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
         that must be async (e.g. a remote API call); `stop` shields it from cancellation.

@@ -2,8 +2,9 @@
 
 The Harbor CLI downloads and caches each task directory. Its verifier runs in the
 runtime the harness edited — or, when the task asks for it with
-``[verifier].environment_mode = "separate"``, in a second box the agent never touched,
-carrying only what the task declared. Either way the score lands in
+``[verifier].environment_mode = "separate"``, in a second box the agent never
+touched, carrying only what the task declared: the harbor env's verifier seat runs
+``HarborVerifierTask`` there (see ``env.py``). Either way the score lands in
 ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
@@ -15,6 +16,7 @@ otherwise build the verifier image from ``tests/Dockerfile``.
 """
 
 import asyncio
+import copy
 import hashlib
 import io
 import logging
@@ -23,23 +25,16 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from collections.abc import AsyncIterator, Iterator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.runtimes import (
-    DockerConfig,
-    PrimeConfig,
-    Runtime,
-    RuntimeConfig,
-    provision_runtime,
-)
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
@@ -189,37 +184,14 @@ class HarborTask(Task[HarborData]):
                 )
         trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
-    def scoring_runtime(
-        self, runtime: Runtime, base_runtime_config: RuntimeConfig
-    ) -> AbstractAsyncContextManager[Runtime] | None:
-        if self.data.verifier is None:
-            return None
-        config = verifier_runtime_config(
-            runtime, base_runtime_config, self.data.verifier
-        )
-        return self._verifier_box(runtime, config)
+    def graded_elsewhere(self) -> "HarborTask":
+        """A copy whose `solved` records nothing here: the harbor env's verifier
+        seat grades this task's finished work in a box of the task's choosing."""
+        clone = copy.copy(self)
+        clone._graded_elsewhere = True
+        return clone
 
-    @asynccontextmanager
-    async def _verifier_box(
-        self, runtime: Runtime, config: RuntimeConfig
-    ) -> AsyncIterator[Runtime]:
-        """Carry the declared evidence out of the agent's box, confirm that box is gone,
-        and stand up a clean one to grade in.
-
-        Nothing starts until `stop_confirmed` returns: a verifier sharing a network with
-        a box the agent left a process running in is not isolated from it.
-        """
-        collected = await collect(runtime, self.data.artifacts)
-        await runtime.stop_confirmed()
-        async with provision_runtime(config, name=f"{runtime.name}-verifier") as box:
-            await box.prepare_setup()
-            # Artifacts first, tests second: the task declares where its evidence lands,
-            # and an entry pointing into /tests would otherwise hand the agent the
-            # grader's own scripts.
-            await restore(box, collected)
-            await self._stage_tests(box, wipe=True)
-            await box.prepare_execution([])
-            yield box
+    _graded_elsewhere: bool = False
 
     async def _stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
         """Put the task package's `tests/` in `/tests`, where `test.sh` expects it.
@@ -249,9 +221,19 @@ class HarborTask(Task[HarborData]):
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
-        # In separate mode the verifier box arrived staged; `runtime` is that box.
-        if self.data.verifier is None:
-            await self._stage_tests(runtime)
+        if self.data.verifier is not None:
+            if not self._graded_elsewhere:
+                raise TaskError(
+                    f"task {self.data.name!r} declares a separate verifier "
+                    '([verifier].environment_mode = "separate"); grade it through '
+                    "the harbor env's verifier seat (this taskset's default env), "
+                    "or force shared grading with --taskset.ignore-separate-verifier"
+                )
+            return {}
+        await self._stage_tests(runtime)
+        return await self._graded(runtime, trace)
+
+    async def _graded(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         await runtime.run(["bash", "/tests/test.sh"], verifier_env(self.data))
@@ -282,48 +264,61 @@ class HarborTask(Task[HarborData]):
             return None
 
 
-def verifier_runtime_config(
-    runtime: Runtime, base_runtime_config: RuntimeConfig, verifier: VerifierConfig
-) -> RuntimeConfig:
-    """The verifier box's config, derived from the agent box's."""
-    config = runtime.config
-    if (
-        not isinstance(config, DockerConfig | PrimeConfig)
-        or not isinstance(base_runtime_config, DockerConfig | PrimeConfig)
-        or type(base_runtime_config) is not type(config)
-    ):
-        raise TaskError(
-            "a separate verifier needs a container runtime matching the run's "
-            f"runtime config; got {type(config).__name__} against "
-            f"{type(base_runtime_config).__name__}"
+class HarborVerifierTask(HarborTask):
+    """The verifier seat's task: grade a solver's finished work in a box the agent
+    never touched — the one place a `[verifier].environment_mode = "separate"` task
+    is scored. Minted per episode by the harbor env from the solver's trace, never
+    loaded from a taskset. Only the solver's collected artifacts come in; `tests/`
+    is staged fresh; the inherited scoring runs `test.sh` and reads the reward."""
+
+    NEEDS_CONTAINER = True
+
+    def __init__(self, data: HarborData, artifacts: dict[str, bytes | None]) -> None:
+        super().__init__(data)
+        self._artifacts = artifacts
+
+    @classmethod
+    def data_for(cls, data: HarborData) -> HarborData:
+        """The verifier box, declared as task data — the seat's runtime resolves
+        from it (image, workdir, resources, network policy), exactly as the
+        solver's box resolves from the solver task's.
+
+        Which box follows Harbor: a declared `[verifier.environment]` states its
+        own image, workdir, and resources, and what it omits is the run's default;
+        a fresh copy of `[environment]` keeps the task's own. The verifier's
+        network policy applies either way."""
+        verifier = data.verifier
+        if verifier is None:
+            raise TaskError(f"task {data.name!r} declares no separate verifier")
+        fresh = verifier.fresh_copy
+        return data.model_copy(
+            update={
+                "name": f"{data.name} (verifier)",
+                "prompt": "Harbor separate verifier: a deterministic grading run "
+                "with no model turns.",
+                "image": verifier.image if verifier.image is not None else data.image,
+                "workdir": data.workdir if fresh else verifier.workdir,
+                "resources": data.resources if fresh else verifier.resources,
+                "network_allow": list(verifier.network_allow),
+                "network_block": [],
+                "timeout": TaskTimeout(scoring=data.timeout.scoring),
+                "artifacts": [],
+                "collect": [],
+            }
         )
-    network_base = base_runtime_config
-    if isinstance(network_base, PrimeConfig) and "*" not in verifier.network_allow:
-        # Prime enforces egress restrictions only for VM sandboxes. Keep an
-        # unrestricted agent in its configured container, but provision its
-        # restricted verifier as the VM those restrictions require.
-        network_base = network_base.model_copy(update={"vm": True})
-    network_config = network_base.with_task_network_policy(verifier.network_allow, [])
-    updates: dict[str, Any] = {
-        "allow": network_config.allow,
-        "block": network_config.block,
-    }
-    if isinstance(network_config, PrimeConfig) and network_config.network_restricted:
-        updates["vm"] = True
-    if not verifier.fresh_copy:
-        # A declared [verifier.environment] replaces the task's environment rather than
-        # extending it, so what it omits falls back to the run's defaults instead of
-        # inheriting the agent box's task-derived resources.
-        updates |= {
-            field: getattr(base_runtime_config, field)
-            for field in ("workdir", "cpu", "memory", "gpu", "disk")
-        }
-    if verifier.image is not None:
-        updates["image"] = verifier.image
-    updates |= verifier.resources.model_dump(exclude_none=True)
-    if verifier.workdir is not None:
-        updates["workdir"] = verifier.workdir
-    return type(config).model_validate({**config.model_dump(), **updates})
+
+    async def setup(self, trace: Trace, runtime: Runtime) -> None:
+        # Artifacts first, tests second: an artifact entry pointing into /tests
+        # must not survive staging, which wipes and rebuilds that directory.
+        await restore(runtime, self._artifacts)
+        await self._stage_tests(runtime, wipe=True)
+
+    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
+        """Collect hooks already ran in the solver's box; nothing travels from here."""
+
+    @reward(weight=1.0)
+    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
+        return await self._graded(runtime, trace)
 
 
 def task_resources(environment, multiplier: float) -> TaskResources:

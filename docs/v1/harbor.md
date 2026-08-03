@@ -112,13 +112,13 @@ Two deliberate differences from `harbor run`:
 
 ## Separate verifier environments
 
-`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). Only the declared artifacts and the `/logs/artifacts/` convention directory cross over, and the agent's box is confirmed deleted before the verifier starts, so nothing the agent left running can reach the grader. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
+`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). The harbor env — this taskset's default — runs a `verifier` seat for such tasks: the solver plays the task as usual, its declared artifacts and the `/logs/artifacts/` convention directory are collected while its box is alive, the box is torn down, and the seat then provisions a fresh box, restores those artifacts, stages `tests/` fresh, and grades there. The seat runs no program and never calls the model (the `noop` harness); its placement defaults to the solver's runtime policy, with `--env.verifier.runtime.*` overriding (a network-restricted verifier on Prime needs `vm true`). Its rewards and metrics are recorded onto the solver's trace. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
 
 Which image the verifier boots from follows Harbor: a declared `[verifier.environment]` if there is one, otherwise a fresh copy of `[environment]`, which is the task's own image.
 
 A declared `[verifier.environment]` needs a pullable `docker_image`. Without one Harbor would build the verifier image from `tests/Dockerfile`, and verifiers never builds images — so build and push it yourself and name the resulting reference, exactly as for `[environment]`. `ignore_dockerfile` grades in the agent's image instead, which means the verifier runs somewhere the task never declared; it warns when it does.
 
-`ignore_separate_verifier = true` forces every task back into shared grading, trading the isolation for one sandbox per task.
+Under any other env, a separate-verifier task refuses to grade in the agent's box rather than silently losing its isolation. `ignore_separate_verifier = true` forces every task back into shared grading, trading the isolation for one sandbox per task.
 
 ## Shortcomings
 

@@ -36,19 +36,6 @@ MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
 
-def _is_not_found(error: BaseException) -> bool:
-    """Whether an SDK error chain contains an HTTP 404 response."""
-    seen: set[int] = set()
-    current: BaseException | None = error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        response = getattr(current, "response", None)
-        if getattr(response, "status_code", None) == 404:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
 class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
@@ -347,55 +334,3 @@ class PrimeRuntime(Runtime):
                 )
         with contextlib.suppress(Exception):
             await client.aclose()
-
-    async def teardown_confirmed(self) -> None:
-        """`teardown`, plus polling the sandbox record until removal is proven — what
-        a separate grading box requires of the agent's box before it boots (see
-        `Runtime.teardown_confirmed`)."""
-        sandbox_id = self.info.id
-        if sandbox_id is None:
-            return
-        client, self._client = self._client, None
-        if client is None:
-            # A prior best-effort teardown consumed the original client without proving
-            # removal. A fresh client lets a later confirmed stop still establish it.
-            from prime_sandboxes import AsyncSandboxClient
-
-            client = AsyncSandboxClient()
-        try:
-            try:
-                await client.delete(sandbox_id)
-            except Exception as e:
-                if _is_not_found(e):
-                    return
-                raise SandboxError(
-                    f"prime: failed to delete sandbox {sandbox_id}: {e}"
-                ) from e
-
-            status = "unknown"
-            try:
-                async with asyncio.timeout(60):
-                    delay = 0.1
-                    while True:
-                        try:
-                            sandbox = await client.get(sandbox_id)
-                        except Exception as e:
-                            if _is_not_found(e):
-                                return
-                            raise SandboxError(
-                                f"prime: could not confirm sandbox {sandbox_id} "
-                                f"was deleted: {e}"
-                            ) from e
-                        status = sandbox.status
-                        if status == "TERMINATED":
-                            return
-                        await asyncio.sleep(delay)
-                        delay = min(delay * 2, 3)
-            except TimeoutError as e:
-                raise SandboxError(
-                    f"prime: sandbox {sandbox_id} did not terminate within 60s "
-                    f"(last status: {status})"
-                ) from e
-        finally:
-            with contextlib.suppress(Exception):
-                await client.aclose()

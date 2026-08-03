@@ -27,11 +27,9 @@ from verifiers.v1.utils.decorators import discover_decorated, invoke_all
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
-    from contextlib import AbstractAsyncContextManager
-
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime, RuntimeConfig
+    from verifiers.v1.runtimes import Runtime
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -144,27 +142,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     async def validate(self, runtime: Runtime) -> bool:
         return True
-
-    def scoring_runtime(
-        self, runtime: Runtime, base_runtime_config: RuntimeConfig
-    ) -> AbstractAsyncContextManager[Runtime] | None:
-        """A box to score this task in, instead of the one the agent worked in.
-
-        `None` (the default) keeps scoring where it has always happened: the agent's own
-        runtime, alive and exactly as the agent left it. Return a context manager and
-        the rollout scores the task inside it instead — for a grader the agent must not
-        be able to reach, since anything living in a box the agent had root in is
-        reachable, and hiding individual files only moves the target.
-
-        Whatever has to survive the move is the task's problem: carry it with
-        `collect`/`restore` while the agent's box is still up, inside the context
-        manager. `base_runtime_config` is the resolved run-level config, before the
-        current task's overrides, so the new box can distinguish task-declared resources
-        from CLI overrides; `runtime.config` alone cannot.
-
-        Only `score` moves. `finalize` and the harness's own scoring stay on `runtime`,
-        which is what they describe."""
-        return None
 
     async def score(
         self,
