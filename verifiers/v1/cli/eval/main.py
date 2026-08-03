@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> None:
         # disk. Exit on the conventional Ctrl-C code without a traceback.
         raise SystemExit(130)
     if config.push and not rich:
-        from verifiers.v1.push import push_traces
+        from verifiers.v1.utils.platform import push_traces
 
         push_traces(episodes, config)
     if not rich:  # --rich is the whole output; otherwise dump each trace as JSON

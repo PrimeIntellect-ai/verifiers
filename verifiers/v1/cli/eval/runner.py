@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import random
 import time
 
 from verifiers.v1.cli.dashboard import dashboard
@@ -17,8 +18,8 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode
+from verifiers.v1.taskset import SEED
 from verifiers.v1.trace import EvalRunInfo
-from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
         slots = [RunSlot.finished(episode) for episode in finished] + planned
         push_state = None
         if config.push and config.rich:
-            from verifiers.v1.push import PushState
+            from verifiers.v1.utils.platform import PushState
 
             push_state = PushState()
         display = (
@@ -102,7 +103,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
             if (
                 push_state is not None
             ):  # upload off the event loop so the view keeps refreshing
-                from verifiers.v1.push import push_traces
+                from verifiers.v1.utils.platform import push_traces
 
                 push_state.started = True
                 await asyncio.to_thread(push_traces, episodes, config, push_state)
@@ -136,7 +137,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     )
     tasks = []
     if not legacy:
-        from verifiers.v1.loaders import load_taskset
+        from verifiers.v1.utils.loaders import load_taskset
 
         # The client owns the taskset: load it here, once — the server (and its pool
         # workers) never load data, they rebuild each dispatched task from its request.
@@ -184,7 +185,10 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         if legacy:
             info = await client.info()
             group_scored = info.requires_group_scoring
-            idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
+            idxs = list(range(info.num_tasks))
+            if config.shuffle:
+                random.Random(SEED).shuffle(idxs)
+            idxs = idxs[: config.num_tasks]
             plan = [({"task_idx": idx}, config.num_rollouts) for idx in idxs]
         else:
             group_scored = False

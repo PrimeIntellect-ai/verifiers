@@ -1,33 +1,15 @@
-"""A rollout: one trajectory — drive a harness segment by segment and score its trace.
-
-A rollout's exchange is a sequence of SEGMENTS: the harness program runs until it
-yields (= exits), the run's user answers its final message, and the next segment
-resumes the exchange with that answer (`Harness.resume` — a relaunch on the accreted
-conversation by default, a native continuation for harnesses with their own session
-state). The user loop lives between segments, at the exchange's natural turn
-granularity — never inside the model boundary, so a harness's own tool loop can
-never race or amputate it.
-
-`RolloutRun` is the engine, a staged lifecycle: `open()` boots the world, each
-`step()` runs one segment, `close()` finalizes, scores, and tears the world down —
-each stage under its own timeout. `Agent` is its only driver: `Agent.run` is the
-one-call single-segment form, `Agent.interaction` holds the run open and lets the
-caller supply each user turn, one `turn()` per segment — who answers the program
-(an env's control flow, a simulator agent, a game engine, a human) is the caller's
-business, never this module's.
-"""
+"""Lifecycle of one agent rollout."""
 
 import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.dialects import parse_message
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -36,12 +18,7 @@ from verifiers.v1.errors import (
     boundary,
 )
 from verifiers.v1.harness import Harness
-from verifiers.v1.interception import (
-    Interception,
-    InterceptionServer,
-    Slot,
-    requires_tunnel,
-)
+from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
@@ -50,60 +27,30 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task, TaskData
+from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages
+from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
 
 
-def _as_messages(raw: Messages) -> Messages:
-    """A turn's messages may arrive typed or as wire dicts (env code naturally
-    writes `{"role": "user", ...}`); the trace speaks typed, so normalize here."""
-    return [parse_message(m) if isinstance(m, dict) else m for m in raw]
+@dataclass(frozen=True)
+class RolloutTimeouts:
+    """Per-stage rollout timeouts, each bounding one rollout stage."""
+
+    setup: float | None = None
+    """Timeout (in seconds) for the task + harness setup hooks."""
+    agent: float | None = None
+    """Timeout (in seconds) for the agent's solve attempt."""
+    finalize: float | None = None
+    """Timeout (in seconds) for the task + harness finalize hooks."""
+    scoring: float | None = None
+    """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
 
-@asynccontextmanager
-async def _serve_interception(
-    interception: Interception | None,
-    runtime: Runtime,
-    session: RolloutSession,
-    servers: list,
-    shared_tools: dict[str, SharedToolServer],
-) -> AsyncIterator[Slot]:
-    """A slot on the shared interception when one was injected (its owner keeps the
-    lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
-    down — by this rollout."""
-    if interception is not None:
-        async with interception.acquire(session) as slot:
-            yield slot
-        return
-    tunneled = requires_tunnel(
-        runtime.is_local,
-        [server.config for server in servers],
-        shared_tools.values(),
-    )
-    server = InterceptionServer(requires_tunnel=tunneled)
-    async with server, server.acquire(session) as slot:
-        yield slot
-
-
-class RolloutRun:
-    """One rollout held open segment by segment.
-
-    `open()` boots the world (runtime, setup, interception, tool servers); each
-    `step()` runs ONE harness segment — a program run to its exit — resuming the
-    exchange with the user turn(s) it's given; `close()` finalizes, scores, and
-    tears the world down, returning the finished trace. Expected `RolloutError`s
-    are captured onto the trace (a bad rollout is data, not a crash): `open` and
-    `step` report continuability as a bool, and `close` always returns the trace.
-
-    `wire_data` is the run's recorded view of the task — what `trace.task.data`
-    says the harness saw (`Agent.interaction(mask_prompt=True)` masks the prompt here
-    while the `task` object keeps the full row for its hooks and judges).
-    `runtime` is a live box to run in instead of provisioning one; a borrowed
-    runtime is neither started nor stopped here. `on_trace` observes the run's
-    trace the moment it's minted, before any I/O."""
+class Rollout:
+    """Manages one rollout's lifecycle (open, step, close)."""
 
     def __init__(
         self,
@@ -113,13 +60,9 @@ class RolloutRun:
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
-        wire_data: TaskData | None = None,
         has_user: bool = False,
-        setup_timeout: float | None = None,
-        agent_timeout: float | None = None,
-        finalize_timeout: float | None = None,
-        scoring_timeout: float | None = None,
-        limits: RolloutLimits | None = None,
+        timeouts: RolloutTimeouts,
+        limits: RolloutLimits,
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
         runtime: Runtime | None = None,
@@ -130,11 +73,8 @@ class RolloutRun:
         self.ctx = ctx
         self.runtime_config = runtime_config
         self._has_user = has_user
-        self._setup_timeout = setup_timeout
-        self._agent_timeout = agent_timeout
-        self._agent_time_remaining = agent_timeout
-        self._finalize_timeout = finalize_timeout
-        self._scoring_timeout = scoring_timeout
+        self._timeouts = timeouts
+        self._agent_time_remaining = self._timeouts.agent
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
@@ -143,7 +83,7 @@ class RolloutRun:
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
-                data=task.data if wire_data is None else wire_data,
+                data=task.data,
             ),
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
@@ -153,7 +93,7 @@ class RolloutRun:
         if on_trace is not None:
             on_trace(self.trace)
         self._session = RolloutSession(
-            ctx, self.trace, discover_decorated(task, "stop"), limits or RolloutLimits()
+            ctx, self.trace, discover_decorated(task, "stop"), limits
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -165,7 +105,7 @@ class RolloutRun:
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
-        `agent_timeout` budget only while its own segments run, so time awaiting
+        `timeouts.agent` budget only while its own segments run, so time awaiting
         the caller (including another interleaved agent) cannot starve it."""
 
     @property
@@ -258,8 +198,8 @@ class RolloutRun:
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
                 None
-                if self._setup_timeout is None
-                else asyncio.get_running_loop().time() + self._setup_timeout
+                if self._timeouts.setup is None
+                else asyncio.get_running_loop().time() + self._timeouts.setup
             )
             async with (
                 boundary(TaskError, "task setup"),
@@ -272,28 +212,33 @@ class RolloutRun:
             ):
                 await self.harness.setup(runtime)
             async with boundary(ToolsetError, "building tool servers"):
-                tool_servers = self.task.tool_servers()
+                toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
             # The harness reaches the model at `{base_url}/v1`; tool servers reach this
             # rollout's `/state` + `/task` at `base_url` — it's universally reachable
             # (the interception is exposed whenever any consumer is remote).
-            base_url, secret = await self._stack.enter_async_context(
-                _serve_interception(
+            (
+                base_url,
+                model_secret,
+                state_secret,
+            ) = await self._stack.enter_async_context(
+                serve_interception(
                     self._interception,
                     runtime,
                     self._session,
-                    tool_servers,
+                    toolsets,
                     self._shared_tools,
                 )
             )
             self._endpoint = f"{runtime.host_url(base_url)}/v1"
-            self._secret = secret
+            self._secret = model_secret
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
-                    tool_servers,
+                    toolsets,
                     runtime,
                     shared=self._shared_tools,
-                    state_secret=secret,
+                    state_secret=state_secret,
+                    state_route=self.trace.id,
                     state_base=base_url,
                 )
             )
@@ -354,7 +299,7 @@ class RolloutRun:
                 self.fail(
                     HarnessError(
                         f"agent timeout: rollout exceeded its "
-                        f"{self._agent_timeout:g}s budget"
+                        f"{self._timeouts.agent:g}s budget"
                     )
                 )
             else:
@@ -420,7 +365,7 @@ class RolloutRun:
                         invoke(
                             self.task.finalize, {"trace": trace, "runtime": runtime}
                         ),
-                        self._finalize_timeout,
+                        self._timeouts.finalize,
                     )
                 now = time.time()
                 trace.timing.finalize.end = now
@@ -433,7 +378,7 @@ class RolloutRun:
                                 self.task.score(trace, runtime),
                                 self.harness.score(trace, runtime),
                             ),
-                            self._scoring_timeout,
+                            self._timeouts.scoring,
                         )
                     else:
                         # Serial, not gathered: the harness's metrics describe the
@@ -442,7 +387,7 @@ class RolloutRun:
                         # box is provisioned inside the scoring deadline — a grader
                         # that can't be reached in time is a scoring timeout, not a
                         # zero.
-                        async with asyncio.timeout(self._scoring_timeout):
+                        async with asyncio.timeout(self._timeouts.scoring):
                             await self.harness.score(trace, runtime)
                             async with self._scoring_runtime as scoring_box:
                                 await self.task.score(trace, scoring_box)

@@ -21,11 +21,11 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.retries import backoff, trace_should_retry
-from verifiers.v1.rollout import RolloutRun, _as_messages
+from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     NetworkPolicyConfig,
     Runtime,
@@ -49,6 +49,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
+from verifiers.v1.utils.retries import backoff, trace_should_retry
 
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
@@ -150,9 +151,7 @@ class Interaction:
     rewards after close. Leaving the `interaction()` context closes the exchange
     as `user_closed` and finishes the rollout — hooks and scoring included."""
 
-    def __init__(
-        self, run: "RolloutRun", gate: asyncio.Semaphore | None = None
-    ) -> None:
+    def __init__(self, run: "Rollout", gate: asyncio.Semaphore | None = None) -> None:
         self._run = run
         self._gate = gate
         self._over = False  # a terminated segment was already delivered
@@ -188,14 +187,16 @@ class Interaction:
         if message is not None and prompted:
             raise ValueError(
                 "the task's prompt opens this exchange: take its first reply with "
-                "a bare turn() before answering (or mask the prompt with "
-                "interaction(mask_prompt=True) to open the conversation yourself)"
+                "a bare turn() before answering (or hand the interaction a task "
+                "with `prompt=None` to open the conversation yourself)"
             )
         messages: Messages | None = None
         if isinstance(message, str):
             messages = [UserMessage(content=message)]
         elif message is not None:
-            messages = _as_messages(message)
+            # A turn's messages may arrive typed or as wire dicts (env code naturally
+            # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
+            messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
         self._started = True
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
@@ -241,7 +242,7 @@ class Agent:
         client: Client | None = None,
         interception: Interception | None = None,
     ) -> None:
-        from verifiers.v1.loaders import harness_config_type, load_harness
+        from verifiers.v1.utils.loaders import harness_config_type, load_harness
 
         if config.model is None:
             raise ValueError(
@@ -334,8 +335,12 @@ class Agent:
             return self.interception
         if self._server is None:
             return None
+        if any(tool.state_secret for tool in shared_tools.values()):
+            # Shared state credentials are attached per run, after this owned
+            # server was created; let the rollout size a scoped server instead.
+            return None
         if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not type(task).tools
+            run_is_local and not shared_tools and not task.toolsets(task.config)
         ):
             return self._server
         return None
@@ -407,7 +412,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        run = RolloutRun(task=task, on_trace=on_trace, **params)
+        run = Rollout(task=task, on_trace=on_trace, **params)
         try:
             if await run.open():
                 await run.step()
@@ -430,7 +435,6 @@ class Agent:
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
-        mask_prompt: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
@@ -442,11 +446,10 @@ class Agent:
 
         The task's shape says who speaks first: a prompt-less task is opened by
         the first `turn(message)`; a prompted task speaks first — take its opening
-        reply with a bare `turn()` before answering. `mask_prompt` says a prompted
-        task's prompt belongs to the USER side (a scenario the caller pursues, not
-        the assistant's seed): the wire hides it — the caller opens — while the
-        task object keeps the full row, so its hooks, rewards, and judges score
-        the real question (the user-sim env's contract).
+        reply with a bare `turn()` before answering. A prompt that belongs to the
+        USER side (a scenario the caller pursues, not the assistant's seed) is the
+        caller's to hide: hand the interaction a task whose `data.prompt` is None
+        and keep the scenario on a scoring-side field (the user-sim env's contract).
 
         `runtime` and `tools` borrow live resources from their owners, just as
         they do for `run()`; an env supplies its taskset's shared tools
@@ -462,17 +465,9 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
-        if mask_prompt and task.data.prompt is None:
-            raise ValueError(
-                "mask_prompt hides a prompt the task doesn't have; a prompt-less "
-                "task is already opened by the first turn()"
-            )
         params = self._rollout_params(task, runtime, dict(tools or {}))
-        run = RolloutRun(
+        run = Rollout(
             task=task,
-            wire_data=(
-                task.data.model_copy(update={"prompt": None}) if mask_prompt else None
-            ),
             has_user=True,
             on_trace=on_trace,
             **params,
@@ -517,7 +512,10 @@ class Agent:
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
-            self.harness, type(task), runtime_config, shared_tools=shared_tools
+            self.harness,
+            type(task),
+            runtime_config,
+            tools=[*task.toolsets(task.config), *shared_tools.values()],
         )
         # Timeout precedence: agent-level wins, else the task's, else no limit.
         agent_timeout = (
@@ -530,23 +528,23 @@ class Agent:
             "harness": self.harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
-            "setup_timeout": (
-                self.timeout.setup
-                if self.timeout.setup is not None
-                else task.data.timeout.setup
-            ),
-            "agent_timeout": cap_remote_agent_timeout(
-                agent_timeout, runtime_config, task
-            ),
-            "finalize_timeout": (
-                self.timeout.finalize
-                if self.timeout.finalize is not None
-                else task.data.timeout.finalize
-            ),
-            "scoring_timeout": (
-                self.timeout.scoring
-                if self.timeout.scoring is not None
-                else task.data.timeout.scoring
+            "timeouts": RolloutTimeouts(
+                setup=(
+                    self.timeout.setup
+                    if self.timeout.setup is not None
+                    else task.data.timeout.setup
+                ),
+                agent=cap_remote_agent_timeout(agent_timeout, runtime_config, task),
+                finalize=(
+                    self.timeout.finalize
+                    if self.timeout.finalize is not None
+                    else task.data.timeout.finalize
+                ),
+                scoring=(
+                    self.timeout.scoring
+                    if self.timeout.scoring is not None
+                    else task.data.timeout.scoring
+                ),
             ),
             "limits": self.limits,
             "shared_tools": shared_tools,
@@ -652,7 +650,6 @@ class _EpisodeAgent(Agent):
         *,
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
-        mask_prompt: bool = False,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
@@ -674,7 +671,6 @@ class _EpisodeAgent(Agent):
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
-                mask_prompt=mask_prompt,
                 on_trace=self._watch(remember),
             ) as interaction:
                 yield interaction

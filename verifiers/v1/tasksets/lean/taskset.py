@@ -16,7 +16,6 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources
@@ -28,6 +27,7 @@ from verifiers.v1.tasksets.lean.scoring import (
     protected_signature_substring_present,
 )
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.decorators import reward
 
 # Lean v4.27 with Mathlib v4.27.
 DEFAULT_DOCKER_IMAGE = "team-clyvldofb0000gg1kx39rgzjq/lean-tactic:mathlib-v4.27.0-v3"

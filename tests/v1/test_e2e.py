@@ -37,6 +37,7 @@ AGENTIC_PLACEMENTS = [
     _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("codex", "docker", "codex-harness-in-docker"),
     _pair("claude-code", "docker", "claude-code-harness-in-docker"),
+    _pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]
@@ -54,9 +55,11 @@ USER_RUNTIMES = [
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus one remote placement for the sandbox/tunnel boundary.
 ACP_RESUME_PLACEMENTS = [
+    _pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
     _pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
     _pair("pi", "docker", "pi-acp-in-docker"),
     _pair("pool", "docker", "pool-acp-in-docker"),
+    _pair("openclaw", "docker", "openclaw-acp-in-docker"),
     _pair("pool", "prime", "pool-acp-in-prime"),
 ]
 
@@ -101,6 +104,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
         "echo-v1",
         harness=harness,
         runtime={"type": harness_runtime},
+        env={"agent": {"sampling": {"temperature": 0.0}}},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -109,13 +113,35 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.stop_condition == "agent_completed"
     assert trace.reward == 1.0
     # The seat's resolved identity rides the trace (policy metadata for trainers).
-    assert trace.agent is not None and trace.agent.config.sampling.max_tokens == 2048
+    assert trace.agent is not None
+    assert trace.agent.config.sampling.max_tokens == 2048
+    assert trace.agent.config.sampling.temperature == 0.0
     # Every sampled turn has one per-call record, linked to its assistant node.
     sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
     assert [c.node for c in trace.calls if c.error is None] == sampled
     for call in trace.calls:
         assert call.model and call.sampling is not None
         assert call.time.duration > 0
+
+
+@pytest.mark.e2e
+@pytest.mark.browser_use
+@pytest.mark.docker
+async def test_browser_use(run_v1, tmp_path):
+    """The browser_use harness runs in an explicitly browser-capable runtime."""
+    image = (
+        "mcr.microsoft.com/playwright/python:v1.61.0-noble@"
+        "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
+    )
+    (trace,) = await run_v1(
+        "echo-v1",
+        harness="browser_use",
+        runtime={"type": "docker", "image": image},
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert trace.ok
+    assert trace.reward == 1.0
 
 
 @pytest.mark.e2e
@@ -214,7 +240,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     the harness's runtime, or its own runtime) x the harness `runtime`. The tool stamps
     its output with a token the prompt never reveals, so reward 1.0 proves the tool was
     reachable from wherever the harness runs and actually ran. Eval-wide SHARED servers
-    are a different scope (`Taskset.tools`) with their own env-server-path coverage:
+    are a different scope (`Taskset.toolsets`) with their own env-server-path coverage:
     `test_shared_tool_isolation`."""
     (trace,) = await run_v1(
         "echo-tool-v1",
@@ -456,10 +482,10 @@ async def test_env_id_user_sim(run_v1, tmp_path):
     assert user.agent.trainable is False
     assert user.num_turns >= 1  # the modeled user actually spoke
     assert assistant.metrics["user_turns"] >= 1
-    # `mask_prompt`: the scenario is hidden from the assistant's harness (the run's
-    # visible data) while the task's own rewards still scored the real row. The
-    # masked view is what persists (provenance is the row's idx); both sides land
-    # as ONE durable episode.
+    # The env nulls the assistant task's prompt: the scenario is hidden from the
+    # assistant's harness while the task's rewards score off non-prompt fields
+    # (`answer`). The nulled row is what persists (provenance is the row's idx);
+    # both sides land as ONE durable episode.
     assert assistant.task.data.prompt is None
     assert "echoed" in assistant.rewards
     from verifiers.v1.cli.output import read_episodes

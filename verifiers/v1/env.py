@@ -29,12 +29,12 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.retries import run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
-from verifiers.v1.task import Task, resolve_server_config
+from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
-from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.generic import concrete_type, deep_merge
 from verifiers.v1.utils.memory import trim_memory_periodically
+from verifiers.v1.utils.retries import run_episode_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class Env(ABC, Generic[ConfigT]):
     task the agent actually receives — an env-minted task carries its own needs."""
 
     def __init__(self, config: ConfigT) -> None:
-        from verifiers.v1.loaders import load_harness, load_taskset
+        from verifiers.v1.utils.loaders import load_harness, load_taskset
 
         config_cls = concrete_type(type(self), EnvConfig, origin=Env) or EnvConfig
         if not isinstance(config, config_cls):
@@ -204,15 +204,21 @@ class Env(ABC, Generic[ConfigT]):
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
+            sampling = ctx.sampling
+            if spec.sampling is not None:
+                sampling = sampling.model_copy(
+                    update=deep_merge(
+                        sampling.model_dump(exclude_unset=True),
+                        spec.sampling.model_dump(exclude_unset=True),
+                    )
+                )
             resolved = spec.model_copy(
                 update={
                     "harness": spec.harness
                     if spec.harness is not None
                     else self._default_harness,
                     "model": spec.model if spec.model is not None else ctx.model,
-                    "sampling": spec.sampling
-                    if spec.sampling is not None
-                    else ctx.sampling,
+                    "sampling": sampling,
                 }
             )
             return _EpisodeAgent(
@@ -350,7 +356,13 @@ class Env(ABC, Generic[ConfigT]):
         run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(
-                self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+                self.config.interception,
+                requires_tunnel=self._requires_tunnel(shared),
+                state_service_secrets=tuple(
+                    server.state_secret
+                    for server in shared.values()
+                    if server.state_secret
+                ),
             )
             async with interception:
                 self._shared_tools = shared
@@ -378,24 +390,17 @@ class Env(ABC, Generic[ConfigT]):
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: role
-        runtimes, live `shared` servers, and the task class's tool servers;
-        a class overriding `server_config` conservatively counts as remote."""
+        runtimes, live `shared` servers, and the task class's tool servers
+        (`Task.toolsets` is a classmethod, so no task instance is needed)."""
         task_cls = type(self.taskset).task_type()
-        server_classes = [*task_cls.tools]
-        if server_classes and task_cls.server_config is not Task.server_config:
-            return True
-        sole = len({*task_cls.tools}) == 1
         configs = [
-            resolve_server_config(
-                task_cls.__name__, self.taskset.config.task, server_cls, sole=sole
-            )
-            for server_cls in server_classes
+            server.config for server in task_cls.toolsets(self.taskset.config.task)
         ]
         return requires_tunnel(self._runs_local(), configs, shared.values())
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        servers = self.taskset.tool_servers()
+        servers = self.taskset.toolsets(self.taskset.config)
         if not servers:
             yield {}
             return

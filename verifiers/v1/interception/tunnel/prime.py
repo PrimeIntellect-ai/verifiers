@@ -36,7 +36,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         from prime_tunnel import Tunnel as TunnelClient
 
         from verifiers.v1.errors import TunnelError
-        from verifiers.v1.retries import retrying
+        from verifiers.v1.utils.retries import retrying
 
         label = f"host tunnel (port {port})"
         try:

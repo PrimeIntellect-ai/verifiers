@@ -1,7 +1,7 @@
 """Answer trivia with a worker-shared wiki corpus and a reference judge.
 
 The tool server builds an expensive corpus/index in its process-level `setup`, so
-`Taskset.tools` launches one instance per environment worker instead of rebuilding it
+`Taskset.toolsets` launches one instance per environment worker instead of rebuilding it
 per rollout. The tools are read-only; grading comes from the plugged wiki-search judge
 (class-level prompt; reject incoherent answers).
 """
@@ -45,7 +45,9 @@ class WikiSearchConfig(vf.TasksetConfig):
 
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
-    tools = (WikiSearchToolset,)
+    @classmethod
+    def toolsets(cls, config: WikiSearchConfig) -> list[vf.Toolset]:
+        return [WikiSearchToolset(config.tools)]
 
     def load(self) -> list[TriviaTask]:
         from datasets import load_dataset

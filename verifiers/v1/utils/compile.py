@@ -77,18 +77,19 @@ def validate_pairing(
     task_cls: type[Task],
     runtime_config: RuntimeConfig,
     *,
-    shared_tools: Collection = (),
+    tools: Collection = (),
 ) -> None:
     """Reject an impossible harness/task/runtime combination before any work happens.
-    Every check reads class-level facts, so a failure holds for every row the task
-    class can carry. For `shared_tools` only emptiness matters — declarations and
-    live servers alike mean MCP is in play. (Hosting a user is interaction-scoped,
-    not task-scoped — `Agent.interaction` checks the harness can resume an exchange.)"""
-    if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
+    A failure holds for every row the task class can carry. For `tools` only
+    emptiness matters — task-declared and shared servers alike mean MCP is in play.
+    (Hosting a user is interaction-scoped, not task-scoped — `Agent.interaction`
+    checks the harness can resume an exchange.)"""
+    if not harness.SUPPORTS_MCP and tools:
         raise ValueError(
-            f"Harness {harness.config.id!r} does not support MCP tools, but "
-            f"{task_cls.__name__} exposes tool servers (MCP). Run it with a harness that "
-            f"supports MCP (e.g. --env.agent.harness.id bash), or use tasks without tools."
+            f"Harness {harness.config.id!r} does not support MCP tools, but the run "
+            f"serves some ({task_cls.__name__}'s or the taskset's shared servers). Run "
+            f"it with a harness that supports MCP (e.g. --env.agent.harness.id bash), "
+            f"or use tasks without tools."
         )
     if not harness.SUPPORTS_SKILLS and harness.config.skills:
         raise ValueError(

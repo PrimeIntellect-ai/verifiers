@@ -35,7 +35,7 @@ def resolve_env_field(data: dict, narrowed: "type[EnvConfig] | None" = None) -> 
                     raw.model_dump() if isinstance(raw, BaseConfig) else raw
                 )
             return data
-        from verifiers.v1.loaders import resolve_env_config
+        from verifiers.v1.utils.loaders import resolve_env_config
 
         data["env"] = resolve_env_config(raw)
     except ValidationError as e:

@@ -40,7 +40,7 @@ for a pure call (e.g. in tests).
 
 A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
 `score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
-built-ins and `verifiers.v1.loaders` for resolution). Its config lives on `TaskConfig.judges`
+built-ins and `verifiers.v1.utils.loaders` for resolution). Its config lives on `TaskConfig.judges`
 only — judges are config, never row data (`--taskset.task.judges`; a taskset config may
 pre-plug them as class defaults) — and `Task.score` builds and runs it after the task's own
 `@reward`s.
@@ -61,9 +61,9 @@ from verifiers.v1.configs.judge import (
     judge_key,
 )
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.scoring import parse_judge_choice
 from verifiers.v1.types import Messages, Usage
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.score import parse_judge_choice
 
 if TYPE_CHECKING:
     from verifiers.v1.task import TaskData

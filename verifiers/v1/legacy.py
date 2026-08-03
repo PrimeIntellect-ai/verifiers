@@ -507,11 +507,12 @@ def _legacy_output_dir(config) -> Path:
 async def run_legacy_eval(config) -> list[Episode]:
     """Run a legacy environment in process and return v1 episode records."""
     import asyncio
+    import random
 
     from verifiers import load_environment
     from verifiers.v1.cli.output import append_trace, save_config
+    from verifiers.v1.taskset import SEED
     from verifiers.v1.utils.install import ensure_installed, env_name
-    from verifiers.v1.utils.sampling import sample
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
     # already importable), then load by module name.
@@ -523,7 +524,10 @@ async def run_legacy_eval(config) -> list[Episode]:
     ):  # post-load knobs (max_total_completion_tokens, …)
         env.set_kwargs(**config.legacy.extra_env_kwargs)
     dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
-    idxs = sample(list(range(len(dataset))), config.shuffle, config.num_tasks)
+    idxs = list(range(len(dataset)))
+    if config.shuffle:
+        random.Random(SEED).shuffle(idxs)
+    idxs = idxs[: config.num_tasks]
 
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)

@@ -334,7 +334,7 @@ def serve_env(
             if (
                 "config_data" in server_kwargs
             ):  # rebuild the env config for an in-process server
-                from verifiers.v1.loaders import resolve_env_config
+                from verifiers.v1.utils.loaders import resolve_env_config
 
                 server_kwargs = {**server_kwargs}
                 server_kwargs["config"] = resolve_env_config(
