@@ -247,6 +247,10 @@ class DockerRuntime(Runtime):
             self.config.block,
             framework,
         )
+        # Sequential owner-approved rollouts only need to refresh the host-side
+        # proxy policy. The container's default route was already cut irreversibly.
+        if self._cut:
+            return
         script = (
             "set -eu; HOST=$1; "
             "PORT=$2; "

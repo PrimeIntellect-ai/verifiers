@@ -105,9 +105,36 @@ Prime VM; Prime accepts host-level entries.
 
 `artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Collect hooks run in the agent's box from the task's `finalize`, which is Harbor's own ordering — after the agent phase, before collection — and declared paths plus the `/logs/artifacts/` convention dir are then carried into the grading box and restored at their original paths ("no translation", as in Harbor).
 
+## Multi-step tasks
+
+`HarborTaskset` also loads Harbor's `[[steps]]` layout. It carries a default
+`HarborEnv` that dispatches each row by shape: ordinary tasks keep the normal
+single-agent path, while multi-step tasks run their ordered steps in one shared
+runtime. This default is inherited by custom `HarborTaskset` subclasses; an
+explicitly exported or CLI-selected environment still takes precedence.
+
+Each step gets its own instruction, shared-plus-step test overlay, `workdir/`
+overlay and `setup.sh`, healthcheck, agent and verifier timeouts, verifier env,
+collect hooks, artifacts, and verifier result. `min_reward` stops the remaining
+steps, and `multi_step_reward_strategy = "mean" | "final"` produces the trial
+reward. Fresh steps are separate traces in one episode; their local verifier
+values remain as `harbor_step/<step>/<key>` metrics and every trace receives the
+aggregated trial reward.
+
+Harbor starts a fresh agent session per step by default. To continue one harness
+session instead, set:
+
+```toml
+[env]
+resume_trajectory = true
+```
+
+or pass `--env.resume-trajectory`. Resume support is validated by the selected
+harness before the first turn that needs it.
+
 ## Shortcomings
 
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
-- Switching to a different verifier-phase network policy ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
-- Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
+- Agent/verifier phase-policy overrides, including per-step policies ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
+- Per-step agent/verifier users and separate verifier containers
