@@ -117,7 +117,7 @@ async def run_episode_with_retry(
         final = await run()
         if attempt == retry.max_retries or not episode_should_retry(final, retry):
             break
-        cause = final.error or next(
+        cause = final.last_error or next(
             (t.last_error for t in final.traces if t.last_error), None
         )
         history.extend(final.errors)

@@ -2,7 +2,7 @@
 
 The Harbor CLI downloads and caches each task directory. Its verifier runs in the
 same runtime the harness edited, then writes the score to
-``/logs/verifier/reward.txt``.
+``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
 not build Dockerfile-only environments, so those are rejected unless ``ignore_dockerfile``
@@ -21,8 +21,9 @@ import tempfile
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError
@@ -35,6 +36,11 @@ from verifiers.v1.utils.decorators import reward
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
+REWARD_JSON = "/logs/verifier/reward.json"
+REWARD_JSON_ADAPTER = TypeAdapter(
+    float | Annotated[dict[str, float], Field(min_length=1)],
+    config=ConfigDict(strict=True, allow_inf_nan=False),
+)
 
 
 class HarborConfig(TasksetConfig):
@@ -140,7 +146,7 @@ class HarborTask(Task[HarborData]):
         trace.state.artifacts = await collect(runtime, self.data.artifacts)
 
     @reward(weight=1.0)
-    async def solved(self, runtime: Runtime) -> float:
+    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         await runtime.write(
             "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
         )
@@ -153,13 +159,36 @@ class HarborTask(Task[HarborData]):
             {},
         )
         await runtime.run(
-            ["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self.data)
+            [
+                "sh",
+                "-c",
+                (
+                    "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt"
+                    " && cd /tests && bash test.sh"
+                ),
+            ],
+            verifier_env(self.data),
         )
+        scores = await self._reward_json(runtime)
+        if scores is not None:
+            if isinstance(scores, dict) and "reward" in scores:
+                trace.record_metrics(
+                    {key: value for key, value in scores.items() if key != "reward"}
+                )
+                return {"reward": scores["reward"]}
+            return scores
         try:
             reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
             return float(reward or 0)
         except (SandboxError, OSError, ValueError):
             return 0.0
+
+    async def _reward_json(self, runtime: Runtime) -> float | dict[str, float] | None:
+        """Read Harbor's scalar or keyed JSON reward, if it is valid."""
+        try:
+            return REWARD_JSON_ADAPTER.validate_json(await runtime.read(REWARD_JSON))
+        except (SandboxError, OSError, ValidationError):
+            return None
 
 
 def harbor_cli() -> str:
@@ -396,7 +425,11 @@ def parse_verifier_extras(
         # no such directory (the trace is the record) and Harbor never lets destination
         # affect verifier-side placement, so it cannot change any grading outcome.
         artifacts.append(
-            Artifact(source=entry.source, exclude=list(entry.exclude or []))
+            Artifact(
+                source=entry.source,
+                exclude=list(entry.exclude or []),
+                required=False,
+            )
         )
 
     hooks: list[CollectHook] = []

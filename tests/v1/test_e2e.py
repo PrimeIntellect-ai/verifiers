@@ -104,6 +104,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
         "echo-v1",
         harness=harness,
         runtime={"type": harness_runtime},
+        env={"agent": {"sampling": {"temperature": 0.0}}},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -112,7 +113,9 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.stop_condition == "agent_completed"
     assert trace.reward == 1.0
     # The seat's resolved identity rides the trace (policy metadata for trainers).
-    assert trace.agent is not None and trace.agent.config.sampling.max_tokens == 2048
+    assert trace.agent is not None
+    assert trace.agent.config.sampling.max_tokens == 2048
+    assert trace.agent.config.sampling.temperature == 0.0
     # Every sampled turn has one per-call record, linked to its assistant node.
     sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
     assert [c.node for c in trace.calls if c.error is None] == sampled

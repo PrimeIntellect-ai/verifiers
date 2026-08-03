@@ -129,7 +129,7 @@ def _eval_config(
     runtime: dict | None = None,
     env: dict | None = None,
     pool: dict | None = None,
-    model: str | None = None,
+    model: str | None = "deepseek/deepseek-v4-flash-0731",
     reasoning_effort: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
@@ -223,7 +223,7 @@ async def live_ctx():
 
     # Endpoint config only — each rollout builds and closes its own client.
     yield ModelContext(
-        model="deepseek/deepseek-v4-flash",
+        model="deepseek/deepseek-v4-flash-0731",
         client=EvalClientConfig(),
         sampling=SamplingConfig(max_tokens=2048),
     )
