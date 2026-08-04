@@ -3,11 +3,13 @@
 The generic two-sided conversation (`--env.id user-sim` over any taskset) — the
 substrate a tau2-style benchmark builds on. The taskset's row is read as the USER's
 side of the world: its prompt text becomes the scenario in the user's system prompt
-(`--env.persona`), and the assistant plays the same task with its prompt nulled — the
-scenario is the user's knowledge, so the assistant learns the goal only through
-conversation (its own instructions stay in `system_prompt`). The task's rewards and
-judges score that nulled row, so they must read scoring-side fields (`answer`, a
-judge's `question_field`), never the prompt. The user agent rides the tool-less
+(`--env.persona`), and the assistant plays the same task with its prompt withheld
+(`Task.without_prompt()`) — the scenario is the user's knowledge, so the assistant
+learns the goal only through conversation (its own instructions stay in
+`system_prompt`). Scoring runs on that withheld row, which keeps the scenario in
+`data.withheld_prompt`: plugged judges grade against it with no configuration, and a
+hand-written reward that wants the scenario reads `withheld_prompt_text` (the row's
+`prompt_text` is the wire, and the wire is empty). The user agent rides the tool-less
 `null` harness by default (untrainable — `setup()`), opens the conversation, and
 ends it with the done marker; the assistant's trace is then judged by the task's
 own rewards, exactly as in any eval.
@@ -66,15 +68,12 @@ class UserSimEnv(vf.Env[UserSimEnvConfig]):
         )
         # Two interactions, relayed: the user is just another agent, and the env is
         # the control flow between them. The assistant plays the SAME task with its
-        # prompt nulled: the scenario is the user's knowledge, so the wire seeds
-        # nothing and the user opens. Scoring runs on the nulled row — a user-sim
-        # taskset keeps its scoring on non-prompt fields.
-        assistant_task = type(task)(
-            task.data.model_copy(update={"prompt": None}), task.config
-        )
+        # prompt withheld: the scenario is the user's knowledge, so the wire seeds
+        # nothing and the user opens. Scoring runs on the withheld row, which still
+        # carries the scenario for graders (`data.withheld_prompt`).
         async with (
             agents.user.interaction(user_task) as sim,
-            agents.assistant.interaction(assistant_task) as assistant,
+            agents.assistant.interaction(task.without_prompt()) as assistant,
         ):
             # The tau convention: the assistant "answers the phone", the user
             # states the goal. The greeting exists only on the user's side. A

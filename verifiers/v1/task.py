@@ -70,6 +70,13 @@ class TaskTimeout(BaseModel):
     """Timeout (in seconds) for the task's scoring."""
 
 
+def _prompt_text(prompt: str | Messages | None) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    texts = [content_text(message.content) for message in prompt or []]
+    return "\n\n".join(text for text in texts if text)
+
+
 class TaskData(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -82,6 +89,11 @@ class TaskData(BaseModel):
 
     prompt: str | Messages | None = None
     """Initial user prompt; unset if the user opens the conversation."""
+    withheld_prompt: str | Messages | None = None
+    """The prompt `Task.without_prompt()` took off the wire, kept on the row for
+    scoring — the run's user holds the question and the assistant learns it through
+    conversation (useful for user simulation + judging). Never sampled into a
+    request: like an `answer` field, it rides the row for graders only."""
     system_prompt: str | None = None
     """Optional system prompt to prepend to the user prompt."""
 
@@ -110,10 +122,13 @@ class TaskData(BaseModel):
 
     @property
     def prompt_text(self) -> str:
-        if isinstance(self.prompt, str):
-            return self.prompt
-        texts = [content_text(message.content) for message in self.prompt or []]
-        return "\n\n".join(text for text in texts if text)
+        return _prompt_text(self.prompt)
+
+    @property
+    def withheld_prompt_text(self) -> str:
+        """`withheld_prompt` as text — what a grader reads when the wire carried no
+        prompt."""
+        return _prompt_text(self.withheld_prompt)
 
 
 class WireTaskData(TaskData):
@@ -135,8 +150,23 @@ class Task(Generic[DataT, StateT, ConfigT]):
         self.config = config if config is not None else self.config_type()()
 
     def with_system_prompt(self, system_prompt: str) -> Self:
+        # Copy rather than reconstruct, here and below: subclass instance state survives.
         clone = copy.copy(self)
         clone.data = self.data.model_copy(update={"system_prompt": system_prompt})
+        return clone
+
+    def without_prompt(self) -> Self:
+        """The same task with its prompt off the wire, kept on the row as
+        `withheld_prompt`: nothing seeds the conversation, so whoever opens it holds
+        the question, while scoring still has it to grade against (plugged judges read
+        it). Useful for user simulation + judging. Idempotent."""
+        clone = copy.copy(self)
+        clone.data = self.data.model_copy(
+            update={
+                "prompt": None,
+                "withheld_prompt": self.data.prompt or self.data.withheld_prompt,
+            }
+        )
         return clone
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
