@@ -1,28 +1,26 @@
-"""Client configs: describe an OpenAI-compatible endpoint and resolve it to a Client.
+"""Client configs: describe an OpenAI-compatible endpoint.
 
 A `BaseClientConfig` is an OpenAI-compatible endpoint (base_url + API-key env var
-+ extra headers) that `resolve_client` turns into a `Client`. The default Prime
-endpoint, API key, and team fall back to the active Prime CLI config, so direct
-`uv run eval` calls behave like `prime eval`. Both the eval entrypoint (its model
-client) and in-env LLM calls (e.g. a judge reward) build clients from these.
-`ClientConfig` is the CLI-selectable discriminated union (eval | train).
++ extra headers); `clients.resolve_client` turns one into a live `Client`, and every
+rollout does so for itself. The default Prime endpoint, API key, and team fall back to
+the active Prime CLI config, so direct `uv run eval` calls behave like `prime eval`.
+Both the eval entrypoint (its model client) and in-env LLM calls (e.g. a judge reward)
+build clients from these. `ClientConfig` is the CLI-selectable discriminated union
+(eval | train).
 """
 
 import os
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
-from openai import AsyncOpenAI
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
 from verifiers.utils.client_utils import load_prime_config
-from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.clients.train import TrainClient
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
+
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
 
@@ -74,12 +72,15 @@ class TrainClientConfig(BaseClientConfig):
     `None` auto-resolves from the model — which falls back to the default renderer (no
     tool support) for models not in the renderer map, so set it explicitly for
     fine-tunes / tool-using envs."""
-    pool_size: int = 1
-    """Renderer slots shared across concurrent rollouts (client-side tokenization)."""
     renderer_model_name: str | None = None
     """Model the tokenizer/renderer pool is built for. Pin to the base model so a LoRA
     adapter name (served only for sampling) never drives tokenizer loading. Falls back to
     the per-request model when None."""
+    multiplex: int = Field(256, ge=1)
+    """Rollouts that share one renderer (~75-95 MB each): the pool warms one and grows on
+    demand, so N concurrent rollouts hold ~N/multiplex tokenizers. A renderer is only busy
+    for the render itself (ms against a multi-second turn), so one absorbs many rollouts;
+    lower this when rendering is the slow part (very long prompts, frequent bridge misses)."""
 
 
 # Discriminated union for a CLI-selectable client (`--client.type eval|train`).
@@ -100,28 +101,3 @@ def resolve_api_key(config: BaseClientConfig) -> str:
     ):
         api_key = load_prime_config().get("api_key")
     return api_key or "EMPTY"
-
-
-def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
-    """An `AsyncOpenAI` for `config` (resolved key + extra headers) — for in-env model calls
-    (e.g. a judge) and the training client's engine connection."""
-    return AsyncOpenAI(
-        base_url=config.base_url,
-        api_key=resolve_api_key(config),
-        default_headers=config.headers or None,
-    )
-
-
-def resolve_client(config: BaseClientConfig) -> Client:
-    if isinstance(config, TrainClientConfig):
-        # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
-        return TrainClient(
-            build_async_openai(config),
-            pool_size=config.pool_size,
-            config=config.renderer,
-            renderer_model_name=config.renderer_model_name,
-        )
-    # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
-    return EvalClient(
-        config.base_url, resolve_api_key(config), headers=config.headers or None
-    )

@@ -1,4 +1,5 @@
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Annotated
 
 from pydantic import Field
@@ -15,7 +16,8 @@ from verifiers.v1.interception.server import (
     InterceptionServer,
     InterceptionServerConfig,
 )
-from verifiers.v1.runtimes import runtime_is_local
+from verifiers.v1.runtimes import Runtime, runtime_is_local
+from verifiers.v1.session import RolloutSession
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import SharedToolServer
@@ -54,16 +56,49 @@ def requires_tunnel(
 
 
 def make_interception(
-    config: InterceptionConfig, *, requires_tunnel: bool
+    config: InterceptionConfig,
+    *,
+    requires_tunnel: bool,
+    state_service_secrets: tuple[str, ...] = (),
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
     `make_runtime`). With `requires_tunnel`, each server is exposed through its configured
     tunnel; otherwise it remains on host loopback. The caller computes this requirement."""
     if isinstance(config, InterceptionServerConfig):
-        return InterceptionServer(config, requires_tunnel)
+        return InterceptionServer(config, requires_tunnel, state_service_secrets)
     if isinstance(config, StaticInterceptionPoolConfig):
-        return StaticInterceptionPool(config, requires_tunnel)
-    return ElasticInterceptionPool(config, requires_tunnel)
+        return StaticInterceptionPool(config, requires_tunnel, state_service_secrets)
+    return ElasticInterceptionPool(config, requires_tunnel, state_service_secrets)
+
+
+@asynccontextmanager
+async def serve_interception(
+    interception: Interception | None,
+    runtime: Runtime,
+    session: RolloutSession,
+    servers: list,
+    shared_tools: "dict[str, SharedToolServer]",
+) -> AsyncIterator[Slot]:
+    """A slot on the shared interception when one was injected (its owner keeps the
+    lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
+    down — by the caller's context."""
+    if interception is not None:
+        async with interception.acquire(session) as slot:
+            yield slot
+        return
+    tunneled = requires_tunnel(
+        runtime.is_local,
+        [server.config for server in servers],
+        shared_tools.values(),
+    )
+    server = InterceptionServer(
+        requires_tunnel=tunneled,
+        state_service_secrets=tuple(
+            tool.state_secret for tool in shared_tools.values() if tool.state_secret
+        ),
+    )
+    async with server, server.acquire(session) as slot:
+        yield slot
 
 
 __all__ = [
@@ -79,4 +114,5 @@ __all__ = [
     "StaticInterceptionPoolConfig",
     "make_interception",
     "requires_tunnel",
+    "serve_interception",
 ]

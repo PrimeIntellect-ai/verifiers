@@ -3,10 +3,11 @@
 The generic two-sided conversation (`--env.id user-sim` over any taskset) — the
 substrate a tau2-style benchmark builds on. The taskset's row is read as the USER's
 side of the world: its prompt text becomes the scenario in the user's system prompt
-(`--env.persona`), and the assistant plays the same task with a masked prompt — it
-is hidden from its harness, so it learns the user's goal only through
-conversation (its own instructions stay in `system_prompt`), while the task's
-rewards and judges still score the real row. The user agent rides the tool-less
+(`--env.persona`), and the assistant plays the same task with its prompt nulled — the
+scenario is the user's knowledge, so the assistant learns the goal only through
+conversation (its own instructions stay in `system_prompt`). The task's rewards and
+judges score that nulled row, so they must read scoring-side fields (`answer`, a
+judge's `question_field`), never the prompt. The user agent rides the tool-less
 `null` harness by default (untrainable — `setup()`), opens the conversation, and
 ends it with the done marker; the assistant's trace is then judged by the task's
 own rewards, exactly as in any eval.
@@ -64,14 +65,16 @@ class UserSimEnv(vf.Env[UserSimEnvConfig]):
             )
         )
         # Two interactions, relayed: the user is just another agent, and the env is
-        # the control flow between them. The assistant plays the SAME task with a
-        # masked prompt: the scenario is the user's knowledge, so the wire seeds
-        # nothing and the user opens — while the task's hooks, rewards, and plugged
-        # judges still score the real row (they read the task object, not the
-        # run's masked view).
+        # the control flow between them. The assistant plays the SAME task with its
+        # prompt nulled: the scenario is the user's knowledge, so the wire seeds
+        # nothing and the user opens. Scoring runs on the nulled row — a user-sim
+        # taskset keeps its scoring on non-prompt fields.
+        assistant_task = type(task)(
+            task.data.model_copy(update={"prompt": None}), task.config
+        )
         async with (
             agents.user.interaction(user_task) as sim,
-            agents.assistant.interaction(task, mask_prompt=True) as assistant,
+            agents.assistant.interaction(assistant_task) as assistant,
         ):
             # The tau convention: the assistant "answers the phone", the user
             # states the goal. The greeting exists only on the user's side. A
@@ -89,7 +92,7 @@ class UserSimEnv(vf.Env[UserSimEnvConfig]):
     async def finalize(self, task, episode):
         """One conversation-shape fact about the user's side, recorded on the
         assistant's trace; judgement stays on the task's rewards."""
-        (user,) = (t for t in episode.traces if t.agent_name == "user")
+        (user,) = (t for t in episode.traces if t.agent.name == "user")
         for trace in episode.traces:
-            if trace.agent_name == "assistant":
+            if trace.agent.name == "assistant":
                 trace.record_metric("user_turns", float(user.num_turns))

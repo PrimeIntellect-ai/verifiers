@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from pydantic import ConfigDict, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
@@ -35,7 +35,6 @@ from verifiers.v1.types import (
     KeptTokens,
     Message,
     Response,
-    StrictBaseModel,
     TextContentPart,
     Tool,
     ToolMessage,
@@ -104,7 +103,7 @@ def _validate_raw_mm_data(mmd: MultiModalData) -> MultiModalData:
     )
 
 
-class MessageNode(StrictBaseModel):
+class MessageNode(BaseModel):
     """One message in the graph: a message plus the tokens it adds to the cumulative
     sequence. Concatenating a root→leaf path's nodes reconstructs that branch's full token
     sequence; the mask/logprobs make it a training sample."""
@@ -170,7 +169,7 @@ class MessageNode(StrictBaseModel):
     sampling-replay training. Rides the wire as raw-bytes `__nd__` dicts; kept off disk
     by the dump-site `exclude` in prime-rl."""
 
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @field_serializer("multi_modal_data")
     def serialize_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:

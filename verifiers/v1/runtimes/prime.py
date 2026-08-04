@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
+from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
 from verifiers.v1.errors import SandboxError
@@ -75,12 +76,12 @@ class PrimeConfig(NetworkPolicyConfig):
             raise ValueError(
                 "Prime allow/block egress lists require a VM sandbox (vm=true)"
             )
-        from prime_sandboxes.models import validate_egress_lists
-
-        allow = None if self.allow == ["*"] else self.allow
-        block = self.block or None
-        if allow is not None or block != ["*"]:
-            validate_egress_lists(allow, block)
+        if not self.allow:
+            return self
+        validate_egress_lists(
+            None if self.allow == ["*"] else self.allow,
+            self.block or None,
+        )
         return self
 
     @model_validator(mode="after")
@@ -185,13 +186,15 @@ class PrimeRuntime(Runtime):
         if not self.network_restricted:
             return
         try:
+            hosts = list(
+                dict.fromkeys(
+                    h for h in (urlsplit(route).hostname for route in routes) if h
+                )
+            )
             if self.config.allow == ["*"]:
                 policy = {"deny": self.config.block}
             else:
-                hosts = [h for h in (urlsplit(route).hostname for route in routes) if h]
                 entries = list(dict.fromkeys([*hosts, *self.config.allow]))
-                from prime_sandboxes.models import validate_egress_lists
-
                 validate_egress_lists(entries, None)
                 policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
@@ -220,21 +223,14 @@ class PrimeRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
-            # Poll directly so the rollout stage owns the execution timeout; the SDK helper
-            # otherwise imposes its own 15-minute limit.
-            job = await self._client.start_background_job(
+            result = await self._client.run_background_job(
                 self.info.id,
                 shlex.join(argv),
+                timeout=MAX_LIFETIME,
                 working_dir=self.config.workdir,
                 env=env,
+                poll_interval=1,
             )
-            delay = 0.1
-            while True:
-                result = await self._client.get_background_job(self.info.id, job)
-                if result.completed:
-                    break
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
@@ -274,7 +270,7 @@ class PrimeRuntime(Runtime):
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
-    async def read(self, path: str) -> bytes:
+    async def _read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (

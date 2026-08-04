@@ -9,10 +9,11 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1.envs.agentic_judge import ScoreConfig
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
-from verifiers.v1.loaders import judge_class, judge_config_type, load_judge
 from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.utils.loaders import judge_class, judge_config_type, load_judge
 
 RUBRIC_TOML = """
 [[criteria]]
@@ -36,6 +37,7 @@ def make_trace(
     task_cls: type[QAData] = QAData,
 ) -> vf.Trace:
     return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
             type="Task",
             data=task_cls(idx=0, prompt="Capital of France?", answer=answer),
@@ -244,6 +246,7 @@ async def test_reference_score_messages_prompt(fake_judge_model):
         answer="Paris",
     )
     trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
@@ -269,6 +272,7 @@ async def test_reference_question_field(fake_judge_model):
         answer="Paris",
     )
     trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
@@ -293,6 +297,7 @@ def full_trace_fixture() -> vf.Trace:
     from verifiers.v1.types import ToolCall, ToolMessage
 
     return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(
             type="Task", data=QAData(idx=0, prompt="Capital of France?", answer="Paris")
         ),
@@ -367,32 +372,20 @@ async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
     assert all("SECRET REASONING" not in prompt for prompt in fake_judge_model)
 
 
-async def test_config_prompt_overrides_class_template(fake_judge_model):
-    judge = vf.ReferenceJudge(
-        vf.ReferenceJudgeConfig(prompt="Q:{question} A:{answer} R:{response}")
-    )
+async def test_config_prompt_overrides_class_template(tmp_path, fake_judge_model):
+    # Config `prompt` is a file path; the same {field} placeholders work.
+    file = tmp_path / "judge.txt"
+    file.write_text("Q:{question} A:{answer} R:{response}")
+    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt=file))
     assert judge.build_messages(question="q", answer="a", response="r") == "Q:q A:a R:r"
     # A template needn't use every evaluate field: score also passes {positive}/{negative},
     # which str.format ignores when the (custom) prompt doesn't reference them.
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 1.0
     assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
-
-
-async def test_prompt_file(tmp_path, fake_judge_model):
-    # The prompt template can come from a file; the same {field} placeholders work.
-    file = tmp_path / "judge.txt"
-    file.write_text("Q:{question} A:{answer} R:{response}")
-    trace = make_trace()
-    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=file))
-    assert await judge.score(trace.task.data, trace) == 1.0
-    assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
     # a bad path fails at judge construction, not mid-eval at score time
     with pytest.raises(FileNotFoundError):
-        vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=tmp_path / "missing.txt"))
-    # inline and file prompts are mutually exclusive
-    with pytest.raises(ValueError, match="not both"):
-        vf.ReferenceJudgeConfig(prompt="inline", prompt_file=file)
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt=tmp_path / "missing.txt"))
 
 
 # --- reference input/verdict knobs ------------------------------------------------------------
@@ -469,7 +462,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
         await JudgedTask(trace.task.data, taskset.config.task).score(
             trace, runtime=None
         )
-    assert "reference" not in trace.rewards
+    assert trace.rewards["reference"] is None  # seeded: expected but never scored
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
 
@@ -488,10 +481,14 @@ def test_rubric_criteria_toml_and_json(tmp_path):
     toml = rubric_judge(tmp_path).criteria
     assert [c.name for c in toml] == ["mentions_paris", "is_polite"]
     assert [c.weight for c in toml] == [3.0, 1.0]
-    # JSON: both the {"criteria": [...]} object and a bare list parse to the same rubric
+    # JSON accepts a metadata-bearing object or a bare criteria list.
     items = [c.model_dump() for c in toml]
     assert (
-        rubric_judge(tmp_path, json.dumps({"criteria": items}), ".json").criteria
+        rubric_judge(
+            tmp_path,
+            json.dumps({"title": "Safety", "criteria": items}),
+            ".json",
+        ).criteria
         == toml
     )
     assert rubric_judge(tmp_path, json.dumps(items), ".json").criteria == toml
@@ -519,8 +516,23 @@ def test_rubric_rejects_bad_files(tmp_path):
         ).criteria
     # negative/NaN/inf weights would invert a criterion or corrupt the weighted mean
     for weight in (-1.0, float("nan"), float("inf")):
-        with pytest.raises(ValueError, match="negative or non-finite"):
+        with pytest.raises(
+            ValueError, match="greater than or equal to 0|finite number"
+        ):
             _ = rubric_judge(tmp_path, weights={"mentions_paris": weight}).criteria
+    with pytest.raises(ValueError, match="non-finite total"):
+        _ = rubric_judge(
+            tmp_path, weights={"mentions_paris": 1e308, "is_polite": 1e308}
+        ).criteria
+
+
+@pytest.mark.parametrize("weight", [float("nan"), float("inf"), float("-inf")])
+def test_judge_composition_weights_are_finite(weight):
+    with pytest.raises(ValueError, match="finite number"):
+        vf.JudgeConfig(weight=weight)
+    for field in ("task_weight", "judge_weight"):
+        with pytest.raises(ValueError, match="finite number"):
+            ScoreConfig.model_validate({field: weight})
 
 
 async def test_rubric_score(tmp_path, fake_judge_model):
@@ -577,7 +589,7 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
 
 
 def test_rubric_choices_validation(tmp_path):
-    with pytest.raises(ValueError, match="at least two"):
+    with pytest.raises(ValueError, match="at least 2"):
         _ = rubric_judge(
             tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["only"]\n'
         ).criteria

@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import base64
 import contextlib
 import hashlib
 import logging
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -100,15 +101,32 @@ class NetworkPolicyConfig(BaseConfig):
     """Shared execution-time policy surface for runtimes that support it."""
 
     allow: list[str] = Field(default_factory=lambda: ["*"])
-    """Destinations allowed during execution; `*` leaves egress unrestricted."""
+    """Destinations allowed during execution; `*` is unrestricted and `[]` is
+    framework-only."""
     block: list[str] = Field(default_factory=list)
-    """Destinations denied during execution."""
+    """Destinations denied during execution; any `*` makes the policy framework-only."""
+
+    @model_validator(mode="after")
+    def _validate_network_policy(self) -> Self:
+        if not self.allow or "*" in self.block:
+            # Empty allowlists and wildcard blocks both mean framework-only access.
+            self.allow = []
+            self.block = ["*"]
+        elif self.allow != ["*"] and self.block:
+            raise ValueError(
+                "non-empty concrete allow and block egress lists are mutually exclusive"
+            )
+        return self
 
     @property
     def network_restricted(self) -> bool:
         return "*" not in self.allow or bool(self.block)
 
     def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
+        values = self.model_dump()
+        if not allow or not self.allow or "*" in block:
+            # Framework-only access is absorbing; composition cannot widen either side.
+            return type(self).model_validate({**values, "allow": [], "block": ["*"]})
         if "*" not in allow:
             allow = (
                 allow
@@ -118,9 +136,7 @@ class NetworkPolicyConfig(BaseConfig):
         else:
             allow = self.allow
         block = list(dict.fromkeys([*block, *self.block]))
-        return type(self).model_validate(
-            {**self.model_dump(), "allow": allow, "block": block}
-        )
+        return type(self).model_validate({**values, "allow": allow, "block": block})
 
 
 class BaseRuntimeInfo(BaseConfig):
@@ -181,6 +197,16 @@ class Runtime(ABC):
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         pass
+
+    async def alive(self) -> bool:
+        """Whether the box still executes anything. Not every runtime raises when
+        the box is gone — some surface it as `exec`'s own non-zero result,
+        indistinguishable from the command failing. One probe on the failure path
+        tells the two apart before we blame anyone."""
+        try:
+            return (await self.run(["true"], {})).exit_code == 0
+        except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
+            return False
 
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
@@ -260,9 +286,42 @@ class Runtime(ABC):
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        """Read `path` into host memory. `max_bytes` caps the transfer, raising past
+        the cap — for a file written by something we don't control, whose size we
+        can't assume. The cap is enforced inside the box rather than after the
+        transfer, and base64 because `run` returns decoded text. Framework method —
+        override `_read`, not this."""
+        if max_bytes is None:
+            return await self._read(path)
+        # Through a temp file, not a pipe: `head | base64` exits with base64's 0
+        # even when the path is missing, and a missing file must raise here just
+        # as it does from `_read`.
+        result = await self.run(
+            [
+                "sh",
+                "-c",
+                (
+                    "t=$(mktemp) || exit 1; "
+                    'head -c "$1" -- "$2" > "$t" || { rm -f "$t"; exit 1; }; '
+                    'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
+                ),
+                "sh",
+                str(max_bytes + 1),
+                path,
+            ],
+            {},
+        )
+        if result.exit_code:
+            raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+        data = base64.b64decode(result.stdout)
+        if len(data) > max_bytes:
+            raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
+        return data
+
     @abstractmethod
-    async def read(self, path: str) -> bytes:
-        pass
+    async def _read(self, path: str) -> bytes:
+        """Read the whole file at `path`; `read` adds the optional transfer cap."""
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
@@ -285,7 +344,7 @@ class Runtime(ABC):
 
     async def prepare_execution(self, routes: list[str]) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
-        their policy here while keeping the interception and MCP `routes` reachable."""
+        their policy here; `routes` identifies the interception and MCP endpoints."""
 
     @property
     def network_restricted(self) -> bool:

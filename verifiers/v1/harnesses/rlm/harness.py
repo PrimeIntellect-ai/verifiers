@@ -6,16 +6,16 @@ import random
 import shlex
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, PositiveInt, model_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.decorators import metric
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.decorators import metric
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +38,18 @@ class RLMHarnessConfig(HarnessConfig):
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
-    summarize_at_tokens: int | tuple[int, int] | None = None
+    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
     """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
     past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
     threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
     `None` disables auto-compaction; ints must be positive."""
 
     @model_validator(mode="after")
-    def validate_limits(self) -> "RLMHarnessConfig":
+    def validate_range(self) -> "RLMHarnessConfig":
         value = self.summarize_at_tokens
-        if isinstance(value, tuple):
-            lo, hi = value
-            if lo <= 0 or hi <= 0:
-                raise ValueError("`summarize_at_tokens` range bounds must be positive.")
-            if lo > hi:
-                raise ValueError(
-                    "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
-                )
-        elif value is not None and value <= 0:
+        if isinstance(value, tuple) and value[0] > value[1]:
             raise ValueError(
-                "`summarize_at_tokens` must be positive, or None to disable."
+                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
             )
         return self
 
@@ -94,6 +86,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
         env = {**self.config.resolved_env, "RLM_HOME": RLM_HOME}
+        extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
+        env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")

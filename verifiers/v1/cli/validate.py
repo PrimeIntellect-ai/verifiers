@@ -14,17 +14,18 @@ import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
 from verifiers.v1.cli.resolve import (
     extract_id,
+    narrow_taskset_config,
     plugin_errors,
     references_config_file,
     with_positional_taskset,
 )
 from verifiers.v1.configs.cli.validate import ValidateConfig
-from verifiers.v1.decorators import invoke
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
 from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
@@ -41,15 +42,7 @@ def _narrow(argv: list[str]) -> type[ValidateConfig]:
     """`ValidateConfig` with `taskset` narrowed to the config type of the id on the CLI — so
     the single `cli()` parse stays typed and `-h` renders the taskset's fields. Absent an id
     (a `@ file.toml` may carry it) the base type is left for the validator to resolve."""
-    taskset_id = extract_id(argv, "taskset")
-    if not taskset_id:
-        return ValidateConfig
-    ftype = vf.taskset_config_type(taskset_id)
-    return type(
-        ValidateConfig.__name__,
-        (ValidateConfig,),
-        {"__annotations__": {"taskset": ftype}, "taskset": ftype(id=taskset_id)},
-    )
+    return narrow_taskset_config(ValidateConfig, extract_id(argv, "taskset"))
 
 
 ResultRow = dict[str, Any]
@@ -96,6 +89,12 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
         trace = Trace(
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
+            # No agent runs here — the info only records the runtime policy.
+            agent=vf.AgentInfo(
+                config=vf.AgentConfig(runtime=config.runtime),
+                name="validate",
+                trainable=False,
+            ),
         )
         await runtime.start()
         await asyncio.wait_for(
@@ -131,6 +130,12 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
         trace = Trace(
             task=TraceTask(type=type(task).__name__, data=task.data),
             state=state_cls(type(task))(),
+            # No agent runs here — the info only records the runtime policy.
+            agent=vf.AgentInfo(
+                config=vf.AgentConfig(runtime=config.runtime),
+                name="validate",
+                trainable=False,
+            ),
         )
         await runtime.start()
         await asyncio.wait_for(
@@ -198,7 +203,14 @@ async def _validate_task(task: Task, config: ValidateConfig) -> ResultRow:
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.select(config.num_tasks, config.shuffle)
+    if config.num_tasks is None and taskset.INFINITE:
+        raise ValueError(
+            f"{type(taskset).__name__} is infinite - bound the run with -n"
+        )
+    selected = taskset.shuffle() if config.shuffle else taskset
+    if config.num_tasks is not None:
+        selected = selected.head(config.num_tasks)
+    tasks = list(selected)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):

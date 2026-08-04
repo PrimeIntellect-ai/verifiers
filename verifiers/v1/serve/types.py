@@ -1,8 +1,8 @@
 from typing import ClassVar
 
-from pydantic import BaseModel, Field, field_serializer, model_validator
+from pydantic import BaseModel, Field, SerializeAsAny, model_validator
 
-from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.task import WireTaskData  # noqa: F401  (docstring reference)
 from verifiers.v1.trace import WireTrace
@@ -65,14 +65,10 @@ class RunRequest(BaseRequest):
 
 
 class RunResponse(BaseResponse):
-    episode: WireEpisode | None = None
+    episode: SerializeAsAny[WireEpisode] | None = None
     """The rollout's episode — its standing (`id`/`env`/`errors`, carrying
     episode-level errors even when no trace minted) inlined next to its flat,
     self-contained traces; task-specific data preserved in `model_extra`."""
-
-    @field_serializer("episode")
-    def _ser_episode(self, episode: "WireEpisode | None") -> dict | None:
-        return episode.model_dump() if episode is not None else None
 
 
 class RunGroupRequest(BaseRequest):
@@ -87,8 +83,4 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    traces: list[WireTrace] | None = None
-
-    @field_serializer("traces")
-    def _ser_traces(self, traces: "list[WireTrace] | None") -> list[dict] | None:
-        return [t.model_dump() for t in traces] if traces is not None else None
+    traces: list[SerializeAsAny[WireTrace]] | None = None

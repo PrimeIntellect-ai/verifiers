@@ -58,8 +58,8 @@ def trace_to_sample(
         "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
         "episode_id": episode_id,
-        "agent": trace.agent_name,
-        "trainable": trace.trainable,
+        "agent": trace.agent.name,
+        "trainable": trace.agent.trainable,
         "task": task,
         "prompt": [],
         "completion": dump(branches[-1].messages) if branches else [],
@@ -73,8 +73,8 @@ def trace_to_sample(
         "is_completed": trace.is_completed,
         "is_truncated": trace.is_truncated,
         "metrics": trace.metrics,
-        "error": trace.error.model_dump(mode="json", exclude_none=True)
-        if trace.error
+        "error": trace.last_error.model_dump(mode="json", exclude_none=True)
+        if trace.last_error
         else None,
         "stop_condition": trace.stop_condition,
         "trajectory": [
@@ -93,7 +93,8 @@ def trace_to_sample(
     # Flatten sub-rewards to top-level keys the way v0 does (raw scores, as v0's
     # per-function outputs were); env metrics stay nested.
     for name, reward in trace.rewards.items():
-        sample.setdefault(name, reward.score)
+        if reward is not None:
+            sample.setdefault(name, reward.score)
     return sample
 
 
@@ -124,12 +125,19 @@ def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]
     back to all traces when none are trainable (same rule as the dashboard).
     `avg_error` is the share of EPISODES that aren't ok: a hook failure counts
     even when its traces are clean or it left none."""
-    scored = [t for t in traces if t.trainable] or traces
+    scored = [t for t in traces if t.agent.trainable] or traces
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
     for trace in scored:
-        scores = {name: reward.score for name, reward in trace.rewards.items()}
-        for name, value in {**scores, **trace.metrics}.items():
+        scores = {
+            name: reward.score
+            for name, reward in trace.rewards.items()
+            if reward is not None
+        }
+        metrics = {
+            name: value for name, value in trace.metrics.items() if value is not None
+        }
+        for name, value in {**scores, **metrics}.items():
             sums[name] = sums.get(name, 0.0) + value
             counts[name] = counts.get(name, 0) + 1
     n = len(scored)
@@ -186,7 +194,7 @@ def push_traces(
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
     traces = [trace for episode in episodes for trace in episode.traces]
-    env_name = (config.env.taskset.id) or config.id
+    env_name = (config.env.taskset.id) or config.legacy.id
     metrics = _run_metrics(episodes, traces)
     samples = _build_samples(episodes)
     num_examples = len({t.task.data.idx for t in traces})

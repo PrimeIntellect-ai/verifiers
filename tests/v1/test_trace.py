@@ -21,7 +21,8 @@ class MyState(vf.State):
 def test_bare_trace_round_trip():
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=3, prompt="hello"))
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=3, prompt="hello")),
     )
     rt = vf.Trace.model_validate(tr.model_dump())
     assert rt.id == tr.id
@@ -35,6 +36,7 @@ def test_custom_task_state_round_trip():
     # Custom data and state round-trip into the same parameterization. Data fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
     tr = vf.Trace[MyTask, MyState](
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="gold")),
         state=MyState(score=7),
         nodes=[
@@ -59,6 +61,7 @@ def test_wire_trace_round_trip():
     # Two leaves off one root → 2 branches (a compaction-shaped trace), so the round-trip has to
     # carry node `parent` links for `num_branches` to survive.
     tr = vf.Trace[MyTask, vf.State](
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="a")),
         tools=[vf.Tool(name="echo", description="", parameters={"type": "object"})],
         nodes=[
@@ -68,17 +71,22 @@ def test_wire_trace_round_trip():
         ],
     )
     tr.record_reward("r", 1.0)
+    tr.rewards.setdefault("solved", None)  # seeded: expected but never scored
+    tr.metrics.setdefault("acc", None)
     tr.info = {"build": "ok"}
     tr.stop("done")
 
     # the dump is plain pydantic — derived values are properties, so they're not serialized
     data = json.loads(tr.model_dump_json(exclude_none=True))
     assert "reward" not in data and "is_truncated" not in data
+    # exclude_none drops None FIELDS, not None dict values — unscored seeds survive
+    assert data["rewards"]["solved"] is None and data["metrics"]["acc"] is None
 
     rt = vf.WireTrace.model_validate(data)
     assert rt.num_branches == tr.num_branches == 2  # branch topology survived
     assert rt.num_turns == tr.num_turns == 2
-    assert rt.reward == 1.0  # property recomputed from `rewards`
+    assert rt.reward == 1.0  # property recomputed from `rewards`, seeds contribute 0
+    assert rt.rewards["solved"] is None
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
     assert (

@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import logging
 
 import msgpack
@@ -8,11 +7,9 @@ import zmq.asyncio
 
 from verifiers.utils.process_utils import use_threading_tqdm_lock
 from verifiers.utils.serve_utils import msgpack_encoder
-from verifiers.v1.clients import ModelContext, resolve_client
-from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.loaders import load_environment
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -22,21 +19,25 @@ from verifiers.v1.serve.types import (
     RunRequest,
     RunResponse,
 )
-from verifiers.v1.task import Task, task_data_cls
+from verifiers.v1.task import Task
 from verifiers.v1.types import SamplingConfig
+from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)
 
 
 class EnvServer:
     def __init__(
-        self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
+        self,
+        config: EnvConfig,
+        address: str = "tcp://127.0.0.1:5000",
+        max_concurrent: int | None = None,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = load_environment(config)
         self.task_cls = type(self.env.taskset).task_type()
-        self.data_cls = task_data_cls(self.task_cls)
+        self.data_cls = self.task_cls.data_type()
         # A dispatched task is its client-side model_dump(): a field excluded from
         # serialization would vanish on the wire and rebuild silently defaulted, so
         # refuse to serve such a taskset.
@@ -52,13 +53,8 @@ class EnvServer:
         # v1 envs never group-score (siblings score inside the env's own rollout);
         # only the legacy (v0) bridge sets this.
         self.requires_group_scoring = False
-        self._gate = (
-            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-        )
-        self._clients: dict[
-            tuple[str, str], Client
-        ] = {}  # (client_config, model) -> Client
-
+        # This worker's episode bound (`--max-concurrent`), spanning requests.
+        self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -100,19 +96,13 @@ class EnvServer:
         data = self.data_cls.model_validate(task_data)
         return self.task_cls(data, self.env.config.taskset.task)
 
-    def _client(self, client_config: ClientConfig, model: str) -> Client:
-        """Cache clients because renderer initialization builds a tokenizer pool."""
-        key = (client_config.model_dump_json(), model)
-        if key not in self._clients:
-            self._clients[key] = resolve_client(client_config)
-        return self._clients[key]
-
     def _context(
         self, client_config: ClientConfig, model: str, sampling: SamplingConfig
     ) -> ModelContext:
-        return ModelContext(
-            client=self._client(client_config, model), model=model, sampling=sampling
-        )
+        """The request's sampling context. No client is built or cached here — each
+        rollout constructs its own from `client_config` and closes it, so a request's
+        endpoint (and a training run's changing model) leaves nothing behind."""
+        return ModelContext(client=client_config, model=model, sampling=sampling)
 
     def serving(self):
         """The env's serving resources, entered for the server's lifetime so they're
@@ -122,8 +112,8 @@ class EnvServer:
     async def _run(self, req: RunRequest) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         (slot,) = self.env.slots(self._build_task(req.task_data))
-        # The gate spans requests: `--env.max-concurrent` bounds this worker's
-        # agent runs the same way the in-process eval's semaphore does.
+        # The gate spans requests: `--max-concurrent` bounds this worker's episodes
+        # in flight the same way the in-process eval's semaphore does.
         episode = await self.env.run_slot(slot, ctx, self._gate)
         # Trust the env-minted episode; serialize it once before client-side re-typing.
         return RunResponse.model_construct(episode=episode)
@@ -210,9 +200,6 @@ class EnvServer:
             finally:
                 for task in tasks:
                     task.cancel()
-                for client in self._clients.values():
-                    with contextlib.suppress(Exception):
-                        await client.close()
                 self.frontend.close()
                 self.ctx.term()
                 logger.info("EnvServer down: taskset=%s", self.taskset_id)

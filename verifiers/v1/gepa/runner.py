@@ -12,7 +12,7 @@ from gepa.api import optimize
 from gepa.core.result import GEPAResult
 
 from verifiers.v1.cli.output import append_episode, output_path, save_config
-from verifiers.v1.clients import ModelContext, resolve_client
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import Env
 from verifiers.v1.episode import Episode
 from verifiers.v1.gepa.adapter import GEPAAdapter
@@ -37,7 +37,10 @@ class _GEPALog:
 
 def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
-    all_tasks = env.taskset.select(config.num_train + config.num_val, config.shuffle)
+    # Global shuffle: an infinite taskset raises here — run it with
+    # shuffle=false (there is no whole set to sample from).
+    taskset = env.taskset.shuffle() if config.shuffle else env.taskset
+    all_tasks = list(taskset.head(config.num_train + config.num_val))
     train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
     selected_tasks = [*train_tasks, *val_tasks]
     # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
@@ -69,12 +72,11 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
         if run_dir is not None:
             await append_episode(run_dir, episode, write_lock)
 
-    # The client opens an httpx pool at construction, so build it inside the try that closes it —
-    # a failure while building ctx/reflection_lm must not leak the pool.
-    client = None
     try:
-        client = resolve_client(config.client)
-        ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
+        # The endpoint stays config: each rollout builds and closes its own client.
+        ctx = ModelContext(
+            client=config.client, model=config.model, sampling=config.sampling
+        )
         reflection_lm = build_reflection_lm(config)
         serving = env.serving()
         loop.run_until_complete(serving.__aenter__())
@@ -105,10 +107,21 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
                 "skip_perfect_score": False,
                 "logger": _GEPALog(),
             }
-            return optimize(**optimize_kwargs)
+            result = optimize(**optimize_kwargs)
+            if run_dir is not None:
+                # Persist the winning prompt as a plain file so it can be handed straight to
+                # eval/train via `--env.taskset.system-prompt` (see TasksetConfig).
+                candidate = result.best_candidate
+                best = (
+                    candidate.get("system_prompt", "")
+                    if isinstance(candidate, dict)
+                    else str(candidate)
+                )
+                best_path = run_dir / "best_system_prompt.txt"
+                best_path.write_text(best, encoding="utf-8")
+                logger.info("best system prompt: %s", best_path)
+            return result
         finally:
             loop.run_until_complete(serving.__aexit__(None, None, None))
     finally:
-        if client is not None:
-            loop.run_until_complete(client.close())
         loop.close()

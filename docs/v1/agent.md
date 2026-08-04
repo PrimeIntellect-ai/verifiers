@@ -9,9 +9,7 @@ async with vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2")) as solver:
     trace = await solver.run(vf.Task(vf.TaskData(prompt="What is 2+2?")))
 ```
 
-Every run is a standard rollout producing a `vf.Trace`. By default, the agent is self-contained: its context owns the model client and shared interception server, while each run owns its runtime and any per-run interception machinery.
-
-Exiting the context closes an agent-owned client, so create a new agent for later runs; injected clients remain caller-owned.
+Every run is a standard rollout producing a `vf.Trace`. By default, the agent is self-contained: its context owns a shared interception server, while each rollout owns its model client, its runtime, and any per-run interception machinery.
 
 ## Interactions
 
@@ -33,8 +31,9 @@ the final assistant message's text.
 
 A prompted task speaks first through a bare `turn()`; a prompt-less task starts
 with `turn(message)`. Leaving the context closes the exchange as `user_closed`
-and finishes scoring. `interaction(mask_prompt=True)` keeps a scenario prompt
-available to the task while hiding it from the assistant.
+and finishes scoring. To keep a scenario away from the assistant (the user-sim
+shape), hand the interaction a task whose `data.prompt` is None and score off
+non-prompt fields.
 
 ## Borrowed Resources
 
@@ -55,18 +54,17 @@ async with InterceptionServer() as server:
     ...
 ```
 
-### Client
+The caller is responsible for correctly handling the lifecycle of such borrowed resources: they must be live for every run placed on them, and the agent never tears them down.
 
-Pass `client=` to reuse an existing client — agents on the same endpoint should share a single `Client` (one connection pool).
+## Client
+
+The model endpoint is not a borrowed resource — it is config. Set `AgentConfig.client`; each rollout builds and closes its own `Client` from it.
 
 ```python
-client = vf.resolve_client(vf.EvalClientConfig())
-
-solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"), client=client)
-judge = vf.make_agent(vf.AgentConfig(model="openai/gpt-5.4-mini"), client=client)
+solver = vf.make_agent(
+    vf.AgentConfig(model="z-ai/glm-5.2", client=vf.EvalClientConfig())
+)
 ```
-
-The caller is responsible for correctly handling the lifecycle of such borrowed resources: they must be live for every run placed on them, and the agent never tears them down.
 
 ## Trace
 

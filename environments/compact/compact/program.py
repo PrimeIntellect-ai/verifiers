@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp"]
+# dependencies = ["openai", "mcp>=1.24.0,<2"]
 # ///
 """The compacting harness's program: a context-REWRITE loop (so every turn branches).
 

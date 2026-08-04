@@ -3,14 +3,27 @@
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
+from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
-from verifiers.v1.configs.cli.env import EnvServerConfig
+from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
+from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.configs.legacy import LegacyEnvConfig
+from verifiers.v1.configs.serve import ServeConfig
+from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
 
-class EvalConfig(EnvServerConfig):
+class EvalConfig(BaseConfig):
+    env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
+    """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to
+    the selected env's config class by the env id, else the taskset id."""
+    serve: ServeConfig = ServeConfig()
+    """How the env is hosted under `--server`: the worker pool, each worker's episode
+    bound. Ignored by an in-process run."""
+    legacy: LegacyEnvConfig = LegacyEnvConfig()
+    """A classic (v0) environment to evaluate through the bridge instead of `[env]`."""
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
     Excluded from the saved config so re-running `@ config.toml` lands in a fresh dir."""
@@ -37,9 +50,12 @@ class EvalConfig(EnvServerConfig):
     shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
+        128, ge=1, validation_alias=AliasChoices("max_concurrent", "c")
     )
-    """Max rollouts in flight at once."""
+    """Episodes in flight at once, `None` for no limit. An episode plays its agents one
+    at a time, so this is the live agent runs too — until `--env.max-concurrent-agents`
+    says otherwise. Under `--server` it seeds each worker's bound, unless
+    `--serve.max-concurrent` pins one."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = Field(False, exclude=True)
@@ -49,7 +65,7 @@ class EvalConfig(EnvServerConfig):
     """Show a live dashboard instead of per-rollout logs (in-process only; an unset
     `rich` defaults off under `--server`)."""
     server: bool = False
-    """Drive rollouts through the env-server worker pool (sized by `--pool.*`) instead of
+    """Drive rollouts through the env-server worker pool (sized by `[serve]`) instead of
     in-process — the path prime-rl trains through. Incompatible with `--rich`."""
     push: bool = True
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
@@ -80,3 +96,47 @@ class EvalConfig(EnvServerConfig):
                 "`--server`; drop `--rich`."
             )
         return self
+
+    @property
+    def is_legacy(self) -> bool:
+        """Whether this run goes through the v0 bridge: a legacy id and no v1 taskset."""
+        return self.legacy.id is not None and not self.env.taskset.id
+
+    @property
+    def env_id(self) -> str:
+        """The run's identifier: the v1 env's, else the v0 env id."""
+        return self.env.env_id or self.legacy.id or ""
+
+    @property
+    def worker_max_concurrent(self) -> int | None:
+        """A served worker's episode bound: its own pin, else the run's `--max-concurrent`."""
+        return (
+            self.serve.max_concurrent
+            if self.serve.max_concurrent is not None
+            else self.max_concurrent
+        )
+
+    @model_validator(mode="after")
+    def _refuse_mixed_run(self):
+        # A v0 id next to any v1 env identity leaves one of the two going nowhere, and
+        # which one depends on `is_legacy`: a taskset makes it False, so the v0 env never
+        # loads; a bare `--env.id` leaves it True, so the v0 env runs under the v1 name.
+        if self.legacy.id is None or not self.env.env_id:
+            return self
+        if self.env.taskset.id:
+            raise ValueError(
+                f"--legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine "
+                f"with the v1 taskset {self.env.taskset.id!r}. Pairing a reusable env with "
+                f"a taskset is --env.id {self.legacy.id!r} (TOML: id under [env]); to run "
+                "the v0 env instead, drop the taskset."
+            )
+        raise ValueError(
+            f"--legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with "
+            f"the v1 env --env.id {self.env.id!r}: the v0 env is what would run, stamped "
+            "with the v1 env's name. Keep whichever one you meant to run."
+        )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_env(cls, data):
+        return resolve_env_field(data, narrowed_env_annotation(cls))

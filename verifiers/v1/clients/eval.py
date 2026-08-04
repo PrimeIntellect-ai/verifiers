@@ -1,16 +1,4 @@
-"""The eval client: relay the program's native request to the provider.
-
-`EvalClient` (the default) is a thin `httpx` forwarder: it sends the program's request body
-without a typed round-trip, mutating only what the eval owns (model + sampling, via the dialect's
-`apply_overrides`). Eligible end-to-end request headers are forwarded too; rollout auth, body
-framing, and connection headers are replaced. The provider response is parsed into a vf
-`Response` for the trace, while its full JSON object stays on `Response.raw` for the interception
-server to return.
-
-The transport is provider-agnostic: the dialect supplies the upstream path + auth headers, so a
-new wire format (incl. non-OpenAI providers like Anthropic) is just a new `Dialect` — no client
-change. Endpoint config (base url, api key, billing headers) comes from the client config.
-"""
+"""The eval client: proxies harness-native request to the provider."""
 
 import re
 from collections.abc import Mapping
@@ -19,7 +7,9 @@ import httpx
 from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
+from verifiers.v1.clients.base import DEFAULT_LIMITS, DEFAULT_TIMEOUT, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.configs.client import BaseClientConfig, resolve_api_key
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
@@ -57,6 +47,8 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         "signature-input",
     }
 )
+
+
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
 _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
 
@@ -64,22 +56,13 @@ _SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
 class EvalClient(Client):
     """Relay native JSON to the provider and parse a copy for the trace."""
 
-    def __init__(
-        self, base_url: str, api_key: str, headers: dict[str, str] | None = None
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+    def __init__(self, config: BaseClientConfig) -> None:
+        self.base_url = config.base_url
+        self.api_key = resolve_api_key(config)
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
-        self.headers = dict(headers or {})
-        # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
-        # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
-        # httpx base-url joining, which drops the base path for a leading-slash request path.
-        # Match V1's default concurrency while retaining HTTPX's 20-idle keepalive bound.
-        self.http = httpx.AsyncClient(
-            timeout=None,
-            limits=httpx.Limits(max_connections=128, max_keepalive_connections=20),
-        )
+        self.headers = dict(config.headers or {})
+        self.client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, limits=DEFAULT_LIMITS)
 
     async def get_response(
         self,
@@ -92,7 +75,7 @@ class EvalClient(Client):
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
-            self.base_url + dialect.upstream_path,
+            join_url(self.base_url, dialect.upstream_path),
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
@@ -118,12 +101,9 @@ class EvalClient(Client):
         incoming: Mapping[str, str] | None,
         session_id: str | None,
     ) -> httpx.Headers:
-        """Build provider headers from the intercepted request.
-
-        Preserve provider feature headers such as `openai-beta` / `anthropic-beta`,
-        discard localhost auth and transport framing, then apply endpoint-configured headers,
-        session routing, and real provider auth.
-        """
+        """Provider headers from the intercepted request: keep feature headers
+        (`openai-beta`, `anthropic-beta`), discard localhost auth and framing, then apply
+        endpoint headers, session routing, and real provider auth."""
         headers = httpx.Headers(incoming)
         connection = headers.pop("connection", "")
         for name in _BLOCKED_REQUEST_HEADERS | set(
@@ -145,14 +125,14 @@ class EvalClient(Client):
         stream: bool = False,
     ) -> httpx.Response:
         headers.setdefault("content-type", "application/json")
-        request = self.http.build_request(
+        request = self.client.build_request(
             "POST",
             url,
             content=to_json(body, inf_nan_mode="null"),
             headers=headers,
         )
         try:
-            response = await self.http.send(request, stream=stream)
+            response = await self.client.send(request, stream=stream)
         except httpx.TimeoutException as e:
             raise model_error(str(e), status_code=504) from e
         except httpx.HTTPError as e:
@@ -163,9 +143,6 @@ class EvalClient(Client):
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                # relay the provider's status (and body) so the harness SDK retries 5xx/429 and not
-                # 4xx; an empty/HTML body (e.g. a 404 from a base_url missing `/v1`) would otherwise
-                # make an information-free ProviderError
                 raise model_error(
                     f"upstream {e.response.status_code}: {e.response.text}",
                     status_code=e.response.status_code,
@@ -193,7 +170,7 @@ class EvalClient(Client):
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
-            self.base_url + dialect.upstream_path,
+            join_url(self.base_url, dialect.upstream_path),
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
             stream=True,
@@ -228,11 +205,11 @@ class EvalClient(Client):
     ) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
-            self.base_url + route,
+            join_url(self.base_url, route),
             body,
             self._headers(dialect, headers, None),
         )
         return from_json(resp.content)
 
     async def close(self) -> None:
-        await self.http.aclose()
+        await self.client.aclose()

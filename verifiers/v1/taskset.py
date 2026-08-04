@@ -1,98 +1,111 @@
 """The taskset: a thin loader that yields typed tasks.
 
-A `Taskset` is the data half of an environment: config in, tasks out. `load()` — the
-one subclass hook — builds each row's `TaskData` and wraps it in the task type with
-the config's task-facing subtree:
+A `Taskset` is the data half of an environment: config in, tasks out. `load()` is
+the main hook that builds each task:
 
     def load(self) -> Iterable[MyTask]:
-        return [MyTask(MyData(idx=i, ...), self.config.task) for i in ...]
+        for i in ...:
+            yield MyTask(MyData(idx=i, ...), self.config.task)
 
-`load` may also be a generator, possibly infinite (declare `INFINITE = True`); runs
-materialize what they need through `select`, the env server pulls task by task.
-
-Load-time knobs live on the taskset config, task-facing knobs under its `task`
-subtree, shared tool servers on `tools`. All per-task behavior lives on the `Task`.
-
-The class stays generic (`Taskset[TaskT, TasksetConfigT]`) so the loaders can read
-the types: `taskset_config_type` narrows `--env.taskset.*` flags, `task_type` types
-the wire trace — one task type per taskset, so replay can rebuild saved rows.
+`load` may also be a generator for infinite tasksets. There is a one-to-one
+mapping between taskset and task type, i.e. a taskset may only yield one task
+type.
 """
 
 from __future__ import annotations
 
+import copy
 import itertools
-import logging
-from collections.abc import Iterable
-from typing import TYPE_CHECKING, ClassVar, Generic
+import random
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Generic, Self
 
-from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.task import Task, TaskT, resolve_server_config
-from verifiers.v1.utils.generic import generic_type
-from verifiers.v1.utils.sampling import sample
+from verifiers.v1.task import Task, TaskT
+from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
 
-logger = logging.getLogger(__name__)
-
+SEED = 0  # fixed so `--shuffle` samples the same items every run (reproducible)
 
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
 
 
-class Taskset(Generic[TaskT, TasksetConfigT]):
-    INFINITE: ClassVar[bool] = False
-    """Whether `load` yields tasks forever. Inherent to the taskset, not a config
-    knob: runs bound themselves with `select(num_tasks)`, and shuffle is impossible."""
-
-    tools: ClassVar[tuple[type[Toolset], ...]] = ()
-    """Tool server classes shared by one environment worker's rollouts."""
+class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
+    INFINITE: bool = False
+    """Whether the taskset is infinite (yields tasks forever). Class-declared;
+    a `head(n)` view shadows it per instance (bounded by construction)."""
 
     def __init__(self, config: TasksetConfigT) -> None:
         self.config = config
+        override = config.system_prompt
+        self.system_prompt = override.read_text() if override is not None else None
+        self.transform: Callable[[Iterator[TaskT]], Iterator[TaskT]] | None = None
+        """Iteration transform carried by `head`/`shuffle` views (see `view`)."""
+
+    @abstractmethod
+    def load(self) -> Iterable[TaskT]:
+        """Build and yield the taskset's tasks; may be a generator (see module doc)."""
+
+    def __iter__(self) -> Iterator[TaskT]:
+        """Lazily iterate `load()` with the config-layer system prompt applied and
+        any view transform on top — the read path; `load` is the subclass hook."""
+        prompt = self.system_prompt
+        tasks = (
+            task.with_system_prompt(prompt) if prompt is not None else task
+            for task in self.load()
+        )
+        yield from self.transform(tasks) if self.transform is not None else tasks
+
+    def view(self, transform: Callable[[Iterator[TaskT]], Iterator[TaskT]]) -> Self:
+        """A shallow copy of this taskset iterating through `transform`, composed
+        onto any transform this taskset already carries."""
+        clone = copy.copy(self)
+        prev = self.transform
+        clone.transform = (
+            transform if prev is None else lambda tasks: transform(prev(tasks))
+        )
+        return clone
+
+    def head(self, num_tasks: int) -> Self:
+        """A lazy, always-finite view of the first `num_tasks` tasks."""
+        view = self.view(lambda tasks: itertools.islice(tasks, num_tasks))
+        view.INFINITE = False
+        return view
+
+    def shuffle(self, seed: int | None = None) -> Self:
+        """A shuffled view under `seed` — the shared fixed seed when None, so runs
+        sample reproducibly (materializes the receiver on iteration); raises on an
+        infinite taskset — bound it first (`head(n).shuffle()`)."""
+        if self.INFINITE:
+            raise ValueError(
+                f"{type(self).__name__} is infinite - cannot shuffle; "
+                "bound it first with head(num_tasks)"
+            )
+
+        def shuffled(tasks: Iterator[TaskT]) -> Iterator[TaskT]:
+            materialized = list(tasks)
+            random.Random(SEED if seed is None else seed).shuffle(materialized)
+            return iter(materialized)
+
+        return self.view(shuffled)
 
     @classmethod
     def task_type(cls) -> type[Task]:
-        return generic_type(cls, Task, origin=Taskset) or Task
+        return concrete_type(cls, Task, origin=Taskset) or Task
 
-    def load(self) -> Iterable[TaskT]:
-        raise NotImplementedError
+    @classmethod
+    def toolsets(cls, config: TasksetConfigT) -> list[Toolset]:
+        """Tool servers shared by all tasks in the taskset (one global instance
+        per server, reused across an environment worker's rollouts), each
+        constructed with its config off `config` — override and wire explicitly:
 
-    def select(
-        self, num_tasks: int | None = None, shuffle: bool = False
-    ) -> list[TaskT]:
-        """Materialize the first `num_tasks` off `load` (all when `None`), pulled
-        lazily. `shuffle` samples from the whole taskset instead (fixed-seed), which
-        materializes everything first; on an `INFINITE` taskset it's a warned no-op —
-        the first `num_tasks` generated are already an arbitrary sample."""
-        if type(self).INFINITE:
-            if num_tasks is None:
-                raise ValueError(
-                    f"{type(self).__name__} is infinite - select a bounded subset "
-                    "with num_tasks (-n on the CLI)"
-                )
-            if shuffle:
-                logger.warning(
-                    "shuffle is a no-op on an infinite taskset - "
-                    "taking the first %d generated tasks",
-                    num_tasks,
-                )
-            return list(itertools.islice(self.load(), num_tasks))
-        if shuffle:
-            return sample(self.load(), shuffle=True, limit=num_tasks)
-        return list(itertools.islice(self.load(), num_tasks))
-
-    def server_config(self, server_cls: type) -> BaseConfig:
-        """The config a `tools` entry is built with, resolved off `self.config` (the
-        taskset config; see `resolve_server_config`). Override to pair explicitly."""
-        return resolve_server_config(
-            type(self).__name__,
-            self.config,
-            server_cls,
-            sole=len(set(type(self).tools)) == 1,
-        )
-
-    def tool_servers(self) -> list[Toolset]:
-        return [cls(self.server_config(cls)) for cls in type(self).tools]
+            @classmethod
+            def toolsets(cls, config: MyConfig) -> list[vf.Toolset]:
+                return [SearchToolset(config.tools)]
+        """
+        return []

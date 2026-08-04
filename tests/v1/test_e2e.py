@@ -37,6 +37,7 @@ AGENTIC_PLACEMENTS = [
     _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
     _pair("codex", "docker", "codex-harness-in-docker"),
     _pair("claude-code", "docker", "claude-code-harness-in-docker"),
+    _pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
     _pair("bash", "prime", "bash-harness-in-prime"),
     _pair("bash", "modal", "bash-harness-in-modal"),
 ]
@@ -54,9 +55,11 @@ USER_RUNTIMES = [
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus one remote placement for the sandbox/tunnel boundary.
 ACP_RESUME_PLACEMENTS = [
+    _pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
     _pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
     _pair("pi", "docker", "pi-acp-in-docker"),
     _pair("pool", "docker", "pool-acp-in-docker"),
+    _pair("openclaw", "docker", "openclaw-acp-in-docker"),
     _pair("pool", "prime", "pool-acp-in-prime"),
 ]
 
@@ -101,6 +104,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
         "echo-v1",
         harness=harness,
         runtime={"type": harness_runtime},
+        env={"agent": {"sampling": {"temperature": 0.0}}},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -109,13 +113,35 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.stop_condition == "agent_completed"
     assert trace.reward == 1.0
     # The seat's resolved identity rides the trace (policy metadata for trainers).
-    assert trace.agent is not None and trace.agent.config.sampling.temperature == 0
+    assert trace.agent is not None
+    assert trace.agent.config.sampling.max_tokens == 2048
+    assert trace.agent.config.sampling.temperature == 0.0
     # Every sampled turn has one per-call record, linked to its assistant node.
     sampled = [i for i, n in enumerate(trace.nodes) if n.sampled]
     assert [c.node for c in trace.calls if c.error is None] == sampled
     for call in trace.calls:
         assert call.model and call.sampling is not None
         assert call.time.duration > 0
+
+
+@pytest.mark.e2e
+@pytest.mark.browser_use
+@pytest.mark.docker
+async def test_browser_use(run_v1, tmp_path):
+    """The browser_use harness runs in an explicitly browser-capable runtime."""
+    image = (
+        "mcr.microsoft.com/playwright/python:v1.61.0-noble@"
+        "sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69"
+    )
+    (trace,) = await run_v1(
+        "echo-v1",
+        harness="browser_use",
+        runtime={"type": "docker", "image": image},
+        output_dir=tmp_path,
+        max_turns=2,
+    )
+    assert trace.ok
+    assert trace.reward == 1.0
 
 
 @pytest.mark.e2e
@@ -154,8 +180,8 @@ async def test_interaction(live_ctx):
             harness=NullHarnessConfig(id="null"),
             model=live_ctx.model,
             sampling=live_ctx.sampling,
+            client=live_ctx.client,
         ),
-        client=live_ctx.client,
     )
     task = vf.Task(
         vf.TaskData(
@@ -214,7 +240,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     the harness's runtime, or its own runtime) x the harness `runtime`. The tool stamps
     its output with a token the prompt never reveals, so reward 1.0 proves the tool was
     reachable from wherever the harness runs and actually ran. Eval-wide SHARED servers
-    are a different scope (`Taskset.tools`) with their own env-server-path coverage:
+    are a different scope (`Taskset.toolsets`) with their own env-server-path coverage:
     `test_shared_tool_isolation`."""
     (trace,) = await run_v1(
         "echo-tool-v1",
@@ -229,7 +255,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     assert trace.reward == 1.0
     # The interception server captured the advertised tools onto the trace (for tool-use SFT):
     # the null harness offered the task's MCP tool as `echo_back`, schema included.
-    assert trace.tools is not None
+    assert trace.tools
     (echo_tool,) = [t for t in trace.tools if t.name == "echo_back"]
     assert "message" in echo_tool.parameters.get("properties", {})
 
@@ -335,6 +361,7 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
         runtime={"type": harness_runtime},
         output_dir=tmp_path,
         max_turns=10,
+        max_tokens=8192,
     )
     assert trace.ok
     assert trace.num_turns >= 1  # ran a command, then finished
@@ -355,9 +382,9 @@ async def test_multi_agent_env(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one episode, one trace per role
-    assert sorted(t.agent_name for t in traces) == ["a", "b"]
-    (b,) = [t for t in traces if t.agent_name == "b"]
-    assert b.trainable is False
+    assert sorted(t.agent.name for t in traces) == ["a", "b"]
+    (b,) = [t for t in traces if t.agent.name == "b"]
+    assert b.agent.trainable is False
     for trace in traces:
         assert trace.ok
         assert trace.reward == 1.0  # each seat's own task reward
@@ -366,7 +393,7 @@ async def test_multi_agent_env(run_v1, tmp_path):
     # agent info (completion order — the gathered seats land in either order).
     (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
     row = json.loads(line)
-    assert row["env"] == "duet-v1"
+    assert row["env"] == {"id": "duet-v1"}
     by_name = {t["agent"]["name"]: t for t in row["traces"]}
     assert set(by_name) == {"a", "b"}
     assert by_name["a"]["agent"]["trainable"] is True
@@ -385,7 +412,7 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2  # one episode, two attempts
-    assert all(t.agent_name == "agent" and t.ok for t in traces)
+    assert all(t.agent.name == "agent" and t.ok for t in traces)
     assert any(t.metrics["best"] == 1.0 for t in traces)
     assert all(t.metrics["pass_at_n"] == 1.0 for t in traces)  # echo always passes
 
@@ -401,21 +428,21 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     model's call. Exercises the config surface too: a policy-only prompt
     override (the verdict contract is appended regardless) and
     reward-composition weights."""
+    policy = tmp_path / "judge_policy.txt"
+    policy.write_text("Check EMPIRICALLY that the agent echoed the word back.")
     traces = await run_v1(
         "echo-v1",
-        harness=None,  # seats pin their own harness; there is no run-level one
+        harness=None,
         env={
             "id": "agentic-judge",
-            # The solver owns the shared box, so the container is pinned here.
             "solver": {"harness": {"id": "bash"}, "runtime": {"type": "docker"}},
-            # The judge reads the trace and reasons before it writes the
-            # verdict file; the shared 2048-token run cap truncates it mid-audit.
             "judge": {
                 "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
             },
             "task": {
-                "prompt": "Check EMPIRICALLY that the agent echoed the word back.",
+                "prompt": {"path": str(policy)},
+                "hint": "Do not rely on README.md",
             },
             "score": {"task_weight": 0.5},
         },
@@ -423,15 +450,15 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
         max_turns=10,
         rollout_timeout=600,
     )
-    assert sorted(t.agent_name for t in traces) == ["judge", "solver"]
-    (solver,) = [t for t in traces if t.agent_name == "solver"]
-    (judge,) = [t for t in traces if t.agent_name == "judge"]
+    assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
+    (solver,) = [t for t in traces if t.agent.name == "solver"]
+    (judge,) = [t for t in traces if t.agent.name == "judge"]
     assert solver.ok and judge.ok
-    assert judge.trainable is False
+    assert judge.agent.trainable is False
     # The task's own reward keeps its raw score; the rescale lands on the weight.
     assert solver.rewards["echoed"].score == 1.0
     assert solver.rewards["echoed"].weight == 0.5
-    assert isinstance(judge.info.get("verdict"), dict)  # scraped off the box
+    assert isinstance(judge.info.get("verdict"), dict)
     assert 0.0 <= solver.rewards["judge"].score <= 1.0
 
 
@@ -448,24 +475,24 @@ async def test_env_id_user_sim(run_v1, tmp_path):
         max_turns=6,
         rollout_timeout=300,
     )
-    assert sorted(t.agent_name for t in traces) == ["assistant", "user"]
-    (assistant,) = [t for t in traces if t.agent_name == "assistant"]
-    (user,) = [t for t in traces if t.agent_name == "user"]
+    assert sorted(t.agent.name for t in traces) == ["assistant", "user"]
+    (assistant,) = [t for t in traces if t.agent.name == "assistant"]
+    (user,) = [t for t in traces if t.agent.name == "user"]
     assert assistant.ok and user.ok
-    assert user.trainable is False
+    assert user.agent.trainable is False
     assert user.num_turns >= 1  # the modeled user actually spoke
     assert assistant.metrics["user_turns"] >= 1
-    # `mask_prompt`: the scenario is hidden from the assistant's harness (the run's
-    # visible data) while the task's own rewards still scored the real row. The
-    # masked view is what persists (provenance is the row's idx); both sides land
-    # as ONE durable episode.
+    # The env nulls the assistant task's prompt: the scenario is hidden from the
+    # assistant's harness while the task's rewards score off non-prompt fields
+    # (`answer`). The nulled row is what persists (provenance is the row's idx);
+    # both sides land as ONE durable episode.
     assert assistant.task.data.prompt is None
     assert "echoed" in assistant.rewards
     from verifiers.v1.cli.output import read_episodes
     from verifiers.v1.trace import WireTrace
 
     (record,) = read_episodes(tmp_path, WireTrace)
-    assert {t.agent_name for t in record.traces} == {"assistant", "user"}
+    assert {t.agent.name for t in record.traces} == {"assistant", "user"}
     assert record.id  # both traces are persisted under one durable episode identity
 
 
@@ -488,14 +515,14 @@ async def test_env_id_user_sim_with_tools(run_v1, tmp_path):
         max_tokens=8192,
         rollout_timeout=300,
     )
-    (assistant,) = [t for t in traces if t.agent_name == "assistant"]
-    (user,) = [t for t in traces if t.agent_name == "user"]
+    (assistant,) = [t for t in traces if t.agent.name == "assistant"]
+    (user,) = [t for t in traces if t.agent.name == "user"]
     assert assistant.ok and user.ok
     assert assistant.task.data.prompt is None  # the scenario stayed off the wire
     assert user.num_turns >= 1  # the modeled user actually drove the exchange
     assert assistant.rewards["echoed"].score == 1.0  # the tool ran, mid-conversation
     # The tool was advertised to the masked chat exactly as to any run.
-    assert assistant.tools is not None
+    assert assistant.tools
     assert any(tool.name == "echo_back" for tool in assistant.tools)
 
 
@@ -514,8 +541,8 @@ async def test_kuhn_poker_self_play(run_v1, tmp_path):
         max_tokens=8192,
         rollout_timeout=300,
     )
-    assert sorted(t.agent_name for t in traces) == ["player0", "player1"]
-    payoffs = {t.agent_name: t.rewards["payoff"].score for t in traces}
+    assert sorted(t.agent.name for t in traces) == ["player0", "player1"]
+    payoffs = {t.agent.name: t.rewards["payoff"].score for t in traces}
     assert payoffs["player0"] + payoffs["player1"] == 0  # zero-sum
     assert abs(payoffs["player0"]) in (1.0, 2.0)
     for trace in traces:
@@ -542,7 +569,7 @@ async def test_multi_agent_env_server(run_v1_server, tmp_path):
         max_turns=2,
     )
     assert len(traces) == 2
-    assert sorted(t.agent_name for t in traces) == ["a", "b"]
+    assert sorted(t.agent.name for t in traces) == ["a", "b"]
     for trace in traces:
         assert trace.ok
         assert trace.metrics["duet"] == 1.0
