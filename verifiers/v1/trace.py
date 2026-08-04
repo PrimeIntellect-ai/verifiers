@@ -165,6 +165,14 @@ class TrainMetadata(BaseModel):
     step: int | None = None
     """The batch window collecting when it landed, which is not known until it does."""
 
+    def off_policy_steps(self, policy: PolicySpan) -> int | None:
+        """How far behind the policy being trained the generating policy was. Step `n` trains the
+        policy step `n-1` produced, so an episode generated at `v{k}` is `(n-1)-k` behind — queue
+        time included, since `step` is the window it landed in, not the one it left."""
+        if self.step is None:
+            return None
+        return max(0, (self.step - 1) - policy.start)
+
 
 class EvalMetadata(BaseModel):
     """An episode a training run measures itself with."""
@@ -173,6 +181,15 @@ class EvalMetadata(BaseModel):
 
     step: int
     """The step whose eval produced it, known from the moment it is dispatched."""
+
+    def off_policy_steps(self, policy: PolicySpan) -> int:
+        """How far off the policy it measured drifted while it ran. Nothing trains on an eval, so
+        there is no policy for it to be behind; what makes it off-policy is the policy moving under
+        it, leaving it a measurement of a blend rather than of the version it started on.
+
+        Its `step` cannot answer that — it is fixed when the eval is dispatched, so a slow eval that
+        outlives several updates would still look on-policy."""
+        return policy.drift
 
 
 EpisodeMetadata = Annotated[TrainMetadata | EvalMetadata, Field(discriminator="type")]
@@ -195,14 +212,11 @@ class TrainRunInfo(BaseModel):
 
     @property
     def off_policy_steps(self) -> int | None:
-        """How far behind the policy being trained at `metadata.step` the generating policy was, or
-        `None` when there is nothing to compare. Step `n` trains the policy step `n-1` produced, so
-        an episode generated at `v{k}` is `(n-1)-k` behind — measured against whichever step its
-        metadata places it in."""
-        step = self.metadata.step
-        if self.policy is None or step is None:
+        """How far off-policy this episode is, as its metadata defines that, or `None` when there
+        is no span to measure against."""
+        if self.policy is None:
             return None
-        return max(0, (step - 1) - self.policy.start)
+        return self.metadata.off_policy_steps(self.policy)
 
 
 RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
