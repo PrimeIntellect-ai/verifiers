@@ -36,7 +36,7 @@ from openai import AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 MCP_CALL_ATTEMPTS = 6
-MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
+MCP_TIMEOUT = httpx.Timeout(float(os.environ.get("VF_MCP_TIMEOUT", "600")), connect=5.0)
 
 BROWSER_TOOL_TIMEOUT = 3600
 """Matches the bash harness's command timeout."""

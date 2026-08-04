@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
@@ -18,7 +19,7 @@ from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 SERPER_URL = "https://google.serper.dev/search"
 
 MCP_CALL_ATTEMPTS = 6
-MCP_TIMEOUT = httpx.Timeout(600.0, connect=5.0)  # the OpenAI SDK client defaults
+MCP_TIMEOUT = httpx.Timeout(float(os.environ.get("VF_MCP_TIMEOUT", "600")), connect=5.0)
 
 
 BASH_TOOL = {
