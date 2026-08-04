@@ -314,7 +314,7 @@ class InterceptionServer(Interception):
             return web.json_response(
                 dialect.error_body("rollout concluded"), status=409
             )
-        if session.terminated:
+        if session.trace.terminated_by_intercept:
             return web.json_response(
                 dialect.error_body(
                     f"rollout stopped: {session.trace.stop_condition or 'intercepted'}"
@@ -606,7 +606,7 @@ class InterceptionServer(Interception):
                                 ),
                                 status=400,
                             )
-                    if session.terminated:
+                    if session.trace.terminated_by_intercept:
                         return web.json_response(
                             dialect.error_body("rollout terminated"), status=400
                         )
@@ -778,7 +778,7 @@ class InterceptionServer(Interception):
                     return web.json_response(
                         dialect.error_body("rollout concluded"), status=409
                     )
-                if session.terminated:
+                if session.trace.terminated_by_intercept:
                     return web.json_response(
                         dialect.error_body("rollout terminated"), status=400
                     )
@@ -890,14 +890,14 @@ class InterceptionServer(Interception):
                 if parser_error is not None:
                     raise parser_error
                 response = parser.finish()
-                if not session.released and not session.terminated:
+                if not session.released and not session.trace.terminated_by_intercept:
                     node = turn.commit(response, tools)
                     session.trace.interceptions.extend(request_records or [])
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
             finally:
                 # Release the withheld events only now — after the commit — then close.
                 with contextlib.suppress(ConnectionResetError):
-                    if node is not None or not session.terminated:
+                    if node is not None or not session.trace.terminated_by_intercept:
                         for event in deferred:
                             await resp.write(event)
                     await resp.write_eof()

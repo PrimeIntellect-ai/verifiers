@@ -128,6 +128,10 @@ class Rollout:
         """The original exception most recently captured onto the trace."""
         return self._failure
 
+    @property
+    def terminated_by_intercept(self) -> bool:
+        return self.trace.terminated_by_intercept
+
     def fail(self, error: Exception) -> None:
         """Record `error` as this rollout's outcome (captured onto the trace, the
         remaining stages skipped) — the run's owner reporting a failure the run
@@ -296,7 +300,7 @@ class Rollout:
                         data = data.model_copy(update={"prompt": rewritten_prompt})
                     else:
                         messages = await self._session.intercept_users(messages)
-                    if self._session.terminated:
+                    if self.trace.terminated_by_intercept:
                         return False
                 await self.harness.run(
                     self.ctx,
@@ -309,6 +313,8 @@ class Rollout:
                     messages,
                 )
         except TimeoutError as e:
+            if self.terminated_by_intercept:
+                return False
             # An expired rollout deadline is the agent breaking its time budget —
             # an agent failure, never a clean stop. A TimeoutError from the
             # harness's own I/O with no expired deadline stays the raw failure.
@@ -323,6 +329,8 @@ class Rollout:
                 self.fail(e)
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
+            if self.terminated_by_intercept:
+                return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
@@ -377,7 +385,7 @@ class Rollout:
             finally:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
-            if not self._failed and self._opened:
+            if not self._failed and self._opened and not self.terminated_by_intercept:
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
                     await asyncio.wait_for(
@@ -399,8 +407,9 @@ class Rollout:
                         self._timeouts.scoring,
                     )
                 trace.timing.scoring.end = time.time()
-        except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
-            self.fail(e)
+        except Exception as e:  # noqa: BLE001 - finalize boundary records rollout failures
+            if not self.terminated_by_intercept:
+                self.fail(e)
         finally:
             trace.is_completed = True
             trace.ok = not self._failed
