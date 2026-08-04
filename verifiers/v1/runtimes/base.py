@@ -230,7 +230,18 @@ class Runtime(ABC):
         self,
         script: str | bytes,
         env: dict[str, str] | None = None,
+        sync: bool = True,
     ) -> list[str]:
+        """Write *script* into the runtime and return the argv to execute it under the
+        script's venv interpreter.
+
+        When *sync* is True (the default), ``uv`` itself and the script's PEP 723
+        dependencies are installed / synced before the interpreter is discovered —
+        that requires network access.  When *sync* is False the method assumes that
+        both ``uv`` and the script's venv are **already present** in the runtime (e.g.
+        pre-baked into a Docker image) and only runs ``uv python find`` to locate the
+        interpreter — a fast, offline-only operation.
+        """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         path = f"/tmp/vf-scripts/{digest}.py"
@@ -239,17 +250,30 @@ class Runtime(ABC):
                 if digest not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
-                    command = (
-                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
-                        f"&& {{ {_ENSURE_UV}; }} "
-                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& uv python find --script {shlex.quote(path)} --no-config"
-                    )
+                    if sync:
+                        command = (
+                            f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                            f"&& {{ {_ENSURE_UV}; }} "
+                            f"&& uv sync --script {shlex.quote(path)} -q --no-config "
+                            f"&& uv python find --script {shlex.quote(path)} --no-config"
+                        )
+                    else:
+                        command = (
+                            f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                            f"&& uv python find --script {shlex.quote(path)} --no-config"
+                        )
                     result = await self.run(["sh", "-c", command], env or {})
                     if result.exit_code != 0:
+                        hint = ""
+                        if not sync:
+                            hint = (
+                                " (sync=False assumes a pre-baked venv — "
+                                "did you build the image with `uv sync --script` "
+                                "for this script?)"
+                            )
                         raise RuntimeError(
                             "failed to prepare uv script: "
-                            f"{result.stderr.strip()[-2000:]}"
+                            f"{result.stderr.strip()[-2000:]}{hint}"
                         )
                     self._uv_interpreters[digest] = result.stdout.strip().splitlines()[
                         -1
@@ -276,6 +300,7 @@ class Runtime(ABC):
         script: str | bytes,
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        sync: bool = True,
     ) -> ProgramResult:
         """The script is written to a stable, content-addressed path rather than the per-rollout
         workspace: uv keys its per-script environment by the script's full path, so a
@@ -283,7 +308,7 @@ class Runtime(ABC):
         content means identical scripts share one path → uv reuses one env, bounded by the
         number of distinct scripts. Published via a unique temp + atomic `mv`, so
         concurrent rollouts writing the same content never race a half-written read."""
-        argv = await self.prepare_uv_script(script, env)
+        argv = await self.prepare_uv_script(script, env, sync=sync)
         return await self.run([*argv, *(args or [])], env or {})
 
     async def read(self, path: str, max_bytes: int | None = None) -> bytes:
