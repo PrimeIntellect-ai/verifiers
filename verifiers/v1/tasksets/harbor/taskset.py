@@ -140,6 +140,8 @@ class HarborData(TaskData):
     tags: list[str] = Field(default_factory=list)
     task_dir: str = ""
     """Host path to the task dir; used to stage tests/ to verify."""
+    upload_environment: bool = False
+    """Whether to stage environment/ into the workdir."""
     verifier_env: dict[str, str] = Field(default_factory=dict)
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
@@ -154,6 +156,27 @@ class HarborData(TaskData):
 
 class HarborTask(Task[HarborData]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
+
+    async def setup(self, runtime: Runtime) -> None:
+        if not self.data.upload_environment:
+            return
+        await runtime.write(
+            "/tmp/environment.tgz",
+            make_tar(Path(self.data.task_dir) / "environment"),
+        )
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                "tar --no-same-owner -xzf /tmp/environment.tgz && rm /tmp/environment.tgz",
+            ],
+            {},
+        )
+        if result.exit_code:
+            raise RuntimeError(
+                f"environment setup failed (exit {result.exit_code}): "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
+            )
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         """Run Harbor's collect hooks while the agent's box is still alive.
@@ -437,6 +460,7 @@ def resolve_image(
 
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
     # Harbor is optional, so imports stay deferred until a Harbor task loads.
+    from harbor.environments.definition import should_upload_environment_dir
     from harbor.models.task.config import NetworkMode
     from harbor.models.task.task import Task as HarborModelTask
 
@@ -444,6 +468,11 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     parsed = harbor_task.config
     artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
     environment = parsed.environment
+    environment_dir = task_dir / "environment"
+    upload_environment = should_upload_environment_dir(
+        environment_dir,
+        docker_image=environment.docker_image,
+    )
     network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
     task, meta = parsed.task, parsed.metadata
     authors = (
@@ -499,6 +528,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        upload_environment=upload_environment,
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
         collect=hooks,
@@ -658,9 +688,9 @@ def verifier_env(task: HarborData) -> dict[str, str]:
     return resolve_env_vars(task.verifier_env)
 
 
-# Downloaded test directories are immutable. Cache only the latest archive to
-# bound memory while reusing it across rollouts of the current task.
-@lru_cache(maxsize=1)
+# Downloaded task directories are immutable. Cache the current task's environment
+# and tests to bound memory while reusing both archives across rollouts.
+@lru_cache(maxsize=2)
 def make_tar(directory: Path) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
