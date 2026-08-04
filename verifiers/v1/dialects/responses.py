@@ -211,9 +211,11 @@ class ResponsesStreamParser(StreamParser):
         events = self.terminal_events or self.events
         for event in iter_sse_reverse(b"".join(events)):
             if event.get("type") in FINAL_EVENTS:
-                return response_from_wire(
+                response = response_from_wire(
                     OpenAIResponse.model_validate(event["response"])
                 )
+                response.raw = event["response"]
+                return response
         raise ValueError("Responses stream ended without a terminal event")
 
 
@@ -314,6 +316,70 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
 
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
+
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        raw["output"] = [
+            {
+                "type": "message",
+                "id": "msg_intercepted",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        ]
+        raw["status"] = "completed"
+        raw["error"] = None
+        raw["incomplete_details"] = None
+        raw.pop("required_action", None)
+
+    def stream_events(self, response: Response, text: str) -> list[bytes]:
+        item = {
+            "type": "message",
+            "id": "msg_intercepted",
+            "role": "assistant",
+            "status": "completed",
+            "content": [],
+        }
+        completed = dict(response.raw or {})
+        self.rewrite_response(completed, text)
+        completed.setdefault("id", response.id or "resp_intercepted")
+        completed.setdefault("object", "response")
+        completed.setdefault("created_at", response.created)
+        completed.setdefault("model", response.model)
+        common = {"output_index": 0, "item_id": item["id"], "content_index": 0}
+        part = {"type": "output_text", "text": "", "annotations": []}
+        events = [
+            (
+                "response.created",
+                {"response": {**completed, "status": "in_progress", "output": []}},
+            ),
+            ("response.output_item.added", {"output_index": 0, "item": item}),
+            ("response.content_part.added", {**common, "part": part}),
+            (
+                "response.output_text.delta",
+                {**common, "delta": text, "logprobs": []},
+            ),
+            (
+                "response.output_text.done",
+                {**common, "text": text, "logprobs": []},
+            ),
+            ("response.content_part.done", {**common, "part": {**part, "text": text}}),
+            (
+                "response.output_item.done",
+                {
+                    "output_index": 0,
+                    "item": {**item, "content": [{**part, "text": text}]},
+                },
+            ),
+            ("response.completed", {"response": completed}),
+        ]
+        return [
+            *(
+                f"data: {json.dumps({'type': kind, 'sequence_number': i, **fields})}\n\n".encode()
+                for i, (kind, fields) in enumerate(events)
+            ),
+            b"data: [DONE]\n\n",
+        ]
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()

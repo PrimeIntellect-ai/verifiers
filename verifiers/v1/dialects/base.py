@@ -168,6 +168,14 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         return self.response_type.model_validate(raw)
 
     @abstractmethod
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        """Replace a native response with one inert text-only assistant message."""
+
+    @abstractmethod
+    def stream_events(self, response: Response, text: str) -> list[bytes]:
+        """Serialize a deliberately minimal text-only SSE response."""
+
+    @abstractmethod
     def stream_parser(self) -> StreamParser:
         """Create the per-request incremental parser for a native SSE response."""
 

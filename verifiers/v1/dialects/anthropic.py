@@ -183,13 +183,16 @@ class AnthropicStreamParser(StreamParser):
     blocks: dict[int, dict] = field(default_factory=dict)
     block_parts: dict[int, dict[str, list[str]]] = field(default_factory=dict)
     partial_json: dict[int, list[str]] = field(default_factory=dict)
+    complete: bool = False
 
     def feed(self, raw: bytes) -> None:
         event = parse_sse_event(raw)
         if event is None:
             return
         kind = event.get("type")
-        if kind == "message_start":
+        if kind == "message_stop":
+            self.complete = True
+        elif kind == "message_start":
             self.message = event.get("message") or {}
         elif kind == "content_block_start":
             index = event["index"]
@@ -235,13 +238,17 @@ class AnthropicStreamParser(StreamParser):
             }
 
     def finish(self) -> Response:
+        if not self.complete:
+            raise ValueError("Anthropic stream ended without a message_stop event")
         for index, fields in self.block_parts.items():
             for field_name, parts in fields.items():
                 self.blocks[index][field_name] = "".join(parts)
         for index, parts in self.partial_json.items():
             self.blocks[index]["input"] = json.loads("".join(parts) or "{}")
         self.message["content"] = [self.blocks[index] for index in sorted(self.blocks)]
-        return response_from_wire(self.validate_response(self.message))
+        response = response_from_wire(self.validate_response(self.message))
+        response.raw = self.message
+        return response
 
 
 class ModdedUsage(AnthropicUsage):
@@ -301,6 +308,64 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
 
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
+
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        raw["content"] = [{"type": "text", "text": text}]
+        raw["stop_reason"] = "end_turn"
+        raw["stop_sequence"] = None
+
+    def stream_events(self, response: Response, text: str) -> list[bytes]:
+        def event(kind: str, payload: dict) -> bytes:
+            return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
+
+        usage = response.usage
+        return [
+            event(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": response.id or "msg_intercepted",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "model": response.model,
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {
+                            "input_tokens": usage.input_tokens if usage else 0,
+                            "output_tokens": 0,
+                        },
+                    },
+                },
+            ),
+            event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": text},
+                },
+            ),
+            event("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            event(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": {"output_tokens": usage.completion_tokens if usage else 0},
+                },
+            ),
+            event("message_stop", {"type": "message_stop"}),
+        ]
 
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)

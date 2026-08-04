@@ -73,6 +73,8 @@ class SandboxError(RolloutError):
 class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
+    status_code = 400
+
 
 class InterceptionError(RolloutError):
     """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
