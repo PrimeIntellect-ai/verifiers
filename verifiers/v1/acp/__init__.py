@@ -9,6 +9,7 @@ from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
@@ -16,7 +17,7 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.aio import run_shielded
 
-ACP_SOURCE = (Path(__file__).resolve().parent / "_runner.py").read_text()
+ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 __all__ = ["ACP"]
@@ -187,6 +188,7 @@ class ACPHarnessSession(HarnessSession):
         self._lock = asyncio.Lock()
 
     async def _start(self) -> None:
+        self._stderr_tail.clear()
         program = await self.runtime.prepare_uv_script(
             ACP_SOURCE, {**self.env, "UV_FROZEN": "false"}
         )
@@ -221,12 +223,16 @@ class ACPHarnessSession(HarnessSession):
             "session_path": None,
         }
         async with self._lock:
+            if self._closed:
+                raise HarnessError(
+                    f"harness {self.harness.config.id!r} session is already closed"
+                )
             if self._process is None:
                 await self._start()
             assert self._process is not None
             assert self._reader is not None
             try:
-                await self._process.write_stdin(
+                await self._process.write(
                     _packet({"operation": "prompt", "config": config})
                 )
                 response = await self._reader.read()
@@ -250,7 +256,7 @@ class ACPHarnessSession(HarnessSession):
         try:
             if graceful and reader is not None:
                 try:
-                    await process.write_stdin(_packet({"operation": "shutdown"}))
+                    await process.write(_packet({"operation": "shutdown"}))
                     response = await asyncio.wait_for(reader.read(), timeout=10)
                     if not response.get("ok"):
                         raise RuntimeError(
@@ -285,12 +291,13 @@ class ACPHarnessSession(HarnessSession):
     async def close(self) -> None:
         if self._closed:
             return
+        # Publish closure before waiting for the process lock. A turn that
+        # already passed HarnessSession.turn()'s fast check rechecks under the
+        # same lock in _run(), so it cannot restart after teardown.
+        await super().close()
 
         async def close_process() -> None:
             async with self._lock:
                 await self._stop(graceful=True)
 
-        try:
-            await run_shielded(close_process())
-        finally:
-            await super().close()
+        await run_shielded(close_process())

@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 BuiltinSkill = Literal["edit", "search"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/rlm-harness.git"
-RLM_VERSION = "56218f33796ecbe465445bc43948886354fde196"
 RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
@@ -31,7 +30,7 @@ RLM_ACP = ACP()
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = RLM_VERSION
+    version: str = "main"
     """Git ref (branch, tag, or commit) of rlm-harness to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
@@ -129,7 +128,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             env["RLM_SKILLS"] = ",".join(self.config.builtin_skills)
         return env
 
-    async def open_session(
+    async def session(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -164,7 +163,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        """Run one ACP segment for callers that explicitly bypass `open_session()`."""
+        """Run one standalone ACP segment through the default session adapter."""
         system_prompt, prompt = self.resolve_prompt(data)
         return await RLM_ACP.run(
             runtime,
@@ -194,12 +193,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         }
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await runtime.run(["rm", "-rf", self._state_dir(trace)], {})
+        await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
 
     @staticmethod
-    def _state_dir(trace: Trace) -> str:
-        return f"{RLM_STATE_DIR}/{trace.id}"
-
-    @classmethod
-    def _home(cls, trace: Trace) -> str:
-        return f"{cls._state_dir(trace)}/home"
+    def _home(trace: Trace) -> str:
+        return f"{RLM_STATE_DIR}/{trace.id}/home"

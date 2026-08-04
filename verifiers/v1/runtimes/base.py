@@ -62,7 +62,7 @@ class RuntimeProcess(ABC):
     stderr: AsyncIterator[bytes]
 
     @abstractmethod
-    async def write_stdin(self, data: bytes) -> None:
+    async def write(self, data: bytes) -> None:
         pass
 
     @abstractmethod

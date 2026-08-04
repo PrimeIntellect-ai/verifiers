@@ -72,7 +72,7 @@ class DockerProcess(RuntimeProcess):
         self.stdout = _read_stream(process.stdout)
         self.stderr = _read_stream(process.stderr)
 
-    async def write_stdin(self, data: bytes) -> None:
+    async def write(self, data: bytes) -> None:
         self._stdin.write(data)
         await self._stdin.drain()
 
@@ -93,7 +93,7 @@ class DockerProcess(RuntimeProcess):
             self._container,
             "sh",
             "-c",
-            'kill -"$1" "$2"',
+            'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2"',
             "vf-signal",
             signal,
             str(self._pid),
@@ -379,7 +379,16 @@ class DockerRuntime(Runtime):
             arg for key, value in env.items() for arg in ("--env", f"{key}={value}")
         ]
         pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
-        wrapper = 'echo $$ > "$1"; shift; exec "$@"'
+        # Give the target its own process group when `setsid -w` is available so
+        # terminate()/kill() reap its descendants while docker exec remains
+        # attached if setsid needs to fork. The inner shell records the
+        # post-setsid PID before exec preserves it as the target PID.
+        wrapper = (
+            "if setsid -w true >/dev/null 2>&1; then "
+            'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
+            'vf-process "$@"; '
+            'fi; echo $$ > "$1"; shift; exec "$@"'
+        )
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",

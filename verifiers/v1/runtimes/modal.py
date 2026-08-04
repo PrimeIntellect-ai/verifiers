@@ -70,7 +70,7 @@ class ModalProcess(RuntimeProcess):
         self.stdout: AsyncIterator[bytes] = process.stdout
         self.stderr: AsyncIterator[bytes] = process.stderr
 
-    async def write_stdin(self, data: bytes) -> None:
+    async def write(self, data: bytes) -> None:
         await self._process.stdin.write.aio(data)
         await self._process.stdin.drain.aio()
 
@@ -217,7 +217,24 @@ class ModalRuntime(Runtime):
                         int(ready.stdout.strip()),
                         self.config.workdir,
                     )
-                if await proc.poll.aio() is not None or loop.time() >= deadline:
+                returncode = await proc.poll.aio()
+                if returncode is not None or loop.time() >= deadline:
+                    if returncode is None:
+                        # Modal's ContainerProcess has no signal API. A live
+                        # process without a readable PID cannot be targeted, so
+                        # fail the sandbox closed instead of abandoning it.
+                        sandbox = self._sandbox
+                        try:
+                            await sandbox.terminate.aio()
+                        except Exception:
+                            logger.warning(
+                                "modal: failed to terminate sandbox %s after live "
+                                "process startup timed out",
+                                self.info.id,
+                                exc_info=True,
+                            )
+                        else:
+                            self._sandbox = None
                     raise SandboxError(
                         "modal live process failed to start: "
                         f"{ready.stderr.strip() or 'PID unavailable'}"

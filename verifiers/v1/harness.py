@@ -116,28 +116,7 @@ class Harness(ABC, Generic[ConfigT]):
                 # `write` moves bytes, not modes; restore the execute bits scripts need.
                 await runtime.run(["chmod", "+x", *executables], {})
 
-    async def run(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        messages: Messages | None = None,
-    ) -> None:
-        """Compatibility entry point for running one segment without retaining a
-        session handle. Rollouts use `open_session()` and keep its result instead."""
-        session = await self.open_session(
-            ctx, trace, runtime, endpoint, secret, mcp_urls, data
-        )
-        try:
-            await session.turn(messages)
-        finally:
-            await session.close()
-
-    async def open_session(
+    async def session(
         self,
         ctx: ModelContext,
         trace: Trace,

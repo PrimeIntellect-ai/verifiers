@@ -39,6 +39,17 @@ async def _read_stream(reader: asyncio.StreamReader) -> AsyncIterator[bytes]:
         yield chunk
 
 
+def _signal_process(
+    process: asyncio.subprocess.Process, signal_: signal.Signals
+) -> None:
+    if process.returncode is not None:
+        return
+    # open_process() creates a new session, so pgid == pid and signalling the
+    # group reaps the complete process tree.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(os.getpgid(process.pid), signal_)
+
+
 class SubprocessProcess(RuntimeProcess):
     def __init__(self, process: asyncio.subprocess.Process) -> None:
         self._process = process
@@ -49,7 +60,7 @@ class SubprocessProcess(RuntimeProcess):
         self.stdout = _read_stream(process.stdout)
         self.stderr = _read_stream(process.stderr)
 
-    async def write_stdin(self, data: bytes) -> None:
+    async def write(self, data: bytes) -> None:
         self._stdin.write(data)
         await self._stdin.drain()
 
@@ -57,10 +68,10 @@ class SubprocessProcess(RuntimeProcess):
         return await self._process.wait()
 
     async def terminate(self) -> None:
-        SubprocessRuntime._signal(self._process, signal.SIGTERM)
+        _signal_process(self._process, signal.SIGTERM)
 
     async def kill(self) -> None:
-        SubprocessRuntime._signal(self._process, signal.SIGKILL)
+        _signal_process(self._process, signal.SIGKILL)
 
 
 class SubprocessRuntime(Runtime):
@@ -156,20 +167,11 @@ class SubprocessRuntime(Runtime):
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_bytes, data)
 
-    @staticmethod
-    def _signal(proc: asyncio.subprocess.Process, sig: signal.Signals) -> None:
-        if proc.returncode is not None:
-            return
-        # Signal the whole group (start_new_session => pgid == pid), not just proc.pid,
-        # so a background server's children (sh -> uv -> python) stop with it.
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(proc.pid), sig)
-
     async def teardown(self) -> None:
         """Stop and reap background servers before their event loop closes."""
         background = list(self._background)
         for proc in background:
-            self._signal(proc, signal.SIGTERM)
+            _signal_process(proc, signal.SIGTERM)
         if background:
             try:
                 await asyncio.wait_for(
@@ -180,7 +182,7 @@ class SubprocessRuntime(Runtime):
                 )
             except TimeoutError:
                 for proc in background:
-                    self._signal(proc, signal.SIGKILL)
+                    _signal_process(proc, signal.SIGKILL)
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(
                         asyncio.gather(
@@ -195,7 +197,7 @@ class SubprocessRuntime(Runtime):
 
     def cleanup(self) -> None:
         for proc in self._background:
-            self._signal(proc, signal.SIGTERM)
+            _signal_process(proc, signal.SIGTERM)
         self._background = []
         if self.workdir is not None:
             shutil.rmtree(self.workdir, ignore_errors=True)

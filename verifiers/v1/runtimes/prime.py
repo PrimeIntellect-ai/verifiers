@@ -108,7 +108,7 @@ class PrimeProcess(RuntimeProcess):
         self.stdout: AsyncIterator[bytes] = process.stdout
         self.stderr: AsyncIterator[bytes] = process.stderr
 
-    async def write_stdin(self, data: bytes) -> None:
+    async def write(self, data: bytes) -> None:
         await self._process.write_stdin(data)
 
     async def wait(self) -> int:

@@ -234,7 +234,7 @@ class Rollout:
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
             async with boundary(HarnessError, "opening harness session"):
-                self._harness_session = await self.harness.open_session(
+                self._harness_session = await self.harness.session(
                     self.ctx,
                     self.trace,
                     runtime,
