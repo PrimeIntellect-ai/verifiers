@@ -35,7 +35,7 @@ class HarnessConfig(BaseConfig):
     @property
     def resolved_env(self) -> dict[str, str]:
         forwarded = {k: os.environ[k] for k in self.forward_env if k in os.environ}
-        return {**forwarded, **self.env, "VF_MCP_TIMEOUT": str(self.tool_timeout)}
+        return {**forwarded, **self.env}
 
 
 class WireHarnessConfig(HarnessConfig):

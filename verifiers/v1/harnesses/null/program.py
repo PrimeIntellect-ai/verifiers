@@ -7,7 +7,6 @@
 import argparse
 import asyncio
 import json
-import os
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 
@@ -16,7 +15,7 @@ from openai import AsyncOpenAI
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 MCP_CALL_ATTEMPTS = 6
-MCP_TIMEOUT = httpx.Timeout(float(os.environ.get("VF_MCP_TIMEOUT", "600")), connect=5.0)
+MCP_TIMEOUT = 600.0
 
 
 async def chat(
@@ -44,7 +43,8 @@ async def mcp_session(spec: dict):
     try:
         http_client = await stack.enter_async_context(
             create_mcp_http_client(
-                headers=spec.get("headers") or None, timeout=MCP_TIMEOUT
+                headers=spec.get("headers") or None,
+                timeout=httpx.Timeout(spec.get("timeout", MCP_TIMEOUT), connect=5.0),
             )
         )
         read, write, *_ = await stack.enter_async_context(
