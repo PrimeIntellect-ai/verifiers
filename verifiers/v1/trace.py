@@ -157,21 +157,37 @@ class PolicySpan(BaseModel):
         return max(0, self.end - self.start)
 
 
+class TrainMetadata(BaseModel):
+    """An episode a training run trains on."""
+
+    type: Literal["train"] = "train"
+
+    step: int | None = None
+    """The batch window collecting when it landed, which is not known until it does."""
+
+
+class EvalMetadata(BaseModel):
+    """An episode a training run measures itself with."""
+
+    type: Literal["eval"] = "eval"
+
+    step: int
+    """The step whose eval produced it, known from the moment it is dispatched."""
+
+
+EpisodeMetadata = Annotated[TrainMetadata | EvalMetadata, Field(discriminator="type")]
+"""What an episode is to the training run it belongs to."""
+
+
 class TrainRunInfo(BaseModel):
-    """A training run. Its episodes are the ones it trains on and the ones it evaluates along
-    the way — both belong to the run and both are placed by the same step and policy, so they
-    are one record distinguished by `kind` rather than two."""
+    """A training run. Its episodes are the ones it trains on and the ones it evaluates along the
+    way: one run, one id, and `metadata` says which of the two an episode is."""
 
     type: Literal["train"] = "train"
 
     id: str
 
-    kind: Literal["train", "eval"] = "train"
-    """Whether the run trains on this episode or only measures it."""
-
-    step: int | None = None
-    """The step it belongs to: the one whose eval produced it, or — for an episode trained on —
-    the batch window collecting when it lands, which is not known until it does."""
+    metadata: EpisodeMetadata = Field(default_factory=TrainMetadata)
 
     policy: PolicySpan | None = None
     """The live policy versions it was generated across. `None` when it was not generated from the
@@ -179,18 +195,14 @@ class TrainRunInfo(BaseModel):
 
     @property
     def off_policy_steps(self) -> int | None:
-        """How far behind the policy being trained at `step` the generating policy was, or `None`
-        when there is nothing to compare. Step `n` trains the policy step `n-1` produced, so an
-        episode generated at `v{k}` is `(n-1)-k` behind.
-
-        What that measures follows what `step` means for the kind. An episode trained on is placed
-        by the window it landed in, so its lag includes the time it sat in the queue. An eval is
-        placed by the epoch it was dispatched for, so its lag is the one it had when it started —
-        a slow eval that outlives several updates still reports that, because what it measured is
-        the policy it ran, not the one that has since replaced it."""
-        if self.policy is None or self.step is None:
+        """How far behind the policy being trained at `metadata.step` the generating policy was, or
+        `None` when there is nothing to compare. Step `n` trains the policy step `n-1` produced, so
+        an episode generated at `v{k}` is `(n-1)-k` behind — measured against whichever step its
+        metadata places it in."""
+        step = self.metadata.step
+        if self.policy is None or step is None:
             return None
-        return max(0, (self.step - 1) - self.policy.start)
+        return max(0, (step - 1) - self.policy.start)
 
 
 RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
