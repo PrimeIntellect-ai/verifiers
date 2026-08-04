@@ -1,9 +1,10 @@
 import base64
+import inspect
 
 import numpy as np
-
 import verifiers.v1 as vf
 from verifiers.v1 import graph
+from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.types import TurnTokens
 
 
@@ -109,6 +110,37 @@ def test_routed_experts_none_when_absent():
         )
     )
     assert trace.branches[-1].routed_experts is None
+
+
+def test_failed_inference_can_commit_completed_tool_observations() -> None:
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x"))
+    )
+    user = vf.UserMessage(content="u1")
+    assistant = vf.AssistantMessage(
+        content=None,
+        tool_calls=[vf.ToolCall(id="eval-1", name="bash", arguments="{}")],
+    )
+    graph.prepare_turn(trace, [user]).commit(_response(assistant))
+    result = vf.ToolMessage(tool_call_id="eval-1", content='{"eval_state":"pass"}')
+
+    pending = graph.prepare_turn(trace, [user, assistant, result])
+    pending.commit_prompt_tail()
+
+    assert trace.tool_messages == [result]
+    tool_node = trace.branches[-1].nodes[-1]
+    assert tool_node.message == result
+    assert tool_node.token_ids == []
+    assert tool_node.mask == []
+
+
+def test_streaming_and_non_streaming_errors_both_preserve_prompt_tail() -> None:
+    non_streaming = inspect.getsource(InterceptionServer.handle_request)
+    streaming = inspect.getsource(InterceptionServer._stream)
+
+    # Each handler has one OverlongPromptError and one RolloutError path.
+    assert non_streaming.count("turn.commit_prompt_tail(tools)") == 2
+    assert streaming.count("turn.commit_prompt_tail(tools)") == 2
 
 
 def test_tool_call_hash_matches_v0_content_and_arguments_normalization():

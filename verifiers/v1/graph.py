@@ -371,6 +371,21 @@ class PendingTurn:
             self.trace.tools = tools
         return assistant_id
 
+    def commit_prompt_tail(self, tools: list[Tool] | None = None) -> int | None:
+        """Persist new prompt observations when inference cannot return a response.
+
+        Tool results are part of the next model prompt. If that request ends the
+        rollout before producing a response, they are still completed environment
+        observations and must survive for scoring and audit. Their renderer token
+        attribution is unavailable, so the new input nodes intentionally carry no
+        tokens and therefore never enter the action mask.
+        """
+
+        tail_id = _commit_prompt_tail(self)
+        if tools:
+            self.trace.tools = tools
+        return tail_id
+
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
     """Resolve `prompt` against the trace graph without mutating it."""
@@ -618,6 +633,35 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     _attribute_kept_tokens(trace, assistant_id, tokens.kept_tokens if tokens else None)
 
     return assistant_id
+
+
+def _commit_prompt_tail(turn: PendingTurn) -> int | None:
+    """Commit only unseen input messages from a failed inference turn."""
+
+    trace = turn.trace
+    idx = _head_index(trace)
+    parent = turn.prefix_node_ids[-1] if turn.prefix_node_ids else None
+    committed: int | None = None
+    for message in turn.tail:
+        key = (parent, message_hash(message))
+        existing = idx.get(key)
+        if existing is not None:
+            parent = existing
+            committed = existing
+            continue
+        trace.nodes.append(
+            MessageNode.model_construct(
+                parent=parent,
+                message=message,
+                token_ids=[],
+                mask=[],
+                is_content=[],
+            )
+        )
+        parent = len(trace.nodes) - 1
+        idx[key] = parent
+        committed = parent
+    return committed
 
 
 # --- walking the graph (views) ---------------------------------------------------------

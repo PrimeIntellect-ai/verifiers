@@ -472,6 +472,7 @@ class InterceptionServer(Interception):
                     # cleanly as a truncation — refuse the call to halt the harness (same
                     # shape as `refused` above).
                     error = e
+                    turn.commit_prompt_tail(tools)
                     session.trace.stop("context_length")
                     logger.debug("prompt too long: id=%s", session.trace.id)
                     return web.json_response(
@@ -482,6 +483,7 @@ class InterceptionServer(Interception):
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
                     error = e
+                    turn.commit_prompt_tail(tools)
                     session.error = e
                     logger.warning(
                         "model call failed: id=%s %s: %s",
@@ -589,6 +591,7 @@ class InterceptionServer(Interception):
                 )
             except OverlongPromptError as e:
                 error = e
+                turn.commit_prompt_tail(tools)
                 session.trace.stop("context_length")
                 logger.debug("prompt too long: id=%s", session.trace.id)
                 return web.json_response(
@@ -596,6 +599,7 @@ class InterceptionServer(Interception):
                 )
             except RolloutError as e:
                 error = e
+                turn.commit_prompt_tail(tools)
                 session.error = e
                 logger.warning(
                     "model call failed: id=%s %s: %s",

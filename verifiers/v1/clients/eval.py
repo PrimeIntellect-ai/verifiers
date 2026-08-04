@@ -108,6 +108,17 @@ class EvalClient(Client):
         # call instead of crashing the whole rollout on one bad response.
         try:
             raw = from_json(resp.content)
+            # OpenRouter occasionally emits a completed non-streaming chat
+            # response with `finish_reason: null`.  The OpenAI SDK's strict
+            # model rejects that wire-compatible provider variant before the
+            # dialect can map an unknown finish reason to ``None``.  For an
+            # evaluation client a missing terminal label is equivalent to a
+            # normal stop: preserve the response content/tool calls and avoid
+            # turning a provider formatting quirk into a failed rollout.
+            if isinstance(raw, dict):
+                for choice in raw.get("choices") or []:
+                    if isinstance(choice, dict) and choice.get("finish_reason") is None:
+                        choice["finish_reason"] = "stop"
             response = dialect.parse_response(dialect.validate_response(raw))
         except (ValueError, ValidationError) as e:
             raise model_error(

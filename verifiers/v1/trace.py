@@ -456,10 +456,80 @@ class Trace(StrictBaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Model-generated tokens across all turns, summed across branches."""
         return sum(branch.num_output_tokens for branch in self.branches)
 
+    def _policy_branch_sum(self, attribute: str) -> int:
+        """Sum `attribute` over policy branches, degrading to ALL branches.
+
+        A branch is auxiliary when it starts at its own parentless root instead of
+        the conversation's -- how a harness-issued summarizer or sub-agent call
+        appears in the graph.
+
+        Falls back to every branch when no branch starts at `nodes[0]`, which can
+        only mean the auxiliary rule does not describe this trace. That direction
+        matters: the naive `sum(... if root)` returns 0 in that case, and a 0 makes
+        the caller's cap permanently unreachable -- silently removing a limit
+        rather than enforcing a slightly conservative one. Degrade toward the old,
+        stricter behaviour, and say so, rather than toward no limit at all.
+        """
+        branches = self.branches
+        if not branches:
+            return 0
+        root = self.nodes[0] if self.nodes else None
+        policy = [b for b in branches if b.nodes and b.nodes[0] is root]
+        if not policy:
+            logger.warning(
+                "no branch starts at the trace root; billing every branch to the "
+                "policy budget (trace=%s, branches=%d)",
+                self.id,
+                len(branches),
+            )
+            policy = branches
+        return sum(getattr(b, attribute) for b in policy)
+
+    @property
+    def num_policy_input_tokens(self) -> int:
+        """Input tokens on the policy's own branches, for symmetry with the others.
+
+        `num_input_tokens` subtracts output from total across ALL branches, so an
+        auxiliary summarizer's prompt inflates it exactly as its completion used
+        to inflate the output count.
+        """
+        return self.num_policy_total_tokens - self.num_policy_output_tokens
+
+    @property
+    def num_policy_output_tokens(self) -> int:
+        """Model-generated tokens on the policy's own branches.
+
+        Excludes auxiliary branches: model invocations the harness makes on its own
+        behalf (context summarization and the like), which begin at their own
+        parentless root rather than descending from the conversation's. Those
+        completions are harness overhead, not policy output, and a harness that
+        masks them from the loss is already asserting they are not the policy's
+        work -- charging them to the policy's generation budget contradicts that.
+
+        Identical to `num_output_tokens` for any trace with a single root, so
+        harnesses that never spawn an auxiliary call are unaffected.
+        """
+        return self._policy_branch_sum("num_output_tokens")
+
     @property
     def num_total_tokens(self) -> int:
         """Final sequence lengths (last prompt + completion) summed across branches."""
         return sum(branch.num_total_tokens for branch in self.branches)
+
+    @property
+    def num_policy_total_tokens(self) -> int:
+        """Final sequence lengths on the policy's own branches.
+
+        The auxiliary-branch exclusion `num_policy_output_tokens` applies, for the
+        same reason: a summarizer runs its own short conversation whose sequence
+        length says nothing about how much context the policy is carrying. Summed
+        in, it makes this cap fire on rollouts nowhere near the model's window --
+        measured on an SKX step, it stopped a rollout whose largest real context
+        was 20,035 tokens of a 32,768 window.
+
+        Identical to `num_total_tokens` for any single-root trace.
+        """
+        return self._policy_branch_sum("num_total_tokens")
 
     @property
     def usage(self) -> Usage | None:

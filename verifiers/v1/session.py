@@ -42,17 +42,27 @@ class RolloutLimits:
             return "max_turns"
         if (
             self.max_input_tokens is not None
-            and trace.num_input_tokens >= self.max_input_tokens
+            # Policy branches only, matching the output and total caps. Unset in
+            # the SKX config today, so this is here so the next person to set it
+            # does not rediscover the summarizer double-charge a third time.
+            and trace.num_policy_input_tokens >= self.max_input_tokens
         ):
             return "max_input_tokens"
         if (
             self.max_output_tokens is not None
-            and trace.num_output_tokens >= self.max_output_tokens
+            # Policy branches only: a harness-issued summarizer completion is not
+            # output the policy chose to spend. Measured on a 26-rollout SKX step,
+            # summaries were 32-39% of this budget and caused every truncation
+            # attributed to it, so counting them silently converts the budget into
+            # truncation as soon as compaction turns on.
+            and trace.num_policy_output_tokens >= self.max_output_tokens
         ):
             return "max_output_tokens"
         if (
             self.max_total_tokens is not None
-            and trace.num_total_tokens >= self.max_total_tokens
+            # Policy branches only, as above: an auxiliary summarizer conversation
+            # is not context the policy is carrying.
+            and trace.num_policy_total_tokens >= self.max_total_tokens
         ):
             return "max_total_tokens"
         return None

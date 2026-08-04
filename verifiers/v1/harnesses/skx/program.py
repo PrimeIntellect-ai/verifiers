@@ -10,6 +10,7 @@ import json
 import re
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
+from typing import Any
 
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
@@ -92,7 +93,12 @@ SUMMARIZER_SYSTEM = (
     " /workspace/.skx_artifacts/ and every SHA-256 handle verbatim; never shorten,"
     " normalize, or paraphrase them. Do not include analysis, plans, or code blocks."
 )
-SUMMARIZER_MAX_TOKENS = 4096
+# Qwen's visible summary is short, but its retained reasoning shares this
+# completion budget.  The 4,096-token cap was exhausted by a live second
+# compaction, cutting an artifact handle mid-digest and forcing lossy fallback.
+# Match the SKX policy-turn ceiling so thinking has headroom; the 600-word /
+# 6,000-character output bounds still keep the bridge itself compact.
+SUMMARIZER_MAX_TOKENS = 8192
 SUMMARIZER_MAX_CHARS = 6000
 AUXILIARY_SAMPLING_HEADER = "X-Verifiers-Auxiliary-Sampling"
 FALLBACK_SUMMARY = (
@@ -102,21 +108,91 @@ FALLBACK_SUMMARY = (
 )
 
 
-def _split_for_compaction(messages: list[dict], keep_recent: int) -> tuple[list[dict], list[dict], list[dict]]:
+def _message_tokens(message: dict) -> int:
+    """Cheap upper-ish estimate of a message's token cost.
+
+    Deliberately not a tokenizer call: this runs inside the rollout loop on every
+    compaction, and the budget it feeds is a safety margin, not an accounting
+    figure. chars/4 is the usual English approximation and errs high on the code
+    and compiler output that dominate these transcripts.
+    """
+
+    content = message.get("content")
+    if isinstance(content, str):
+        size = len(content)
+    elif isinstance(content, list):
+        size = sum(len(str(part.get("text", part))) for part in content
+                   if isinstance(part, (dict, str)))
+    else:
+        size = len(str(content or ""))
+    for call in message.get("tool_calls") or []:
+        size += len(str(call))
+    return size // 4 + 4
+
+
+def _split_for_compaction(
+    messages: list[dict], keep_recent: int, keep_recent_tokens: int = 0
+) -> tuple[list[dict], list[dict], list[dict]]:
     """head (system + first user task) | middle (to summarize) | tail (kept verbatim).
 
     The tail must start on a message the model could naturally resume from: never a
     `tool` result orphaned from the assistant call that produced it, so the boundary
-    walks back to include the owning assistant message."""
+    walks back to include the owning assistant message.
+
+    `keep_recent_tokens` additionally bounds the tail by size. The count bound
+    alone is not a bound on context: a single completion can be 8192 tokens, so
+    six messages can carry more than the trigger that fired the compaction, and
+    the whole point of compacting is to come back under it.
+    """
     head_end = 0
     while head_end < len(messages) and messages[head_end]["role"] == "system":
         head_end += 1
     if head_end < len(messages) and messages[head_end]["role"] == "user":
         head_end += 1
-    tail_start = max(head_end, len(messages) - keep_recent)
-    while tail_start > head_end and messages[tail_start].get("role") == "tool":
-        tail_start -= 1
+    def _resumable_back(index: int) -> int:
+        """Nearest resumable boundary at or before `index`."""
+        while index > head_end and messages[index].get("role") == "tool":
+            index -= 1
+        return index
+
+    def _resumable_forward(index: int) -> int:
+        """Nearest resumable boundary at or after `index`."""
+        while index < len(messages) and messages[index].get("role") == "tool":
+            index += 1
+        return index
+
+    # Every candidate boundary is made resumable BEFORE its budget is judged.
+    # Trimming first and walking back afterwards is wrong: the walk-back re-adds
+    # the message the trim just dropped, so a tail trimmed to fit came back over
+    # budget. Measured on a constructed case, that returned 9,316 tokens against
+    # an 8,192 budget -- the bound silently did nothing.
+    tail_start = _resumable_back(max(head_end, len(messages) - keep_recent))
+    if keep_recent_tokens > 0:
+        # Never advance past the final exchange: a tail of nothing cannot be
+        # resumed from, so an oversized last exchange is accepted as-is.
+        floor = _resumable_back(len(messages) - 1)
+        while (
+            tail_start < floor
+            and sum(_message_tokens(m) for m in messages[tail_start:]) > keep_recent_tokens
+        ):
+            advanced = _resumable_forward(tail_start + 1)
+            if advanced > floor:
+                break
+            tail_start = advanced
     return messages[:head_end], messages[head_end:tail_start], messages[tail_start:]
+
+
+def _compaction_ready(
+    messages: list[dict], keep_recent: int, keep_recent_tokens: int = 0
+) -> bool:
+    """Whether compaction would fold a substantial middle right now.
+
+    A no-op attempt must not start the cooldown: doing so postpones the first
+    real compaction by three policy turns, after the model may already have
+    consumed the artifact the summary was meant to preserve.
+    """
+
+    return len(_split_for_compaction(messages, keep_recent, keep_recent_tokens)[1]) >= 4
 
 
 def _transcript(middle: list[dict]) -> str:
@@ -141,12 +217,129 @@ def _transcript(middle: list[dict]) -> str:
     return joined[-24000:]
 
 
+def _tool_name(call: Any) -> str:
+    if not isinstance(call, dict):
+        return ""
+    function = call.get("function")
+    if isinstance(function, dict):
+        return str(function.get("name") or "")
+    return str(call.get("name") or "")
+
+
+def _candidate_mutation_indices(messages: list[dict]) -> list[int]:
+    return [
+        index
+        for index, message in enumerate(messages)
+        if any(
+            _tool_name(call) in {"write", "edit"}
+            for call in message.get("tool_calls") or []
+        )
+    ]
+
+
+def _decoded_tool_output(message: dict) -> dict[str, Any] | None:
+    content = message.get("content")
+    if not isinstance(content, str):
+        return None
+    try:
+        decoded = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    output = decoded.get("output")
+    return output if isinstance(output, dict) else None
+
+
+def _evaluation_state(output: dict[str, Any]) -> dict[str, object] | None:
+    artifacts = output.get("artifacts")
+    progress = output.get("progress")
+    diagnostics = output.get("diagnostics")
+    if not (
+        isinstance(artifacts, dict)
+        and isinstance(progress, dict)
+        and isinstance(diagnostics, dict)
+    ):
+        return None
+    candidate = artifacts.get("candidate")
+    compile_info = diagnostics.get("compile_diagnostic")
+    correct_info = diagnostics.get("correctness_diagnostic")
+    state: dict[str, object] = {
+        "trusted_evaluation_recorded": True,
+        "evaluation_attempt": progress.get("attempt"),
+        "evaluation_state": progress.get("current_state") or output.get("eval_state"),
+        "correctness_passed": output.get("passed"),
+    }
+    if isinstance(candidate, dict):
+        state["evaluated_candidate_sha256"] = candidate.get("sha256")
+    if isinstance(compile_info, dict):
+        state["compilation_passed"] = compile_info.get("passed")
+    if isinstance(correct_info, dict):
+        state["correctness_passed"] = correct_info.get("passed")
+        state["correctness_category"] = correct_info.get("category")
+        state["runtime_type"] = correct_info.get("runtime_type")
+    return {key: value for key, value in state.items() if value not in (None, "")}
+
+
+def _legacy_state(output: dict[str, Any]) -> dict[str, object] | None:
+    fields = (
+        "candidate_sha256",
+        "build_passed",
+        "build_calls",
+        "builds_remaining",
+        "compile_error",
+        "correct_error",
+    )
+    state = {field: output[field] for field in fields if field in output}
+    diagnostics = output.get("diagnostics")
+    if isinstance(diagnostics, dict) and "eval_state" in diagnostics:
+        state["eval_state"] = diagnostics["eval_state"]
+    return state or None
+
+
+def _compaction_state_ledger(messages: list[dict]) -> str:
+    """Return a deterministic, bounded resume record for the latest SKX work.
+
+    The record is intentionally regenerated from the full pre-compaction
+    message list rather than trusting either the summarizer or the retained
+    message tail.  It makes a failed build/eval actionable after compaction
+    without turning the bridge into another large transcript.
+    """
+
+    latest: tuple[int, dict[str, object]] | None = None
+    for index, message in enumerate(messages):
+        output = _decoded_tool_output(message)
+        if output is None:
+            continue
+        state = _evaluation_state(output) or _legacy_state(output)
+        if state:
+            latest = (index, state)
+    if latest is None:
+        return "No trusted build or evaluation result is recorded yet."
+
+    result_index, found = latest
+    mutations = _candidate_mutation_indices(messages)
+    parts = [f"{field}={value}" for field, value in found.items()]
+    if found.get("trusted_evaluation_recorded") is True:
+        changed = any(index > result_index for index in mutations)
+        parts.append(f"candidate_changed_after_evaluation={changed}")
+        parts.append(f"current_candidate_evaluated={not changed}")
+    for field in ("compile_error", "correct_error"):
+        value = found.get(field)
+        if isinstance(value, str) and value:
+            replacement = f"{field}={value[:360]}"
+            parts = [part for part in parts if not part.startswith(f"{field}=")]
+            parts.append(replacement)
+    return "; ".join(parts)[:1200]
+
+
 async def compact(
     client: AsyncOpenAI,
     model: str,
     messages: list[dict],
     keep_recent: int,
     tracker_path: str,
+    keep_recent_tokens: int = 0,
     *,
     stats: dict[str, int] | None = None,
     stats_updated=None,
@@ -155,7 +348,7 @@ async def compact(
     the history around the summary. The summary completion is generated through the
     same intercepted endpoint (so it lands in the trace) and its exact text is written
     to the tracker file for the harness to mask out of the loss."""
-    head, middle, tail = _split_for_compaction(messages, keep_recent)
+    head, middle, tail = _split_for_compaction(messages, keep_recent, keep_recent_tokens)
     if len(middle) < 4:
         # Nothing substantial to fold away — re-summarizing a near-empty middle
         # (e.g. right after a previous compaction) only burns budget.
@@ -199,7 +392,13 @@ async def compact(
         "role": "user",
         "content": (
             "Earlier context was compacted to stay within the token budget. Summary of"
-            " the work so far:\n" + summary + "\nContinue the task from this state."
+            " older messages only; it may omit events retained in recent context:\n" + summary
+            + "\n\nMachine-generated current SKX state (authoritative over the summary):\n"
+            + _compaction_state_ledger(messages)
+            + "\nIf current_candidate_evaluated=True, do not evaluate it again. Repair the"
+            " recorded failure or inspect its bounded artifact first. Only evaluate after a"
+            " candidate edit. Continue from this machine-generated state even if the prose"
+            " summary conflicts with it."
         ),
     }
     return head + [bridge] + tail
@@ -373,6 +572,36 @@ def _dedup_observation(
     return content, False, repeated
 
 
+EVAL_NUDGE = (
+    "You have not run the trusted evaluator in this rollout. An attempt that stops"
+    " without one carries no evidence about the kernel and is scored below a"
+    " candidate that was evaluated and failed, so this is not a valid place to"
+    " finish. Run skx-eval now (the bash tool, command `skx-eval`), read its result,"
+    " and continue from what it reports. If candidate.py is not finished, make it"
+    " runnable first and evaluate that — the eval budget is a ceiling, not a target."
+)
+
+
+def _is_trusted_eval(content) -> bool:
+    """Whether one tool observation is a trusted SKX evaluator result.
+
+    Mirrors the reward-side envelope check (``skx_rlvr.evidence.eval_result``):
+    the finish contract below must recognize exactly what the scorer counts as
+    evidence, or it would nudge a rollout that already evaluated."""
+    if not isinstance(content, str):
+        return False
+    try:
+        envelope = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(envelope, dict) or envelope.get("is_error") is not False:
+        return False
+    output = envelope.get("output")
+    return isinstance(output, dict) and bool(
+        output.get("eval_label") or output.get("eval_state")
+    )
+
+
 def _mutates_workspace(name: str) -> bool:
     return name.rsplit("_", 1)[-1].lower() in {"edit", "write"}
 
@@ -398,8 +627,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--compact-trigger-tokens", type=int, default=0)
     parser.add_argument("--compact-keep-recent", type=int, default=6)
+    parser.add_argument("--compact-keep-recent-tokens", type=int, default=0)
     parser.add_argument("--compact-tracker-file", default="")
     parser.add_argument("--stats-file", default="")
+    parser.add_argument("--eval-nudges", type=int, default=0)
     return parser.parse_args()
 
 
@@ -410,6 +641,8 @@ async def main() -> None:
         "deduped_observations": 0,
         "model_call_attempts": 0,
         "model_call_retries": 0,
+        "trusted_evals": 0,
+        "eval_nudges": 0,
     }
 
     def flush_stats() -> None:
@@ -461,6 +694,20 @@ async def main() -> None:
         )
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
+            # The trusted evaluator is the episode's only evidence, so a finish
+            # that never ran one is refused rather than accepted: the model is
+            # told what is missing and continues. Bounded by --eval-nudges, and
+            # every nudged turn still spends the framework's turn budget, so the
+            # episode terminates either way.
+            if (
+                dispatch
+                and not stats["trusted_evals"]
+                and stats["eval_nudges"] < args.eval_nudges
+            ):
+                stats["eval_nudges"] += 1
+                messages.append({"role": "user", "content": EVAL_NUDGE})
+                flush_stats()
+                continue
             flush_stats()
             break
         turn += 1
@@ -470,6 +717,9 @@ async def main() -> None:
             and context_tokens is not None
             and context_tokens >= args.compact_trigger_tokens
             and turn - last_compact_attempt >= 3
+            and _compaction_ready(
+                messages[:-1], args.compact_keep_recent, args.compact_keep_recent_tokens
+            )
         ):
             # Compact BEFORE serving the tool results so the post-compaction
             # branch resumes cleanly at the pending tool call. The cooldown
@@ -485,6 +735,7 @@ async def main() -> None:
                     messages[:-1],
                     args.compact_keep_recent,
                     args.compact_tracker_file,
+                    keep_recent_tokens=args.compact_keep_recent_tokens,
                     stats=stats,
                     stats_updated=flush_stats,
                 )
@@ -530,6 +781,7 @@ async def main() -> None:
             )
             stats["repeat_tool_calls"] += repeated
             stats["deduped_observations"] += deduped
+            stats["trusted_evals"] += _is_trusted_eval(content)
             if _successful_workspace_mutation(name, content):
                 workspace_revision += 1
             messages.append(
