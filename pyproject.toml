@@ -76,10 +76,23 @@ dev = [
 # from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
-    "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
-    "proposer-solver-v1", "reverse-text-v1", "color-codeword-v1",
-    "wordle-v1", "openenv-wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
+    "gsm8k-v1",
+    "glossary-v1",
+    "deepwiki-v1",
+    "wiki-search-v1",
+    "code-golf-v1",
+    "proposer-solver-v1",
+    "reverse-text-v1",
+    "color-codeword-v1",
+    "wordle-v1",
+    "openenv-wordle-v1",
+    "alphabet-sort-v1",
+    "scratchpad-v1",
     "kuhn-poker-v1",
+    "bash-interception-v1",
+    "grayscale-interception-v1",
+    "interception-v1",
+    "web-search-interception-v1",
 ]
 
 [project.optional-dependencies]
@@ -133,6 +146,10 @@ color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
 kuhn-poker-v1 = { path = "environments/kuhn_poker_v1", editable = true }
+bash-interception-v1 = { path = "environments/bash_interception_v1", editable = true }
+grayscale-interception-v1 = { path = "environments/grayscale_interception_v1", editable = true }
+interception-v1 = { path = "environments/interception_v1", editable = true }
+web-search-interception-v1 = { path = "environments/web_search_interception_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.
