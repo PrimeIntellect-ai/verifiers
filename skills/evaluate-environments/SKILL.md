@@ -87,7 +87,7 @@ uv run eval my-task-v1 \
   --help
 ```
 
-For implementation details and defaults, start at `verifiers/v1/configs/cli/eval.py` and follow its fields into `verifiers/v1/configs/`. Client configs live in `verifiers/v1/clients/config.py`, sampling in `verifiers/v1/types.py`, and runtime- and harness-specific configs next to their implementations in `verifiers/v1/runtimes/` and `verifiers/v1/harnesses/`. Custom taskset and env config fields live next to those implementations.
+For implementation details and defaults, start at `verifiers/v1/configs/cli/eval.py` and follow its fields into `verifiers/v1/configs/`. Client configs live in `verifiers/v1/configs/client.py`, sampling in `verifiers/v1/types.py`, and runtime- and harness-specific configs next to their implementations in `verifiers/v1/runtimes/` and `verifiers/v1/harnesses/`. Custom taskset and env config fields live next to those implementations.
 
 ## Typed taskset overrides
 
