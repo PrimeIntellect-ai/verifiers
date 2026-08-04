@@ -7,6 +7,7 @@
 import asyncio
 import json
 import os
+import signal
 import sys
 import traceback
 from contextlib import AsyncExitStack, suppress
@@ -30,33 +31,21 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     TextContentBlock,
-    ToolCall,
-    ToolCallUpdate,
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
-PROBE_UNAVAILABLE_EXIT_CODE = 75
 
 
 class VerifiersClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
-        self.tool_calls: dict[str, str] = {}
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
-        self.tool_calls = {}
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        if isinstance(update, ToolCall):
-            self.tool_calls[update.tool_call_id] = update.status or "pending"
-            return
-        if isinstance(update, ToolCallUpdate):
-            if update.status:
-                self.tool_calls[update.tool_call_id] = update.status
-            return
         if not isinstance(update, AgentMessageChunk) or not isinstance(
             update.content, TextContentBlock
         ):
@@ -168,22 +157,10 @@ async def prompt(
         raise ValueError("ACP prompt has no content")
     client.reset()
     try:
-        response = await connection.prompt(session_id=session_id, prompt=blocks)
+        await connection.prompt(session_id=session_id, prompt=blocks)
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
-    tool_statuses = list(client.tool_calls.values())
-    completed_tool_turn = (
-        config["allow_empty_tool_reply"]
-        and response.stop_reason == "end_turn"
-        and bool(tool_statuses)
-        and all(status in ("completed", "failed") for status in tool_statuses)
-    )
-    if not client.visible_reply.strip() and not completed_tool_turn:
-        raise RuntimeError(
-            "ACP agent produced no visible reply "
-            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
-        )
     return client.visible_reply
 
 
@@ -319,151 +296,68 @@ class LiveACPSession:
             self._reset()
 
 
-async def read_packet(reader: asyncio.StreamReader) -> dict:
-    size = int.from_bytes(await reader.readexactly(8), "big")
+async def read_packet(stream: asyncio.StreamReader) -> dict | None:
+    try:
+        header = await stream.readexactly(8)
+    except asyncio.IncompleteReadError as error:
+        if not error.partial:
+            return None
+        raise EOFError("ACP session packet ended early") from error
+    size = int.from_bytes(header, "big")
     if size > MAX_PACKET_BYTES:
         raise ValueError(f"ACP session packet is too large: {size} bytes")
-    return json.loads((await reader.readexactly(size)).decode())
+    try:
+        return json.loads((await stream.readexactly(size)).decode())
+    except asyncio.IncompleteReadError as error:
+        raise EOFError("ACP session packet ended early") from error
 
 
-async def write_packet(writer: asyncio.StreamWriter, value: dict) -> None:
+def write_packet(stream: Any, value: dict) -> None:
     data = json.dumps(value, ensure_ascii=False).encode()
-    writer.write(len(data).to_bytes(8, "big"))
-    writer.write(data)
-    await writer.drain()
+    if len(data) > MAX_PACKET_BYTES:
+        raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
+    stream.write(len(data).to_bytes(8, "big"))
+    stream.write(data)
+    stream.flush()
 
 
-async def serve_session(socket_path: str) -> None:
-    path = Path(socket_path)
-    path.unlink(missing_ok=True)
+async def serve_stream() -> None:
     session = LiveACPSession()
-    lock = asyncio.Lock()
-    stop_lock = asyncio.Lock()
-    shutdown = asyncio.Event()
-    active_prompt: asyncio.Task[str] | None = None
-
-    async def run_prompt(config: dict) -> str:
-        nonlocal active_prompt
-        async with lock:
-            if shutdown.is_set():
-                raise RuntimeError("ACP session is shutting down")
-            active_prompt = asyncio.create_task(session.run(config))
+    closed = False
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await asyncio.get_running_loop().connect_read_pipe(
+        lambda: protocol, sys.stdin.buffer
+    )
+    try:
+        while request := await read_packet(reader):
+            stop = False
             try:
-                return await active_prompt
-            finally:
-                active_prompt = None
-
-    async def stop_session() -> None:
-        shutdown.set()
-        async with stop_lock:
-            task = active_prompt
-            if task is not None and not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            # `run_prompt` releases this after its cancelled session request unwinds.
-            # Holding it for close prevents a waiting prompt from racing a restart.
-            async with lock:
-                await session.close()
-
-    async def handle(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        response: dict | None = None
-        try:
-            request = await read_packet(reader)
-            operation = request.get("operation")
-            if operation == "ping":
-                response = {"ok": True}
-            elif operation == "shutdown":
-                await stop_session()
-                response = {"ok": True}
-            elif operation == "prompt":
-                prompt_task = asyncio.create_task(run_prompt(request["config"]))
-                disconnect_task = asyncio.create_task(reader.read())
-                done, _ = await asyncio.wait(
-                    (prompt_task, disconnect_task),
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if prompt_task in done:
-                    disconnect_task.cancel()
-                    await asyncio.gather(disconnect_task, return_exceptions=True)
-                    response = {"ok": True, "reply": await prompt_task}
+                operation = request.get("operation")
+                if operation == "prompt":
+                    response = {
+                        "ok": True,
+                        "reply": await session.run(request["config"]),
+                    }
+                elif operation == "shutdown":
+                    await session.close()
+                    closed = True
+                    stop = True
+                    response = {"ok": True}
                 else:
-                    # The short-lived request was cancelled or timed out. Stop the
-                    # prompt and agent so neither keeps consuming tokens unattended.
-                    await stop_session()
-                    # `stop_session` cancels and awaits the tracked ACP prompt;
-                    # now let its lock-owning wrapper finish and clear bookkeeping.
-                    await asyncio.gather(prompt_task, return_exceptions=True)
-                    return
-            else:
-                raise ValueError(f"unknown ACP session operation: {operation!r}")
-        except asyncio.CancelledError:
-            if not shutdown.is_set():
-                raise
-        except Exception as error:  # noqa: BLE001 - serialize every request failure
-            traceback.print_exc()
-            response = {
-                "ok": False,
-                "error": f"{type(error).__name__}: {error}",
-            }
-        try:
-            if response is not None:
-                await write_packet(writer, response)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            writer.close()
-            with suppress(BrokenPipeError, ConnectionResetError):
-                await writer.wait_closed()
-
-    server = await asyncio.start_unix_server(handle, path=socket_path)
-    os.chmod(path, 0o600)
-    try:
-        async with server:
-            await shutdown.wait()
+                    raise ValueError(f"unknown ACP session operation: {operation!r}")
+            except Exception as error:  # noqa: BLE001 - serialize protocol failures
+                traceback.print_exc()
+                response = {
+                    "ok": False,
+                    "error": f"{type(error).__name__}: {error}",
+                }
+            write_packet(sys.stdout.buffer, response)
+            if stop:
+                break
     finally:
-        server.close()
-        await server.wait_closed()
-        await stop_session()
-        path.unlink(missing_ok=True)
-
-
-async def connect(
-    socket_path: str,
-    wait_seconds: float = 60,
-) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + wait_seconds
-    while True:
-        try:
-            return await asyncio.open_unix_connection(socket_path)
-        except (FileNotFoundError, ConnectionRefusedError):
-            if loop.time() >= deadline:
-                raise RuntimeError("timed out waiting for ACP session")
-            await asyncio.sleep(0.1)
-
-
-async def request_session(
-    socket_path: str,
-    request: dict,
-    wait_seconds: float = 60,
-    response_seconds: float | None = None,
-) -> dict:
-    reader, writer = await connect(socket_path, wait_seconds)
-    try:
-        await write_packet(writer, request)
-        response = (
-            await read_packet(reader)
-            if response_seconds is None
-            else await asyncio.wait_for(read_packet(reader), response_seconds)
-        )
-    finally:
-        writer.close()
-        await writer.wait_closed()
-    if not response.get("ok"):
-        raise RuntimeError(response.get("error") or "ACP session request failed")
-    return response
+        if not closed:
+            await session.close()
 
 
 def read_config(path_value: str) -> dict:
@@ -477,36 +371,15 @@ async def main() -> None:
     operation = sys.argv[1]
     if operation == "once":
         sys.stdout.write(await run_once(read_config(sys.argv[2])))
-    elif operation == "serve":
-        await serve_session(sys.argv[2])
-    elif operation == "request":
-        response = await request_session(
-            sys.argv[3],
-            {"operation": "prompt", "config": read_config(sys.argv[2])},
-        )
-        sys.stdout.write(response["reply"])
-    elif operation == "shutdown":
-        await request_session(
-            sys.argv[2],
-            {"operation": "shutdown"},
-            wait_seconds=2,
-            response_seconds=5,
-        )
-    elif operation == "probe":
-        wait_seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 0
-        try:
-            await asyncio.wait_for(
-                request_session(
-                    sys.argv[2],
-                    {"operation": "ping"},
-                    wait_seconds=wait_seconds,
-                ),
-                timeout=max(2, wait_seconds + 1),
-            )
-        except RuntimeError as error:
-            if str(error) == "timed out waiting for ACP session":
-                raise SystemExit(PROBE_UNAVAILABLE_EXIT_CODE) from None
-            raise
+    elif operation == "stream":
+        task = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        if task is not None:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                with suppress(NotImplementedError):
+                    loop.add_signal_handler(sig, task.cancel)
+        with suppress(asyncio.CancelledError):
+            await serve_stream()
     else:
         raise ValueError(f"unknown ACP runner operation: {operation!r}")
 

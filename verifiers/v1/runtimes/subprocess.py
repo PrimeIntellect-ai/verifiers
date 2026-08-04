@@ -5,12 +5,18 @@ import contextlib
 import os
 import shutil
 import signal
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.runtimes.base import BaseRuntimeInfo, ProgramResult, Runtime
+from verifiers.v1.runtimes.base import (
+    BaseRuntimeInfo,
+    ProgramResult,
+    Runtime,
+    RuntimeProcess,
+)
 
 _BACKGROUND_STOP_TIMEOUT = 5
 
@@ -26,6 +32,35 @@ class SubprocessConfig(BaseConfig):
 
 class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):
     pass
+
+
+async def _read_stream(reader: asyncio.StreamReader) -> AsyncIterator[bytes]:
+    while chunk := await reader.read(64 * 1024):
+        yield chunk
+
+
+class SubprocessProcess(RuntimeProcess):
+    def __init__(self, process: asyncio.subprocess.Process) -> None:
+        self._process = process
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        self._stdin = process.stdin
+        self.stdout = _read_stream(process.stdout)
+        self.stderr = _read_stream(process.stderr)
+
+    async def write_stdin(self, data: bytes) -> None:
+        self._stdin.write(data)
+        await self._stdin.drain()
+
+    async def wait(self) -> int:
+        return await self._process.wait()
+
+    async def terminate(self) -> None:
+        SubprocessRuntime._signal(self._process, signal.SIGTERM)
+
+    async def kill(self) -> None:
+        SubprocessRuntime._signal(self._process, signal.SIGKILL)
 
 
 class SubprocessRuntime(Runtime):
@@ -74,6 +109,23 @@ class SubprocessRuntime(Runtime):
             stdout=stdout.decode(errors="replace"),
             stderr=stderr.decode(errors="replace"),
         )
+
+    async def open_process(
+        self, argv: list[str], env: dict[str, str]
+    ) -> RuntimeProcess:
+        full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
+        full_env.update(env)
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            env=full_env,
+            cwd=self.workdir,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        self._background.append(proc)
+        return SubprocessProcess(proc)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

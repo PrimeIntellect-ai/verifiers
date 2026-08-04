@@ -51,9 +51,9 @@ USER_RUNTIMES = [
     pytest.param("modal", marks=[_m.modal], id="harness-in-modal"),
 ]
 
-# ACP-backed harnesses: each must preserve an exchange across process relaunches and
+# ACP-backed harnesses: each must preserve an exchange across interaction segments and
 # retain MCP access after resuming. Cover every harness in the local container runtime,
-# plus one remote placement for the sandbox/tunnel boundary.
+# plus remote placements for the sandbox/tunnel and native-process boundaries.
 ACP_RESUME_PLACEMENTS = [
     _pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
     _pair("rlm", "docker", "rlm-acp-in-docker"),
@@ -62,6 +62,7 @@ ACP_RESUME_PLACEMENTS = [
     _pair("pool", "docker", "pool-acp-in-docker"),
     _pair("openclaw", "docker", "openclaw-acp-in-docker"),
     _pair("pool", "prime", "pool-acp-in-prime"),
+    _pair("rlm", "prime", "rlm-acp-in-prime-vm"),
 ]
 
 # harness runtime x tool placement: every axis value once plus the two-container case
@@ -216,7 +217,10 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
-        runtime={"type": harness_runtime},
+        runtime={
+            "type": harness_runtime,
+            **({"vm": True} if harness_runtime == "prime" else {}),
+        },
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,

@@ -12,6 +12,7 @@ import logging
 import math
 import shlex
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
@@ -26,6 +27,7 @@ from verifiers.v1.runtimes.base import (
     NetworkPolicyConfig,
     ProgramResult,
     Runtime,
+    RuntimeProcess,
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
@@ -98,6 +100,25 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     image_cached: bool | None = None
     """Whether the platform already had the image at create (None until then). False means
     a first-use auto-build ran while this sandbox waited to start."""
+
+
+class PrimeProcess(RuntimeProcess):
+    def __init__(self, process) -> None:
+        self._process = process
+        self.stdout: AsyncIterator[bytes] = process.stdout
+        self.stderr: AsyncIterator[bytes] = process.stderr
+
+    async def write_stdin(self, data: bytes) -> None:
+        await self._process.write_stdin(data)
+
+    async def wait(self) -> int:
+        return await self._process.wait()
+
+    async def terminate(self) -> None:
+        await self._process.terminate()
+
+    async def kill(self) -> None:
+        await self._process.kill()
 
 
 class PrimeRuntime(Runtime):
@@ -240,6 +261,31 @@ class PrimeRuntime(Runtime):
             stdout=result.stdout or "",
             stderr=result.stderr or "",
         )
+
+    async def open_process(
+        self, argv: list[str], env: dict[str, str]
+    ) -> RuntimeProcess:
+        if not self.config.vm:
+            raise SandboxError(
+                "persistent harness sessions on Prime require a VM sandbox; "
+                "set runtime.prime.vm=true"
+            )
+        open_process = getattr(self._client, "open_process", None)
+        if open_process is None:
+            raise SandboxError(
+                "Prime VM live processes require a prime-sandboxes SDK version "
+                "that provides AsyncSandboxClient.open_process()"
+            )
+        try:
+            process = await open_process(
+                self.info.id,
+                shlex.join(argv),
+                working_dir=self.config.workdir,
+                env=env,
+            )
+        except Exception as e:
+            raise SandboxError(f"prime live process failed to start: {e}") from e
+        return PrimeProcess(process)
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public

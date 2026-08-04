@@ -10,6 +10,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
@@ -52,6 +53,29 @@ class ProgramResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+class RuntimeProcess(ABC):
+    """A live process whose stdio crosses a runtime boundary."""
+
+    stdout: AsyncIterator[bytes]
+    stderr: AsyncIterator[bytes]
+
+    @abstractmethod
+    async def write_stdin(self, data: bytes) -> None:
+        pass
+
+    @abstractmethod
+    async def wait(self) -> int:
+        pass
+
+    @abstractmethod
+    async def terminate(self) -> None:
+        pass
+
+    @abstractmethod
+    async def kill(self) -> None:
+        pass
 
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
@@ -215,6 +239,14 @@ class Runtime(ABC):
         against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
         still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
+
+    async def open_process(
+        self, argv: list[str], env: dict[str, str]
+    ) -> RuntimeProcess:
+        """Start a live process for a rollout-scoped harness session."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support live processes"
+        )
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

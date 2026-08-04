@@ -13,7 +13,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from functools import cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -112,25 +112,38 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
             "a local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
-    root = "/tmp/vf-src"
+    # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
+    # the VM's root disk. Keep source, build scratch space, and uv's cache on the
+    # durable runtime filesystem so ordinary dependency installs cannot exhaust
+    # the tmpfs.
+    workdir = str(PurePosixPath(runtime.config.workdir))
+    root = str(PurePosixPath(workdir) / ".vf-src")
+    temp = str(PurePosixPath(workdir) / ".vf-tmp")
+    cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
     vf, env = _verifiers_root(), Path(source_dir)
     await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS))
     await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
-    venv = "/tmp/vf-venv"
+    venv = str(PurePosixPath(workdir) / ".vf-venv")
+    root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # The upload carries no .git, so hatch-vcs falls back to version 0.0.0 — an env
     # package's `verifiers>=...` floor would then resolve PyPI verifiers OVER the local
     # build, silently running the server against a released (older) API. Pretend the
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
     extras = ",".join(type(server).EXTRAS)
+    vf_source = shlex.quote(str(PurePosixPath(root) / vf.name))
+    env_source = shlex.quote(
+        str(PurePosixPath(root) / (env.name + (f"[{extras}]" if extras else "")))
+    )
     setup = (
-        f"{_ENSURE_UV}; set -e; "
-        f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
-        f"uv venv {venv} && "
+        f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
+        f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
+        f"{_ENSURE_UV}; "
+        f'for t in {root_q}/*.tar.gz; do tar -xzf "$t" -C {root_q}; done && '
+        f"uv venv {venv_q} && "
         f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
-        f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
-        f"uv pip install --python {venv} "
-        f"{shlex.quote(f'{root}/{env.name}' + (f'[{extras}]' if extras else ''))}"
+        f"uv pip install --python {venv_q} {vf_source} && "
+        f"uv pip install --python {venv_q} {env_source}"
     )
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:

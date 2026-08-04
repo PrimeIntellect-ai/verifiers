@@ -1,44 +1,29 @@
 """Public Agent Client Protocol support for harness programs."""
 
 import asyncio
+import contextlib
 import json
 import secrets
-from pathlib import Path, PurePosixPath
-from weakref import WeakKeyDictionary
+from collections.abc import AsyncIterator
+from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harness import Harness, HarnessSession
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "_runner.py").read_text()
-PROBE_UNAVAILABLE_EXIT_CODE = 75
+MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 __all__ = ["ACP"]
 
 
 class ACP:
     """Run one-shot ACP agents or create rollout-scoped ACP sessions."""
-
-    def __init__(self) -> None:
-        self._sidecar_locks: WeakKeyDictionary[Runtime, dict[str, asyncio.Lock]] = (
-            WeakKeyDictionary()
-        )
-
-    def _sidecar_lock(self, runtime: Runtime, sidecar_path: str) -> asyncio.Lock:
-        locks = self._sidecar_locks.get(runtime)
-        if locks is None:
-            locks = {}
-            self._sidecar_locks[runtime] = locks
-        lock = locks.get(sidecar_path)
-        if lock is None:
-            lock = asyncio.Lock()
-            locks[sidecar_path] = lock
-        return lock
 
     async def setup(self, harness: Harness, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -71,7 +56,6 @@ class ACP:
             secret,
             mcp_urls,
             data,
-            acp=self,
             env=env,
             command=command,
             prompt=prompt,
@@ -112,7 +96,6 @@ class ACP:
         mcp_urls: dict[str, str] | None = None,
         system_prompt: str | None = None,
         session_path: str | None = None,
-        sidecar_path: str | None = None,
         allow_empty_tool_reply: bool = False,
     ) -> ProgramResult:
         if prompt is None:
@@ -133,53 +116,6 @@ class ACP:
         program = await runtime.prepare_uv_script(
             ACP_SOURCE, {**env, "UV_FROZEN": "false"}
         )
-        sidecar_log = None
-        if sidecar_path is not None:
-            sidecar_dir = self._sidecar_dir(sidecar_path)
-            sidecar_log = f"{sidecar_dir}/acp.log"
-            async with self._sidecar_lock(runtime, sidecar_path):
-                probe = await runtime.run([*program, "probe", sidecar_path], {})
-                if probe.exit_code == PROBE_UNAVAILABLE_EXIT_CODE:
-                    removed = await runtime.run(["rm", "-f", sidecar_path], {})
-                    if removed.exit_code != 0:
-                        raise RuntimeError(
-                            "stale ACP session cleanup failed: "
-                            f"{removed.stderr.strip()}"
-                        )
-                    created = await runtime.run(
-                        ["mkdir", "-p", "-m", "700", sidecar_dir], {}
-                    )
-                    if created.exit_code != 0:
-                        raise RuntimeError(
-                            f"ACP session directory failed: {created.stderr.strip()}"
-                        )
-                    await runtime.run_background(
-                        [*program, "serve", sidecar_path],
-                        env,
-                        sidecar_log,
-                    )
-                    ready = await runtime.run(
-                        [*program, "probe", sidecar_path, "60"], {}
-                    )
-                    if ready.exit_code != 0:
-                        log = await runtime.run(["tail", "-c", "4000", sidecar_log], {})
-                        detail = (
-                            ready.stderr.strip()
-                            or ready.stdout.strip()
-                            or "session did not become ready"
-                        )
-                        if log.exit_code == 0 and log.stdout:
-                            detail = (
-                                f"{detail}\n\nACP session log:\n{log.stdout.rstrip()}"
-                            )
-                        raise RuntimeError(f"ACP session failed to start: {detail}")
-                elif probe.exit_code != 0:
-                    detail = (
-                        probe.stderr.strip()
-                        or probe.stdout.strip()
-                        or "session did not respond"
-                    )
-                    raise RuntimeError(f"ACP session probe failed: {detail}")
         directory = f".vf-acp-{secrets.token_hex(8)}"
         created = await runtime.run(["mkdir", "-m", "700", directory], {})
         if created.exit_code != 0:
@@ -187,66 +123,38 @@ class ACP:
         path = f"{directory}/config.json"
         try:
             await runtime.write(path, json.dumps(config).encode())
-            command = (
-                [*program, "request", path, sidecar_path]
-                if sidecar_path is not None
-                else [*program, "once", path]
-            )
-            result = await runtime.run_program(command, env)
-            if sidecar_log is not None and result.exit_code != 0:
-                log = await runtime.run(["tail", "-c", "4000", sidecar_log], {})
-                if log.exit_code == 0 and log.stdout:
-                    result = ProgramResult(
-                        exit_code=result.exit_code,
-                        stdout=result.stdout,
-                        stderr=(
-                            f"{result.stderr.rstrip()}\n\nACP session log:\n"
-                            f"{log.stdout.rstrip()}"
-                        ).lstrip(),
-                    )
-            return result
+            return await runtime.run_program([*program, "once", path], env)
         finally:
             await run_shielded(runtime.run(["rm", "-rf", directory], {}))
 
-    async def _close(
-        self,
-        runtime: Runtime,
-        sidecar_path: str,
-    ) -> None:
-        sidecar_dir = self._sidecar_dir(sidecar_path)
-        exists = await runtime.run(["test", "-S", sidecar_path], {})
-        failure = ""
-        try:
-            if exists.exit_code == 0:
-                program = await runtime.prepare_uv_script(
-                    ACP_SOURCE, {"UV_FROZEN": "false"}
-                )
-                result = await runtime.run([*program, "shutdown", sidecar_path], {})
-                if result.exit_code != 0:
-                    log = await runtime.run(
-                        ["tail", "-c", "4000", f"{sidecar_dir}/acp.log"], {}
-                    )
-                    failure = (
-                        result.stderr.strip()
-                        or result.stdout.strip()
-                        or "ACP session shutdown failed"
-                    )
-                    if log.exit_code == 0 and log.stdout:
-                        failure = (
-                            f"{failure}\n\nACP session log:\n{log.stdout.rstrip()}"
-                        )
-        finally:
-            await run_shielded(runtime.run(["rm", "-rf", sidecar_dir], {}))
-        if failure:
-            raise RuntimeError(failure)
 
-    @staticmethod
-    def _sidecar_dir(sidecar_path: str) -> str:
-        path = PurePosixPath(sidecar_path)
-        parent = str(path.parent)
-        if path.is_absolute() or ".." in path.parts or parent in ("", ".", "/"):
-            raise ValueError("ACP session must live in a private subdirectory")
-        return parent
+def _packet(value: dict) -> bytes:
+    data = json.dumps(value, ensure_ascii=False).encode()
+    if len(data) > MAX_PACKET_BYTES:
+        raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
+    return len(data).to_bytes(8, "big") + data
+
+
+class _PacketReader:
+    def __init__(self, source: AsyncIterator[bytes]) -> None:
+        self._source = source.__aiter__()
+        self._buffer = bytearray()
+
+    async def _readexactly(self, size: int) -> bytes:
+        while len(self._buffer) < size:
+            try:
+                self._buffer.extend(await anext(self._source))
+            except StopAsyncIteration as e:
+                raise EOFError("ACP process closed its stdout") from e
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+    async def read(self) -> dict:
+        size = int.from_bytes(await self._readexactly(8), "big")
+        if size > MAX_PACKET_BYTES:
+            raise ValueError(f"ACP session packet is too large: {size} bytes")
+        return json.loads((await self._readexactly(size)).decode())
 
 
 class ACPHarnessSession(HarnessSession):
@@ -262,38 +170,127 @@ class ACPHarnessSession(HarnessSession):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-        acp: ACP,
         env: dict[str, str],
         command: list[str],
         prompt: str | Messages | None,
         system_prompt: str | None,
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
-        self.acp = acp
         self.env = env
         self.command = command
         self.prompt = prompt
         self.system_prompt = system_prompt
-        self.sidecar_path = f".vf-acp/{self.trace.id}/acp.sock"
-        self._started = False
+        self._process: RuntimeProcess | None = None
+        self._reader: _PacketReader | None = None
+        self._stderr_tail = bytearray()
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+
+    async def _start(self) -> None:
+        program = await self.runtime.prepare_uv_script(
+            ACP_SOURCE, {**self.env, "UV_FROZEN": "false"}
+        )
+        process = await self.runtime.open_process([*program, "stream"], self.env)
+        self._process = process
+        self._reader = _PacketReader(process.stdout)
+        self._stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
+
+    async def _drain_stderr(self, stream: AsyncIterator[bytes]) -> None:
+        async for chunk in stream:
+            self._stderr_tail.extend(chunk)
+            if len(self._stderr_tail) > 4000:
+                del self._stderr_tail[:-4000]
+
+    def _stderr(self) -> str:
+        return self._stderr_tail.decode(errors="replace").strip()
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
-        self._started = True
-        return await self.acp._run(
-            self.runtime,
-            self.env,
-            self.command,
-            self.prompt if messages is None else messages,
-            mcp_urls=self.mcp_urls,
-            system_prompt=self.system_prompt,
-            sidecar_path=self.sidecar_path,
+        prompt = self.prompt if messages is None else messages
+        if prompt is None:
+            raise ValueError("ACP requires a prompt")
+        wire_messages = (
+            [{"role": "user", "content": prompt}]
+            if isinstance(prompt, str)
+            else [message_to_wire(message) for message in prompt]
         )
+        config = {
+            "command": self.command,
+            "messages": wire_messages,
+            "mcp_urls": self.mcp_urls,
+            "system_prompt": self.system_prompt or "",
+            "session_path": None,
+        }
+        async with self._lock:
+            if self._process is None:
+                await self._start()
+            assert self._process is not None
+            assert self._reader is not None
+            try:
+                await self._process.write_stdin(
+                    _packet({"operation": "prompt", "config": config})
+                )
+                response = await self._reader.read()
+            except BaseException:
+                await run_shielded(self._stop(graceful=False))
+                raise
+        if not response.get("ok"):
+            detail = response.get("error") or "ACP session request failed"
+            if stderr := self._stderr():
+                detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+            raise RuntimeError(detail)
+        return ProgramResult(exit_code=0, stdout=response.get("reply", ""), stderr="")
+
+    async def _stop(self, *, graceful: bool) -> None:
+        process, self._process = self._process, None
+        reader, self._reader = self._reader, None
+        stderr_task, self._stderr_task = self._stderr_task, None
+        if process is None:
+            return
+        failure: BaseException | None = None
+        try:
+            if graceful and reader is not None:
+                try:
+                    await process.write_stdin(_packet({"operation": "shutdown"}))
+                    response = await asyncio.wait_for(reader.read(), timeout=10)
+                    if not response.get("ok"):
+                        raise RuntimeError(
+                            response.get("error") or "ACP session shutdown failed"
+                        )
+                except BaseException as error:  # noqa: BLE001 - finish teardown if cancelled
+                    failure = error
+            try:
+                await asyncio.wait_for(process.wait(), timeout=10 if graceful else 0.1)
+            except BaseException:  # noqa: BLE001 - cancellation still requires termination
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(process.terminate(), timeout=5)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except BaseException:  # noqa: BLE001 - cancellation still requires a kill
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(process.kill(), timeout=5)
+                    with contextlib.suppress(BaseException):
+                        await asyncio.wait_for(process.wait(), timeout=5)
+        finally:
+            if stderr_task is not None:
+                if not stderr_task.done():
+                    stderr_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await stderr_task
+        if failure is not None:
+            detail = str(failure)
+            if stderr := self._stderr():
+                detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+            raise RuntimeError(detail) from failure
 
     async def close(self) -> None:
         if self._closed:
             return
+
+        async def close_process() -> None:
+            async with self._lock:
+                await self._stop(graceful=True)
+
         try:
-            if self._started:
-                await self.acp._close(self.runtime, self.sidecar_path)
+            await run_shielded(close_process())
         finally:
             await super().close()
