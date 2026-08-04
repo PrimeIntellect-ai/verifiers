@@ -133,27 +133,35 @@ class Reward(BaseModel):
 
 
 class EvalRunInfo(BaseModel):
+    """A standalone eval: a model measured once, against nothing that is training."""
+
     type: Literal["eval"] = "eval"
 
     id: str
-    step: int | None = None
-
-    policy_version: int | None = None
-    """The version of the policy this measures."""
 
 
 class TrainRunInfo(BaseModel):
+    """A training run. Its episodes are the ones it trains on and the ones it evaluates along
+    the way — both belong to the run and both are placed by the same step and policy, so they
+    are one record distinguished by `kind` rather than two."""
+
     type: Literal["train"] = "train"
 
     id: str
+
+    kind: Literal["train", "eval"] = "train"
+    """Whether the run trains on this episode or only measures it."""
+
     step: int | None = None
+    """The step it belongs to: the one whose eval produced it, or — for an episode trained on —
+    the batch window collecting when it lands, which is not known until it does."""
 
     policy_version: int | None = None
-    """The version of the policy this was generated from."""
+    """The version of the policy that produced it."""
 
     off_policy_steps: int = 0
-    """How many versions behind the step training on it — 0 when on-policy. Only the training
-    path goes stale; an eval is measured against the policy it ran on."""
+    """How many versions behind the step training on it. Always 0 for `kind="eval"`, which is
+    measured against the policy it ran on."""
 
 
 RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
