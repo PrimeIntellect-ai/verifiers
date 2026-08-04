@@ -166,7 +166,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                         "url": url,
                         "transport": "streamable-http",
                         "connectionTimeoutMs": 60_000,
-                        "requestTimeoutMs": 600_000,
+                        "requestTimeoutMs": int(self.config.tool_timeout * 1000),
                     }
                     for name, url in mcp_urls.items()
                 }
