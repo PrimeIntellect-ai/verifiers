@@ -36,6 +36,9 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every error captured across attempts, oldest to newest."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)
     """Every agent's trace, in completion order."""
+    info: dict[str, Any] = Field(default_factory=dict)
+    """Scratch space for episode-level metadata, the counterpart to `Trace.info`. What describes
+    the whole episode belongs here rather than repeated on each of its traces."""
 
     @property
     def last_error(self) -> Error | None:
@@ -77,13 +80,11 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return grouped
 
     def record_run(self, run: RunInfo | None = None, **info: Any) -> None:
-        """Record the run identity, and optional extra info on every trace it carries. Both
-        describe the episode as a whole, so a consumer stamps once here instead of walking the
-        traces itself."""
+        """Record the run identity and any extra metadata about this episode. Both describe the
+        episode as a whole, so they are recorded once here rather than repeated on every trace."""
         if run is not None:
             self.run = run
-        for trace in self.traces:
-            trace.info.update(info)
+        self.info.update(info)
 
     @classmethod
     def of(cls, trace: Trace, env: str = "") -> "Episode":
