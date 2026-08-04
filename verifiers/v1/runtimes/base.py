@@ -258,8 +258,12 @@ class Runtime(ABC):
                             f"&& uv python find --script {shlex.quote(path)} --no-config"
                         )
                     else:
+                        # Match the PATH that _ENSURE_UV and the run-wrapper set up so
+                        # pre-baked images that installed uv to ~/.local/bin (pip --user
+                        # or the standalone installer) find it without the full bootstrap.
                         command = (
                             f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                            f'&& export PATH="$HOME/.local/bin:$PATH" '
                             f"&& uv python find --script {shlex.quote(path)} --no-config"
                         )
                     result = await self.run(["sh", "-c", command], env or {})
@@ -267,9 +271,9 @@ class Runtime(ABC):
                         hint = ""
                         if not sync:
                             hint = (
-                                " (sync=False assumes a pre-baked venv — "
-                                "did you build the image with `uv sync --script` "
-                                "for this script?)"
+                                " (sync=False assumes uv is on PATH and the script's venv "
+                                "is pre-baked into the image — see the gsm8k_v1 Dockerfile "
+                                "for the expected pattern)"
                             )
                         raise RuntimeError(
                             "failed to prepare uv script: "
