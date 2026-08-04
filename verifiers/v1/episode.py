@@ -1,14 +1,14 @@
 """The episode — one run's traces plus their shared standing, whole."""
 
 import uuid
-from typing import Generic
+from typing import Any, Generic
 
 from pydantic import BaseModel, Field
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
-from verifiers.v1.trace import AgentConfigT, Error, Trace
+from verifiers.v1.trace import AgentConfigT, Error, RunInfo, Trace
 from verifiers.v1.types import Usage
 
 
@@ -26,6 +26,10 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     env: EnvInfo = Field(default_factory=EnvInfo)
     """The env that produced this episode."""
+    run: RunInfo | None = None
+    """The run this episode belongs to (eval or train), consumer-stamped — the same identity its
+    traces carry, recorded once on the thing that was actually dispatched. An episode that produced
+    no traces still has somewhere to say which run it belonged to."""
     ok: bool = False
     """Whether the episode completed successfully."""
     errors: list[Error] = Field(default_factory=list)
@@ -72,10 +76,18 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             grouped.setdefault(trace.agent.name, []).append(trace)
         return grouped
 
+    def record_run(self, run: RunInfo, **info: Any) -> None:
+        """Record the run identity on the episode and on every trace it carries. The run and any
+        extra `info` describe the episode as a whole, so stamping it here keeps the two in step
+        rather than leaving each consumer to walk the traces itself."""
+        self.run = run
+        for trace in self.traces:
+            trace.record_run(run, **info)
+
     @classmethod
     def of(cls, trace: Trace, env: str = "") -> "Episode":
         """The single-agent record: one trace as its own episode."""
-        return cls(env=EnvInfo(id=env), traces=[trace], ok=trace.ok)
+        return cls(env=EnvInfo(id=env), run=trace.run, traces=[trace], ok=trace.ok)
 
 
 WireEpisode = Episode[WireTaskData, State, WireAgentConfig]

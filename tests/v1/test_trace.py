@@ -98,3 +98,35 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
+
+
+def test_episode_records_the_run_it_belongs_to():
+    """`Episode.run` is the same identity its traces carry, recorded once on the thing that was
+    actually dispatched — so an episode that produced no traces can still say which run it was."""
+
+    def trace() -> vf.Trace:
+        return vf.Trace(
+            agent=vf.AgentInfo(config=vf.AgentConfig()),
+            task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi")),
+        )
+
+    first, second = trace(), trace()
+    episode = vf.Episode(traces=[first, second])
+    assert episode.run is None
+
+    run = vf.TrainRunInfo(id="r1", step=7)
+    episode.record_run(run, env_name="duet")
+    assert episode.run == run
+    assert [t.run for t in episode.traces] == [
+        run,
+        run,
+    ]  # the traces stay in step with it
+    assert all(t.info == {"env_name": "duet"} for t in episode.traces)
+
+    # An episode with nothing in it still carries the run — there is no trace to hold it.
+    empty = vf.Episode()
+    empty.record_run(run)
+    assert empty.run == run and empty.traces == []
+
+    # The single-agent record inherits the run from the trace it wraps.
+    assert vf.Episode.of(first, env="duet-v1").run == run
