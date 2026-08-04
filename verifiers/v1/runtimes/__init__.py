@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from pydantic import Field
@@ -45,6 +47,22 @@ def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
     return runtime
 
 
+@asynccontextmanager
+async def provision_runtime(
+    config: RuntimeConfig, name: str | None = None
+) -> AsyncIterator[Runtime]:
+    """Provision a box from `config` and tear it down on exit.
+
+    `start()` sits inside the `try`: a failed start may already hold a paid sandbox, so
+    it has to reach `stop()` (which is safe on a partially-started runtime)."""
+    runtime = make_runtime(config, name)
+    try:
+        await runtime.start()
+        yield runtime
+    finally:
+        await runtime.stop()
+
+
 def runtime_is_local(config: RuntimeConfig) -> bool:
     """Whether a runtime of this config exchanges host-local URLs without a public
     tunnel, read off the runtime class without provisioning one."""
@@ -71,5 +89,6 @@ __all__ = [
     "SubprocessRuntime",
     "SubprocessRuntimeInfo",
     "make_runtime",
+    "provision_runtime",
     "runtime_is_local",
 ]

@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from verifiers.v1.clients import ModelContext
+from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.trace import Trace
 
 if TYPE_CHECKING:
@@ -61,6 +61,7 @@ class RolloutLimits:
 @dataclass
 class RolloutSession:
     ctx: ModelContext
+    client: Client
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)

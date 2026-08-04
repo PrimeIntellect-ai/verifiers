@@ -319,10 +319,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
 
-    rewards: dict[str, Reward] = Field(default_factory=dict)
-    """Named, weighted rewards"""
-    metrics: dict[str, float] = Field(default_factory=dict)
-    """Unweighted, named metrics"""
+    rewards: dict[str, Reward | None] = Field(default_factory=dict)
+    """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
+    preceding error)."""
+    metrics: dict[str, float | None] = Field(default_factory=dict)
+    """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata."""
     state: StateT = Field(default_factory=State, exclude=True)
@@ -346,7 +347,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def reward(self) -> float:
-        return sum(r.value for r in self.rewards.values())
+        return sum(r.value for r in self.rewards.values() if r is not None)
 
     @property
     def has_error(self) -> bool:

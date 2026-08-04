@@ -143,7 +143,7 @@ class JudgeTask(vf.Task):
         self,
         data: vf.TaskData,
         files: dict[str, bytes],
-        artifacts: dict[str, bytes],
+        artifacts: dict[str, bytes | None],
     ) -> None:
         super().__init__(data)
         self.files = files
@@ -398,7 +398,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
         if self.config.score.task_weight != 1.0:
             for reward in solution.rewards.values():
-                reward.weight *= self.config.score.task_weight
+                if reward is not None:
+                    reward.weight *= self.config.score.task_weight
         total = sum(criterion.weight for criterion in criteria)
         reward = sum(c.weight * scores[c.name] for c in criteria) / total
         solution.record_reward("judge", reward, weight=self.config.score.judge_weight)

@@ -461,7 +461,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
         await JudgedTask(trace.task.data, taskset.config.task).score(
             trace, runtime=None
         )
-    assert "reference" not in trace.rewards
+    assert trace.rewards["reference"] is None  # seeded: expected but never scored
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
 
