@@ -20,7 +20,7 @@ from verifiers.v1.configs.env import (
     _declared_agent_configs,
     default_agent_harness,
 )
-from verifiers.v1.episode import EnvInfo, Episode
+from verifiers.v1.episode import EnvInfo, Episode, GroupInfo
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import (
@@ -56,6 +56,8 @@ class RunSlot:
     traces: list[Trace] = field(default_factory=list)
     episode: Episode | None = None
     done: bool = False
+    group: GroupInfo | None = None
+    """The cohort this slot was planned in, stamped onto its episode when it lands."""
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":
@@ -64,6 +66,7 @@ class RunSlot:
             traces=list(episode.traces),
             episode=episode,
             done=True,
+            group=episode.group,
         )
 
 
@@ -294,10 +297,13 @@ class Env(ABC, Generic[ConfigT]):
         return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
-        """Plan `n` independent episodes of `task` (`-r n`): nothing couples them."""
+        """Plan `n` independent episodes of `task` (`-r n`). They run independently, but they
+        are one cohort — the attempts a consumer compares with each other — so they share a
+        `GroupInfo`, which lands on each episode."""
         if n < 1:
             raise ValueError("a task needs at least one rollout (n >= 1)")
-        return [RunSlot(task) for _ in range(n)]
+        group = GroupInfo(size=n)
+        return [RunSlot(task, group=group) for _ in range(n)]
 
     async def run_slot(
         self,
@@ -330,6 +336,7 @@ class Env(ABC, Generic[ConfigT]):
                 )
 
         episode = await run_episode_with_retry(attempt, self.config.retries)
+        episode.group = slot.group
         slot.traces = list(episode.traces)
         slot.episode = episode
         slot.done = True
