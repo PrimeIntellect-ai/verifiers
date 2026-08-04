@@ -112,11 +112,15 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
             "a local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
-    root = "/tmp/vf-src"
+    # Not /tmp: sandbox images commonly mount it as a small fixed tmpfs (485 MB on prime
+    # VM boxes), far too little for the server venv, while the workdir is on the real
+    # disk (tens of GB) and is already the cwd `runtime.run` uses.
+    base = (getattr(runtime.config, "workdir", None) or "/tmp").rstrip("/")
+    root = f"{base}/vf-src"
     vf, env = _verifiers_root(), Path(source_dir)
     await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS))
     await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
-    venv = "/tmp/vf-venv"
+    venv = f"{base}/vf-venv"
     # The upload carries no .git, so hatch-vcs falls back to version 0.0.0 — an env
     # package's `verifiers>=...` floor would then resolve PyPI verifiers OVER the local
     # build, silently running the server against a released (older) API. Pretend the
