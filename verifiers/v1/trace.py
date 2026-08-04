@@ -179,10 +179,15 @@ class TrainRunInfo(BaseModel):
 
     @property
     def off_policy_steps(self) -> int | None:
-        """How far behind the policy being trained the generating policy was, or `None` when
-        there is nothing to compare. Step `n` trains the policy step `n-1` produced, so an episode
-        generated at `v{k}` and placed in step `n` is `(n-1)-k` behind — queue time included, since
-        `step` is the window it landed in, not the one it left."""
+        """How far behind the policy being trained at `step` the generating policy was, or `None`
+        when there is nothing to compare. Step `n` trains the policy step `n-1` produced, so an
+        episode generated at `v{k}` is `(n-1)-k` behind.
+
+        What that measures follows what `step` means for the kind. An episode trained on is placed
+        by the window it landed in, so its lag includes the time it sat in the queue. An eval is
+        placed by the epoch it was dispatched for, so its lag is the one it had when it started —
+        a slow eval that outlives several updates still reports that, because what it measured is
+        the policy it ran, not the one that has since replaced it."""
         if self.policy is None or self.step is None:
             return None
         return max(0, (self.step - 1) - self.policy.start)
