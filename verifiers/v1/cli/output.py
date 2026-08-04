@@ -31,7 +31,7 @@ CONFIG_FILE = "config.toml"
 """Filename a run's resolved config is written to (re-runnable via `@ config.toml`)."""
 
 # Compiling an adapter is the expensive part; run output reuses only a few model classes.
-_type_adapter = cache(TypeAdapter)
+type_adapter = cache(TypeAdapter)
 
 
 def output_path(config: EvalConfig) -> Path:
@@ -76,7 +76,7 @@ def save_config(config: BaseModel, results_dir: Path) -> None:
 def write_episode(results_dir: Path, episode: Episode) -> None:
     """Serialize and append one rollout episode in the worker thread."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
-    data = _type_adapter(type(episode)).dump_json(episode, exclude_none=True)
+    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
 
@@ -92,7 +92,7 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[Episode]:
     `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
     importing it). A pre-episode line (one bare trace) is wrapped as a single-trace
     record, so both file generations read uniformly."""
-    trace_adapter = _type_adapter(trace_type)
+    trace_adapter = type_adapter(trace_type)
     episodes: list[Episode] = []
     with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
         for line in f:

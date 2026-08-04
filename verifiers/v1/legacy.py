@@ -76,7 +76,7 @@ def _as_dict(obj: Any) -> Any:
     return obj
 
 
-_TOOLS_ADAPTER = TypeAdapter(
+TOOLS_ADAPTER = TypeAdapter(
     list[OnErrorOmit[Annotated[Tool, BeforeValidator(_as_dict)]]]
 )
 
@@ -86,7 +86,7 @@ def _to_v1_tools(raw: Any) -> list[Tool] | None:
     shapes are identical (name/description/parameters/strict), so this is a re-validation;
     malformed entries are dropped rather than failing the whole trace mapping."""
     try:
-        defs = _TOOLS_ADAPTER.validate_python(raw or [])
+        defs = TOOLS_ADAPTER.validate_python(raw or [])
     except ValidationError:
         return None
     return defs or None
