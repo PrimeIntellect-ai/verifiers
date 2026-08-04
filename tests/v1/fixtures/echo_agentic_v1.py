@@ -31,6 +31,13 @@ class EchoAgenticData(vf.TaskData):
 
 
 class EchoAgenticTask(vf.Task[EchoAgenticData]):
+    async def finalize(self, trace: vf.Trace, runtime: Runtime) -> None:
+        # Subprocess uses a runtime-owned temporary cwd, not a restorable absolute
+        # path; isolated agentic judging requires a container anyway.
+        if runtime.type == "subprocess":
+            return
+        trace.state.artifacts = await vf.collect(runtime, self.data.artifacts)
+
     @vf.reward(weight=1.0)
     async def wrote_phrase(self, runtime: Runtime) -> float:
         try:
@@ -57,6 +64,7 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
                     ),
                     system_prompt=SYSTEM,
                     answer=phrase,
+                    artifacts=[vf.Artifact(source=TARGET)],
                 ),
                 self.config.task,
             )

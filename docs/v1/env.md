@@ -51,7 +51,8 @@ Just like tasksets and harnesses, an `Env` can be user-defined for full expressi
 | --- | --- | --- |
 | `single-agent` | `agent` | (default) one `agent` plays the taskset |
 | `best-of-n` | `agent` | `n` independent attempts per episode; its metrics mark the argmax-reward sibling (`best`) and whether any reached `--env.threshold` (`pass_at_n`) — rejection sampling and pass@k. |
-| `agentic-judge` | `solver`, `judge` | the solver plays the task; a code-executing judge agent verifies the finished attempt with real execution. |
+| `agentic-judge` | `solver`, `judge` | the solver plays the task; a code-executing judge verifies its collected artifacts in a fresh runtime with the same policy. |
+| `shared-agentic-judge` | `solver`, `judge` | the solver plays the task; a code-executing judge explicitly verifies it in the same runtime. |
 
 ## Grading artifacts
 
