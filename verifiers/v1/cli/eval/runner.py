@@ -10,7 +10,6 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.output import (
     append_episode,
-    append_trace,
     output_path,
     save_config,
 )
@@ -257,9 +256,12 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 )
             records = []
             for trace in traces:
-                await append_trace(out, trace, write_lock, env=config.env_id)
-                record = Episode.of(trace)
+                # Mint the episode once and persist that same object, so the row on disk carries
+                # the run the caller gets back — `append_trace` would wrap the trace in an
+                # episode of its own, which nothing has stamped.
+                record = Episode.of(trace, env=config.env_id)
                 record.record_run(EvalRunInfo(id=config.uuid))
+                await append_episode(out, record, write_lock)
                 records.append(record)
             return records
 
