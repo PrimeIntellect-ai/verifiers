@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
-from verifiers.v1.trace import AgentConfigT, Error, RunInfo, Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, RunInfo, Trace
 from verifiers.v1.types import Usage
 
 
@@ -93,6 +93,13 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         for trace in self.traces:
             grouped.setdefault(trace.agent.name, []).append(trace)
         return grouped
+
+    def to_record(self) -> dict[str, Any]:
+        """JSON record without raw tensors — the episode form of `Trace.to_record`, and the unit
+        `traces.jsonl` stores: one episode per line."""
+        return self.model_dump(
+            mode="json", exclude={"traces": {"__all__": EXCLUDE_FIELDS}}
+        )
 
     def record_run(self, run: RunInfo | None = None, **info: Any) -> None:
         """Record the run identity and any extra metadata about this episode. Both describe the

@@ -145,6 +145,12 @@ class TrainRunInfo(BaseModel):
     id: str
     step: int | None = None
 
+    policy_version: int | None = None
+    """The version of the policy that generated the episode."""
+
+    off_policy_steps: int = 0
+    """How many policy versions behind the step training on it — 0 when on-policy."""
+
 
 RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
 """The run a trace belongs to, discriminated on `type`."""
