@@ -23,6 +23,7 @@ from verifiers.v1.types import (
     ImageUrlContentPart,
     ImageUrlSource,
     Messages,
+    ProviderToolEvent,
     Response,
     Sampling,
     SamplingConfig,
@@ -101,53 +102,10 @@ def fold_assistant(items: list[dict]) -> AssistantMessage:
     content = ""
     reasoning: list[str] = []
     calls: list[ToolCall] = []
+    provider_tools: list[ProviderToolEvent] = []
     for item in items:
-        if item.get("type") == "reasoning":
-            reasoning += [s.get("text", "") for s in item.get("summary") or []]
-            reasoning += [c.get("text", "") for c in item.get("content") or []]
-        elif item.get("type") in ("function_call", "custom_tool_call"):
-            calls.append(
-                ToolCall(
-                    id=item.get("call_id", ""),
-                    name=item.get("name", ""),
-                    arguments=item.get("arguments", item.get("input", "")),
-                )
-            )
-        else:  # an assistant message item
-            raw = item.get("content")
-            content += (
-                raw
-                if isinstance(raw, str)
-                else "".join(
-                    p.get("text", "")
-                    for p in raw or []
-                    if p.get("type") in ("input_text", "output_text")
-                )
-            )
-    return AssistantMessage(
-        content=content or None,
-        reasoning_content="\n".join(r for r in reasoning if r) or None,
-        tool_calls=calls or None,
-        provider_state=items,
-    )
-
-
-def response_from_wire(response: OpenAIResponse) -> Response:
-    """An OpenAI Responses object -> a vf `Response` (its `output` items folded into one
-    assistant message)."""
-    data = response.model_dump()
-    content = ""
-    reasoning: list[str] = []
-    calls: list[ToolCall] = []
-    for item in data.get("output") or []:
         kind = item.get("type")
-        if kind == "message":
-            content += "".join(
-                p.get("text", "")
-                for p in item.get("content") or []
-                if p.get("type") == "output_text"
-            )
-        elif kind == "reasoning":
+        if kind == "reasoning":
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
         elif kind in ("function_call", "custom_tool_call"):
@@ -158,7 +116,34 @@ def response_from_wire(response: OpenAIResponse) -> Response:
                     arguments=item.get("arguments", item.get("input", "")),
                 )
             )
-    tool_calls = calls or None
+        elif kind in (None, "message"):
+            raw = item.get("content")
+            content += (
+                raw
+                if isinstance(raw, str)
+                else "".join(
+                    p.get("text", "")
+                    for p in raw or []
+                    if p.get("type") in ("input_text", "output_text")
+                )
+            )
+        else:
+            provider_tools.append(ProviderToolEvent.from_native(item))
+    return AssistantMessage(
+        content=content or None,
+        reasoning_content="\n".join(r for r in reasoning if r) or None,
+        tool_calls=calls or None,
+        provider_tools=provider_tools or None,
+        provider_state=items,
+    )
+
+
+def response_from_wire(response: OpenAIResponse) -> Response:
+    """An OpenAI Responses object -> a vf `Response` (its `output` items folded into one
+    assistant message)."""
+    data = response.model_dump()
+    assistant = fold_assistant(data.get("output") or [])
+    tool_calls = assistant.tool_calls
     finish: FinishReason = (
         "length"
         if data.get("status") == "incomplete"
@@ -184,12 +169,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         id=data.get("id", ""),
         created=data.get("created_at", 0),
         model=data.get("model", ""),
-        message=AssistantMessage(
-            content=content or None,
-            reasoning_content="\n".join(r for r in reasoning if r) or None,
-            tool_calls=tool_calls,
-            provider_state=data.get("output"),
-        ),
+        message=assistant,
         finish_reason=finish,
         usage=usage,
     )

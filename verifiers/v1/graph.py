@@ -371,6 +371,14 @@ class PendingTurn:
     def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
         node_id = _commit_turn(self, response)
+        assert node_id is not None
+        if tools:
+            self.trace.tools = tools
+        return node_id
+
+    def commit_prompt(self, tools: list[Tool] | None = None) -> int | None:
+        """Record a request that interception terminated before model inference."""
+        node_id = _commit_turn(self, None)
         if tools:
             self.trace.tools = tools
         return node_id
@@ -548,10 +556,10 @@ def _attribute_kept_tokens(
     node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
 
 
-def _commit_turn(turn: PendingTurn, response: Response) -> int:
+def _commit_turn(turn: PendingTurn, response: Response | None) -> int | None:
     trace = turn.trace
     prompt = turn.prompt
-    tokens = response.tokens
+    tokens = response.tokens if response is not None else None
     multi_modal_data = tokens.multi_modal_data if tokens else None
     prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
@@ -618,6 +626,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         if mm_path is not None:
             mm_path.append((parent, msg))
         cursor = end
+
+    if response is None:
+        return parent
 
     # Assistant node: trailing scaffold (the generation prompt) + the sampled completion.
     comp_ids = tokens.completion_ids if tokens else []

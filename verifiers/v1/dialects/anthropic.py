@@ -21,6 +21,7 @@ from verifiers.v1.types import (
     ImageUrlContentPart,
     ImageUrlSource,
     Messages,
+    ProviderToolEvent,
     Response,
     Sampling,
     SamplingConfig,
@@ -76,7 +77,11 @@ def parse_messages(body: dict) -> Messages:
                 if isinstance(content, str)
                 else content or []
             )
-            state = [block for block in blocks if block["type"] in THINKING]
+            state = [
+                block
+                for block in blocks
+                if block.get("type") not in ("text", "tool_use")
+            ]
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             reasoning = "".join(
                 b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
@@ -90,11 +95,25 @@ def parse_messages(body: dict) -> Messages:
                 for b in blocks
                 if b.get("type") == "tool_use"
             ]
+            provider_names = {
+                block["id"]: block.get("name")
+                or str(block.get("type") or "").removesuffix("_tool_use")
+                for block in state
+                if block.get("id")
+            }
+            provider_tools = [
+                ProviderToolEvent.from_native(
+                    block, name=provider_names.get(block.get("tool_use_id"))
+                )
+                for block in state
+                if block.get("type") not in THINKING
+            ]
             prompt.append(
                 AssistantMessage(
                     content=text or None,
                     reasoning_content=reasoning or None,
                     tool_calls=calls or None,
+                    provider_tools=provider_tools or None,
                     provider_state=state or None,
                 )
             )
@@ -124,10 +143,23 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     message: text -> content, thinking -> reasoning, tool_use -> tool calls)."""
     data = message.model_dump()
     blocks = data.get("content") or []
-    state = [block for block in blocks if block["type"] in THINKING]
+    state = [block for block in blocks if block.get("type") not in ("text", "tool_use")]
     content: list[str] = []
     reasoning: list[str] = []
     calls: list[ToolCall] = []
+    provider_names = {
+        block["id"]: block.get("name")
+        or str(block.get("type") or "").removesuffix("_tool_use")
+        for block in state
+        if block.get("id")
+    }
+    provider_tools = [
+        ProviderToolEvent.from_native(
+            block, name=provider_names.get(block.get("tool_use_id"))
+        )
+        for block in state
+        if block.get("type") not in THINKING
+    ]
     for block in blocks:
         kind = block.get("type")
         if kind == "text":
@@ -167,6 +199,7 @@ def response_from_wire(message: AnthropicMessage) -> Response:
             content="".join(content) or None,
             reasoning_content="".join(reasoning) or None,
             tool_calls=calls or None,
+            provider_tools=provider_tools or None,
             provider_state=state or None,
         ),
         finish_reason=finish,

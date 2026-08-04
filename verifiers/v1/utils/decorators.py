@@ -86,6 +86,44 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
+def on_request(func: F, priority: int = 0) -> F: ...
+@overload
+def on_request(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def on_request(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Inspect one message before it reaches the model.
+
+    Return a message of the same type to replace ``request[-1]``, ``Terminate`` to
+    end the rollout, or ``None`` to allow it unchanged. The full history is available
+    through an optional ``trace`` argument.
+    """
+    decorator = mark(
+        "intercept",
+        intercept_priority=priority,
+        intercept_directions=("request",),
+    )
+    return decorator if func is None else decorator(func)
+
+
+@overload
+def on_response(func: F, priority: int = 0) -> F: ...
+@overload
+def on_response(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def on_response(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Inspect a response before it reaches the harness.
+
+    Return an ``AssistantMessage`` to replace it, ``Terminate`` to end the rollout,
+    or ``None`` to allow it unchanged. The full history is available through an
+    optional ``trace`` argument.
+    """
+    decorator = mark(
+        "intercept",
+        intercept_priority=priority,
+        intercept_directions=("response",),
+    )
+    return decorator if func is None else decorator(func)
+
+
+@overload
 def metric(func: F, priority: int = 0) -> F: ...
 @overload
 def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
