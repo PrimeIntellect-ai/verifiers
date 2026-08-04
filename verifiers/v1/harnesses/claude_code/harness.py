@@ -2,6 +2,7 @@
 
 import json
 import shlex
+from pathlib import Path
 
 from pydantic import Field
 
@@ -21,6 +22,7 @@ set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
 curl -fsSL https://claude.ai/install.sh | HOME={home} bash -s {version}
 """
+TOOL_HOOK_SOURCE = (Path(__file__).resolve().parents[1] / "tool_hook.py").read_text()
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
@@ -30,6 +32,7 @@ class ClaudeCodeHarnessConfig(HarnessConfig):
 
 class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_MCP = True
     # images would require streaming inputs
     SUPPORTS_RESUME = False
@@ -52,6 +55,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             detail = (result.stderr or result.stdout).strip()[-500:]
             raise RuntimeError(f"Claude Code install failed: {detail}")
 
+    async def setup_tool_interception(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(TOOL_HOOK_SOURCE, self.config.resolved_env)
+
     async def launch(
         self,
         ctx: ModelContext,
@@ -61,6 +67,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, instruction = self.resolve_text_prompt(data)
         env = {
@@ -73,6 +80,37 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "DISABLE_AUTOUPDATER": "1",
             "IS_SANDBOX": "1",
         }
+        settings_path = None
+        if tool_interception_url:
+            hook = await runtime.prepare_uv_script(
+                TOOL_HOOK_SOURCE, self.config.resolved_env
+            )
+            command = shlex.join(
+                [
+                    *hook,
+                    "--adapter=claude",
+                    f"--url={tool_interception_url}",
+                ]
+            )
+            command += ' --secret="$ANTHROPIC_API_KEY"'
+            settings_path = f"{CLAUDE_CONFIG_DIR}/settings-{trace.id}.json"
+            await runtime.write(
+                settings_path,
+                json.dumps(
+                    {
+                        "hooks": {
+                            event: [
+                                {"hooks": [{"type": "command", "command": command}]}
+                            ]
+                            for event in (
+                                "PreToolUse",
+                                "PostToolUse",
+                                "PostToolUseFailure",
+                            )
+                        }
+                    }
+                ).encode(),
+            )
         argv = [
             CLAUDE_BIN.format(version=self.config.version),
             "--print",
@@ -83,6 +121,8 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         ]
         if system_prompt:
             argv += ["--append-system-prompt", system_prompt]
+        if settings_path:
+            argv += ["--settings", settings_path]
         argv += [
             arg
             for tool in self.config.disabled_tools or []

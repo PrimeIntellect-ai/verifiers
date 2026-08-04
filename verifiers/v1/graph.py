@@ -505,26 +505,26 @@ def _attribute_mm(
 
 def _attribute_routed_experts(
     trace: Trace,
-    new_node_ids: list[int],
-    path_len: int,
+    nodes: list[tuple[int, int]],
     payload: Any,
 ) -> None:
-    """Attach each new node's slice of this turn's MoE expert-routing array. The `generate`
-    payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
-    0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
-    we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
-    the routing attributed when they were first created. A node whose slice falls outside the
-    array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
-    branch then reports no routing rather than misaligning."""
+    """Attach each node's slice of this turn's MoE expert-routing array."""
     if payload is None:
         return
     raw = binascii.a2b_base64(payload["data"])
     arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
         payload["shape"]
     )
-    off = path_len - int(payload.get("start", 0) or 0)
-    needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
-    for nid in new_node_ids:
+    payload_start = int(payload.get("start", 0) or 0)
+    needed = max(
+        (
+            start + len(trace.nodes[nid].token_ids) - payload_start
+            for nid, start in nodes
+        ),
+        default=0,
+    )
+    for nid, start in nodes:
+        off = start - payload_start
         n = len(trace.nodes[nid].token_ids)
         end = off + n
         if n and 0 <= off and end <= arr.shape[0]:
@@ -536,7 +536,6 @@ def _attribute_routed_experts(
             trace.nodes[nid].routed_experts = np.concatenate(
                 [arr[off:], arr[-1:]], axis=0
             )
-        off = end
 
 
 def _attribute_kept_tokens(
@@ -580,13 +579,27 @@ def _commit_turn(turn: PendingTurn, response: Response | None) -> int | None:
     # ids and keeps the message-hash prefix.
     prefix = turn.prefix_node_ids
     path_len = turn.path_len  # cumulative stored token length of the reused prefix
+    routing_nodes: list[tuple[int, int]] = []
+    mm_reused = len(prefix)
     if tokens is not None and prefix:
         # Compare node by node against the prompt_ids slice at the running offset (C-level list
         # ==, short-circuits at the first divergent node) — no full concatenation materialized.
         keep = 0
         off = 0
-        for nid in prefix:
-            node_tokens = trace.nodes[nid].token_ids
+        for i, nid in enumerate(prefix):
+            node = trace.nodes[nid]
+            node_tokens = node.token_ids
+            span = spans[i] if spans and i < len(spans) else None
+            if not node_tokens and span is not None:
+                # `/tool` records the canonical message before a renderer has tokenized it.
+                # Fill that node from the next model request instead of charging its tokens
+                # to the assistant generation scaffold.
+                end = span[1]
+                node.token_ids = node_tokens = prompt_ids[off:end]
+                node.mask = [False] * len(node_tokens)
+                node.is_content = is_content[off:end] if has_is_content else []
+                routing_nodes.append((nid, off))
+                mm_reused = min(mm_reused, i)
             if prompt_ids[off : off + len(node_tokens)] != node_tokens:
                 break
             off += len(node_tokens)
@@ -594,11 +607,10 @@ def _commit_turn(turn: PendingTurn, response: Response | None) -> int | None:
         prefix = prefix[:keep]
         path_len = off
     num_reused = len(prefix)
+    mm_reused = min(mm_reused, num_reused)
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
-    # Track new nodes separately so routed-expert attribution does not need this full path.
-    new_node_ids: list[int] = []
     # Materialize the reused message path only for multimodal cursor attribution.
     mm_path: list[tuple[int, Message]] | None = None
     if multi_modal_data is not None:
@@ -622,7 +634,7 @@ def _commit_turn(turn: PendingTurn, response: Response | None) -> int | None:
         )
         parent = len(trace.nodes) - 1
         idx[key] = parent
-        new_node_ids.append(parent)
+        routing_nodes.append((parent, start))
         if mm_path is not None:
             mm_path.append((parent, msg))
         cursor = end
@@ -651,16 +663,16 @@ def _commit_turn(turn: PendingTurn, response: Response | None) -> int | None:
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
     assistant_id = len(trace.nodes) - 1
     idx[(parent, message_hash(response.message))] = assistant_id
-    new_node_ids.append(assistant_id)
+    routing_nodes.append((assistant_id, gen_start))
 
     # Attribute this turn's images onto the input nodes that introduced them (by content part).
     if mm_path is not None:
-        _attribute_mm(trace, mm_path, num_reused, multi_modal_data)
+        _attribute_mm(trace, mm_path, mm_reused, multi_modal_data)
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
     _attribute_routed_experts(
-        trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
+        trace, routing_nodes, tokens.routed_experts if tokens else None
     )
 
     # Attribute this turn's kept-set sampling masks onto the assistant node (they are

@@ -99,6 +99,7 @@ class Rollout:
             stops=discover_decorated(task, "stop"),
             limits=limits,
             intercepts=discover_decorated(task, "intercept"),
+            supports_tool_interception=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -106,6 +107,7 @@ class Rollout:
         self._opened = False
         self._closed = False
         self._endpoint: str | None = None
+        self._tool_interception_url: str | None = None
         self._urls: dict[str, str] = {}
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
@@ -207,6 +209,8 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
+                if self._session.intercepts:
+                    await self.harness.setup_tool_interception(runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -226,8 +230,11 @@ class Rollout:
                     self._shared_tools,
                 )
             )
-            self._endpoint = f"{runtime.host_url(base_url)}/v1"
+            runtime_base_url = runtime.host_url(base_url)
+            self._endpoint = f"{runtime_base_url}/v1"
             self._secret = model_secret
+            if self._session.intercepts:
+                self._tool_interception_url = f"{runtime_base_url}/tool"
             self._urls = await self._stack.enter_async_context(
                 serve_tools(
                     toolsets,
@@ -240,7 +247,17 @@ class Rollout:
             )
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
-            await runtime.prepare_execution([self._endpoint, *self._urls.values()])
+            await runtime.prepare_execution(
+                [
+                    self._endpoint,
+                    *(
+                        [self._tool_interception_url]
+                        if self._tool_interception_url
+                        else []
+                    ),
+                    *self._urls.values(),
+                ]
+            )
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
@@ -311,6 +328,7 @@ class Rollout:
                     self._urls,
                     data,
                     messages,
+                    self._tool_interception_url,
                 )
         except TimeoutError as e:
             if self.terminated_by_intercept:

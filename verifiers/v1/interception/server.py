@@ -43,6 +43,10 @@ from verifiers.v1.errors import (
     TaskError,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
+from verifiers.v1.interception.tool import (
+    ToolInterceptionDecision,
+    ToolInterceptionRequest,
+)
 from verifiers.v1.interception.tunnel import (
     PrimeTunnelConfig,
     Tunnel,
@@ -60,6 +64,7 @@ from verifiers.v1.types import (
     Tool,
     ToolMessage,
     Usage,
+    content_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -211,6 +216,7 @@ class InterceptionServer(Interception):
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
+        app.router.add_post("/tool", self.handle_tool)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
@@ -247,6 +253,122 @@ class InterceptionServer(Interception):
             dialect.error_body(str(error)),
             status=getattr(error, "status_code", 502),
         )
+
+    async def handle_tool(self, request: web.Request) -> web.Response:
+        """Intercept one harness-owned tool call before execution or after its result."""
+        secret = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        session = self.sessions.get(secret)
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        if session.released:
+            return web.json_response({"error": "rollout concluded"}, status=409)
+        session.adopt(asyncio.current_task())
+        tool_lock = session.tool_lock = session.tool_lock or asyncio.Lock()
+        await tool_lock.acquire()
+        try:
+            if session.trace.terminated_by_intercept:
+                return web.json_response(
+                    ToolInterceptionDecision(
+                        action="terminate", reason=session.trace.stop_condition
+                    ).model_dump()
+                )
+            item = ToolInterceptionRequest.model_validate_json(await request.read())
+            branch = next(
+                (
+                    branch.messages
+                    for branch in reversed(session.trace.branches)
+                    if any(
+                        any(
+                            call.id == item.tool_call_id
+                            for call in prior.tool_calls or []
+                        )
+                        for prior in branch.messages
+                        if isinstance(prior, AssistantMessage)
+                    )
+                ),
+                None,
+            )
+            if branch is None:
+                return web.json_response({"error": "unknown tool call"}, status=409)
+            if item.phase == "before":
+                pending = session.pending_tool_results.pop(item.tool_call_id, None)
+                if pending is None:
+                    return web.json_response(
+                        ToolInterceptionDecision(action="allow").model_dump()
+                    )
+                rewritten, records = pending
+                if not item.can_rewrite:
+                    termination = InterceptRecord(
+                        direction="response",
+                        handler=records[-1].handler,
+                        action="terminate",
+                        reason="this harness cannot synthesize a blocked tool result",
+                    )
+                    session.terminate(termination)
+                    return web.json_response(
+                        ToolInterceptionDecision(
+                            action="terminate", reason=termination.reason
+                        ).model_dump()
+                    )
+                session.trace.interceptions.extend(records)
+                return web.json_response(
+                    ToolInterceptionDecision(
+                        action="rewrite", content=content_text(rewritten.content)
+                    ).model_dump()
+                )
+            if item.content is None:
+                raise TaskError("tool result content is required after execution")
+            message = ToolMessage(
+                tool_call_id=item.tool_call_id,
+                name=item.name,
+                content=item.content,
+            )
+            turn = graph.prepare_turn(session.trace, [*branch, message])
+            messages: Messages = [message]
+            decision = await session.intercept_request(turn.scoped_trace(), messages)
+            rewritten = messages[0]
+            assert isinstance(rewritten, ToolMessage)
+            termination = decision.termination
+            records = decision.records
+            if records and not item.can_rewrite:
+                if termination is None:
+                    termination = InterceptRecord(
+                        direction="request",
+                        handler=records[-1].handler,
+                        action="terminate",
+                        reason="this harness cannot rewrite this tool result",
+                    )
+                records = []
+                rewritten = message
+            if records and not isinstance(rewritten.content, str):
+                raise TaskError("harness tool hooks can only rewrite plain text")
+            graph.prepare_turn(session.trace, [*branch, rewritten]).commit_prompt()
+            session.trace.interceptions.extend(records)
+            if termination is not None:
+                session.terminate(termination)
+                return web.json_response(
+                    ToolInterceptionDecision(
+                        action="terminate", reason=termination.reason
+                    ).model_dump()
+                )
+            action = "rewrite" if records else "allow"
+            return web.json_response(
+                ToolInterceptionDecision(
+                    action=action,
+                    content=content_text(rewritten.content)
+                    if action == "rewrite"
+                    else None,
+                ).model_dump()
+            )
+        except ValidationError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except RolloutError as e:
+            session.error = e
+            return web.json_response(
+                {"error": str(e)}, status=getattr(e, "status_code", 502)
+            )
+        finally:
+            tool_lock.release()
 
     def record_call(
         self,

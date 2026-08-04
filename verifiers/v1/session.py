@@ -33,6 +33,7 @@ from verifiers.v1.types import (
     Messages,
     Response,
     SystemMessage,
+    ToolMessage,
 )
 from verifiers.v1.utils.decorators import invoke
 
@@ -92,6 +93,7 @@ class RolloutSession:
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     intercepts: list[Interceptor] = field(default_factory=list)
+    supports_tool_interception: bool = False
     stream_replays: dict[
         str, tuple[tuple[str, bytes], "asyncio.Future[StreamReplay | None]"]
     ] = field(default_factory=dict)
@@ -125,6 +127,13 @@ class RolloutSession:
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
+    tool_lock: asyncio.Lock | None = None
+    """Created only when a harness uses `/tool`; serializes its parallel callbacks so each
+    result extends the latest graph branch instead of creating sibling branches."""
+    pending_tool_results: dict[str, tuple[ToolMessage, list[InterceptRecord]]] = field(
+        default_factory=dict
+    )
+    """Synthetic results returned by response hooks and consumed before tool execution."""
 
     @cached_property
     def state_adapter(self) -> TypeAdapter:
@@ -231,8 +240,9 @@ class RolloutSession:
     async def intercept_response(
         self, trace: Trace, response: Response
     ) -> tuple[InterceptDecision, str | None]:
-        """Run response hooks and reduce a replacement to one inert text message."""
+        """Run response hooks and reduce a replacement to text or pending tool results."""
         records: list[InterceptRecord] = []
+        pending: dict[str, tuple[ToolMessage, list[InterceptRecord]]] = {}
         try:
             for handler in self.matching_intercepts("response"):
                 result = invoke(
@@ -261,11 +271,41 @@ class RolloutSession:
                     )
                 if result is None or result == response.message:
                     continue
+                if isinstance(result, ToolMessage):
+                    if not self.supports_tool_interception:
+                        raise ValueError(
+                            "this harness cannot intercept tools before execution"
+                        )
+                    tool_names = {
+                        call.id: call.name for call in response.message.tool_calls or []
+                    }
+                    tool_name = tool_names.get(result.tool_call_id)
+                    if tool_name is None:
+                        raise ValueError(
+                            "response tool results must reference a tool call in the response"
+                        )
+                    if not isinstance(result.content, str):
+                        raise TypeError(
+                            "synthetic tool results must contain plain text"
+                        )
+                    result = result.model_copy(
+                        update={"name": result.name or tool_name}
+                    )
+                    record = InterceptRecord(
+                        direction="response", handler=name, action="rewrite"
+                    )
+                    prior = pending.get(result.tool_call_id)
+                    pending[result.tool_call_id] = (
+                        result,
+                        [*(prior[1] if prior else []), record],
+                    )
+                    continue
                 if not isinstance(result, AssistantMessage):
                     raise TypeError(
-                        "response hooks must return vf.AssistantMessage, "
+                        "response hooks must return vf.AssistantMessage, vf.ToolMessage, "
                         "vf.Terminate, or None"
                     )
+                pending.clear()
                 response.message = result
                 records.append(
                     InterceptRecord(
@@ -277,6 +317,7 @@ class RolloutSession:
             raise
         except Exception as e:
             raise TaskError(f"@on_response failed: {type(e).__name__}: {e}") from e
+        self.pending_tool_results.update(pending)
         decision = InterceptDecision(records=records)
         if not records:
             return decision, None

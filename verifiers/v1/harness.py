@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -33,6 +34,8 @@ ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
+    SUPPORTS_TOOL_INTERCEPTION: ClassVar[bool] = False
+    """Whether the harness checks `/tool` before executing model-proposed tools."""
     SUPPORTS_MCP: ClassVar[bool] = False
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
@@ -94,6 +97,9 @@ class Harness(ABC, Generic[ConfigT]):
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
 
+    async def setup_tool_interception(self, runtime: Runtime) -> None:
+        """Prepare an optional native tool hook before runtime networking is restricted."""
+
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
         the program's fixed skill discovery location, which a supporting harness's
@@ -126,20 +132,23 @@ class Harness(ABC, Generic[ConfigT]):
         mcp_urls: dict[str, str],
         data: TaskData,
         messages: Messages | None = None,
+        tool_interception_url: str | None = None,
     ) -> None:
         """Run ONE segment of the exchange: the program from launch (or, with
         `messages`, the user's next turn(s) via `resume`) until it yields — a segment
         ends when the program exits. The rollout loop owns the exchange across
         segments (and stamps its end); a harness only ever sees one segment."""
         async with boundary(HarnessError, f"harness {self.config.id!r}"):
-            if messages is None:
-                result = await self.launch(
-                    ctx, trace, runtime, endpoint, secret, mcp_urls, data
-                )
-            else:
-                result = await self.resume(
-                    ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages
-                )
+            method = self.launch if messages is None else self.resume
+            args = (ctx, trace, runtime, endpoint, secret, mcp_urls, data)
+            if messages is not None:
+                args = (*args, messages)
+            kwargs = (
+                {"tool_interception_url": tool_interception_url}
+                if "tool_interception_url" in inspect.signature(method).parameters
+                else {}
+            )
+            result = await method(*args, **kwargs)
         if trace.stop_condition is not None:
             return  # a @stop refused a turn mid-rollout; the harness's exit is expected
         if result.exit_code != 0:
@@ -180,6 +189,7 @@ class Harness(ABC, Generic[ConfigT]):
         mcp_urls: dict[str, str],
         data: TaskData,
         messages: Messages,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         """Run the next segment of an exchange this trace already carries: the user
         spoke (`messages`), the program answers — with the whole conversation behind
@@ -203,6 +213,11 @@ class Harness(ABC, Generic[ConfigT]):
             *(m for m in branch if m.role != "system" or data.system_prompt is None),
             *messages,
         ]
+        kwargs = (
+            {"tool_interception_url": tool_interception_url}
+            if "tool_interception_url" in inspect.signature(self.launch).parameters
+            else {}
+        )
         return await self.launch(
             ctx,
             trace,
@@ -211,6 +226,7 @@ class Harness(ABC, Generic[ConfigT]):
             secret,
             mcp_urls,
             data.model_copy(update={"prompt": conversation}),
+            **kwargs,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

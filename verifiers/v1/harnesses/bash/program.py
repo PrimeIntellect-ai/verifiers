@@ -1,6 +1,6 @@
 # /// script
-# requires-python = ">=3.10"
-# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "tenacity"]
+# requires-python = ">=3.11"
+# dependencies = ["openai", "mcp>=1.24.0,<2", "httpx", "pydantic", "tenacity"]
 # ///
 """Secrets arrive through argv so local tool subprocesses do not inherit them."""
 
@@ -10,15 +10,31 @@ import json
 import subprocess
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from openai import AsyncOpenAI
+from pydantic import BaseModel, JsonValue
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 SERPER_URL = "https://google.serper.dev/search"
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
+
+
+class ToolInterceptionRequest(BaseModel):
+    tool_call_id: str
+    name: str
+    can_rewrite: bool = True
+    phase: Literal["before", "after"] = "after"
+    content: JsonValue | None = None
+
+
+class ToolInterceptionDecision(BaseModel):
+    action: Literal["allow", "rewrite", "terminate"]
+    content: str | None = None
+    reason: str | None = None
 
 
 BASH_TOOL = {
@@ -308,6 +324,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
+    parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
@@ -323,6 +340,9 @@ async def main() -> None:
         path.unlink()
         initial = json.loads(payload)
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    tool_client = (
+        httpx.AsyncClient(timeout=None) if args.tool_interception_url else None
+    )
     config = json.loads(args.mcp_config or "{}")
     tools = [BASH_TOOL]
     reserved = {"bash"}
@@ -354,50 +374,74 @@ async def main() -> None:
             break
         for call in message.tool_calls:
             name = call.function.name
-            try:
-                tool_args = json.loads(call.function.arguments or "{}")
-            except json.JSONDecodeError as e:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
-                    }
+            content = None
+            if tool_client is not None:
+                response = await tool_client.post(
+                    args.tool_interception_url,
+                    headers={"Authorization": f"Bearer {args.api_key}"},
+                    json=ToolInterceptionRequest(
+                        tool_call_id=call.id, name=name, phase="before"
+                    ).model_dump(mode="json"),
                 )
-                continue
-            # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
-            # below assume a dict, so reject anything else as a tool error rather than crashing.
-            if not isinstance(tool_args, dict):
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
-                    }
-                )
-                continue
-            if name in dispatch:
-                content = await call_mcp(servers, dispatch, name, tool_args)
-            elif name == "bash":
-                content = await asyncio.to_thread(
-                    run_bash, tool_args.get("command", "")
-                )
-            elif name == "edit" and args.edit:
-                content = await asyncio.to_thread(
-                    run_edit,
-                    tool_args.get("path"),
-                    tool_args.get("old_str"),
-                    tool_args.get("new_str"),
-                )
-            elif name == "search" and args.search:
-                content = await asyncio.to_thread(
-                    run_search,
-                    tool_args.get("query", ""),
-                    args.serper_key,
-                    tool_args.get("num_results", 5),
-                )
-            else:
-                content = f"error: unknown tool {name!r}"
+                response.raise_for_status()
+                decision = ToolInterceptionDecision.model_validate(response.json())
+                if decision.action == "rewrite":
+                    content = decision.content
+                elif decision.action == "terminate":
+                    raise RuntimeError(decision.reason)
+            if content is None:
+                try:
+                    tool_args = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError as e:
+                    tool_args = e
+                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)`
+                # calls below assume a dict, so reject anything else as a tool error.
+                if isinstance(tool_args, json.JSONDecodeError):
+                    content = (
+                        f"error: invalid JSON in tool arguments ({tool_args}); "
+                        "resend the call with valid JSON"
+                    )
+                elif not isinstance(tool_args, dict):
+                    content = (
+                        "error: tool arguments must be a JSON object, got "
+                        f"{type(tool_args).__name__}; resend as an object"
+                    )
+                elif name in dispatch:
+                    content = await call_mcp(servers, dispatch, name, tool_args)
+                elif name == "bash":
+                    content = await asyncio.to_thread(
+                        run_bash, tool_args.get("command", "")
+                    )
+                elif name == "edit" and args.edit:
+                    content = await asyncio.to_thread(
+                        run_edit,
+                        tool_args.get("path"),
+                        tool_args.get("old_str"),
+                        tool_args.get("new_str"),
+                    )
+                elif name == "search" and args.search:
+                    content = await asyncio.to_thread(
+                        run_search,
+                        tool_args.get("query", ""),
+                        args.serper_key,
+                        tool_args.get("num_results", 5),
+                    )
+                else:
+                    content = f"error: unknown tool {name!r}"
+                if tool_client is not None:
+                    response = await tool_client.post(
+                        args.tool_interception_url,
+                        headers={"Authorization": f"Bearer {args.api_key}"},
+                        json=ToolInterceptionRequest(
+                            tool_call_id=call.id, name=name, content=content
+                        ).model_dump(mode="json"),
+                    )
+                    response.raise_for_status()
+                    decision = ToolInterceptionDecision.model_validate(response.json())
+                    if decision.action == "rewrite":
+                        content = decision.content
+                    elif decision.action == "terminate":
+                        raise RuntimeError(decision.reason)
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": content}
             )
