@@ -118,6 +118,6 @@ class BashHarness(Harness[BashHarnessConfig]):
             )
             args.append(f"--initial-messages-file={path}")
         program = await runtime.prepare_uv_script(
-            PROGRAM_SOURCE, self.config.resolved_env
+            PROGRAM_SOURCE, self.config.resolved_env, activate=False
         )
         return await runtime.run_program([*program, *args], env)
