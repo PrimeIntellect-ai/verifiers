@@ -6,7 +6,7 @@ import random
 import shlex
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, PositiveInt, model_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -38,26 +38,18 @@ class RLMHarnessConfig(HarnessConfig):
     builtin_skills: list[BuiltinSkill] = Field(default_factory=list)
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); the base `skills` field takes SKILL.md paths."""
-    summarize_at_tokens: int | tuple[int, int] | None = None
+    summarize_at_tokens: PositiveInt | tuple[PositiveInt, PositiveInt] | None = None
     """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
     past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
     threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
     `None` disables auto-compaction; ints must be positive."""
 
     @model_validator(mode="after")
-    def validate_limits(self) -> "RLMHarnessConfig":
+    def validate_range(self) -> "RLMHarnessConfig":
         value = self.summarize_at_tokens
-        if isinstance(value, tuple):
-            lo, hi = value
-            if lo <= 0 or hi <= 0:
-                raise ValueError("`summarize_at_tokens` range bounds must be positive.")
-            if lo > hi:
-                raise ValueError(
-                    "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
-                )
-        elif value is not None and value <= 0:
+        if isinstance(value, tuple) and value[0] > value[1]:
             raise ValueError(
-                "`summarize_at_tokens` must be positive, or None to disable."
+                "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
             )
         return self
 

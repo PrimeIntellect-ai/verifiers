@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, SerializeAsAny
+from pydantic import BaseModel, FiniteFloat, SerializeAsAny
 
 from verifiers.v1.clients import BaseClientConfig
 from verifiers.v1.types import ID, SamplingConfig
@@ -17,7 +17,7 @@ class JudgeConfig(BaseClientConfig):
     """Plugin id; empty for a judge called directly by task code."""
     name: str = ""
     """Reward key override for a plugged judge."""
-    weight: float = 1.0
+    weight: FiniteFloat = 1.0
     model: str = "openai/gpt-5.4-nano"
     sampling: SamplingConfig = SamplingConfig()
     prompt: Path | None = None

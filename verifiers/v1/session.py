@@ -11,7 +11,10 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import TYPE_CHECKING
+
+from pydantic import TypeAdapter
 
 from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.trace import Trace
@@ -95,6 +98,11 @@ class RolloutSession:
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
+
+    @cached_property
+    def state_adapter(self) -> TypeAdapter:
+        """The rollout's state codec, built only when a state channel is used."""
+        return TypeAdapter(type(self.trace.state))
 
     def adopt(self, task: "asyncio.Task | None") -> None:
         """Track a handler task serving this session, for cancellation at release.

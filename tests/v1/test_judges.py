@@ -9,6 +9,7 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1.envs.agentic_judge import ScoreConfig
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.judge import Judge, JudgeResponse
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -480,10 +481,14 @@ def test_rubric_criteria_toml_and_json(tmp_path):
     toml = rubric_judge(tmp_path).criteria
     assert [c.name for c in toml] == ["mentions_paris", "is_polite"]
     assert [c.weight for c in toml] == [3.0, 1.0]
-    # JSON: both the {"criteria": [...]} object and a bare list parse to the same rubric
+    # JSON accepts a metadata-bearing object or a bare criteria list.
     items = [c.model_dump() for c in toml]
     assert (
-        rubric_judge(tmp_path, json.dumps({"criteria": items}), ".json").criteria
+        rubric_judge(
+            tmp_path,
+            json.dumps({"title": "Safety", "criteria": items}),
+            ".json",
+        ).criteria
         == toml
     )
     assert rubric_judge(tmp_path, json.dumps(items), ".json").criteria == toml
@@ -511,8 +516,23 @@ def test_rubric_rejects_bad_files(tmp_path):
         ).criteria
     # negative/NaN/inf weights would invert a criterion or corrupt the weighted mean
     for weight in (-1.0, float("nan"), float("inf")):
-        with pytest.raises(ValueError, match="negative or non-finite"):
+        with pytest.raises(
+            ValueError, match="greater than or equal to 0|finite number"
+        ):
             _ = rubric_judge(tmp_path, weights={"mentions_paris": weight}).criteria
+    with pytest.raises(ValueError, match="non-finite total"):
+        _ = rubric_judge(
+            tmp_path, weights={"mentions_paris": 1e308, "is_polite": 1e308}
+        ).criteria
+
+
+@pytest.mark.parametrize("weight", [float("nan"), float("inf"), float("-inf")])
+def test_judge_composition_weights_are_finite(weight):
+    with pytest.raises(ValueError, match="finite number"):
+        vf.JudgeConfig(weight=weight)
+    for field in ("task_weight", "judge_weight"):
+        with pytest.raises(ValueError, match="finite number"):
+            ScoreConfig.model_validate({field: weight})
 
 
 async def test_rubric_score(tmp_path, fake_judge_model):
@@ -569,7 +589,7 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
 
 
 def test_rubric_choices_validation(tmp_path):
-    with pytest.raises(ValueError, match="at least two"):
+    with pytest.raises(ValueError, match="at least 2"):
         _ = rubric_judge(
             tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["only"]\n'
         ).criteria
