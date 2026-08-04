@@ -200,7 +200,7 @@ class Branch(BaseModel):
             mask.extend(node.mask)
         return mask
 
-    def _spread(self, values: Callable[[MessageNode], list[float]]) -> list[float]:
+    def spread(self, values: Callable[[MessageNode], list[float]]) -> list[float]:
         """A per-sampled-token node field widened to `token_ids`: each node's values land on its
         sampled positions, 0.0 everywhere else."""
         out: list[float] = []
@@ -225,13 +225,13 @@ class Branch(BaseModel):
     def logprobs(self) -> list[float]:
         """Per-token sampling logprobs aligned to `token_ids` — the node logprobs spread onto
         their sampled positions, 0.0 on every non-sampled token."""
-        return self._spread(lambda node: node.logprobs)
+        return self.spread(lambda node: node.logprobs)
 
     @property
     def advantages(self) -> list[float]:
         """Per-token credit aligned to `token_ids`, spread like `logprobs`. Empty-handed nodes
         contribute 0.0, so a branch whose credit was never assigned reads as all zeros."""
-        return self._spread(lambda node: node.advantages)
+        return self.spread(lambda node: node.advantages)
 
     @property
     def multi_modal_data(self) -> MultiModalData | None:

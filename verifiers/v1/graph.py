@@ -103,8 +103,7 @@ class MessageNode(BaseModel):
     `mask`; empty for input messages."""
     advantages: list[float] = Field(default_factory=list)
     """Per-token credit over the sampled tokens, same layout as `logprobs`; empty until a
-    consumer's RL algorithm assigns it. It belongs to the node rather than to a branch because
-    branches share nodes: the same generated token cannot be credited two ways."""
+    consumer's RL algorithm assigns it."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
