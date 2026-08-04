@@ -4,7 +4,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
+from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr
@@ -130,97 +130,6 @@ class Reward(BaseModel):
     @property
     def value(self) -> float:
         return self.score * self.weight
-
-
-class EvalRunInfo(BaseModel):
-    """A standalone eval: a model measured once, against nothing that is training."""
-
-    type: Literal["eval"] = "eval"
-
-    id: str
-
-
-class PolicySpan(BaseModel):
-    """The live policy versions an episode was generated across — `TimeSpan`'s shape, measured in
-    policy updates."""
-
-    start: int = 0
-    """The live version when generation began."""
-
-    end: int = 0
-    """The live version when it finished."""
-
-    @property
-    def drift(self) -> int:
-        """Updates that landed mid-generation: above 0, the episode's later turns came from a
-        newer policy than its first."""
-        return max(0, self.end - self.start)
-
-
-class TrainMetadata(BaseModel):
-    """An episode a training run trains on."""
-
-    type: Literal["train"] = "train"
-
-    step: int | None = None
-    """The batch window collecting when it landed, which is not known until it does."""
-
-    def off_policy_steps(self, policy: PolicySpan) -> int | None:
-        """How far behind the policy being trained the generating policy was. Step `n` trains the
-        policy step `n-1` produced, so an episode generated at `v{k}` is `(n-1)-k` behind — queue
-        time included, since `step` is the window it landed in, not the one it left."""
-        if self.step is None:
-            return None
-        return max(0, (self.step - 1) - policy.start)
-
-
-class EvalMetadata(BaseModel):
-    """An episode a training run measures itself with."""
-
-    type: Literal["eval"] = "eval"
-
-    step: int
-    """The step whose eval produced it, known from the moment it is dispatched."""
-
-    def off_policy_steps(self, policy: PolicySpan) -> int:
-        """How far off the policy it measured drifted while it ran. Nothing trains on an eval, so
-        there is no policy for it to be behind; what makes it off-policy is the policy moving under
-        it, leaving it a measurement of a blend rather than of the version it started on.
-
-        Its `step` cannot answer that — it is fixed when the eval is dispatched, so a slow eval that
-        outlives several updates would still look on-policy."""
-        return policy.drift
-
-
-EpisodeMetadata = Annotated[TrainMetadata | EvalMetadata, Field(discriminator="type")]
-"""What an episode is to the training run it belongs to."""
-
-
-class TrainRunInfo(BaseModel):
-    """A training run. Its episodes are the ones it trains on and the ones it evaluates along the
-    way: one run, one id, and `metadata` says which of the two an episode is."""
-
-    type: Literal["train"] = "train"
-
-    id: str
-
-    metadata: EpisodeMetadata = Field(default_factory=TrainMetadata)
-
-    policy: PolicySpan | None = None
-    """The live policy versions it was generated across. `None` when it was not generated from the
-    live policy at all — a frozen sampler follows no version, so staleness has no meaning for it."""
-
-    @property
-    def off_policy_steps(self) -> int | None:
-        """How far off-policy this episode is, as its metadata defines that, or `None` when there
-        is no span to measure against."""
-        if self.policy is None:
-            return None
-        return self.metadata.off_policy_steps(self.policy)
-
-
-RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
-"""The run a trace belongs to, discriminated on `type`."""
 
 
 class ModelCall(BaseModel):

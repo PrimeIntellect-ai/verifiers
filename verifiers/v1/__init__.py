@@ -30,7 +30,18 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
-from verifiers.v1.episode import EnvInfo, Episode, GroupInfo, WireEpisode
+from verifiers.v1.episode import (
+    EnvInfo,
+    Episode,
+    EvalMetadata,
+    EvalRunInfo,
+    GroupInfo,
+    PolicySpan,
+    RunInfo,
+    TrainMetadata,
+    TrainRunInfo,
+    WireEpisode,
+)
 from verifiers.v1.errors import (
     EnvError,
     HarnessError,
@@ -75,19 +86,13 @@ from verifiers.v1.trace import (
     AgentSpan,
     Branch,
     Error,
-    EvalMetadata,
-    EvalRunInfo,
     ModelCall,
-    PolicySpan,
     Reward,
-    RunInfo,
     TimeSpan,
     TimeSplit,
     Timing,
     Trace,
     TraceTask,
-    TrainMetadata,
-    TrainRunInfo,
     VersionInfo,
     WireTrace,
 )
