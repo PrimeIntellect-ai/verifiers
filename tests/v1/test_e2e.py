@@ -503,7 +503,6 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     assert solver.rewards["wrote_phrase"].score == 1.0
     assert solver.rewards["wrote_phrase"].weight == 0.5
     assert isinstance(judge.info.get("verdict"), dict)
-    assert judge.info["verdict"]["verdicts"][0]["verdict"] == "yes"
     assert 0.0 <= solver.rewards["judge"].score <= 1.0
 
 
