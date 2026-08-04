@@ -23,7 +23,7 @@ from pydantic_core import from_json
 
 from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
 from verifiers.v1.configs.cli.eval import EvalConfig
-from verifiers.v1.episode import Episode, WireEpisode
+from verifiers.v1.episode import Episode, GroupInfo, WireEpisode
 from verifiers.v1.trace import WireTrace
 
 K = TypeVar("K", bound=Hashable)
@@ -33,6 +33,19 @@ def task_key(data: Mapping) -> str:
     """Content identity of one task's wire data — an `exclude_none` dump, the shape
     saved rows already have on disk. `sort_keys` so field order can't split identity."""
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+def groups_by_key(kept: list[Episode]) -> dict[str, GroupInfo]:
+    """The group each kept task is already in, by task key — what a replayed task's
+    replacements rejoin so a resume does not split one group in two. A task saved before
+    groups existed, or with none recorded, is absent."""
+    groups: dict[str, GroupInfo] = {}
+    for episode in kept:
+        if episode.group is None or not episode.traces:
+            continue
+        data = episode.traces[0].task.data.model_dump(mode="json", exclude_none=True)
+        groups.setdefault(task_key(data), episode.group)
+    return groups
 
 
 def distribute(

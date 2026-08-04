@@ -296,13 +296,17 @@ class Env(ABC, Generic[ConfigT]):
         episode.ok = all(t.ok for t in episode.traces)
         return episode
 
-    def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
+    def slots(
+        self, task: Task, n: int = 1, group: GroupInfo | None = None
+    ) -> list[RunSlot]:
         """Plan `n` independent episodes of `task` (`-r n`). They run independently, but they
         are one group — the attempts a consumer compares with each other — so they share a
-        `GroupInfo`, which lands on each episode."""
+        `GroupInfo`, which lands on each episode. Pass `group` to join episodes planned
+        earlier: a resumed run plans only what it still owes, and its replacements belong to
+        the group the kept ones are already in."""
         if n < 1:
             raise ValueError("a task needs at least one rollout (n >= 1)")
-        group = GroupInfo(size=n)
+        group = group or GroupInfo(size=n)
         return [RunSlot(task, group=group) for _ in range(n)]
 
     async def run_slot(
