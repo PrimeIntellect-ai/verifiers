@@ -25,6 +25,7 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.docker.egress import HOST_ALIAS, EgressProxy, NetworkPolicy
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +112,54 @@ async def docker(*args: str) -> ProgramResult:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except BaseException:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        await run_shielded(proc.communicate())
+        raise
     return ProgramResult(
         exit_code=proc.returncode or 0,
         stdout=stdout.decode(errors="replace"),
         stderr=stderr.decode(errors="replace"),
     )
+
+
+async def _abort_process_startup(
+    proc: asyncio.subprocess.Process, container: str, pidfile: str
+) -> str:
+    """Kill a partially opened container process and reap its local docker client."""
+    # The target normally writes its PID immediately, but cancellation can win
+    # that race. Wait briefly for the file before signalling the process group.
+    cleanup = (
+        'i=0; while [ "$i" -lt 20 ]; do '
+        'if [ -s "$1" ]; then pid=$(cat "$1"); '
+        'kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; '
+        'rm -f "$1"; exit 0; fi; '
+        "i=$((i + 1)); sleep 0.05; done; exit 1"
+    )
+    try:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                docker(
+                    "exec",
+                    container,
+                    "sh",
+                    "-c",
+                    cleanup,
+                    "vf-process-cleanup",
+                    pidfile,
+                ),
+                timeout=2,
+            )
+    finally:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        _, stderr = await proc.communicate()
+    return stderr.decode(errors="replace").strip()
 
 
 _PROXY_HOST = "host.docker.internal"
@@ -409,19 +452,27 @@ class DockerRuntime(Runtime):
         )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 5
-        while True:
-            ready = await docker("exec", self._container, "cat", pidfile)
-            if ready.exit_code == 0 and ready.stdout.strip().isdigit():
-                return DockerProcess(proc, self._container, int(ready.stdout.strip()))
-            if proc.returncode is not None or loop.time() >= deadline:
-                if proc.returncode is None:
-                    proc.kill()
-                _, stderr = await proc.communicate()
-                detail = stderr.decode(errors="replace").strip() or ready.stderr.strip()
-                raise SandboxError(
-                    f"docker live process failed to start: {detail or 'PID unavailable'}"
-                )
-            await asyncio.sleep(0.05)
+        try:
+            while True:
+                ready = await docker("exec", self._container, "cat", pidfile)
+                if ready.exit_code == 0 and ready.stdout.strip().isdigit():
+                    return DockerProcess(
+                        proc, self._container, int(ready.stdout.strip())
+                    )
+                if proc.returncode is not None or loop.time() >= deadline:
+                    break
+                await asyncio.sleep(0.05)
+        except BaseException:
+            await run_shielded(_abort_process_startup(proc, self._container, pidfile))
+            raise
+
+        stderr = await run_shielded(
+            _abort_process_startup(proc, self._container, pidfile)
+        )
+        detail = stderr or ready.stderr.strip()
+        raise SandboxError(
+            f"docker live process failed to start: {detail or 'PID unavailable'}"
+        )
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
