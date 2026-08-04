@@ -435,7 +435,10 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
         harness=None,
         env={
             "id": "agentic-judge",
-            "solver": {"harness": {"id": "bash"}, "runtime": {"type": "docker"}},
+            "solver": {
+                "harness": {"id": "bash"},
+                "runtime": {"type": "docker", "block": ["example.com"]},
+            },
             "judge": {
                 "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
