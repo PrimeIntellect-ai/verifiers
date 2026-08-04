@@ -109,6 +109,12 @@ async def post_chat_completion_with_routed_experts_sidecar(
         cast_to=httpx.Response,
         options={"headers": extra_headers} if extra_headers else {},
     )
+    # `cast_to=httpx.Response` deliberately bypasses the SDK response parser so
+    # we can strip provider-specific routed-expert metadata.  It also bypasses
+    # the SDK's normal status handling.  Check the status before attempting to
+    # parse: otherwise an upstream {"error": ...} body is misreported as a
+    # malformed ChatCompletion, hiding the actionable provider error.
+    raw_response.raise_for_status()
     stripped, routed_data = strip_routed_experts_data(raw_response.content)
     response = ChatCompletion.model_validate_json(stripped)
     if routed_data is not None:
