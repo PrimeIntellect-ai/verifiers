@@ -8,7 +8,7 @@ import json
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import Any, ClassVar, cast
 
 import httpx
 from pydantic import Field
@@ -16,19 +16,14 @@ from pydantic import Field
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
-from verifiers.v1.runtimes import SubprocessConfig, make_runtime
+from verifiers.v1.runtimes import Runtime, SubprocessConfig, make_runtime
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.decorators import reward
 
 from .response import trace_to_nemo_response
-from .toolset import NeMoGymState, NeMoGymToolset, _post
-
-NEMO_GYM_INSTALL_HINT = "uv sync --python 3.12 --extra nemo-gym"
-
-if TYPE_CHECKING:
-    from verifiers.v1.runtimes import Runtime
+from .toolset import NeMoGymState, NeMoGymToolset
 
 
 class NeMoGymTaskConfig(TaskConfig):
@@ -63,9 +58,12 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         state.resources_url = self.config.resources_url.rstrip("/")
         state.headers = dict(self.config.headers)
         state.request_timeout = self.config.request_timeout
-        state.direct_tools = self.data.row["responses_create_params"].get("tools") or []
+        tools = self.data.row["responses_create_params"].get("tools") or []
+        state.direct_tools = {
+            tool["name"]: tool for tool in tools if tool.get("type") == "function"
+        }
 
-        response = await _post(state, "seed_session", self.data.row)
+        response = await state.post("seed_session", self.data.row)
         response.raise_for_status()
         metadata = response.json().get("mcp")
         if metadata is None:
@@ -81,12 +79,10 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
     @reward(weight=1.0)
     async def nemo_gym(self, trace: Trace) -> float:
         state = trace.state
-        response_body = trace_to_nemo_response(
-            trace,
-            self.data.row["responses_create_params"],
-        )
-        response = await _post(
-            state, "verify", {**self.data.row, "response": response_body}
+        params = self.data.row["responses_create_params"]
+        response = await state.post(
+            "verify",
+            self.data.row | {"response": trace_to_nemo_response(trace, params)},
         )
         response.raise_for_status()
         result = response.json()
@@ -96,13 +92,9 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
             if key not in {"responses_create_params", "response", "reward"}
         }
         trace.info["nemo_gym"] = details
-        trace.record_metrics(
-            {
-                key: float(value)
-                for key, value in details.items()
-                if isinstance(value, (bool, int, float))
-            }
-        )
+        for key, value in details.items():
+            if isinstance(value, (bool, int, float)):
+                trace.record_metric(key, float(value))
         return float(result["reward"])
 
 
@@ -151,7 +143,7 @@ class NeMoGymEnv(SingleAgentEnv):
         if importlib.util.find_spec("nemo_gym") is None:
             raise RuntimeError(
                 "Managed NeMo Gym tasksets require the `nemo-gym` extra. "
-                f"Install it with: `{NEMO_GYM_INSTALL_HINT}`"
+                "Install it with: `uv sync --python 3.12 --extra nemo-gym`"
             )
         entrypoint = taskset.resource_server
         if entrypoint is None:

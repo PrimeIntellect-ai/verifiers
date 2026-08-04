@@ -25,7 +25,7 @@ class SharedToolsetConfig(BaseConfig):
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
-    def _register(self, mcp: FastMCP) -> None:
+    def register(self, mcp: FastMCP) -> None:
         for fn in discover_decorated(self, "tool"):
             mcp.add_tool(
                 self._with_state(fn),

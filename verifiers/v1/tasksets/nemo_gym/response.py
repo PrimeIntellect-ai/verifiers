@@ -21,7 +21,6 @@ def trace_to_nemo_response(
             f"NeMo Gym scoring requires exactly one trace branch, got {len(branches)}"
         )
 
-    response_item_types = {"reasoning", "message", "function_call"}
     output: list[dict[str, Any]] = []
     started = False
 
@@ -30,10 +29,10 @@ def trace_to_nemo_response(
         if isinstance(message, AssistantMessage) and node.sampled:
             started = True
             if message.provider_state and all(
-                item.get("type") in response_item_types
+                item.get("type") in {"reasoning", "message", "function_call"}
                 for item in message.provider_state
             ):
-                output.extend(dict(item) for item in message.provider_state)
+                output.extend(message.provider_state)
                 continue
             if message.reasoning_content:
                 output.append(
@@ -65,8 +64,7 @@ def trace_to_nemo_response(
                 {
                     "type": "function_call",
                     "call_id": call.id,
-                    "name": call.name,
-                    "arguments": call.arguments,
+                    **call.model_dump(exclude={"id"}),
                 }
                 for call in message.tool_calls or []
             )
