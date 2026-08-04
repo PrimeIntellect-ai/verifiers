@@ -101,9 +101,11 @@ class MessageNode(BaseModel):
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
-    advantages: list[float] = Field(default_factory=list)
-    """Per-token credit over the sampled tokens, same layout as `logprobs`; empty until a
-    consumer's RL algorithm assigns it."""
+    advantages: list[float] | None = None
+    """Per-token credit over the sampled tokens, same layout as `logprobs`. `None` until a
+    consumer's RL algorithm assigns it, which is not the same as a credit of zero: a group whose
+    rewards were all equal is assigned zeros and carries no gradient, while an unassigned node was
+    never scored at all."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the

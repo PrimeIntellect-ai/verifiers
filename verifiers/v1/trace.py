@@ -200,12 +200,14 @@ class Branch(BaseModel):
             mask.extend(node.mask)
         return mask
 
-    def spread(self, values: Callable[[MessageNode], list[float]]) -> list[float]:
+    def spread(
+        self, values: Callable[[MessageNode], list[float] | None]
+    ) -> list[float]:
         """A per-sampled-token node field widened to `token_ids`: each node's values land on its
-        sampled positions, 0.0 everywhere else."""
+        sampled positions, 0.0 everywhere else. A node holding nothing contributes zeros."""
         out: list[float] = []
         for node in self.nodes:
-            mask, node_values = node.mask, values(node)
+            mask, node_values = node.mask, values(node) or []
             sampled = sum(mask) if node_values else 0
             # Bulk-fill the canonical unsampled-prefix/sampled-suffix layout.
             if not sampled or all(mask[-sampled:]):
@@ -228,9 +230,13 @@ class Branch(BaseModel):
         return self.spread(lambda node: node.logprobs)
 
     @property
-    def advantages(self) -> list[float]:
-        """Per-token credit aligned to `token_ids`, spread like `logprobs`. Empty-handed nodes
-        contribute 0.0, so a branch whose credit was never assigned reads as all zeros."""
+    def advantages(self) -> list[float] | None:
+        """Per-token credit aligned to `token_ids`, spread like `logprobs` — or `None` when no node
+        on the path was ever assigned any, which a branch of zeros would otherwise be
+        indistinguishable from. A partially assigned path spreads, the unassigned nodes reading
+        0.0."""
+        if all(node.advantages is None for node in self.nodes):
+            return None
         return self.spread(lambda node: node.advantages)
 
     @property
