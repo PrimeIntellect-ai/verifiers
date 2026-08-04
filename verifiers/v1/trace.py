@@ -142,18 +142,18 @@ class EvalRunInfo(BaseModel):
 
 class PolicySpan(BaseModel):
     """The live policy versions an episode was generated across — `TimeSpan`'s shape, measured in
-    policy updates instead of seconds."""
+    policy updates."""
 
     start: int = 0
-    """The version generation began under: the policy that produced most of the episode."""
+    """The live version when generation began."""
 
     end: int = 0
-    """The version in force when it finished."""
+    """The live version when it finished."""
 
     @property
     def drift(self) -> int:
-        """Updates that landed mid-generation. 0 when one policy produced the whole episode; above
-        that, the episode is a blend and its later turns came from a newer policy than its first."""
+        """Updates that landed mid-generation: above 0, the episode's later turns came from a
+        newer policy than its first."""
         return max(0, self.end - self.start)
 
 
@@ -179,10 +179,10 @@ class TrainRunInfo(BaseModel):
 
     @property
     def off_policy_steps(self) -> int | None:
-        """How many versions behind the policy in training the generating policy was, or `None`
-        when there is nothing to compare. A run's step `n` trains the policy that step `n-1`
-        produced, so an episode generated under `v{k}` and placed in step `n` is `(n-1)-k` behind —
-        queue time included, since `step` is the window it landed in, not the one it left."""
+        """How far behind the policy being trained the generating policy was, or `None` when
+        there is nothing to compare. Step `n` trains the policy step `n-1` produced, so an episode
+        generated at `v{k}` and placed in step `n` is `(n-1)-k` behind — queue time included, since
+        `step` is the window it landed in, not the one it left."""
         if self.policy is None or self.step is None:
             return None
         return max(0, (self.step - 1) - self.policy.start)
