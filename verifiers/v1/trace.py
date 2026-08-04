@@ -140,6 +140,23 @@ class EvalRunInfo(BaseModel):
     id: str
 
 
+class PolicySpan(BaseModel):
+    """The live policy versions an episode was generated across — `TimeSpan`'s shape, measured in
+    policy updates instead of seconds."""
+
+    start: int = 0
+    """The version generation began under: the policy that produced most of the episode."""
+
+    end: int = 0
+    """The version in force when it finished."""
+
+    @property
+    def drift(self) -> int:
+        """Updates that landed mid-generation. 0 when one policy produced the whole episode; above
+        that, the episode is a blend and its later turns came from a newer policy than its first."""
+        return max(0, self.end - self.start)
+
+
 class TrainRunInfo(BaseModel):
     """A training run. Its episodes are the ones it trains on and the ones it evaluates along
     the way — both belong to the run and both are placed by the same step and policy, so they
@@ -156,12 +173,19 @@ class TrainRunInfo(BaseModel):
     """The step it belongs to: the one whose eval produced it, or — for an episode trained on —
     the batch window collecting when it lands, which is not known until it does."""
 
-    policy_version: int | None = None
-    """The version of the policy that produced it."""
+    policy: PolicySpan | None = None
+    """The live policy versions it was generated across. `None` when it was not generated from the
+    live policy at all — a frozen sampler follows no version, so staleness has no meaning for it."""
 
-    off_policy_steps: int = 0
-    """How many versions behind the step training on it. Always 0 for `kind="eval"`, which is
-    measured against the policy it ran on."""
+    @property
+    def off_policy_steps(self) -> int | None:
+        """How many versions behind the policy in training the generating policy was, or `None`
+        when there is nothing to compare. A run's step `n` trains the policy that step `n-1`
+        produced, so an episode generated under `v{k}` and placed in step `n` is `(n-1)-k` behind —
+        queue time included, since `step` is the window it landed in, not the one it left."""
+        if self.policy is None or self.step is None:
+            return None
+        return max(0, (self.step - 1) - self.policy.start)
 
 
 RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
