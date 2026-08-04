@@ -18,16 +18,12 @@ class ToolsetConfig(BaseConfig):
     runtime: RuntimeConfig = SubprocessConfig()
     url: str | None = None
     install_dir: str | None = None
-    """Where to build the server's venv in a sandboxed runtime (default: under /tmp).
-    Point this at a path on the real disk when the image caps /tmp — prime VM boxes mount
-    it as a 485 MB tmpfs, too small for a server whose dependency closure is large."""
 
 
 class SharedToolsetConfig(BaseConfig):
     runtime: RuntimeConfig = SubprocessConfig()
     url: str | None = None
     install_dir: str | None = None
-    """Where to build the server's venv in a sandboxed runtime (see `ToolsetConfig`)."""
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
