@@ -112,10 +112,8 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
             "a local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
-    # Not /tmp: sandbox images commonly mount it as a small fixed tmpfs (485 MB on prime
-    # VM boxes), far too little for the server venv, while the workdir is on the real
-    # disk (tens of GB) and is already the cwd `runtime.run` uses.
-    base = (getattr(runtime.config, "workdir", None) or "/tmp").rstrip("/")
+    # Default /tmp; `install_dir` redirects when an image caps it (prime VM boxes: 485 MB tmpfs).
+    base = (getattr(server.config, "install_dir", None) or "/tmp").rstrip("/")
     root = f"{base}/vf-src"
     vf, env = _verifiers_root(), Path(source_dir)
     await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS))
@@ -127,20 +125,28 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
     extras = ",".join(type(server).EXTRAS)
+    # Quote every caller-derived path; the glob stays outside the quotes so it still expands.
+    qroot, qvenv = shlex.quote(root), shlex.quote(venv)
     setup = (
         f"{_ENSURE_UV}; set -e; "
-        f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
-        f"uv venv {venv} && "
+        f'for t in {qroot}/*.tar.gz; do tar -xzf "$t" -C {qroot}; done && '
+        f"uv venv {qvenv} && "
         f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
-        f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
-        f"uv pip install --python {venv} "
+        f"uv pip install --python {qvenv} {shlex.quote(f'{root}/{vf.name}')} && "
+        f"uv pip install --python {qvenv} "
         f"{shlex.quote(f'{root}/{env.name}' + (f'[{extras}]' if extras else ''))}"
     )
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
+        detail = (result.stderr or result.stdout).strip()[-2000:]
+        hint = (
+            " — the install ran out of space under "
+            f"{base!r}; set `install_dir` to a path on a larger filesystem"
+            if "No space left on device" in detail
+            else ""
+        )
         raise ToolsetError(
-            f"server {server.server_name!r} install failed in runtime: "
-            f"{(result.stderr or result.stdout).strip()[-2000:]}"
+            f"server {server.server_name!r} install failed in runtime{hint}: {detail}"
         )
     return f"{venv}/bin/python"
 
