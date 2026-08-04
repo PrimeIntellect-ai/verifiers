@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
@@ -135,12 +136,19 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
 
 def run_bash(command: str) -> str:
     try:
+        env = os.environ.copy()
+
+        if venv := env.pop("VIRTUAL_ENV", None):
+            prefix = f"{venv}/bin:{env.get('HOME', '')}/.local/bin:"
+            env["PATH"] = env.get("PATH", "").removeprefix(prefix)
+
         result = subprocess.run(
             ["bash", "-c", command],
             capture_output=True,
             text=True,
             timeout=3600,
             check=False,
+            env=env,
         )
         return result.stdout + result.stderr
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
