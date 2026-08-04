@@ -16,7 +16,7 @@ from verifiers.v1.cli.output import (
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
-from verifiers.v1.episode import Episode, GroupInfo
+from verifiers.v1.episode import Episode
 from verifiers.v1.taskset import SEED
 from verifiers.v1.trace import EvalRunInfo
 
@@ -41,9 +41,8 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     out = output_path(config)
-    # One (task, rollouts-to-run, group) triple per selected task; resume shrinks the counts
-    # and carries the group its kept episodes are already in.
-    plan = [(task, config.num_rollouts, None) for task in tasks]
+    # One (task, rollouts-to-run) pair per selected task; resume shrinks the counts.
+    plan = [(task, config.num_rollouts) for task in tasks]
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
     finished: list[Episode] = []
     if config.resume is not None:
@@ -56,14 +55,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
         counts = resume.distribute(keys, owed, config.num_rollouts)
-        # A task's replacements rejoin the group of its kept episodes, so one `-r k` stays one
-        # group across the resume instead of splitting into kept and re-run halves.
-        kept_groups = resume.groups_by_key(finished)
-        plan = [
-            (task, n, kept_groups.get(key) or GroupInfo(size=config.num_rollouts))
-            for task, key, n in zip(tasks, keys, counts)
-            if n
-        ]
+        plan = [(task, n) for task, n in zip(tasks, counts) if n]
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
@@ -90,11 +82,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     # Serving resources (shared tool servers, interception) come up once for the
     # run; plan slots inside so the env's agents borrow them.
     async with env.serving():
-        planned = [
-            slot
-            for task, n, group in plan
-            for slot in env.slots(task, n=n, group=group)
-        ]
+        planned = [slot for task, n in plan for slot in env.slots(task, n=n)]
         slots = [RunSlot.finished(episode) for episode in finished] + planned
         push_state = None
         if config.push and config.rich:

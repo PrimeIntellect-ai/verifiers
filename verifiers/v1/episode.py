@@ -40,7 +40,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     env: EnvInfo = Field(default_factory=EnvInfo)
     """The env that produced this episode."""
     group: GroupInfo | None = None
-    """The group it was planned in, when the producer planned one."""
+    """The group it was planned in, consumer-stamped like `run`."""
     run: RunInfo | None = None
     """The run this episode belongs to (eval or train), consumer-stamped. It lives here rather than
     on each trace because the episode is what a consumer dispatches, and an episode that produced
