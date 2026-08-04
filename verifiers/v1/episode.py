@@ -23,29 +23,24 @@ class EnvInfo(BaseModel):
 
 
 class GroupInfo(BaseModel):
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    """The episodes planned together from one task, compared against each other."""
 
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     size: int = 1
-    """How many episodes were planned in it."""
 
 
 class EvalRunInfo(BaseModel):
-    """A standalone eval: a model measured once, against nothing that is training."""
+    """A standalone eval: a model measured against nothing that is training."""
 
     type: Literal["eval"] = "eval"
-
     id: str
 
 
 class PolicySpan(BaseModel):
-    """The live policy versions an episode was generated across — `TimeSpan`'s shape, measured in
-    policy updates."""
+    """Live policy versions with a derived, non-serialized drift in updates."""
 
     start: int = 0
-    """The live version when generation began."""
-
     end: int = 0
-    """The live version when it finished."""
 
     @property
     def drift(self) -> int:
@@ -56,13 +51,11 @@ class TrainMetadata(BaseModel):
     """An episode a training run trains on."""
 
     type: Literal["train"] = "train"
-
     step: int | None = None
-    """The batch window collecting when it landed, which is not known until it does."""
+    """The batch window it landed in, which is not known until it does."""
 
     def off_policy_steps(self, policy: PolicySpan) -> int | None:
-        """How far behind the policy being trained the generating policy was — queue time
-        included, since `step` is the window it landed in, not the one it left."""
+        """Versions behind the policy in training, queue time included."""
         if self.step is None:
             return None
         return max(0, (self.step - 1) - policy.start)
@@ -72,17 +65,12 @@ class EvalMetadata(BaseModel):
     """An episode a training run measures itself with."""
 
     type: Literal["eval"] = "eval"
-
     step: int
-    """The step whose eval produced it, known from the moment it is dispatched."""
+    """The step whose eval produced it, known when it is dispatched."""
 
     def off_policy_steps(self, policy: PolicySpan) -> int:
-        """How far off the policy it measured drifted while it ran. Nothing trains on an eval, so
-        there is no policy for it to be behind; what makes it off-policy is the policy moving under
-        it, leaving it a measurement of a blend rather than of the version it started on.
-
-        Its `step` cannot answer that — it is fixed when the eval is dispatched, so a slow eval that
-        outlives several updates would still look on-policy."""
+        """Versions the policy moved under it. Nothing trains on an eval, so it can only be
+        off-policy by drifting — and its `step` is fixed at dispatch, so it cannot say that."""
         return policy.drift
 
 
@@ -91,17 +79,14 @@ EpisodeMetadata = Annotated[TrainMetadata | EvalMetadata, Field(discriminator="t
 
 
 class TrainRunInfo(BaseModel):
-    """A training run. Its episodes are the ones it trains on and the ones it evaluates along the
-    way: one run, one id, and `metadata` says which of the two an episode is."""
+    """A training run: one id over the episodes it trains on and the ones it evaluates itself with,
+    which `metadata` tells apart."""
 
     type: Literal["train"] = "train"
-
     id: str
-
     metadata: EpisodeMetadata = Field(default_factory=TrainMetadata)
-
     policy: PolicySpan | None = None
-    """`None` when it was not generated from the live policy at all, as with a frozen sampler."""
+    """`None` when it was not generated from the live policy, as with a frozen sampler."""
 
     @property
     def off_policy_steps(self) -> int | None:
