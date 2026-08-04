@@ -23,9 +23,6 @@ class EnvInfo(BaseModel):
 
 
 class GroupInfo(BaseModel):
-    """The episodes planned together from one task, compared against each other. The `id` is
-    per group, not per task: planning the same task again is a new group."""
-
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
 
     size: int = 1
