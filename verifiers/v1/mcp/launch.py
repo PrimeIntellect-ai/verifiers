@@ -125,7 +125,6 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
     extras = ",".join(type(server).EXTRAS)
-    # Quote every caller-derived path; the glob stays outside the quotes so it still expands.
     qroot, qvenv = shlex.quote(root), shlex.quote(venv)
     setup = (
         f"{_ENSURE_UV}; set -e; "
