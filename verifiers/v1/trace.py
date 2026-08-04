@@ -138,6 +138,9 @@ class EvalRunInfo(BaseModel):
     id: str
     step: int | None = None
 
+    policy_version: int | None = None
+    """The version of the policy this measures."""
+
 
 class TrainRunInfo(BaseModel):
     type: Literal["train"] = "train"
@@ -146,10 +149,11 @@ class TrainRunInfo(BaseModel):
     step: int | None = None
 
     policy_version: int | None = None
-    """The version of the policy that generated the episode."""
+    """The version of the policy this was generated from."""
 
     off_policy_steps: int = 0
-    """How many policy versions behind the step training on it — 0 when on-policy."""
+    """How many versions behind the step training on it — 0 when on-policy. Only the training
+    path goes stale; an eval is measured against the policy it ran on."""
 
 
 RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
