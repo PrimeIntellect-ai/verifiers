@@ -165,6 +165,8 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
+                network_allow=solved.network_allow,
+                network_block=solved.network_block,
             ),
             files=files,
             artifacts={} if share_runtime else solution.state.artifacts,

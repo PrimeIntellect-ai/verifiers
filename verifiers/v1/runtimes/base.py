@@ -332,19 +332,17 @@ class Runtime(ABC):
         return url
 
     async def prepare_setup(self) -> None:
-        """Claim the runtime for trusted setup; restricted runtimes may reject reuse."""
+        """Open egress for trusted setup when reusing a restricted runtime."""
         if not self.network_restricted:
             return
         if self._setup_claimed:
-            raise SandboxError(
-                f"network-filtered {self.type} runtimes are single-rollout; "
-                "provision a fresh runtime instead of reusing this one"
-            )
+            await self.prepare_execution(None)
         self._setup_claimed = True
 
-    async def prepare_execution(self, routes: list[str]) -> None:
+    async def prepare_execution(self, routes: list[str] | None) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
-        their policy here; `routes` identifies the interception and MCP endpoints."""
+        their policy here; `routes` identifies the interception and MCP endpoints.
+        None restores unrestricted egress for another trusted setup phase."""
 
     @property
     def network_restricted(self) -> bool:
