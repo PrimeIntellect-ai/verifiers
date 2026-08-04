@@ -18,23 +18,18 @@ class EnvInfo(BaseModel):
     id: str = ""
     """`EnvConfig.env_id`, e.g. `agentic-judge+gsm8k-v1`."""
 
-    name: str = ""
-    """What the caller knows this env by, when that differs from `id` — the key it was
-    configured under. A run over several envs keys its metrics by this; a run over one
-    can leave it empty."""
+    name: str | None = None
+    """What the caller knows this env by, when that differs from `id`."""
 
 
 class GroupInfo(BaseModel):
-    """The cohort an episode belongs to: the episodes planned together from one task, which a
-    consumer compares against each other (pass@k over the group, a GRPO baseline within it).
-
-    Its `id` is per cohort, not per task: the same task planned again later is a new group, so
-    two rounds of it never merge into one comparison."""
+    """The episodes planned together from one task, compared against each other. The `id` is
+    per group, not per task: planning the same task again is a new group."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
 
     size: int = 1
-    """How many episodes were planned in it — the `k` of `-r k`, before any of them fail."""
+    """How many episodes were planned in it."""
 
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
@@ -45,8 +40,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     env: EnvInfo = Field(default_factory=EnvInfo)
     """The env that produced this episode."""
     group: GroupInfo | None = None
-    """The cohort it was planned in, when the producer planned one — several episodes of the
-    same task, meant to be compared with each other."""
+    """The group it was planned in, when the producer planned one."""
     run: RunInfo | None = None
     """The run this episode belongs to (eval or train), consumer-stamped. It lives here rather than
     on each trace because the episode is what a consumer dispatches, and an episode that produced

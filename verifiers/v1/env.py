@@ -57,7 +57,7 @@ class RunSlot:
     episode: Episode | None = None
     done: bool = False
     group: GroupInfo | None = None
-    """The cohort this slot was planned in, stamped onto its episode when it lands."""
+    """The group this slot was planned in, stamped onto its episode when it lands."""
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":
@@ -298,7 +298,7 @@ class Env(ABC, Generic[ConfigT]):
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
         """Plan `n` independent episodes of `task` (`-r n`). They run independently, but they
-        are one cohort — the attempts a consumer compares with each other — so they share a
+        are one group — the attempts a consumer compares with each other — so they share a
         `GroupInfo`, which lands on each episode."""
         if n < 1:
             raise ValueError("a task needs at least one rollout (n >= 1)")
