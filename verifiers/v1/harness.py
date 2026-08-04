@@ -8,11 +8,16 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import HarnessError, SandboxError, boundary
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
+from verifiers.v1.utils.decorators import (
+    discover_decorated,
+    invoke_all,
+    seed,
+    unseed,
+)
 
 if TYPE_CHECKING:
     # Annotation-only: `Trace` appears in signatures only, so this module stays
@@ -155,10 +160,12 @@ class Harness(ABC, Generic[ConfigT]):
         `runtime`) and can read what the harness left behind in the runtime."""
         available = {"task": trace.task.data, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
+        seed(trace.metrics, (fn.__name__ for fn in fns))
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
             results = await invoke_all(fns, available)
         for fn, result in zip(fns, results):
             if isinstance(result, Mapping):
+                unseed(trace.metrics, fn.__name__)
                 trace.record_metrics(result)
             else:
                 trace.record_metric(fn.__name__, result)

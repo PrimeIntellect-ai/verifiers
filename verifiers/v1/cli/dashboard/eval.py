@@ -29,7 +29,7 @@ from verifiers.v1.utils.install import env_name
 from verifiers.v1.utils.interrupt import cleaning_up
 
 if TYPE_CHECKING:
-    from verifiers.v1.push import PushState
+    from verifiers.v1.utils.platform import PushState
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -160,7 +160,7 @@ def _warning(config: EvalConfig) -> Text | None:
     """A local-runtime caution when any code-running seat resolves to the subprocess
     runtime (the tool-less chat loops are exempt), shown above the overview rather
     than as a row in it."""
-    from verifiers.v1.loaders import harness_class
+    from verifiers.v1.utils.loaders import harness_class
 
     if any(
         getattr(config.env, role).runtime.type == "subprocess"
@@ -332,8 +332,8 @@ def Progress(
 
 def _score_segments(traces: list[Trace], source: str) -> str | None:
     """`name mean` segments for every reward/metric key seen across `traces`,
-    first-seen order (a trace records only the functions that ran for it, so keys
-    can vary); None when no trace recorded anything."""
+    first-seen order (a trace carries only its own task's signals — unscored ones
+    seeded as `None` — so keys can vary); None when no trace recorded anything."""
     names: list[str] = []
     for trace in traces:
         names.extend(n for n in getattr(trace, source) if n not in names)
@@ -347,11 +347,13 @@ def _score_segments(traces: list[Trace], source: str) -> str | None:
 
 
 def _score(trace: Trace, source: str, name: str) -> float:
-    """Rewards carry raw score + weight; the breakdown shows the raw score."""
+    """Rewards carry raw score + weight; the breakdown shows the raw score. A missing
+    or unscored (seeded `None`) entry reads as 0.0."""
     if source == "rewards":
         reward = trace.rewards.get(name)
         return reward.score if reward is not None else 0.0
-    return trace.metrics.get(name, 0.0)
+    value = trace.metrics.get(name)
+    return value if value is not None else 0.0
 
 
 def _breakdown(scored: list[Trace], done: list[Trace]) -> Table | None:

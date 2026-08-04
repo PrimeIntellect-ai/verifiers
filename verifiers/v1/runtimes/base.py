@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import base64
 import contextlib
 import hashlib
 import logging
@@ -285,9 +286,42 @@ class Runtime(ABC):
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        """Read `path` into host memory. `max_bytes` caps the transfer, raising past
+        the cap — for a file written by something we don't control, whose size we
+        can't assume. The cap is enforced inside the box rather than after the
+        transfer, and base64 because `run` returns decoded text. Framework method —
+        override `_read`, not this."""
+        if max_bytes is None:
+            return await self._read(path)
+        # Through a temp file, not a pipe: `head | base64` exits with base64's 0
+        # even when the path is missing, and a missing file must raise here just
+        # as it does from `_read`.
+        result = await self.run(
+            [
+                "sh",
+                "-c",
+                (
+                    "t=$(mktemp) || exit 1; "
+                    'head -c "$1" -- "$2" > "$t" || { rm -f "$t"; exit 1; }; '
+                    'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
+                ),
+                "sh",
+                str(max_bytes + 1),
+                path,
+            ],
+            {},
+        )
+        if result.exit_code:
+            raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+        data = base64.b64decode(result.stdout)
+        if len(data) > max_bytes:
+            raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
+        return data
+
     @abstractmethod
-    async def read(self, path: str) -> bytes:
-        pass
+    async def _read(self, path: str) -> bytes:
+        """Read the whole file at `path`; `read` adds the optional transfer cap."""
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:

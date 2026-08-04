@@ -72,7 +72,7 @@ dev = [
     "textarena==0.7.4",
 ]
 # V1 examples and support packages, resolved from their local sources below.
-# Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, serve) run straight
+# Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, validate) run straight
 # from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
@@ -152,7 +152,6 @@ eval = "verifiers.v1.cli.eval.main:main"
 validate = "verifiers.v1.cli.validate:main"
 debug = "verifiers.v1.cli.debug:main"
 replay = "verifiers.v1.cli.replay:main"
-serve = "verifiers.v1.cli.serve:main"
 init = "verifiers.v1.cli.init:main"
 gepa = "verifiers.v1.cli.gepa:main"
 vf-gepa = "verifiers.scripts.gepa:main"
@@ -234,6 +233,7 @@ markers = [
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
     "null: v1 e2e cases on the null harness",
     "bash: v1 e2e cases on the bash harness",
+    "browser_use: v1 e2e cases on the browser_use harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",
     "pi: v1 e2e cases on the pi harness",

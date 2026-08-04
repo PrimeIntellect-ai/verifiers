@@ -1,25 +1,23 @@
-"""Renderer client: client-side tokenization via the `renderers` package.
-
-A drop-in alternative to the chat-completions client: instead of sending messages
-as JSON text, it renders them to token ids with a HF chat template and calls a
-vLLM `/inference/v1/generate` engine, so every response carries token ids +
-sampling logprobs (recorded on the trace's per-turn `tokens`) for training. It
-reuses the chat client's wire translation (message/tool shapes are the same), and
-needs a running vLLM engine.
-"""
+"""Train client: renders prompts to token ids and calls a vLLM generate endpoint."""
 
 import asyncio
 import json
-from collections.abc import Mapping
-from typing import Any
+import logging
+import threading
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Any, ClassVar, TypeVar
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RenderedTokens, RendererConfig
+from renderers import RenderedTokens, Renderer, RendererConfig
 from renderers.base import is_multimodal
 
 from verifiers.utils.multimodal import prepare_images_inplace
+from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
+from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
@@ -35,6 +33,10 @@ from verifiers.v1.types import (
     TurnTokens,
     Usage,
 )
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 def tool_to_wire(tool: Tool) -> dict:
@@ -172,41 +174,134 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-class TrainClient(Client):
-    """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine."""
+@dataclass
+class RendererSlot:
+    """One renderer and the rollouts currently holding it. Encoding mutates a fast
+    tokenizer's state, so `run` serializes encode-side work (render, bridge) on a thread;
+    decode-side work is a pure read and needs neither the lock nor the hop."""
+
+    renderer: Renderer
+    load: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    async def run(self, fn: Callable[[], T]) -> T:
+        def locked() -> T:
+            with self.lock:
+                return fn()
+
+        return await asyncio.to_thread(locked)
+
+
+class ElasticRendererPool:
+    """Process-shared renderers, multiplexed and auto-growing. A pool object is a cheap
+    per-client view: the renderers themselves are the shared state, keyed by what builds
+    them, so every client with the same build inputs works one list."""
+
+    _renderers: ClassVar[dict[tuple, list[RendererSlot]]] = {}
+    """The process's renderers, keyed by build inputs. Unlike the owned interception pool,
+    renderers have no owner to inject them (clients are built per rollout) and must outlive
+    loops and clients, so the shared state lives on the type — and needs no `start`/`stop`:
+    a renderer is pure memory."""
+
+    _locks: ClassVar[dict[tuple, tuple[asyncio.AbstractEventLoop, asyncio.Lock]]] = {}
+    """Per-key single-flight lock for `grow`, minted fresh on a loop change: an asyncio
+    lock binds to the loop that first awaits it, while renderers outlive loops."""
 
     def __init__(
         self,
-        openai: AsyncOpenAI,
-        pool_size: int = 1,
-        config: RendererConfig | None = None,
-        renderer_model_name: str | None = None,
-    ) -> None:
-        self.openai = openai
-        self.pool_size = pool_size
-        self.config = config
-        self.renderer_model_name = renderer_model_name
-        self._pool = None
-
-    def _renderer_pool(
-        self,
-        model: str,
+        renderer_model: str,
+        config: RendererConfig | None,
         *,
         chat_template_kwargs: Mapping[str, Any] | None = None,
-    ):
-        renderer_model = self.renderer_model_name or model
-        if self._pool is None:
-            from renderers import create_renderer_pool
+        multiplex: int,
+    ) -> None:
+        self.renderer_model = renderer_model
+        self.config = config
+        self.chat_template_kwargs = chat_template_kwargs
+        self.multiplex = multiplex
+        self.key = (
+            renderer_model,
+            config.model_dump_json() if config is not None else None,
+            json.dumps(dict(chat_template_kwargs), sort_keys=True)
+            if chat_template_kwargs
+            else None,
+        )
+        self.renderers = self._renderers.setdefault(self.key, [])
 
-            pool_kwargs: dict[str, Any] = {"size": self.pool_size}
-            if chat_template_kwargs:
-                pool_kwargs["chat_template_kwargs"] = chat_template_kwargs
-            self._pool = create_renderer_pool(
-                renderer_model,
-                self.config,
-                **pool_kwargs,
+    def warm(self) -> None:
+        """Start building the first renderer if none exists, so the tokenizer loads while
+        the rollout provisions rather than in front of its first turn. A no-op off the
+        event loop — `acquire` builds on demand anyway."""
+        if self.renderers:
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(self.grow())
+        except RuntimeError:
+            return
+        # A failed warm is not an event: acquire retries the build and surfaces the error.
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
+    async def grow(self) -> RendererSlot:
+        """A renderer with spare capacity — reuse one under `multiplex`, else load one
+        more tokenizer on a thread. Single-flight per key: concurrent cold acquires wait
+        for one build instead of stacking tokenizers."""
+        loop = asyncio.get_running_loop()
+        bound = self._locks.get(self.key)
+        if bound is None or bound[0] is not loop:
+            bound = self._locks[self.key] = (loop, asyncio.Lock())
+        async with bound[1]:
+            for slot in self.renderers:
+                if slot.load < self.multiplex:
+                    return slot
+            from renderers import create_renderer
+            from renderers.base import load_tokenizer
+
+            def build():
+                return create_renderer(
+                    load_tokenizer(self.renderer_model),
+                    self.config,
+                    chat_template_kwargs=self.chat_template_kwargs,
+                )
+
+            slot = RendererSlot(await asyncio.to_thread(build))
+            self.renderers.append(slot)
+            logger.info(
+                "renderer pool: %d renderer(s), multiplex=%d",
+                len(self.renderers),
+                self.multiplex,
             )
-        return self._pool
+            return slot
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[RendererSlot]:
+        """A renderer to render this turn with, growing the pool when every one already
+        carries `multiplex` rollouts. The slot is held for the turn, so `load` counts
+        rollouts in flight rather than renders in progress."""
+        slot = await self.grow()
+        slot.load += 1
+        try:
+            yield slot
+        finally:
+            slot.load -= 1
+
+
+class TrainClient(Client):
+    """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine.
+
+    One client per rollout: it owns its engine connection and takes a slot on the shared
+    `ElasticRendererPool` for each turn."""
+
+    def __init__(self, config: TrainClientConfig) -> None:
+        self.config = config
+        self.client = build_async_openai(config)
+        # The per-request model is only known at call time; a config that pins the renderer
+        # model can warm now, which is every training run (prime-rl always pins it).
+        if config.renderer_model_name is not None:
+            ElasticRendererPool(
+                config.renderer_model_name,
+                config.renderer,
+                multiplex=config.multiplex,
+            ).warm()
 
     async def prepare_request_body(self, dialect: Dialect, body: dict) -> dict:
         if isinstance(dialect, ChatDialect):
@@ -242,7 +337,7 @@ class TrainClient(Client):
             tools = parse_tools(body.get("tools"))
         else:
             prompt, tools = dialect.parse_request(body)
-        from renderers.client import _maybe_offload, generate
+        from renderers.client import generate
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
         wire_messages = (
@@ -257,64 +352,80 @@ class TrainClient(Client):
         )
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         sampling_params.update(raw_sampling)
-        renderer = self._renderer_pool(
-            model,
+        pool = ElasticRendererPool(
+            self.config.renderer_model_name or model,
+            self.config.renderer,
             chat_template_kwargs=chat_template_kwargs,
+            multiplex=self.config.multiplex,
         )
         bridged_turn: PendingTurn | None = None
 
-        # Only build the (O(context)) previous-turn token ids once the cheap guards pass: a
-        # tail that isn't a clean `[tool*, user?]` extension can't bridge.
-        can_bridge = turn is not None and _is_valid_incremental_tail(wire_messages)
-        previous_ids = turn.previous_token_ids() if can_bridge else None
-        if previous_ids is not None:
-            previous_prompt_ids, previous_completion_ids = previous_ids
+        async with pool.acquire() as slot:
+            renderer = slot.renderer
+            # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
+            # tail that isn't a clean `[tool*, user?]` extension can't bridge.
+            can_bridge = turn is not None and _is_valid_incremental_tail(wire_messages)
+            previous_ids = turn.previous_token_ids() if can_bridge else None
+            if previous_ids is not None:
+                previous_prompt_ids, previous_completion_ids = previous_ids
 
-            def bridge():
-                kwargs: dict[str, Any] = {"tools": wire_tools}
-                if is_multimodal(renderer):
-                    kwargs["previous_multi_modal_data"] = (
-                        turn.previous_multi_modal_data()
+                def bridge():
+                    kwargs: dict[str, Any] = {"tools": wire_tools}
+                    if is_multimodal(renderer):
+                        kwargs["previous_multi_modal_data"] = (
+                            turn.previous_multi_modal_data()
+                        )
+                    return renderer.bridge_to_next_turn(
+                        previous_prompt_ids,
+                        previous_completion_ids,
+                        wire_messages,
+                        **kwargs,
                     )
-                return renderer.bridge_to_next_turn(
-                    previous_prompt_ids,
-                    previous_completion_ids,
-                    wire_messages,
-                    **kwargs,
+
+                bridged = await slot.run(bridge)
+                if bridged is not None:
+                    prompt_ids = bridged.token_ids
+                    multi_modal_data = bridged.multi_modal_data
+                    prompt_attribution = bridged
+                    bridged_turn = turn
+                    sampling_params["routed_experts_prompt_start"] = max(
+                        len(previous_prompt_ids) + len(previous_completion_ids) - 1,
+                        0,
+                    )
+
+            # Render here (encode-side, so through the slot) rather than inside `generate`:
+            # handed prebuilt prompt_ids, generate's own renderer touches are decode-side
+            # and stop-id reads, safe on a bare renderer without lock or thread hop.
+            if prompt_ids is None:
+                wire_messages = [message_to_wire(m) for m in prompt]
+                rendered = await slot.run(
+                    lambda: renderer.render(
+                        wire_messages, tools=wire_tools, add_generation_prompt=True
+                    )
                 )
+                prompt_ids = rendered.token_ids
+                multi_modal_data = rendered.multi_modal_data
+                prompt_attribution = rendered
 
-            bridged = await _maybe_offload(renderer, bridge)
-            if bridged is not None:
-                prompt_ids = bridged.token_ids
-                multi_modal_data = bridged.multi_modal_data
-                prompt_attribution = bridged
-                bridged_turn = turn
-                sampling_params["routed_experts_prompt_start"] = max(
-                    len(previous_prompt_ids) + len(previous_completion_ids) - 1,
-                    0,
+            try:
+                result = await generate(
+                    client=self.client,
+                    renderer=renderer,
+                    messages=wire_messages,
+                    model=model,
+                    prompt_ids=prompt_ids,
+                    multi_modal_data=multi_modal_data,
+                    prompt_attribution=prompt_attribution,
+                    tools=wire_tools,
+                    sampling_params=sampling_params,
+                    extra_headers={SESSION_ID_HEADER: session_id}
+                    if session_id
+                    else None,
                 )
-
-        # Bridged prompt ids bypass rendering; only fallback needs the full wire prompt.
-        if prompt_ids is None:
-            wire_messages = [message_to_wire(m) for m in prompt]
-
-        try:
-            result = await generate(
-                client=self.openai,
-                renderer=renderer,
-                messages=wire_messages,
-                model=model,
-                prompt_ids=prompt_ids,
-                multi_modal_data=multi_modal_data,
-                prompt_attribution=prompt_attribution,
-                tools=wire_tools,
-                sampling_params=sampling_params,
-                extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
-            )
-        except RendererOverlongPromptError as e:
-            raise OverlongPromptError(str(e)) from e
-        except OpenAIError as e:
-            raise model_error(e) from e
+            except RendererOverlongPromptError as e:
+                raise OverlongPromptError(str(e)) from e
+            except OpenAIError as e:
+                raise model_error(e) from e
         response = response_from_generate(result, model, bridged_turn)
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
@@ -322,4 +433,4 @@ class TrainClient(Client):
         return response
 
     async def close(self) -> None:
-        await self.openai.close()
+        await self.client.close()

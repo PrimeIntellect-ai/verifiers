@@ -19,18 +19,18 @@ import itertools
 import random
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
-from typing import TYPE_CHECKING, ClassVar, Generic, Self
+from typing import TYPE_CHECKING, Generic, Self
 
-from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.task import Task, TaskT, resolve_server_config
+from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
-from verifiers.v1.utils.sampling import SEED
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
+
+SEED = 0  # fixed so `--shuffle` samples the same items every run (reproducible)
 
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
 
@@ -39,10 +39,6 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
     INFINITE: bool = False
     """Whether the taskset is infinite (yields tasks forever). Class-declared;
     a `head(n)` view shadows it per instance (bounded by construction)."""
-
-    tools: ClassVar[tuple[type[Toolset], ...]] = ()
-    """Tool servers shared by all tasks in the taskset. The environment will
-    spawn a single, global instance, reused across tasks."""
 
     def __init__(self, config: TasksetConfigT) -> None:
         self.config = config
@@ -102,13 +98,14 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
     def task_type(cls) -> type[Task]:
         return concrete_type(cls, Task, origin=Taskset) or Task
 
-    def server_config(self, server_cls: type) -> BaseConfig:
-        return resolve_server_config(
-            type(self).__name__,
-            self.config,
-            server_cls,
-            sole=len(set(type(self).tools)) == 1,
-        )
+    @classmethod
+    def toolsets(cls, config: TasksetConfigT) -> list[Toolset]:
+        """Tool servers shared by all tasks in the taskset (one global instance
+        per server, reused across an environment worker's rollouts), each
+        constructed with its config off `config` — override and wire explicitly:
 
-    def tool_servers(self) -> list[Toolset]:
-        return [cls(self.server_config(cls)) for cls in type(self).tools]
+            @classmethod
+            def toolsets(cls, config: MyConfig) -> list[vf.Toolset]:
+                return [SearchToolset(config.tools)]
+        """
+        return []

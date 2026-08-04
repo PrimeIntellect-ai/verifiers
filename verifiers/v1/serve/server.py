@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import logging
 
 import msgpack
@@ -8,11 +7,9 @@ import zmq.asyncio
 
 from verifiers.utils.process_utils import use_threading_tqdm_lock
 from verifiers.utils.serve_utils import msgpack_encoder
-from verifiers.v1.clients import ModelContext, resolve_client
-from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.loaders import load_environment
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -24,6 +21,7 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.types import SamplingConfig
+from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +55,6 @@ class EnvServer:
         self.requires_group_scoring = False
         # This worker's episode bound (`--max-concurrent`), spanning requests.
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
-        self._clients: dict[
-            tuple[str, str], Client
-        ] = {}  # (client_config, model) -> Client
-
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -102,19 +96,13 @@ class EnvServer:
         data = self.data_cls.model_validate(task_data)
         return self.task_cls(data, self.env.config.taskset.task)
 
-    def _client(self, client_config: ClientConfig, model: str) -> Client:
-        """Cache clients because renderer initialization builds a tokenizer pool."""
-        key = (client_config.model_dump_json(), model)
-        if key not in self._clients:
-            self._clients[key] = resolve_client(client_config)
-        return self._clients[key]
-
     def _context(
         self, client_config: ClientConfig, model: str, sampling: SamplingConfig
     ) -> ModelContext:
-        return ModelContext(
-            client=self._client(client_config, model), model=model, sampling=sampling
-        )
+        """The request's sampling context. No client is built or cached here — each
+        rollout constructs its own from `client_config` and closes it, so a request's
+        endpoint (and a training run's changing model) leaves nothing behind."""
+        return ModelContext(client=client_config, model=model, sampling=sampling)
 
     def serving(self):
         """The env's serving resources, entered for the server's lifetime so they're
@@ -212,9 +200,6 @@ class EnvServer:
             finally:
                 for task in tasks:
                     task.cancel()
-                for client in self._clients.values():
-                    with contextlib.suppress(Exception):
-                        await client.close()
                 self.frontend.close()
                 self.ctx.term()
                 logger.info("EnvServer down: taskset=%s", self.taskset_id)

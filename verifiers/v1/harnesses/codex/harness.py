@@ -254,7 +254,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
                     (
                         f"{json.dumps(name, ensure_ascii=False)}="
                         f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                        "startup_timeout_sec=60.0,tool_timeout_sec=600.0}"
+                        f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
                     )
                     for name, url in mcp_urls.items()
                 )

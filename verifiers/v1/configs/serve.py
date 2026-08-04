@@ -1,8 +1,8 @@
 """How an env is served: the worker pool, where it binds, and each worker's bound.
 
 Serving is its own axis. `[env]` says what runs; this says how it's hosted, so an
-eval, a `serve` process, and a trainer configure it identically instead of each
-flattening pool knobs onto its own config."""
+eval and a trainer's env server configure it identically instead of each flattening
+pool knobs onto its own config."""
 
 from typing import Annotated, Literal
 
@@ -35,10 +35,10 @@ PoolConfig = Annotated[
 ]
 
 
-class ServingConfig(BaseConfig):
+class ServeConfig(BaseConfig):
     """The `[serve]` block: the worker pool, the ZMQ address, and each worker's
-    episode bound. Read by whoever hosts the env — the `serve` CLI, a server-backed
-    eval, a trainer's orchestrator."""
+    episode bound. Read by whoever hosts the env — a server-backed eval, a
+    trainer's env-server process."""
 
     pool: PoolConfig = Field(default_factory=ElasticPoolConfig)
     """Worker-pool sizing. `elastic` (default) starts at one worker and scales up on

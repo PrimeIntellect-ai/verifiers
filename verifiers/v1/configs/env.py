@@ -100,7 +100,10 @@ class EnvConfig(BaseConfig):
         """Narrow `taskset` to its concrete config type by `id`; lazy import for
         the same reason as `AgentConfig._resolve_harness`."""
         if isinstance(data, dict) and data.get("taskset") is not None:
-            from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
+            from verifiers.v1.utils.loaders import (
+                narrow_plugin_field,
+                taskset_config_type,
+            )
 
             narrow_plugin_field(data, "taskset", taskset_config_type)
         return data
@@ -157,7 +160,7 @@ def _declared_agent_configs(config: EnvConfig) -> dict[str, AgentConfig]:
 def default_agent_harness(taskset_id: str) -> HarnessConfig:
     """What an unpinned role's `harness=None` resolves to: the taskset's bundled
     harness when it ships one, else the built-in `bash`."""
-    from verifiers.v1.loaders import default_harness_id, harness_config_type
+    from verifiers.v1.utils.loaders import default_harness_id, harness_config_type
 
     ident = default_harness_id(taskset_id)
     return harness_config_type(ident).model_validate({"id": ident})

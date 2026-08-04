@@ -334,7 +334,7 @@ class DockerRuntime(Runtime):
         if run.exit_code != 0:
             raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
 
-    async def read(self, path: str) -> bytes:
+    async def _read(self, path: str) -> bytes:
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",

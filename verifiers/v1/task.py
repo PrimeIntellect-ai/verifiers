@@ -3,8 +3,8 @@
 `TaskData` is the wire half: a frozen pydantic model carrying the data which
 initializes a task instance. Rides on `trace.task.data` in `traces.jsonl`.
 
-`Task` is the behavior half: runtime prep (`setup`/`finalize`), tool declarations
-(`tools`), and scoring (`@reward`/`@metric`) methods.
+`Task` is the behavior half: runtime prep (`setup`/`finalize`), tool servers
+(`toolsets`), and scoring (`@reward`/`@metric`) methods.
 """
 
 from __future__ import annotations
@@ -16,15 +16,19 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, Self
 
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
-from verifiers.v1.artifacts import Artifact
 from verifiers.v1.configs.task import TaskConfig
-from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, content_text
+from verifiers.v1.utils.artifacts import Artifact
+from verifiers.v1.utils.decorators import (
+    discover_decorated,
+    invoke_all,
+    seed,
+    unseed,
+)
 from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
@@ -122,36 +126,9 @@ DataT = TypeVar("DataT", bound=TaskData)
 ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 
-def resolve_server_config(
-    owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
-) -> BaseConfig:
-    """The config a declared server class is built with, resolved off `config`'s
-    fields: exact type match, else — only for a `sole` declared server — the unique
-    isinstance match, else a default-constructed one. Two matching fields raise; the
-    `server_config` methods are the explicit-pairing override. The isinstance
-    fallback is `sole`-gated because with several servers a subclass-typed field
-    could silently pair with the wrong one."""
-    cfg_cls = server_cls._config_cls()
-    values = {name: getattr(config, name) for name in type(config).model_fields}
-    matched = [name for name, v in values.items() if type(v) is cfg_cls]
-    if not matched and sole:
-        matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
-    if len(matched) > 1:
-        raise TaskError(
-            f"{owner}: ambiguous config for {server_cls.__name__} — config fields "
-            f"{matched} all match {cfg_cls.__name__}; override `server_config` to pair "
-            f"them explicitly"
-        )
-    if matched:
-        return values[matched[0]]
-    return cfg_cls()
-
-
 class Task(Generic[DataT, StateT, ConfigT]):
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether the task needs a containerized environment (isolated filesystem, ...)."""
-
-    tools: ClassVar[tuple[type[Toolset], ...]] = ()
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
@@ -208,31 +185,36 @@ class Task(Generic[DataT, StateT, ConfigT]):
                     judge for judge in judges if not requires_runtime(judge.score)
                 ]
 
+            seed(trace.metrics, (fn.__name__ for fn in metrics))
+            seed(trace.rewards, (fn.__name__ for fn in rewards))
+            seed(trace.rewards, (judge.reward_name for judge in judges))
+
             metric_results = await invoke_all(metrics, available)
             for fn, result in zip(metrics, metric_results):
                 if isinstance(result, Mapping):
+                    unseed(trace.metrics, fn.__name__)
                     trace.record_metrics(result)
                 else:
                     trace.record_metric(fn.__name__, result)
             reward_results = await invoke_all(rewards, available)
             for fn, result in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)
-                items = (
-                    result.items()
-                    if isinstance(result, Mapping)
-                    else [(fn.__name__, result)]
-                )
+                if isinstance(result, Mapping):
+                    unseed(trace.rewards, fn.__name__)
+                    items = result.items()
+                else:
+                    items = [(fn.__name__, result)]
                 for key, value in items:
                     trace.record_reward(key, value, weight)
             judge_results = await invoke_all(
                 [judge.score for judge in judges], available
             )
             for judge, result in zip(judges, judge_results):
-                items = (
-                    result.items()
-                    if isinstance(result, Mapping)
-                    else [(judge.reward_name, result)]
-                )
+                if isinstance(result, Mapping):
+                    unseed(trace.rewards, judge.reward_name)
+                    items = result.items()
+                else:
+                    items = [(judge.reward_name, result)]
                 for key, value in items:
                     trace.record_reward(key, value, judge.config.weight)
 
@@ -245,20 +227,22 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return concrete_type(cls, TaskConfig) or TaskConfig
 
     def plugged_judges(self) -> list[Judge]:
-        from verifiers.v1.loaders import load_judge
+        from verifiers.v1.utils.loaders import load_judge
 
         return [load_judge(config) for config in self.config.judges]
 
-    def server_config(self, server_cls: type) -> BaseConfig:
-        return resolve_server_config(
-            type(self).__name__,
-            self.config,
-            server_cls,
-            sole=len(set(type(self).tools)) == 1,
-        )
+    @classmethod
+    def toolsets(cls, config: ConfigT) -> list[Toolset]:
+        """Tool servers launched per rollout, each constructed with its config off
+        `config` — override and wire explicitly:
 
-    def tool_servers(self) -> list[Toolset]:
-        return [cls(self.server_config(cls)) for cls in type(self).tools]
+            @classmethod
+            def toolsets(cls, config: MyTaskConfig) -> list[vf.Toolset]:
+                return [SearchToolset(config.tools)]
+
+        A classmethod so consumers can size placement (tunnels) off the class
+        before any task instance exists."""
+        return []
 
 
 TaskT = TypeVar("TaskT", bound=Task)

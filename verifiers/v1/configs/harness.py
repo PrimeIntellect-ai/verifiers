@@ -20,6 +20,8 @@ class HarnessConfig(BaseConfig):
     """Extra program variables; harness-owned variables take precedence."""
     forward_env: list[str] = Field(default_factory=list)
     """Host variables to forward without writing secrets into config; explicit `env` wins."""
+    tool_timeout: float = Field(600.0, gt=0)
+    """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
     disabled_tools: list[str] | None = None
     skills: list[Path] = Field(default_factory=list)
     """Skill folders to upload into the program's skill discovery directory — each

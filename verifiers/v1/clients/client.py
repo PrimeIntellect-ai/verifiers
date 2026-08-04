@@ -1,22 +1,21 @@
 """Client interfaces for model inference and relay."""
 
-import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    ClientConfig,
+    TrainClientConfig,
+)
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
 
-logger = logging.getLogger(__name__)
-
 SESSION_ID_HEADER = "X-Session-ID"
-"""Per-rollout routing header. Every turn of one rollout sends the same value (the trace id),
-so a session-affinity router (e.g. vLLM's ``consistent_hash`` policy keyed on its
-``request_id_headers``) pins all of a rollout's turns to the same engine — keeping the
-growing cross-turn prefix warm in that engine's KV cache instead of re-prefilling it
-cold on a random shard each turn."""
+"""Per-rollout routing header (the trace id, same value every turn), so a session-affinity
+router pins a rollout's turns to one engine and its growing prefix stays KV-cached."""
 
 
 @dataclass
@@ -49,14 +48,10 @@ class Client(ABC):
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
-        """Run one completion -> a vf `Response`. The eval client forwards the native JSON and
-        eligible end-to-end headers, then parses a copy via `dialect`; the train client derives
-        the typed prompt from `body` and tokenizes it.
-
-        `session_id` is the rollout's stable id (the trace id); when set, the client sends it
-        as the `SESSION_ID_HEADER` so a session-affinity router keeps the rollout's turns on
-        one engine for cross-turn prefix-cache reuse. `turn` is the graph-resolved prompt
-        prefix; train clients may use it for renderer bridging, while relay clients ignore it."""
+        """Run one completion -> a vf `Response`. The eval client forwards the native JSON
+        and parses a copy via `dialect`; the train client renders `body` to token ids.
+        `session_id` is the rollout's trace id (sent as `SESSION_ID_HEADER`); `turn` is the
+        graph-resolved prompt prefix, used by train clients for renderer bridging."""
 
     async def relay(
         self,
@@ -87,10 +82,20 @@ class Client(ABC):
         pass
 
 
+def resolve_client(config: BaseClientConfig) -> Client:
+    if isinstance(config, TrainClientConfig):
+        from verifiers.v1.clients.train import TrainClient
+
+        return TrainClient(config)
+    from verifiers.v1.clients.eval import EvalClient
+
+    return EvalClient(config)
+
+
 @dataclass(frozen=True)
 class ModelContext:
-    """Client, model, and sampling settings for one rollout."""
+    """Model, endpoint config, and sampling for one rollout."""
 
     model: str
-    client: Client
+    client: ClientConfig
     sampling: Sampling = field(default_factory=Sampling)

@@ -26,12 +26,10 @@ class BaseInterceptionConfig(BaseConfig):
     `multiplex`)."""
 
 
-# (base_url, secret): the interception server's reachable base URL for this rollout, and the
-# bearer the harness/tool servers authenticate with. The harness reaches the model at
-# `{base_url}/v1`; tool servers reach this rollout's shared state at `{base_url}/state`
-# + `/task`. `base_url` is universally reachable — the interception is exposed (tunnel)
+# (base_url, model_secret, state_secret): model inference and task state deliberately use
+# separate capabilities. `base_url` is universally reachable — the interception is exposed
 # whenever any consumer is remote.
-Slot = tuple[str, str]
+Slot = tuple[str, str, str]
 
 
 class Interception(ABC):

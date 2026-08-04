@@ -13,7 +13,7 @@ from typing import (
 )
 
 from verifiers.v1.agent import Agent, Agents, _EpisodeAgent
-from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.env import (
     EnvConfig,
@@ -29,12 +29,12 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.retries import run_episode_with_retry
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
-from verifiers.v1.task import Task, resolve_server_config
+from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
-from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.generic import concrete_type, deep_merge
 from verifiers.v1.utils.memory import trim_memory_periodically
+from verifiers.v1.utils.retries import run_episode_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class Env(ABC, Generic[ConfigT]):
     task the agent actually receives — an env-minted task carries its own needs."""
 
     def __init__(self, config: ConfigT) -> None:
-        from verifiers.v1.loaders import load_harness, load_taskset
+        from verifiers.v1.utils.loaders import load_harness, load_taskset
 
         config_cls = concrete_type(type(self), EnvConfig, origin=Env) or EnvConfig
         if not isinstance(config, config_cls):
@@ -138,8 +138,6 @@ class Env(ABC, Generic[ConfigT]):
         # Serving resources, live only inside `serving()`; the env's agents borrow them.
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
-        # Clients for endpoint-pinning roles, cached by config, closed with serving().
-        self._agent_clients: dict[str, Client] = {}
         # Resource warnings dedupe env-wide (agents are per-episode).
         self._warned_resources: set = set()
 
@@ -204,22 +202,26 @@ class Env(ABC, Generic[ConfigT]):
 
         def make(name: str, spec: AgentConfig) -> Agent:
             # Unpinned fields fall back to the run's ctx / the taskset's harness.
+            sampling = ctx.sampling
+            if spec.sampling is not None:
+                sampling = sampling.model_copy(
+                    update=deep_merge(
+                        sampling.model_dump(exclude_unset=True),
+                        spec.sampling.model_dump(exclude_unset=True),
+                    )
+                )
             resolved = spec.model_copy(
                 update={
                     "harness": spec.harness
                     if spec.harness is not None
                     else self._default_harness,
                     "model": spec.model if spec.model is not None else ctx.model,
-                    "sampling": spec.sampling
-                    if spec.sampling is not None
-                    else ctx.sampling,
+                    "sampling": sampling,
+                    "client": spec.client if spec.client is not None else ctx.client,
                 }
             )
             return _EpisodeAgent(
                 resolved,
-                client=self._client_for(spec.client)
-                if spec.client is not None
-                else ctx.client,
                 interception=self._interception,
                 name=name,
                 shared_tools=self._shared_tools,
@@ -233,13 +235,6 @@ class Env(ABC, Generic[ConfigT]):
 
         agents = Agents(self.config, make)
         return agents
-
-    def _client_for(self, config: ClientConfig) -> Client:
-        """Resolve (and cache by config) an agent-pinned endpoint's client."""
-        key = config.model_dump_json()
-        if key not in self._agent_clients:
-            self._agent_clients[key] = resolve_client(config)
-        return self._agent_clients[key]
 
     async def run_episode(
         self,
@@ -350,7 +345,13 @@ class Env(ABC, Generic[ConfigT]):
         run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(
-                self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+                self.config.interception,
+                requires_tunnel=self._requires_tunnel(shared),
+                state_service_secrets=tuple(
+                    server.state_secret
+                    for server in shared.values()
+                    if server.state_secret
+                ),
             )
             async with interception:
                 self._shared_tools = shared
@@ -365,10 +366,6 @@ class Env(ABC, Generic[ConfigT]):
                     finally:
                         self._shared_tools = {}
                         self._interception = None
-                        clients, self._agent_clients = self._agent_clients, {}
-                        for client in clients.values():
-                            with contextlib.suppress(Exception):
-                                await client.close()
 
     def _runs_local(self) -> bool:
         """Whether every role's runtime policy is local (any remote role means tunnels)."""
@@ -378,24 +375,17 @@ class Env(ABC, Generic[ConfigT]):
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: role
-        runtimes, live `shared` servers, and the task class's tool servers;
-        a class overriding `server_config` conservatively counts as remote."""
+        runtimes, live `shared` servers, and the task class's tool servers
+        (`Task.toolsets` is a classmethod, so no task instance is needed)."""
         task_cls = type(self.taskset).task_type()
-        server_classes = [*task_cls.tools]
-        if server_classes and task_cls.server_config is not Task.server_config:
-            return True
-        sole = len({*task_cls.tools}) == 1
         configs = [
-            resolve_server_config(
-                task_cls.__name__, self.taskset.config.task, server_cls, sole=sole
-            )
-            for server_cls in server_classes
+            server.config for server in task_cls.toolsets(self.taskset.config.task)
         ]
         return requires_tunnel(self._runs_local(), configs, shared.values())
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        servers = self.taskset.tool_servers()
+        servers = self.taskset.toolsets(self.taskset.config)
         if not servers:
             yield {}
             return

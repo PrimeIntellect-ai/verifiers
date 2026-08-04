@@ -17,15 +17,15 @@ import asyncio
 import contextlib
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import zmq
 import zmq.asyncio
-from pydantic import ValidationError
+from pydantic import BeforeValidator, OnErrorOmit, TypeAdapter, ValidationError
 
 from verifiers.v1 import graph
-from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.client import ClientConfig, TrainClientConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
@@ -77,19 +77,19 @@ def _as_dict(obj: Any) -> Any:
     return obj
 
 
+TOOLS_ADAPTER = TypeAdapter(
+    list[OnErrorOmit[Annotated[Tool, BeforeValidator(_as_dict)]]]
+)
+
+
 def _to_v1_tools(raw: Any) -> list[Tool] | None:
     """Map v0 ``RolloutOutput.tool_defs`` onto ``Trace.tools``. The v0 and v1 ``Tool``
     shapes are identical (name/description/parameters/strict), so this is a re-validation;
     malformed entries are dropped rather than failing the whole trace mapping."""
-    defs: list[Tool] = []
-    for t in raw or []:
-        t = _as_dict(t)
-        if not isinstance(t, dict):
-            continue
-        try:
-            defs.append(Tool.model_validate(t))
-        except ValidationError:
-            continue
+    try:
+        defs = TOOLS_ADAPTER.validate_python(raw or [])
+    except ValidationError:
+        return None
     return defs or None
 
 
@@ -278,8 +278,8 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         # base task type above.
         agent=AgentInfo(config=AgentConfig()),
         tools=_to_v1_tools(out.get("tool_defs")) or [],
-        rewards={"reward": Reward(score=float(out.get("reward") or 0.0))},
-        metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
+        rewards={"reward": Reward(score=out.get("reward") or 0.0)},
+        metrics=out.get("metrics") or {},
         info=dict(out.get("info") or {}),
         is_completed=bool(out.get("is_completed", True)),
         # Bridged rollouts are complete by construction; the sentinel mirrors
@@ -387,6 +387,14 @@ class LegacyEnvServer(EnvServer):
         # are no serving resources to enter.
         return contextlib.nullcontext()
 
+    async def run(self) -> None:
+        try:
+            await super().run()
+        finally:
+            for client in self._clients.values():
+                with contextlib.suppress(Exception):
+                    await client.close()
+
     def _v0_client(self, client_config: ClientConfig, model: str):
         """Translate a v1 ``ClientConfig`` into a v0 client (cached). A renderer config
         (token-in/out, training) builds a v0 renderer client whose tokenizer is pinned to
@@ -408,7 +416,6 @@ class LegacyEnvServer(EnvServer):
                     client_type="renderer",
                     renderer_config=client_config.renderer,
                     renderer_model_name=renderer_model,
-                    renderer_pool_size=client_config.pool_size,
                     api_base_url=client_config.base_url,
                     api_key_var=client_config.api_key_var,
                     extra_headers=dict(client_config.headers or {}),
@@ -525,11 +532,12 @@ def _legacy_output_dir(config) -> Path:
 async def run_legacy_eval(config) -> list[Episode]:
     """Run a legacy environment in process and return v1 episode records."""
     import asyncio
+    import random
 
     from verifiers import load_environment
     from verifiers.v1.cli.output import append_trace, save_config
+    from verifiers.v1.taskset import SEED
     from verifiers.v1.utils.install import ensure_installed, env_name
-    from verifiers.v1.utils.sampling import sample
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
     # already importable), then load by module name.
@@ -541,7 +549,10 @@ async def run_legacy_eval(config) -> list[Episode]:
     ):  # post-load knobs (max_total_completion_tokens, …)
         env.set_kwargs(**config.legacy.extra_env_kwargs)
     dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
-    idxs = sample(list(range(len(dataset))), config.shuffle, config.num_tasks)
+    idxs = list(range(len(dataset)))
+    if config.shuffle:
+        random.Random(SEED).shuffle(idxs)
+    idxs = idxs[: config.num_tasks]
 
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)

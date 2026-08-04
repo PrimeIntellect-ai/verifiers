@@ -4,12 +4,6 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACP
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
-from verifiers.v1.artifacts import (
-    ARTIFACTS_DIR,
-    Artifact,
-    collect,
-    restore,
-)
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -28,13 +22,12 @@ from verifiers.v1.configs.legacy import LegacyEnvConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.serve import (
     ElasticPoolConfig,
-    ServingConfig,
+    ServeConfig,
     StaticPoolConfig,
     pool_serve_kwargs,
 )
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.decorators import metric, reward, stop, tool
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.episode import Episode, WireEpisode
@@ -59,24 +52,6 @@ from verifiers.v1.judges import (
     RubricJudge,
     RubricJudgeConfig,
 )
-from verifiers.v1.loaders import (
-    default_harness_id,
-    env_config_type,
-    environment_class,
-    harness_config_type,
-    import_environment,
-    import_harness,
-    import_judge,
-    import_taskset,
-    judge_config_type,
-    load_environment,
-    load_harness,
-    load_judge,
-    load_taskset,
-    resolve_env_config,
-    task_type,
-    taskset_config_type,
-)
 from verifiers.v1.mcp import (
     SharedToolsetConfig,
     Toolset,
@@ -90,24 +65,6 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     RuntimeInfo,
     SubprocessConfig,
-)
-from verifiers.v1.scoring import (
-    compare_stdout_results as compare_stdout_results,
-)
-from verifiers.v1.scoring import (
-    extract_boxed_answer as extract_boxed_answer,
-)
-from verifiers.v1.scoring import (
-    parse_judge_choice as parse_judge_choice,
-)
-from verifiers.v1.scoring import (
-    parse_pytest_outcomes as parse_pytest_outcomes,
-)
-from verifiers.v1.scoring import (
-    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
-)
-from verifiers.v1.scoring import (
-    verify_boxed_math_answer as verify_boxed_math_answer,
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
@@ -153,6 +110,13 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
+from verifiers.v1.utils.artifacts import (
+    ARTIFACTS_DIR,
+    Artifact,
+    collect,
+    restore,
+)
+from verifiers.v1.utils.decorators import metric, reward, stop, tool
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
 )
@@ -161,6 +125,42 @@ from verifiers.v1.utils.git import (
 )
 from verifiers.v1.utils.git import (
     resolve_head as resolve_head,
+)
+from verifiers.v1.utils.loaders import (
+    default_harness_id,
+    env_config_type,
+    environment_class,
+    harness_config_type,
+    import_environment,
+    import_harness,
+    import_judge,
+    import_taskset,
+    judge_config_type,
+    load_environment,
+    load_harness,
+    load_judge,
+    load_taskset,
+    resolve_env_config,
+    task_type,
+    taskset_config_type,
+)
+from verifiers.v1.utils.score import (
+    compare_stdout_results as compare_stdout_results,
+)
+from verifiers.v1.utils.score import (
+    extract_boxed_answer as extract_boxed_answer,
+)
+from verifiers.v1.utils.score import (
+    parse_judge_choice as parse_judge_choice,
+)
+from verifiers.v1.utils.score import (
+    parse_pytest_outcomes as parse_pytest_outcomes,
+)
+from verifiers.v1.utils.score import (
+    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
+)
+from verifiers.v1.utils.score import (
+    verify_boxed_math_answer as verify_boxed_math_answer,
 )
 
 __all__ = [  # noqa: RUF022 - grouped by public API area
@@ -254,7 +254,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Env",
     "SingleAgentEnv",
     "EnvConfig",
-    "ServingConfig",
+    "ServeConfig",
     "LegacyEnvConfig",
     "resolve_env_field",
     "narrowed_env_annotation",
