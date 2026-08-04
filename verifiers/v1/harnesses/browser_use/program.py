@@ -6,7 +6,6 @@
 #     "mcp>=1.24.0,<2",
 #     "httpx",
 #     "tenacity",
-#     "pydantic>=2.13.4",
 # ]
 # ///
 """A chat loop whose one local tool drives a real Chromium over CDP.
@@ -19,6 +18,7 @@ Trace-scoped state preserves tabs across resume and records owned process IDs.
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -33,14 +33,10 @@ from urllib.parse import urlsplit
 
 import httpx
 from openai import AsyncOpenAI
-from pydantic import TypeAdapter, ValidationError
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
-
-JSON_OBJECT_ADAPTER = TypeAdapter(dict[str, Any])
-MESSAGES_ADAPTER = TypeAdapter(list[dict[str, Any]])
 
 BROWSER_TOOL_TIMEOUT = 3600
 """Matches the bash harness's command timeout."""
@@ -326,7 +322,7 @@ async def main() -> None:
         path = Path(args.initial_messages_file)
         payload = path.read_bytes()
         path.unlink()
-        initial = MESSAGES_ADAPTER.validate_json(payload)
+        initial = json.loads(payload)
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     endpoint = (
@@ -341,7 +337,7 @@ async def main() -> None:
         ): endpoint,
     }
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
-    config = JSON_OBJECT_ADAPTER.validate_json(args.mcp_config or "{}")
+    config = json.loads(args.mcp_config or "{}")
     tools = [BROWSER_TOOL]
     reserved = {"browser"}
     mcp_tools, dispatch, servers = (
@@ -367,19 +363,24 @@ async def main() -> None:
         for call in message.tool_calls:
             name = call.function.name
             try:
-                tool_args = JSON_OBJECT_ADAPTER.validate_json(
-                    call.function.arguments or "{}"
-                )
-            except ValidationError as e:
+                tool_args = json.loads(call.function.arguments or "{}")
+            except json.JSONDecodeError as e:
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": call.id,
-                        "content": (
-                            "error: invalid tool arguments "
-                            f"({e.errors(include_url=False)[0]['msg']}); "
-                            "resend as a JSON object"
-                        ),
+                        "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
+                    }
+                )
+                continue
+            # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
+            # below assume a dict, so reject anything else as a tool error rather than crashing.
+            if not isinstance(tool_args, dict):
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
                     }
                 )
                 continue

@@ -4,19 +4,9 @@ import json
 import logging
 import random
 import shlex
-from typing import Annotated, Literal, NotRequired
+from typing import Literal
 
-from pydantic import (
-    Field,
-    FiniteFloat,
-    OnErrorOmit,
-    PositiveInt,
-    Strict,
-    TypeAdapter,
-    ValidationError,
-    model_validator,
-)
-from typing_extensions import TypedDict
+from pydantic import Field, PositiveInt, model_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -30,13 +20,6 @@ from verifiers.v1.utils.decorators import metric
 logger = logging.getLogger(__name__)
 
 BuiltinSkill = Literal["edit", "search"]
-
-
-class _SessionMeta(TypedDict):
-    metrics: NotRequired[dict[str, OnErrorOmit[Annotated[FiniteFloat, Strict()]]]]
-
-
-_SESSION_META_ADAPTER = TypeAdapter(_SessionMeta)
 
 RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
 # rlm writes its session under $RLM_HOME/sessions/<id>/; point it at a workdir-
@@ -166,7 +149,11 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         if result.exit_code != 0 or not result.stdout.strip():
             return {}
         try:
-            meta = _SESSION_META_ADAPTER.validate_json(result.stdout)
-        except ValidationError:
+            meta = json.loads(result.stdout)
+        except json.JSONDecodeError:
             return {}
-        return meta.get("metrics", {})
+        return {
+            key: float(value)
+            for key, value in meta.get("metrics", {}).items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }

@@ -23,8 +23,8 @@ import verifiers.v1 as vf
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
-    _load_criteria,
-    _score_verdicts,
+    load_criteria,
+    score_verdicts,
 )
 from verifiers.v1.utils.compile import validate_pairing
 
@@ -240,7 +240,7 @@ class JudgeTaskConfig(vf.BaseConfig):
     def criteria(self) -> list[Criterion]:
         if self.rubric is None:
             return [SOLVED]
-        return _load_criteria(self.rubric)
+        return load_criteria(self.rubric)
 
 
 class ScoreConfig(vf.BaseConfig):
@@ -324,7 +324,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         solution, verdict = by_agent["solver"], by_agent["judge"]
         verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.criteria()
-        scores = _score_verdicts(verdicts, criteria, "the rubric's")
+        scores = score_verdicts(verdicts, criteria, "the rubric's")
         for criterion in criteria:
             solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
         if self.config.score.task_weight != 1.0:

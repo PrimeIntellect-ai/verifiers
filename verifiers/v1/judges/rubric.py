@@ -8,7 +8,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Annotated, cast
 
-from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
@@ -16,7 +16,7 @@ from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
 
-_CriterionWeight = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+CriterionWeight = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
     encoding="utf-8"
@@ -61,7 +61,7 @@ class Criterion(BaseModel):
     name: str
     """Key for the criterion's metric (`<judge name>/<name>`) and its `weights` override."""
     text: str
-    weight: _CriterionWeight = 1.0
+    weight: CriterionWeight = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
     choices: list[str] = Field(default_factory=lambda: ["no", "yes"], min_length=2)
     """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
@@ -75,28 +75,17 @@ class Criterion(BaseModel):
         return v
 
 
-_CRITERIA_ADAPTER = TypeAdapter(
-    Annotated[
-        list[Criterion],
-        BeforeValidator(
-            lambda value: (
-                value.get("criteria", []) if isinstance(value, dict) else value
-            )
-        ),
-    ]
-)
+CRITERIA_ADAPTER = TypeAdapter(list[Criterion])
 
 
-def _load_criteria(
-    path: Path, weights: dict[str, _CriterionWeight] | None = None
+def load_criteria(
+    path: Path, weights: dict[str, CriterionWeight] | None = None
 ) -> list[Criterion]:
-    """Load either supported rubric shape and apply validated config overrides."""
+    """Load a JSON or TOML rubric and apply validated config overrides."""
     text = path.read_text(encoding="utf-8")
-    criteria = (
-        _CRITERIA_ADAPTER.validate_python(tomllib.loads(text))
-        if path.suffix.lower() == ".toml"
-        else _CRITERIA_ADAPTER.validate_json(text)
-    )
+    data = tomllib.loads(text) if path.suffix.lower() == ".toml" else json.loads(text)
+    items = data.get("criteria", []) if isinstance(data, dict) else data
+    criteria = CRITERIA_ADAPTER.validate_python(items)
     if not criteria:
         raise ValueError(f"rubric file '{path}' lists no criteria")
     names = [criterion.name for criterion in criteria]
@@ -127,7 +116,7 @@ class RubricJudgeConfig(JudgeConfig):
     path: Path
     """A `.toml` or `.json` file containing a `criteria` list. Relative paths resolve
     against the evaluation's working directory."""
-    weights: dict[str, _CriterionWeight] = Field(default_factory=dict)
+    weights: dict[str, CriterionWeight] = Field(default_factory=dict)
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
     question_field: str = ""
     """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
@@ -164,7 +153,7 @@ class RubricVerdicts(BaseModel):
     verdicts: list[CriterionVerdict]
 
 
-def _score_verdicts(
+def score_verdicts(
     verdicts: list[CriterionVerdict],
     criteria: list[Criterion],
     expected: str,
@@ -200,7 +189,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
 
     @cached_property
     def criteria(self) -> list[Criterion]:
-        return _load_criteria(self.config.path, self.config.weights)
+        return load_criteria(self.config.path, self.config.weights)
 
     async def grade_batch(
         self, task: TaskData, trace: Trace, batch: list[Criterion]
@@ -249,7 +238,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 )
             verdicts = RubricVerdicts.model_validate(obj).verdicts
         # A malformed verdict is a judge failure and must error the rollout, not score the model.
-        return _score_verdicts(verdicts, batch, "the batch's")
+        return score_verdicts(verdicts, batch, "the batch's")
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria

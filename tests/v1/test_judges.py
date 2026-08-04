@@ -481,10 +481,14 @@ def test_rubric_criteria_toml_and_json(tmp_path):
     toml = rubric_judge(tmp_path).criteria
     assert [c.name for c in toml] == ["mentions_paris", "is_polite"]
     assert [c.weight for c in toml] == [3.0, 1.0]
-    # JSON: both the {"criteria": [...]} object and a bare list parse to the same rubric
+    # JSON accepts a metadata-bearing object or a bare criteria list.
     items = [c.model_dump() for c in toml]
     assert (
-        rubric_judge(tmp_path, json.dumps({"criteria": items}), ".json").criteria
+        rubric_judge(
+            tmp_path,
+            json.dumps({"title": "Safety", "criteria": items}),
+            ".json",
+        ).criteria
         == toml
     )
     assert rubric_judge(tmp_path, json.dumps(items), ".json").criteria == toml
