@@ -1,7 +1,5 @@
 """Expose NeMo Gym resource tools through Verifiers MCP."""
 
-from __future__ import annotations
-
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any

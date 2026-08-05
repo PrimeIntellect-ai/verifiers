@@ -1,7 +1,5 @@
 """NeMo Gym resource-server tasks driven by Verifiers harnesses."""
 
-from __future__ import annotations
-
 import asyncio
 import importlib.util
 import json
@@ -66,16 +64,9 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         response = await state.post("seed_session", self.data.row)
         response.raise_for_status()
         state.cookies.update(response.cookies)
-        metadata = response.json().get("mcp")
-        if metadata is None:
-            return
-        if metadata.get("transport") != "http":
-            raise ValueError(
-                f"unsupported NeMo Gym MCP transport: {metadata.get('transport')!r}"
-            )
-        mcp_path = metadata.get("url_path", "/mcp").lstrip("/")
-        state.mcp_url = f"{state.resources_url}/{mcp_path}"
-        state.mcp_headers = state.headers | (metadata.get("headers") or {})
+        if metadata := response.json().get("mcp"):
+            state.mcp_url = f"{state.resources_url}/{metadata['url_path'].lstrip('/')}"
+            state.mcp_headers = state.headers | metadata["headers"]
 
     @reward(weight=1.0)
     async def nemo_gym(self, trace: Trace) -> float:
@@ -87,16 +78,13 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         )
         response.raise_for_status()
         result = response.json()
-        details = {
-            key: value
-            for key, value in result.items()
-            if key not in {"responses_create_params", "response", "reward"}
-        }
-        trace.info["nemo_gym"] = details
-        for key, value in details.items():
+        reward = result.pop("reward")
+        del result["responses_create_params"], result["response"]
+        trace.info["nemo_gym"] = result
+        for key, value in result.items():
             if isinstance(value, (bool, int, float)):
                 trace.record_metric(key, float(value))
-        return float(result["reward"])
+        return float(reward)
 
 
 class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):

@@ -1,7 +1,5 @@
 """Convert Verifiers traces to NeMo Gym Responses objects."""
 
-from __future__ import annotations
-
 import json
 from typing import Any
 

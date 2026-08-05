@@ -12,7 +12,6 @@ from omegaconf import OmegaConf
 
 # Managed Gym servers share the evaluator host and never need a routable bind.
 HOST = "127.0.0.1"
-PORT_FILE = Path("nemo_gym.port")
 
 
 def main() -> None:
@@ -24,7 +23,7 @@ def main() -> None:
     module_name, class_name = os.environ["NEMO_GYM_RESOURCE_SERVER"].split(":", 1)
     server_class = getattr(import_module(module_name), class_name)
     config_class = server_class.model_fields["config"].annotation
-    name = module_name.split(".")[-2]
+    name = module_name.rsplit(".", 2)[-2] if "." in module_name else module_name
     server = server_class(
         config=config_class(name=name, host=HOST, port=port, entrypoint="app.py"),
         server_client=ServerClient(
@@ -35,7 +34,7 @@ def main() -> None:
     app = server.setup_webserver()
     server.setup_liveness(app)
     server.setup_exception_middleware(app)
-    PORT_FILE.write_text(str(port), encoding="ascii")
+    Path("nemo_gym.port").write_text(str(port), encoding="ascii")
     uvicorn.Server(uvicorn.Config(app, host=HOST, port=port)).run(sockets=[sock])
 
 
