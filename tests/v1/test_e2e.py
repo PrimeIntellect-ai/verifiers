@@ -314,7 +314,6 @@ async def test_tool_response_image(run_v1, tmp_path):
         "tool-response-image-v1",
         harness="null",
         runtime={"type": "subprocess"},
-        model="openai/gpt-5.6-luna",
         reasoning_effort="none",
         output_dir=tmp_path,
         max_turns=4,
