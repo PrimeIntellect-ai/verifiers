@@ -138,6 +138,10 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> HarnessSession:
+        if not runtime.supports_live_processes:
+            return await super().session(
+                ctx, trace, runtime, endpoint, secret, mcp_urls, data
+            )
         system_prompt, prompt = self.resolve_prompt(data)
         return RLM_ACP.session(
             self,

@@ -116,6 +116,49 @@ class Harness(ABC, Generic[ConfigT]):
                 # `write` moves bytes, not modes; restore the execute bits scripts need.
                 await runtime.run(["chmod", "+x", *executables], {})
 
+    async def run(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+        messages: Messages | None = None,
+    ) -> None:
+        """Run ONE segment of the exchange without retaining a process: the program
+        from launch (or, with `messages`, the user's next turn(s) via `resume`) until
+        it yields. The rollout loop owns the exchange across segments."""
+        async with boundary(HarnessError, f"harness {self.config.id!r}"):
+            if messages is None:
+                result = await self.launch(
+                    ctx, trace, runtime, endpoint, secret, mcp_urls, data
+                )
+            else:
+                result = await self.resume(
+                    ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages
+                )
+        await self._check_result(trace, runtime, result)
+
+    async def _check_result(
+        self, trace: Trace, runtime: Runtime, result: ProgramResult
+    ) -> None:
+        if trace.stop_condition is not None:
+            return  # a @stop refused a turn mid-rollout; the exit is expected
+        if result.exit_code == 0:
+            return
+        # The real cause is at the END of a traceback, so keep the tail.
+        detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
+        if not await runtime.alive():
+            raise SandboxError(
+                f"runtime died under harness {self.config.id!r} "
+                f"(exit {result.exit_code}): {detail}"
+            )
+        raise HarnessError(
+            f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
+        )
+
     async def session(
         self,
         ctx: ModelContext,
@@ -261,20 +304,7 @@ class HarnessSession:
             )
         async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
             result = await self._run(messages)
-        if self.trace.stop_condition is not None:
-            return  # a @stop refused a turn mid-rollout; the exit is expected
-        if result.exit_code != 0:
-            # The real cause is at the END of a traceback, so keep the tail.
-            detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
-            if not await self.runtime.alive():
-                raise SandboxError(
-                    f"runtime died under harness {self.harness.config.id!r} "
-                    f"(exit {result.exit_code}): {detail}"
-                )
-            raise HarnessError(
-                f"harness {self.harness.config.id!r} exited "
-                f"{result.exit_code}: {detail}"
-            )
+        await self.harness._check_result(self.trace, self.runtime, result)
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
         if messages is None:

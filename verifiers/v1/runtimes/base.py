@@ -178,6 +178,11 @@ class Runtime(ABC):
 
     info: BaseRuntimeInfo
 
+    @property
+    def supports_live_processes(self) -> bool:
+        """Whether `open_process()` is implemented for this runtime instance."""
+        return type(self).open_process is not Runtime.open_process
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         self._uv_interpreters: dict[str, str] = {}

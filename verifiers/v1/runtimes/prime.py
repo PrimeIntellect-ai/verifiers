@@ -131,6 +131,10 @@ class PrimeRuntime(Runtime):
         self._client = None
 
     @property
+    def supports_live_processes(self) -> bool:
+        return self.config.vm
+
+    @property
     def published_port(self) -> int | None:
         return SERVICE_PORT
 
