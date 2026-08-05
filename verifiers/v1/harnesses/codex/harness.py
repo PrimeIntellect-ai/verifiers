@@ -106,7 +106,6 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             env,
             ACP_COMMAND,
             prompt,
-            mcp_urls=mcp_urls,
             system_prompt=system_prompt,
             session_path=f"{self._home(trace)}/acp-session",
         )
@@ -141,11 +140,10 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         mcp_config = (
             "mcp_servers={"
             + ",".join(
-                f"{json.dumps(server_name, ensure_ascii=False)}="
+                f"{json.dumps(name, ensure_ascii=False)}="
                 f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
                 f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
                 for name, url in mcp_urls.items()
-                for server_name in (re.sub(r"\s", "_", name),)
             )
             + "}"
             if mcp_urls
