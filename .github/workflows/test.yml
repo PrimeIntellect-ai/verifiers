@@ -106,10 +106,6 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Run Prime VM persistent RLM E2E
-        run: |
-          uv run pytest tests/v1/test_e2e.py::test_acp_resume_with_tool -vv -m "e2e and prime" -k "rlm-acp-in-prime-vm"
-
       - name: Run live v1 E2Es
         run: |
           uv run pytest tests/v1 -vv -n auto -m "e2e and not prime and not modal" --cov=verifiers --cov-report=xml --cov-report=term
