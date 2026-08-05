@@ -18,6 +18,7 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.intercepts.core import InterceptRecord
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -25,6 +26,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     KeptTokens,
+    Message,
     Messages,
     Sampling,
     Tool,
@@ -332,6 +334,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph; branches are derived views and storage stays linear in turns."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
+    interceptions: list[InterceptRecord] = Field(default_factory=list)
+    """Rewrites and terminations produced by task interceptors."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -407,6 +411,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 )
             )
         return branches
+
+    @property
+    def last_message(self) -> Message:
+        """The final message, including an uncommitted interception candidate in trace views."""
+        if not self.nodes:
+            raise ValueError("trace has no messages")
+        return self.nodes[-1].message
 
     @property
     def num_branches(self) -> int:

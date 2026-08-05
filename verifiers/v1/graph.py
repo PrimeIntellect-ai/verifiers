@@ -370,10 +370,45 @@ class PendingTurn:
 
     def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
-        assistant_id = _commit_turn(self, response)
+        node_id = _commit_turn(self, response)
         if tools:
             self.trace.tools = tools
-        return assistant_id
+        return node_id
+
+    def scoped_trace(self, response: Response | None = None) -> Trace:
+        """Return a trace view whose final branch ends in this interception candidate."""
+        nodes = [
+            self.trace.nodes[node_id].model_copy(
+                update={"parent": index - 1 if index else None}
+            )
+            for index, node_id in enumerate(self.prefix_node_ids)
+        ]
+        for message in self.tail:
+            nodes.append(
+                MessageNode.model_construct(
+                    parent=len(nodes) - 1 if nodes else None,
+                    message=message,
+                )
+            )
+        if response is not None:
+            nodes.append(
+                MessageNode.model_construct(
+                    parent=len(nodes) - 1 if nodes else None,
+                    message=response.message,
+                    sampled=True,
+                )
+            )
+        node_ids = {
+            node_id: index for index, node_id in enumerate(self.prefix_node_ids)
+        }
+        calls = [
+            call.model_copy(update={"node": node_ids[call.node]})
+            for call in self.trace.calls
+            if call.node in node_ids
+        ]
+        view = self.trace.model_copy(update={"nodes": nodes, "calls": calls})
+        view._head_index = {}
+        return view
 
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
