@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -81,6 +82,55 @@ trap - EXIT
 """
 
 PRIME_AGENT_ACP = ACP()
+
+
+def _guarded_install(root: str, lock: str, command: str) -> str:
+    """Guard an install with a lock tied to one Linux process lifetime."""
+    return (
+        "set -eu\n"
+        f"mkdir -p {shlex.quote(root)}\n"
+        f"lock={shlex.quote(lock)}\n"
+        "self_start=$(awk '{print $22}' \"/proc/$$/stat\")\n"
+        'case "$self_start" in\n'
+        "  ''|*[!0-9]*) echo 'prime-agent: cannot identify installer process' >&2; "
+        "exit 1 ;;\n"
+        "esac\n"
+        'owner="$$:$self_start"\n'
+        'while ! ln -s "$owner" "$lock" 2>/dev/null; do\n'
+        '  current=$(readlink "$lock" 2>/dev/null || true)\n'
+        "  stale=0\n"
+        '  case "$current" in\n'
+        "    *:*)\n"
+        "      pid=${current%%:*}\n"
+        "      start=${current#*:}\n"
+        '      case "$pid" in\n'
+        "        ''|*[!0-9]*) stale=1 ;;\n"
+        "      esac\n"
+        '      case "$start" in\n'
+        "        ''|*[!0-9]*) stale=1 ;;\n"
+        "      esac\n"
+        '      if [ "$stale" -eq 0 ]; then\n'
+        "        live_start=$(awk '{print $22}' \"/proc/$pid/stat\" "
+        "2>/dev/null || true)\n"
+        '        [ "$live_start" = "$start" ] || stale=1\n'
+        "      fi\n"
+        "      ;;\n"
+        "    *) stale=1 ;;\n"
+        "  esac\n"
+        '  if [ "$stale" -eq 1 ] \\\n'
+        '      && [ "$(readlink "$lock" 2>/dev/null || true)" = "$current" ]; then\n'
+        '    rm -f "$lock"\n'
+        "  fi\n"
+        "  sleep 0.1\n"
+        "done\n"
+        "release_install_lock() {\n"
+        '  if [ "$(readlink "$lock" 2>/dev/null || true)" = "$owner" ]; then\n'
+        '    rm -f "$lock"\n'
+        "  fi\n"
+        "}\n"
+        "trap release_install_lock EXIT\n"
+        f"{command}\n"
+    )
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
@@ -192,7 +242,9 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
 
     @staticmethod
     def trace_root(trace: Trace) -> str:
-        return f"{STATE_ROOT}-{trace.id}"
+        # Keep nested Unix socket paths short while retaining a 128-bit key.
+        trace_key = hashlib.sha256(trace.id.encode()).hexdigest()[:32]
+        return f"{STATE_ROOT}/{trace_key}"
 
     @classmethod
     def agent_dir(cls, trace: Trace) -> str:
@@ -211,17 +263,10 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         logger.info("prime-agent: ensuring %s is installed", self.config.version)
         install_dir = self.install_dir()
         lock = f"{install_dir}.install.lock"
-        guarded = (
-            f"mkdir -p {shlex.quote(INSTALL_ROOT)} && "
-            f'until ln -s "$$" {shlex.quote(lock)} 2>/dev/null; do '
-            f"owner=$(readlink {shlex.quote(lock)}); "
-            f'if ! kill -0 "$owner" 2>/dev/null; then '
-            f'[ "$(readlink {shlex.quote(lock)})" != "$owner" ] || '
-            f"rm -f {shlex.quote(lock)}; fi; "
-            f"sleep 0.1; done; "
-            f'trap \'[ "$(readlink {shlex.quote(lock)})" != "$$" ] || '
-            f"rm -f {shlex.quote(lock)}' EXIT; "
-            f"sh -c {shlex.quote(INSTALL)}"
+        guarded = _guarded_install(
+            INSTALL_ROOT,
+            lock,
+            f"sh -c {shlex.quote(INSTALL)}",
         )
         install = await runtime.run(
             ["sh", "-c", guarded],
