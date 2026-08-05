@@ -65,6 +65,10 @@ ACP_RESUME_PLACEMENTS = [
     _pair("rlm", "prime", "rlm-acp-in-prime-vm"),
 ]
 
+PRIME_AGENT_RESUME_PLACEMENTS = [
+    _pair("prime-agent", "docker", "prime-agent-acp-in-docker"),
+]
+
 # harness runtime x tool placement: every axis value once plus the two-container case
 # (harness and tool in separate docker boxes) and a prime-colocated row (a tool in its
 # OWN prime sandbox needs port exposure; colocated rides the harness's box).
@@ -265,6 +269,30 @@ async def test_prime_agent_persists_native_acp_session(run_v1, tmp_path):
         for message in trace.branches[-1].messages
         if message.role == "user"
     )
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    "harness,harness_runtime", PRIME_AGENT_RESUME_PLACEMENTS, indirect=True
+)
+async def test_prime_agent_acp_resume(run_v1, harness, harness_runtime, tmp_path):
+    """Prime Agent retains its live IPython kernel across interaction segments."""
+    (trace,) = await run_v1(
+        "prime-agent-acp-resume-v1",
+        harness=harness,
+        runtime={"type": harness_runtime},
+        output_dir=tmp_path,
+        max_turns=8,
+        max_tokens=8192,
+        rollout_timeout=600,
+    )
+    assert trace.ok, trace.errors
+    assert trace.stop_condition == "user_closed"
+    assert trace.rewards["resumed"].score == 1.0
+    segments = trace.info["prime_agent_segments"]
+    assert len(segments) == 2
+    assert segments[0]["terminated"] is False
+    assert segments[1]["terminated"] is False
 
 
 @pytest.mark.e2e
