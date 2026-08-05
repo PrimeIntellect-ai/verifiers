@@ -53,11 +53,22 @@ if [ -f /etc/alpine-release ]; then
     fi
     node_bin="$(dirname "$(command -v node)")"
 else
-    command -v curl >/dev/null 2>&1 \
-        || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
+    if ! command -v curl >/dev/null 2>&1; then
+        # Only Debian-family images are provisioned here; say so instead of
+        # failing with "apt-get: not found" on a distro this cannot bootstrap.
+        command -v apt-get >/dev/null 2>&1 \
+            || { echo "prime-agent setup needs curl, or apt-get to install it" >&2; exit 1; }
+        apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
+    fi
     case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
     if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_PRIME_AGENT_NODE_VERSION" ]; then
-        case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
+        # Reject an unknown machine like the OS check does: guessing x64 would
+        # download an archive whose node cannot exec, failing much later.
+        case "$(uname -m)" in
+            aarch64|arm64) node_arch=arm64 ;;
+            x86_64|amd64) node_arch=x64 ;;
+            *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+        esac
         rm -rf "$node"
         mkdir -p "$node"
         curl -fsSL "https://nodejs.org/dist/v$VF_PRIME_AGENT_NODE_VERSION/node-v$VF_PRIME_AGENT_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
@@ -246,10 +257,16 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 f'export {ENV_AGENT_DIR} HOME="${ENV_AGENT_DIR}"\n'
                 # Substitute the bearer token into models.json here, so the plaintext
                 # credential is only readable by this rollout's own agent process.
+                # Node rewrites the parsed document rather than a text substitution:
+                # a token carrying a backslash, quote, or `sed` metacharacter would
+                # otherwise corrupt the key or abort the wrapper before exec.
                 f'models="${ENV_AGENT_DIR}/models.json"\n'
                 f"umask 077\n"
-                f'sed "s|{APIKEY_PLACEHOLDER}|${KEY_VAR}|" "$models" > "$models.tmp"\n'
-                f'mv "$models.tmp" "$models"\n'
+                "node -e '"
+                'const fs=require("fs"),p=process.argv[1],'
+                'c=JSON.parse(fs.readFileSync(p,"utf8"));'
+                f'c.providers["{PROVIDER}"].apiKey=process.env.{KEY_VAR}||"";'
+                'fs.writeFileSync(p,JSON.stringify(c))\' "$models"\n'
                 f'exec {shlex.join(args)} "$@"\n'
             ).encode(),
         )
