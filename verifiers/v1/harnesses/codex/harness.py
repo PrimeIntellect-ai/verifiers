@@ -10,7 +10,7 @@ from collections import Counter
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
+from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -81,6 +81,44 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         if install.exit_code != 0:
             raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
         await CODEX_ACP.setup(self, runtime)
+
+    async def session(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> HarnessSession:
+        if not runtime.supports_live_processes:
+            return await super().session(
+                ctx, trace, runtime, endpoint, secret, mcp_urls, data
+            )
+        if (
+            data.system_prompt is not None
+            and data.prompt is not None
+            and not isinstance(data.prompt, str)
+        ):
+            system_prompt, prompt = data.system_prompt, data.prompt
+        else:
+            system_prompt, prompt = self.resolve_prompt(data)
+        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        return CODEX_ACP.session(
+            self,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            {},
+            data,
+            env=env,
+            command=ACP_COMMAND,
+            prompt=prompt,
+            system_prompt=system_prompt,
+        )
 
     async def launch(
         self,

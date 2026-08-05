@@ -5,7 +5,7 @@ import shlex
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
+from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -63,6 +63,54 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             detail = (acp_result.stderr or acp_result.stdout).strip()[-500:]
             raise RuntimeError(f"Claude Agent ACP install failed: {detail}")
         await CLAUDE_ACP.setup(self, runtime)
+
+    async def session(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> HarnessSession:
+        if not runtime.supports_live_processes:
+            return await super().session(
+                ctx, trace, runtime, endpoint, secret, mcp_urls, data
+            )
+        system_prompt, prompt = self.resolve_prompt(data)
+        config_dir = self.config_dir(trace)
+        options: dict[str, object] = {
+            "strictMcpConfig": True,
+            "disallowedTools": self.config.disabled_tools or [],
+        }
+        session_meta: dict[str, object] = {"claudeCode": {"options": options}}
+        if system_prompt:
+            session_meta["systemPrompt"] = {"append": system_prompt}
+        env = {
+            **self.config.resolved_env,
+            "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
+            "ANTHROPIC_API_KEY": secret,
+            "ANTHROPIC_MODEL": ctx.model,
+            "CLAUDE_CONFIG_DIR": config_dir,
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_AUTOUPDATER": "1",
+            "IS_SANDBOX": "1",
+        }
+        return CLAUDE_ACP.session(
+            self,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            data,
+            env=env,
+            command=ACP_COMMAND,
+            prompt=prompt or "",
+            session_meta=session_meta,
+        )
 
     async def launch(
         self,
