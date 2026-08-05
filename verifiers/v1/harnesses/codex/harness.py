@@ -74,6 +74,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         install = await runtime.run(
             ["sh", "-c", guarded],
             {
+                **self.config.resolved_env,
                 "VF_CODEX_VERSION": CODEX_VERSION,
                 "VF_CODEX_ACP_VERSION": ACP_VERSION,
             },
