@@ -10,6 +10,7 @@ import logging
 import re
 import shlex
 from collections import Counter
+from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -39,6 +40,7 @@ curl -fsSL "https://github.com/openai/codex/releases/download/rust-v{version}/co
 mv "{dir}/bin/codex-${triple}" {bin}
 chmod +x {bin}
 """
+TOOL_HOOK_SOURCE = (Path(__file__).resolve().parents[1] / "tool_hook.py").read_text()
 
 
 class CodexHarnessConfig(HarnessConfig):
@@ -50,6 +52,7 @@ class CodexHarnessConfig(HarnessConfig):
 
 class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
+    SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
@@ -71,6 +74,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         if install.exit_code != 0:
             raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
 
+    async def setup_tool_interception(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(TOOL_HOOK_SOURCE, self.config.resolved_env)
+
     async def launch(
         self,
         ctx: ModelContext,
@@ -80,6 +86,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         task = data
         if (
@@ -131,14 +138,17 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         argv = [
             CODEX_BIN,
             "exec",
-            *self._config_args(ctx, endpoint, mcp_urls),
+            *self._config_args(
+                ctx, endpoint, mcp_urls, tool_interception_url is not None
+            ),
             *image_args,
             "--",
             prompt,
         ]
         try:
             return await runtime.run_program(
-                argv, await self._env(trace, runtime, secret)
+                argv,
+                await self._env(trace, runtime, secret, tool_interception_url),
             )
         finally:
             if image_args:
@@ -160,6 +170,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
         messages,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         """Native continuation: `codex exec resume --last` re-opens the session the
         previous segment recorded — codex's own context, compaction included — and
@@ -193,17 +204,23 @@ class CodexHarness(Harness[CodexHarnessConfig]):
                 secret,
                 mcp_urls,
                 data.model_copy(update={"prompt": messages}),
+                tool_interception_url,
             )
         argv = [
             CODEX_BIN,
             "exec",
             "resume",
             "--last",
-            *self._config_args(ctx, endpoint, mcp_urls),
+            *self._config_args(
+                ctx, endpoint, mcp_urls, tool_interception_url is not None
+            ),
             "--",
             "\n\n".join(texts),
         ]
-        return await runtime.run_program(argv, await self._env(trace, runtime, secret))
+        return await runtime.run_program(
+            argv,
+            await self._env(trace, runtime, secret, tool_interception_url),
+        )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         home = self._home(trace)
@@ -217,7 +234,13 @@ class CodexHarness(Harness[CodexHarnessConfig]):
     def _home(trace: Trace) -> str:
         return f"/tmp/vf-codex-home-{trace.id}"
 
-    async def _env(self, trace: Trace, runtime: Runtime, secret: str) -> dict[str, str]:
+    async def _env(
+        self,
+        trace: Trace,
+        runtime: Runtime,
+        secret: str,
+        tool_interception_url: str | None,
+    ) -> dict[str, str]:
         # codex authenticates to the interception server with the session secret (its
         # provider api key) and posts Responses calls to `{endpoint}/responses`. The
         # per-trace CODEX_HOME scopes its recorded sessions to this rollout, so
@@ -225,6 +248,31 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         # codex refuses a home that doesn't exist, so make it before every segment.
         home = self._home(trace)
         await runtime.run(["mkdir", "-p", home], {})
+        if tool_interception_url:
+            hook = await runtime.prepare_uv_script(
+                TOOL_HOOK_SOURCE, self.config.resolved_env
+            )
+            command = shlex.join(
+                [
+                    *hook,
+                    "--adapter=codex",
+                    f"--url={tool_interception_url}",
+                ]
+            )
+            command += f' --secret="${KEY_VAR}"'
+            await runtime.write(
+                f"{home}/hooks.json",
+                json.dumps(
+                    {
+                        "hooks": {
+                            event: [
+                                {"hooks": [{"type": "command", "command": command}]}
+                            ]
+                            for event in ("PreToolUse", "PostToolUse")
+                        }
+                    }
+                ).encode(),
+            )
         return {
             **self.config.resolved_env,
             KEY_VAR: secret,
@@ -236,6 +284,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         ctx: ModelContext,
         endpoint: str,
         mcp_urls: dict[str, str],
+        tool_interception: bool = False,
     ) -> list[str]:
         # Values are Codex feature names such as `shell_tool`; Codex owns validation.
         # https://developers.openai.com/codex/config-reference#features
@@ -292,6 +341,11 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         return [
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            *(
+                ["--enable", "codex_hooks", "--dangerously-bypass-hook-trust"]
+                if tool_interception
+                else []
+            ),
             # Apps/plugins can flip on remotely and advertise definitions custom providers reject.
             "--disable",
             "apps",

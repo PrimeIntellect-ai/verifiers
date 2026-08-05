@@ -40,6 +40,7 @@ class BashHarnessConfig(HarnessConfig):
 
 class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     NEEDS_CONTAINER = False
@@ -56,6 +57,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         fragments = [BASH_SYSTEM_PROMPT]
@@ -73,6 +75,8 @@ class BashHarness(Harness[BashHarnessConfig]):
             f"--model={ctx.model}",
             f"--system-prompt={system_prompt}",
         ]
+        if tool_interception_url:
+            args.append(f"--tool-interception-url={tool_interception_url}")
         if self.config.edit:
             args.append("--edit")
         if self.config.search:
