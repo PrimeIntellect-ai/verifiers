@@ -107,7 +107,12 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
 class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    SUPPORTS_MCP = True
+    # prime-agent's ACP mode ignores the `mcpServers` of `session/new`, and its own
+    # MCP integrations are authored Python-backed skills the model imports in its
+    # kernel, not tools an ACP client can inject. Claiming support would let a
+    # tool-bearing taskset run with its tools silently absent, so declare it false
+    # and let `validate_pairing` reject that pairing up front.
+    SUPPORTS_MCP = False
     SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
@@ -252,6 +257,5 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             env,
             ["sh", "-c", f'exec "$PWD/{wrapper}"'],
             prompt,
-            mcp_urls=mcp_urls,
             system_prompt=system_prompt,
         )
