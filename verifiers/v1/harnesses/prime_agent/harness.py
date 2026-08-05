@@ -23,7 +23,6 @@ from verifiers.v1.trace import Trace
 logger = logging.getLogger(__name__)
 
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
-LEGACY_ENV_AGENT_DIR = "PRIME_CODING_AGENT_DIR"
 PROVIDER = "intercept"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 
@@ -67,7 +66,6 @@ fi
 
 export PATH="$VF_NODE_BIN_DIR:$PATH"
 export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1
-export PRIME_AGENT_INSTALL_UV=1
 export PRIME_AGENT_KERNEL_VENV="$VF_PRIME_AGENT_KERNEL_VENV"
 npm install --no-audit --no-fund --prefix "$staging" \
     "$staging/prime-agent.tgz" >/dev/null
@@ -468,10 +466,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             **self.config.resolved_env,
             **({KEY_VAR: secret} if secret is not None else {}),
             ENV_AGENT_DIR: agent_dir,
-            LEGACY_ENV_AGENT_DIR: agent_dir,
             "NO_COLOR": "1",
             "PI_OFFLINE": "1",
-            "PI_SKIP_VERSION_CHECK": "1",
             "PRIME_AGENT_KERNEL_VENV": self.kernel_venv(),
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "TEMP": temp_dir,
