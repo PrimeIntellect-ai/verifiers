@@ -1,14 +1,14 @@
 """The episode — one run's traces plus their shared standing, whole."""
 
 import uuid
-from typing import Any, Generic
+from typing import Annotated, Any, Generic, Literal
 
 from pydantic import BaseModel, Field
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
-from verifiers.v1.trace import AgentConfigT, Error, RunInfo, Trace
+from verifiers.v1.trace import AgentConfigT, Error, Trace
 from verifiers.v1.types import Usage
 
 
@@ -17,6 +17,79 @@ class EnvInfo(BaseModel):
 
     id: str = ""
     """`EnvConfig.env_id`, e.g. `agentic-judge+gsm8k-v1`."""
+
+    name: str | None = None
+    """What the caller knows this env by, when that differs from `id`."""
+
+
+class EvalRunInfo(BaseModel):
+    """A standalone eval: a model measured against nothing that is training."""
+
+    type: Literal["eval"] = "eval"
+    id: str
+
+
+class PolicySpan(BaseModel):
+    """Live policy versions with a derived, non-serialized drift in updates."""
+
+    start: int = 0
+    end: int = 0
+
+    @property
+    def drift(self) -> int:
+        return max(0, self.end - self.start)
+
+
+class Metadata(BaseModel):
+    """What one episode is to the training run it belongs to."""
+
+    policy: PolicySpan | None = None
+    """`None` when it was not generated from the live policy, as with a frozen sampler."""
+
+
+class TrainMetadata(Metadata):
+    """An episode a training run trains on."""
+
+    type: Literal["train"] = "train"
+    step: int | None = None
+    """The batch window it landed in, which is not known until it does."""
+
+    @property
+    def off_policy_steps(self) -> int | None:
+        """Versions behind the policy in training, queue time included."""
+        if self.policy is None or self.step is None:
+            return None
+        return max(0, (self.step - 1) - self.policy.start)
+
+
+class EvalMetadata(Metadata):
+    """An episode a training run measures itself with."""
+
+    type: Literal["eval"] = "eval"
+    step: int
+    """The step whose eval produced it, known when it is dispatched."""
+
+    @property
+    def off_policy_steps(self) -> int | None:
+        """Versions the policy moved under it. Nothing trains on an eval, so it can only be
+        off-policy by drifting — and its `step` is fixed at dispatch, so it cannot say that."""
+        return self.policy.drift if self.policy else None
+
+
+EpisodeMetadata = Annotated[TrainMetadata | EvalMetadata, Field(discriminator="type")]
+
+
+class TrainRunInfo(BaseModel):
+    """A training run: one id over the episodes it trains on and the ones it evaluates itself with,
+    which `metadata` tells apart."""
+
+    type: Literal["train"] = "train"
+    id: str
+    metadata: EpisodeMetadata = Field(default_factory=TrainMetadata)
+
+
+RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
+"""The run an episode belongs to, discriminated on `type`."""
 
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):

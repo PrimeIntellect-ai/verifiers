@@ -4,7 +4,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
+from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr
@@ -130,24 +130,6 @@ class Reward(BaseModel):
     @property
     def value(self) -> float:
         return self.score * self.weight
-
-
-class EvalRunInfo(BaseModel):
-    type: Literal["eval"] = "eval"
-
-    id: str
-    step: int | None = None
-
-
-class TrainRunInfo(BaseModel):
-    type: Literal["train"] = "train"
-
-    id: str
-    step: int | None = None
-
-
-RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
-"""The run a trace belongs to, discriminated on `type`."""
 
 
 class ModelCall(BaseModel):

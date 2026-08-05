@@ -30,7 +30,18 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
-from verifiers.v1.episode import Episode, WireEpisode
+from verifiers.v1.episode import (
+    EnvInfo,
+    Episode,
+    EvalMetadata,
+    EvalRunInfo,
+    Metadata,
+    PolicySpan,
+    RunInfo,
+    TrainMetadata,
+    TrainRunInfo,
+    WireEpisode,
+)
 from verifiers.v1.errors import (
     EnvError,
     HarnessError,
@@ -76,16 +87,13 @@ from verifiers.v1.trace import (
     AgentSpan,
     Branch,
     Error,
-    EvalRunInfo,
     ModelCall,
     Reward,
-    RunInfo,
     TimeSpan,
     TimeSplit,
     Timing,
     Trace,
     TraceTask,
-    TrainRunInfo,
     VersionInfo,
     WireTrace,
 )
@@ -195,11 +203,16 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "WireTrace",
     "Reward",
     "Episode",
+    "EnvInfo",
     "WireEpisode",
     "TRACE_VERSION",
     "AgentInfo",
     "RunInfo",
     "EvalRunInfo",
+    "EvalMetadata",
+    "Metadata",
+    "TrainMetadata",
+    "PolicySpan",
     "ModelCall",
     "TrainRunInfo",
     "VersionInfo",
