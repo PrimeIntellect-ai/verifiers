@@ -2,7 +2,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import (
+    AfterValidator,
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+)
 from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
@@ -70,11 +77,38 @@ class ToolCall(BaseModel):
     """Raw JSON string of arguments, exactly as the model emitted it."""
 
 
+class ProviderToolEvent(BaseModel):
+    """A typed view of provider-hosted tool activity."""
+
+    kind: str
+    name: str
+    id: str = ""
+    data: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @classmethod
+    def from_native(cls, item: dict, *, name: str | None = None) -> "ProviderToolEvent":
+        kind = str(item.get("type") or "")
+        name = str(name or item.get("name") or kind)
+        for suffix in ("_tool_result", "_tool_use", "_call", "_result", "_response"):
+            if name.endswith(suffix):
+                name = name.removesuffix(suffix)
+                break
+        return cls(
+            kind=kind,
+            name=name,
+            id=str(
+                item.get("call_id") or item.get("tool_use_id") or item.get("id") or ""
+            ),
+            data=item,
+        )
+
+
 class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str | None = None
     reasoning_content: str | None = None
     tool_calls: list[ToolCall] | None = None
+    provider_tools: list[ProviderToolEvent] | None = None
     provider_state: list[dict[str, Any]] | None = None
     """Opaque native items replayed to preserve signed or encrypted reasoning state."""
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import traceback
 import uuid
@@ -335,7 +336,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
     interceptions: list[InterceptRecord] = Field(default_factory=list)
-    """Rewrites and terminations produced by task interceptors."""
+    """Rewrites and terminations produced by task hooks."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -480,6 +481,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 lines.extend(
                     f"[tool_call {call.name}({call.arguments})]"
                     for call in message.tool_calls or []
+                )
+                lines.extend(
+                    f"[provider_tool {event.name}({json.dumps(event.data, sort_keys=True)})]"
+                    for event in message.provider_tools or []
                 )
             else:
                 if isinstance(message, ToolMessage) and message.name:

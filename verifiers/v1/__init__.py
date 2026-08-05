@@ -44,6 +44,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness
+from verifiers.v1.intercepts import InterceptRecord, Terminate
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     Criterion,
@@ -98,6 +99,7 @@ from verifiers.v1.types import (
     Message,
     MessageContent,
     Messages,
+    ProviderToolEvent,
     Response,
     Sampling,
     SamplingConfig,
@@ -116,7 +118,14 @@ from verifiers.v1.utils.artifacts import (
     collect,
     restore,
 )
-from verifiers.v1.utils.decorators import metric, reward, stop, tool
+from verifiers.v1.utils.decorators import (
+    metric,
+    on_request,
+    on_response,
+    reward,
+    stop,
+    tool,
+)
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
 )
@@ -173,6 +182,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Message",
     "MessageContent",
     "Messages",
+    "ProviderToolEvent",
     "Response",
     "Sampling",
     "SamplingConfig",
@@ -218,6 +228,11 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "tool",
     "metric",
     "reward",
+    "on_request",
+    "on_response",
+    # interception
+    "InterceptRecord",
+    "Terminate",
     # errors
     "RolloutError",
     "EnvError",

@@ -16,6 +16,7 @@ from functools import cached_property
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.intercepts.core import (
@@ -26,7 +27,12 @@ from verifiers.v1.intercepts.core import (
     Terminate,
 )
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import AssistantMessage, Message, Response
+from verifiers.v1.types import (
+    AssistantMessage,
+    Messages,
+    Response,
+    SystemMessage,
+)
 from verifiers.v1.utils.decorators import invoke
 
 logger = logging.getLogger(__name__)
@@ -167,105 +173,150 @@ class RolloutSession:
                 return stop.__name__
         return None
 
-    def matching_intercepts(
-        self, direction: Direction, *, raw: bool
-    ) -> list[Interceptor]:
+    def matching_intercepts(self, direction: Direction) -> list[Interceptor]:
         return [
             handler
             for handler in self.intercepts
             if direction in handler.intercept_directions
-            and handler.intercept_raw is raw
         ]
 
-    async def intercept_message(
-        self, direction: Direction, trace: Trace, message: Message
+    async def intercept_request(
+        self, trace: Trace, request: Messages
     ) -> InterceptDecision:
-        """Run typed interceptors in priority order against one trace candidate."""
+        """Run request hooks in priority order on ``request[-1]``."""
+        if not request:
+            return InterceptDecision()
         records: list[InterceptRecord] = []
         try:
-            for handler in self.matching_intercepts(direction, raw=False):
-                result = invoke(handler, {"trace": trace, "message": message})
+            for handler in self.matching_intercepts("request"):
+                current = request[-1]
+                candidate = [current.model_copy(deep=True)]
+                result = invoke(handler, {"trace": trace, "request": candidate})
                 if inspect.isawaitable(result):
                     result = await result
-                if result is None:
-                    continue
                 name = getattr(handler, "__name__", type(handler).__name__)
-                target = message.role
                 if isinstance(result, Terminate):
                     return InterceptDecision(
-                        message=message,
                         records=records,
                         termination=InterceptRecord(
-                            direction=direction,
+                            direction="request",
                             handler=name,
                             action="terminate",
-                            target=target,
                             reason=result.reason,
                             reward=result.reward,
                         ),
                     )
-                if isinstance(result, str):
-                    message = (
-                        AssistantMessage(content=result)
-                        if isinstance(message, AssistantMessage)
-                        else message.model_copy(update={"content": result})
-                    )
-                elif isinstance(result, type(message)):
-                    message = result
-                else:
+                if result is None or result == current:
+                    continue
+                if type(result) is not type(current):
                     raise TypeError(
-                        f"expected str, {type(message).__name__}, Terminate, or None"
+                        f"request hooks must return {type(current).__name__}, "
+                        "vf.Terminate, or None"
                     )
+                request[-1] = result
                 records.append(
                     InterceptRecord(
-                        direction=direction,
+                        direction="request",
                         handler=name,
                         action="rewrite",
-                        target=target,
                     )
                 )
-                trace.nodes[-1].message = message
+                trace.nodes[-1].message = result
         except RolloutError:
             raise
         except Exception as e:
-            raise TaskError(f"@intercept failed: {type(e).__name__}: {e}") from e
-        return InterceptDecision(message=message, records=records)
+            raise TaskError(f"@on_request failed: {type(e).__name__}: {e}") from e
+        return InterceptDecision(records=records)
 
     async def intercept_response(
         self, trace: Trace, response: Response
-    ) -> tuple[Response, InterceptDecision, str | None]:
-        """Run response guards and reduce rewrites to one inert text message."""
-        decision = await self.intercept_message("response", trace, response.message)
-        if decision.termination is not None:
-            if decision.records:
-                response = response.model_copy(
-                    update={
-                        "message": decision.message,
-                        "finish_reason": "stop",
-                        "tokens": None,
-                    }
+    ) -> tuple[InterceptDecision, str | None]:
+        """Run response hooks and reduce a replacement to one inert text message."""
+        records: list[InterceptRecord] = []
+        try:
+            for handler in self.matching_intercepts("response"):
+                result = invoke(
+                    handler,
+                    {"trace": trace, "response": response.model_copy(deep=True)},
                 )
-            return response, decision, None
-        if not decision.records:
-            return response, decision, None
-        message = decision.message
+                if inspect.isawaitable(result):
+                    result = await result
+                name = getattr(handler, "__name__", type(handler).__name__)
+                if isinstance(result, Terminate):
+                    if records:
+                        response.finish_reason = "stop"
+                        response.tokens = None
+                    return (
+                        InterceptDecision(
+                            records=records,
+                            termination=InterceptRecord(
+                                direction="response",
+                                handler=name,
+                                action="terminate",
+                                reason=result.reason,
+                                reward=result.reward,
+                            ),
+                        ),
+                        None,
+                    )
+                if result is None or result == response.message:
+                    continue
+                if not isinstance(result, AssistantMessage):
+                    raise TypeError(
+                        "response hooks must return vf.AssistantMessage, "
+                        "vf.Terminate, or None"
+                    )
+                response.message = result
+                records.append(
+                    InterceptRecord(
+                        direction="response", handler=name, action="rewrite"
+                    )
+                )
+                trace.nodes[-1].message = response.message
+        except RolloutError:
+            raise
+        except Exception as e:
+            raise TaskError(f"@on_response failed: {type(e).__name__}: {e}") from e
+        decision = InterceptDecision(records=records)
+        if not records:
+            return decision, None
+        message = response.message
         if (
             not isinstance(message, AssistantMessage)
             or not isinstance(message.content, str)
             or message.reasoning_content
             or message.tool_calls
+            or message.provider_tools
             or message.provider_state
         ):
             raise TaskError(
                 "response interception must produce text-only assistant output"
             )
-        return (
-            response.model_copy(
-                update={"message": message, "finish_reason": "stop", "tokens": None}
-            ),
-            decision,
-            message.content,
-        )
+        response.finish_reason = "stop"
+        response.tokens = None
+        return decision, message.content
+
+    async def intercept_users(self, messages: Messages) -> Messages:
+        """Run request hooks on a new user turn before the harness starts."""
+        if not self.matching_intercepts("request"):
+            return messages
+        branch = self.trace.branches[-1].messages if self.trace.branches else []
+        if not branch and self.trace.task.data.system_prompt is not None:
+            branch = [SystemMessage(content=self.trace.task.data.system_prompt)]
+        request = list(messages)
+        for index, message in enumerate(request):
+            current = [message]
+            turn = graph.prepare_turn(self.trace, [*branch, *request[: index + 1]])
+            decision = await self.intercept_request(turn.scoped_trace(), current)
+            request[index] = current[-1]
+            self.trace.interceptions.extend(decision.records)
+            if decision.termination is not None:
+                graph.prepare_turn(
+                    self.trace, [*branch, *request[: index + 1]]
+                ).commit_prompt()
+                self.terminate(decision.termination)
+                break
+        return request
 
     def terminate(self, record: InterceptRecord) -> None:
         """Store a terminal decision so every later exchange is refused."""

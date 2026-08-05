@@ -29,7 +29,7 @@ from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Messages, UserMessage
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,12 @@ class Rollout:
             on_trace(self.trace)
         self.client = resolve_client(ctx.client)
         self._session = RolloutSession(
-            ctx, self.client, self.trace, discover_decorated(task, "stop"), limits
+            ctx=ctx,
+            client=self.client,
+            trace=self.trace,
+            stops=discover_decorated(task, "stop"),
+            limits=limits,
+            intercepts=discover_decorated(task, "intercept"),
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -268,6 +273,31 @@ class Rollout:
         # Prefer an intercepted model/tool error to the harness exit it caused.
         try:
             async with asyncio.timeout_at(self.deadline_at):
+                data = trace.task.data
+                if self._session.matching_intercepts("request"):
+                    if await self._session.refused() is not None:
+                        return False
+                    if messages is None:
+                        prompt = data.prompt
+                        incoming = (
+                            [UserMessage(content=prompt)]
+                            if isinstance(prompt, str)
+                            else list(prompt or [])
+                        )
+                        incoming = await self._session.intercept_users(incoming)
+                        rewritten_prompt = prompt
+                        if isinstance(prompt, str):
+                            content = incoming[0].content
+                            rewritten_prompt = (
+                                content if isinstance(content, str) else incoming
+                            )
+                        elif prompt is not None:
+                            rewritten_prompt = incoming
+                        data = data.model_copy(update={"prompt": rewritten_prompt})
+                    else:
+                        messages = await self._session.intercept_users(messages)
+                    if self._session.terminated:
+                        return False
                 await self.harness.run(
                     self.ctx,
                     trace,
@@ -275,7 +305,7 @@ class Rollout:
                     self._endpoint,
                     self._secret,
                     self._urls,
-                    trace.task.data,
+                    data,
                     messages,
                 )
         except TimeoutError as e:
