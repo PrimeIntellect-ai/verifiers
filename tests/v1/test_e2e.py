@@ -231,11 +231,12 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert trace.ok, trace.errors
     assert trace.stop_condition == "user_closed"
     assert trace.rewards["resumed"].score == 1.0
-    assert trace.tools  # ACP-native tools, or Pi's MCP adapter meta-tool
     segments = trace.info["acp_segments"]
     assert len(segments) == 2
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
+    # Native MCP tools need not appear in the intercepted model request that
+    # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
     if harness == "rlm":
