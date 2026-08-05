@@ -3136,8 +3136,8 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.34"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-sandboxes&rev=892bea7cb3d3f0926d9b42da1ebf206207bb8bab#892bea7cb3d3f0926d9b42da1ebf206207bb8bab" }
+version = "0.2.35"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
     { name = "connect-python" },
@@ -3145,6 +3145,10 @@ dependencies = [
     { name = "protobuf" },
     { name = "pydantic" },
     { name = "tenacity" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/57/cc/287c0db192ddbe003bd5882d1aab5461cdb3912d0c92db7b39734a9e828e/prime_sandboxes-0.2.35.tar.gz", hash = "sha256:e716bfccdcb51aefd5e2d48fdfc3a79bea8c6825bce1871f49f095ced03efc94", size = 86226, upload-time = "2026-08-05T14:29:53.33Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/25/07/c186395925f780b1a18b350f562ebc4e8a64a182c37bd1e3db3948f297e2/prime_sandboxes-0.2.35-py3-none-any.whl", hash = "sha256:29d7057532b21545be5938d3aee822ae3a54085a45934d5c3ac55190e06c5bbb", size = 47189, upload-time = "2026-08-05T14:29:52.142Z" },
 ]
 
 [[package]]
