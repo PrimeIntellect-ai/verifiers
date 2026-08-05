@@ -236,6 +236,14 @@ class ACPHarnessSession(HarnessSession):
                     _packet({"operation": "prompt", "config": config})
                 )
                 response = await self._reader.read()
+            except EOFError as error:
+                exit_code = await run_shielded(self._stop(graceful=False))
+                detail = str(error)
+                if exit_code is not None:
+                    detail = f"{detail} (exit {exit_code})"
+                if stderr := self._stderr():
+                    detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+                raise EOFError(detail) from error
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
@@ -246,13 +254,14 @@ class ACPHarnessSession(HarnessSession):
             raise RuntimeError(detail)
         return ProgramResult(exit_code=0, stdout=response.get("reply", ""), stderr="")
 
-    async def _stop(self, *, graceful: bool) -> None:
+    async def _stop(self, *, graceful: bool) -> int | None:
         process, self._process = self._process, None
         reader, self._reader = self._reader, None
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
-            return
+            return None
         failure: BaseException | None = None
+        exit_code: int | None = None
         try:
             if graceful and reader is not None:
                 try:
@@ -265,17 +274,19 @@ class ACPHarnessSession(HarnessSession):
                 except BaseException as error:  # noqa: BLE001 - finish teardown if cancelled
                     failure = error
             try:
-                await asyncio.wait_for(process.wait(), timeout=10 if graceful else 0.1)
+                exit_code = await asyncio.wait_for(
+                    process.wait(), timeout=10 if graceful else 0.1
+                )
             except BaseException:  # noqa: BLE001 - cancellation still requires termination
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(process.terminate(), timeout=5)
                 try:
-                    await asyncio.wait_for(process.wait(), timeout=5)
+                    exit_code = await asyncio.wait_for(process.wait(), timeout=5)
                 except BaseException:  # noqa: BLE001 - cancellation still requires a kill
                     with contextlib.suppress(Exception):
                         await asyncio.wait_for(process.kill(), timeout=5)
                     with contextlib.suppress(BaseException):
-                        await asyncio.wait_for(process.wait(), timeout=5)
+                        exit_code = await asyncio.wait_for(process.wait(), timeout=5)
         finally:
             if stderr_task is not None:
                 if not stderr_task.done():
@@ -287,6 +298,7 @@ class ACPHarnessSession(HarnessSession):
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail) from failure
+        return exit_code
 
     async def close(self) -> None:
         if self._closed:

@@ -1,17 +1,21 @@
+import asyncio
 import hashlib
 import os
 import shlex
 import subprocess
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
+from verifiers.v1.acp import ACPHarnessSession
 from verifiers.v1.harnesses.prime_agent.harness import (
     INSTALL,
     STATE_ROOT,
     PrimeAgentHarness,
     _guarded_install,
 )
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 
@@ -22,6 +26,61 @@ def test_trace_root_encodes_untrusted_trace_id() -> None:
 
     assert root.parent == PurePosixPath(STATE_ROOT)
     assert root.name == hashlib.sha256(trace.id.encode()).hexdigest()[:32]
+
+
+@pytest.mark.asyncio
+async def test_acp_eof_reports_process_exit_and_stderr() -> None:
+    async def stream(*chunks: bytes):
+        for chunk in chunks:
+            yield chunk
+        await asyncio.sleep(0)
+
+    class Process:
+        stdout = stream()
+        stderr = stream(b"daemon worker received SIGTERM\n")
+
+        async def write(self, data: bytes) -> None:
+            del data
+            await asyncio.sleep(0)
+
+        async def wait(self) -> int:
+            return 143
+
+        async def terminate(self) -> None:
+            raise AssertionError("the exited process must not be terminated")
+
+        async def kill(self) -> None:
+            raise AssertionError("the exited process must not be killed")
+
+    class Runtime:
+        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+            del source, env
+            return ["acp-runner"]
+
+        async def open_process(self, argv: list[str], env: dict[str, str]):
+            del argv, env
+            return Process()
+
+    session = ACPHarnessSession(
+        SimpleNamespace(config=SimpleNamespace(id="prime-agent")),
+        SimpleNamespace(),
+        Trace.model_construct(id="trace"),
+        Runtime(),
+        "http://intercept",
+        "secret",
+        {},
+        TaskData(prompt="hello"),
+        env={},
+        command=["prime-agent", "--mode", "acp"],
+        prompt="hello",
+        system_prompt=None,
+    )
+
+    with pytest.raises(EOFError) as caught:
+        await session._run(None)
+
+    assert "exit 143" in str(caught.value)
+    assert "daemon worker received SIGTERM" in str(caught.value)
 
 
 @pytest.mark.parametrize("owner", [str(os.getpid()), f"{os.getpid()}:0"])
