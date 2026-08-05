@@ -8,6 +8,7 @@ budget (turns / tokens), checked between turns.
 """
 
 import asyncio
+import copy
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
@@ -91,7 +92,6 @@ class RolloutSession:
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     intercepts: list[Interceptor] = field(default_factory=list)
-    terminated: bool = False
     stream_replays: dict[
         str, tuple[tuple[str, bytes], "asyncio.Future[StreamReplay | None]"]
     ] = field(default_factory=dict)
@@ -160,7 +160,7 @@ class RolloutSession:
         call halts the harness (its model call errors out); Harness.run treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
-        if self.terminated:
+        if self.trace.terminated_by_intercept:
             return self.trace.stop_condition or "intercepted"
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
@@ -320,9 +320,10 @@ class RolloutSession:
 
     def terminate(self, record: InterceptRecord) -> None:
         """Store a terminal decision so every later exchange is refused."""
-        if self.terminated:
+        if self.trace.terminated_by_intercept:
             return
-        self.trace.interceptions.append(record)
+        self.error = None
         self.trace.record_reward(f"intercept/{record.handler}", record.reward or 0.0)
-        self.trace.stop_condition = record.reason
-        self.terminated = True
+        self.trace._terminal_rewards = copy.deepcopy(self.trace.rewards)
+        self.trace.interceptions.append(record)
+        self.trace.stop(record.reason)

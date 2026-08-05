@@ -363,10 +363,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""
+    _terminal_rewards: dict[str, Reward | None] | None = PrivateAttr(default=None)
+    """Reward snapshot restored after an interception terminates this rollout."""
 
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values() if r is not None)
+
+    @property
+    def terminated_by_intercept(self) -> bool:
+        return any(record.action == "terminate" for record in self.interceptions)
 
     @property
     def has_error(self) -> bool:
@@ -431,6 +437,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @property
     def is_truncated(self) -> bool:
         """True for framework limits or a length-finished final response."""
+        if self.terminated_by_intercept:
+            return False
         if self.stop_condition in (
             "max_turns",
             "max_input_tokens",
@@ -502,6 +510,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.record_metric(name, value)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
+        if self.terminated_by_intercept:
+            return
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 

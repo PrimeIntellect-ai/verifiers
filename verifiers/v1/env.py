@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import copy
 import logging
 import traceback
 from abc import ABC, abstractmethod
@@ -259,7 +260,12 @@ class Env(ABC, Generic[ConfigT]):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
                     await self.setup(agents)
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
-                    await self.run(task, agents)
+                    try:
+                        await self.run(task, agents)
+                    finally:
+                        for trace in episode.traces:
+                            if trace._terminal_rewards is not None:
+                                trace.rewards = copy.deepcopy(trace._terminal_rewards)
                     if not episode.traces:
                         raise ValueError(
                             f"{type(self).__name__}.run() ran no agent — every "
@@ -275,19 +281,25 @@ class Env(ABC, Generic[ConfigT]):
             episode.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode; ok stays False.
             return episode
+        terminal = [trace for trace in episode.traces if trace.terminated_by_intercept]
         try:
-            async with asyncio.timeout(self.config.timeout.finalize):
-                async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
-                    await self.finalize(task, episode)
-        except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
-            # As above: a TimeoutError here is the deadline's own expiry.
-            if isinstance(e, TimeoutError):
-                e = TimeoutError(
-                    f"{type(self).__name__}.finalize() exceeded its "
-                    f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
-                )
-            episode.errors.append(_as_error(e))
-            return episode
+            try:
+                async with asyncio.timeout(self.config.timeout.finalize):
+                    async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
+                        await self.finalize(task, episode)
+            except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
+                # As above: a TimeoutError here is the deadline's own expiry.
+                if isinstance(e, TimeoutError):
+                    e = TimeoutError(
+                        f"{type(self).__name__}.finalize() exceeded its "
+                        f"{self.config.timeout.finalize:g}s deadline (--env.timeout.finalize)"
+                    )
+                episode.errors.append(_as_error(e))
+                return episode
+        finally:
+            for trace in terminal:
+                assert trace._terminal_rewards is not None
+                trace.rewards = copy.deepcopy(trace._terminal_rewards)
         # Both hooks and every trace concluded — stamp the attempt's verdict
         # (retry history merges into `errors` later without touching it).
         episode.ok = all(t.ok for t in episode.traces)

@@ -118,9 +118,7 @@ class Segment:
     `messages` carries every model-sampled assistant message and intervening tool
     result produced by the segment, in order; `last_reply` is quick sugar for its
     final assistant text. `terminated` marks the exchange over — the run ended (a
-    limit, a `@stop`, or the harness finishing) instead of producing another
-    segment; a terminated `Segment` carries no messages (the last real segment was
-    already delivered), and the interaction's `trace` holds the full exchange.
+    limit, a `@stop`, or the harness finishing) instead of producing another segment.
     """
 
     messages: Messages
@@ -199,6 +197,9 @@ class Interaction:
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
         await self._run.step(messages)
+        if self._run.terminated_by_intercept:
+            self._over = True
+            return Segment(messages=[], terminated=True)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's terminated segment.
