@@ -53,7 +53,11 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             f"sh -c {shlex.quote(ACP_INSTALL)}"
         )
         acp_result = await runtime.run(
-            ["sh", "-c", acp_guarded], {"VF_CLAUDE_ACP_VERSION": ACP_VERSION}
+            ["sh", "-c", acp_guarded],
+            {
+                **self.config.resolved_env,
+                "VF_CLAUDE_ACP_VERSION": ACP_VERSION,
+            },
         )
         if acp_result.exit_code != 0:
             detail = (acp_result.stderr or acp_result.stdout).strip()[-500:]
