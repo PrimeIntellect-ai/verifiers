@@ -11,7 +11,7 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-CLAUDE_ACP_DIR = "/tmp/vf-claude-agent-acp"
+CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
 ACP_VERSION = "0.63.0"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
@@ -20,15 +20,15 @@ CLAUDE_CONFIG_ROOT = ".vf-claude"
 SKILLS_DIR = ".claude/skills"
 ACP_INSTALL = r"""
 set -e
-export PATH="/tmp/vf-node/bin:$PATH"
-if [ "$(cat /tmp/vf-claude-agent-acp/.version 2>/dev/null)" = "$VF_CLAUDE_ACP_VERSION" ] \
-    && [ -x /tmp/vf-claude-agent-acp/packages/node_modules/.bin/claude-agent-acp ]; then
+export PATH="/var/tmp/vf-node/bin:$PATH"
+if [ "$(cat /var/tmp/vf-claude-agent-acp/.version 2>/dev/null)" = "$VF_CLAUDE_ACP_VERSION" ] \
+    && [ -x /var/tmp/vf-claude-agent-acp/packages/node_modules/.bin/claude-agent-acp ]; then
     exit 0
 fi
-npm install --prefix /tmp/vf-claude-agent-acp/packages --ignore-scripts --no-audit --no-fund \
+npm install --prefix /var/tmp/vf-claude-agent-acp/packages --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/claude-agent-acp@$VF_CLAUDE_ACP_VERSION" >/dev/null
-printf %s "$VF_CLAUDE_ACP_VERSION" > /tmp/vf-claude-agent-acp/.version
+printf %s "$VF_CLAUDE_ACP_VERSION" > /var/tmp/vf-claude-agent-acp/.version
 """
 
 CLAUDE_ACP = ACP()

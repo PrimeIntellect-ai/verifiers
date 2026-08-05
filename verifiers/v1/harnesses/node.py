@@ -2,13 +2,13 @@ import shlex
 
 from verifiers.v1.runtimes import Runtime
 
-NODE_DIR = "/tmp/vf-node"
+NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
 NODE_VERSION = "22.19.0"
 
 INSTALL = r"""
 set -e
-node=/tmp/vf-node
+node=/var/tmp/vf-node
 node_ok() { "$node/bin/node" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; }
 
 if [ -f /etc/alpine-release ]; then

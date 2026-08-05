@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 PROVIDER = "intercept"
 KEY_VAR = "CODEX_INTERCEPT_KEY"
 
-CODEX_DIR = "/tmp/vf-codex"
+CODEX_DIR = "/var/tmp/vf-codex"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
 CODEX_VERSION = "0.145.0"
 ACP_VERSION = "1.1.7"
@@ -30,18 +30,18 @@ ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 SKILLS_DIR = ".agents/skills"
 INSTALL = r"""
 set -e
-export PATH="/tmp/vf-node/bin:$PATH"
+export PATH="/var/tmp/vf-node/bin:$PATH"
 versions="$VF_CODEX_VERSION:$VF_CODEX_ACP_VERSION"
-if [ "$(cat /tmp/vf-codex/.versions 2>/dev/null)" = "$versions" ] \
-    && [ -x /tmp/vf-codex/acp/node_modules/.bin/codex ] \
-    && [ -x /tmp/vf-codex/acp/node_modules/.bin/codex-acp ]; then
+if [ "$(cat /var/tmp/vf-codex/.versions 2>/dev/null)" = "$versions" ] \
+    && [ -x /var/tmp/vf-codex/acp/node_modules/.bin/codex ] \
+    && [ -x /var/tmp/vf-codex/acp/node_modules/.bin/codex-acp ]; then
     exit 0
 fi
-npm install --prefix /tmp/vf-codex/acp --ignore-scripts --no-audit --no-fund \
+npm install --prefix /var/tmp/vf-codex/acp --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
     "@openai/codex@$VF_CODEX_VERSION" >/dev/null
-printf %s "$versions" > /tmp/vf-codex/.versions
+printf %s "$versions" > /var/tmp/vf-codex/.versions
 """
 
 CODEX_ACP = ACP()
@@ -96,11 +96,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             return await super().session(
                 ctx, trace, runtime, endpoint, secret, mcp_urls, data
             )
-        if (
-            data.system_prompt is not None
-            and data.prompt is not None
-            and not isinstance(data.prompt, str)
-        ):
+        if data.system_prompt is not None and not isinstance(data.prompt, str):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)

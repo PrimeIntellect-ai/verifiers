@@ -19,7 +19,7 @@ PROVIDER = "intercept"
 KEY_VAR = "PI_INTERCEPT_KEY"
 HOME_VAR = "VF_PI_ORIGINAL_HOME"
 
-PI_DIR = "/tmp/vf-pi"
+PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 SKILLS_DIR = ".agents/skills"
@@ -40,8 +40,8 @@ ACP_COMMAND = [
 
 INSTALL = r"""
 set -e
-packages=/tmp/vf-pi/mcp
-export PATH="/tmp/vf-node/bin:$PATH"
+packages=/var/tmp/vf-pi/mcp
+export PATH="/var/tmp/vf-node/bin:$PATH"
 
 versions="$VF_PI_VERSION:$VF_PI_MCP_VERSION:$VF_PI_ACP_VERSION"
 if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
