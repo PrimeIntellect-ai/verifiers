@@ -145,6 +145,11 @@ class MessageNode(BaseModel):
     `mask`; empty for input messages."""
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
+    advantages: list[float] | None = None
+    """Per-token credit over the sampled tokens, same layout as `logprobs`. `None` until a
+    consumer's RL algorithm assigns it, which is not the same as a credit of zero: a group whose
+    rewards were all equal is assigned zeros and carries no gradient, while an unassigned node was
+    never scored at all."""
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for images this message introduces.
 

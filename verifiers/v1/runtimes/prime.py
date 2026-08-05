@@ -12,6 +12,7 @@ import logging
 import math
 import shlex
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
@@ -26,6 +27,7 @@ from verifiers.v1.runtimes.base import (
     NetworkPolicyConfig,
     ProgramResult,
     Runtime,
+    RuntimeProcess,
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
@@ -100,6 +102,25 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     a first-use auto-build ran while this sandbox waited to start."""
 
 
+class PrimeProcess(RuntimeProcess):
+    def __init__(self, process) -> None:
+        self._process = process
+        self.stdout: AsyncIterator[bytes] = process.stdout
+        self.stderr: AsyncIterator[bytes] = process.stderr
+
+    async def write(self, data: bytes) -> None:
+        await self._process.write_stdin(data)
+
+    async def wait(self) -> int:
+        return await self._process.wait()
+
+    async def terminate(self) -> None:
+        await self._process.terminate()
+
+    async def kill(self) -> None:
+        await self._process.kill()
+
+
 class PrimeRuntime(Runtime):
     is_local: ClassVar[bool] = False
 
@@ -108,6 +129,10 @@ class PrimeRuntime(Runtime):
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
+
+    @property
+    def supports_live_processes(self) -> bool:
+        return self.config.vm
 
     @property
     def published_port(self) -> int | None:
@@ -181,22 +206,25 @@ class PrimeRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def prepare_execution(self, routes: list[str]) -> None:
+    async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
         if not self.network_restricted:
             return
         try:
-            hosts = list(
-                dict.fromkeys(
-                    h for h in (urlsplit(route).hostname for route in routes) if h
-                )
-            )
-            if self.config.allow == ["*"]:
-                policy = {"deny": self.config.block}
+            if routes is None:
+                policy = {"allow": ["*"]}
             else:
-                entries = list(dict.fromkeys([*hosts, *self.config.allow]))
-                validate_egress_lists(entries, None)
-                policy = {"allow": entries} if entries else {"deny": ["*"]}
+                hosts = list(
+                    dict.fromkeys(
+                        h for h in (urlsplit(route).hostname for route in routes) if h
+                    )
+                )
+                if self.config.allow == ["*"]:
+                    policy = {"deny": self.config.block}
+                else:
+                    entries = list(dict.fromkeys([*hosts, *self.config.allow]))
+                    validate_egress_lists(entries, None)
+                    policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
             try:
                 async with asyncio.timeout(60):
@@ -217,8 +245,8 @@ class PrimeRuntime(Runtime):
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
-            self.config.allow,
-            self.config.block,
+            policy.get("allow"),
+            policy.get("deny"),
         )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
@@ -240,6 +268,25 @@ class PrimeRuntime(Runtime):
             stdout=result.stdout or "",
             stderr=result.stderr or "",
         )
+
+    async def open_process(
+        self, argv: list[str], env: dict[str, str]
+    ) -> RuntimeProcess:
+        if not self.config.vm:
+            raise SandboxError(
+                "persistent harness sessions on Prime require a VM sandbox; "
+                "set runtime.prime.vm=true"
+            )
+        try:
+            process = await self._client.open_process(
+                self.info.id,
+                shlex.join(argv),
+                working_dir=self.config.workdir,
+                env=env,
+            )
+        except Exception as e:
+            raise SandboxError(f"prime live process failed to start: {e}") from e
+        return PrimeProcess(process)
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public

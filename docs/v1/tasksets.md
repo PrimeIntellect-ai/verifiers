@@ -24,8 +24,6 @@ The command also supports:
 - `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--env.agent.harness.id <name>`
   - Prefer a built-in harness unless the model needs to run inside a custom program.
 
-Most tasksets do not need specific tools or custom harnesses. (To simulate a user interacting with the model, open an interaction from an env's `run()` and script the user's turns — see the [Agent docs](agent.md).)
-
 > For a production-scale catalog of tasksets, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
 
 ## An example taskset

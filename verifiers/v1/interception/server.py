@@ -410,7 +410,7 @@ class InterceptionServer(Interception):
                 )
             if refused is not None:
                 # Refuse the model call to halt the harness (it sees an HTTP error;
-                # `Harness.run` treats a stopped rollout as the clean exit it is).
+                # `HarnessSession.turn` treats a stopped rollout as the clean exit it is).
                 return web.json_response(
                     dialect.error_body(f"rollout stopped: {refused}"),
                     status=400,
