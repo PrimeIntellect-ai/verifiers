@@ -119,6 +119,7 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
+prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime", rev = "892bea7cb3d3f0926d9b42da1ebf206207bb8bab", subdirectory = "packages/prime-sandboxes" }
 compact = { path = "environments/compact", editable = true }
 glossary-v1 = { path = "environments/glossary_v1", editable = true }
 deepwiki-v1 = { path = "environments/deepwiki_v1", editable = true }
