@@ -34,12 +34,12 @@ class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):
     pass
 
 
-async def _read_stream(reader: asyncio.StreamReader) -> AsyncIterator[bytes]:
+async def read_stream(reader: asyncio.StreamReader) -> AsyncIterator[bytes]:
     while chunk := await reader.read(64 * 1024):
         yield chunk
 
 
-def _signal_process(
+def signal_process(
     process: asyncio.subprocess.Process, signal_: signal.Signals
 ) -> None:
     if process.returncode is not None:
@@ -57,8 +57,8 @@ class SubprocessProcess(RuntimeProcess):
         assert process.stdout is not None
         assert process.stderr is not None
         self._stdin = process.stdin
-        self.stdout = _read_stream(process.stdout)
-        self.stderr = _read_stream(process.stderr)
+        self.stdout = read_stream(process.stdout)
+        self.stderr = read_stream(process.stderr)
 
     async def write(self, data: bytes) -> None:
         self._stdin.write(data)
@@ -68,10 +68,10 @@ class SubprocessProcess(RuntimeProcess):
         return await self._process.wait()
 
     async def terminate(self) -> None:
-        _signal_process(self._process, signal.SIGTERM)
+        signal_process(self._process, signal.SIGTERM)
 
     async def kill(self) -> None:
-        _signal_process(self._process, signal.SIGKILL)
+        signal_process(self._process, signal.SIGKILL)
 
 
 class SubprocessRuntime(Runtime):
@@ -171,7 +171,7 @@ class SubprocessRuntime(Runtime):
         """Stop and reap background servers before their event loop closes."""
         background = list(self._background)
         for proc in background:
-            _signal_process(proc, signal.SIGTERM)
+            signal_process(proc, signal.SIGTERM)
         if background:
             try:
                 await asyncio.wait_for(
@@ -182,7 +182,7 @@ class SubprocessRuntime(Runtime):
                 )
             except TimeoutError:
                 for proc in background:
-                    _signal_process(proc, signal.SIGKILL)
+                    signal_process(proc, signal.SIGKILL)
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(
                         asyncio.gather(
@@ -197,7 +197,7 @@ class SubprocessRuntime(Runtime):
 
     def cleanup(self) -> None:
         for proc in self._background:
-            _signal_process(proc, signal.SIGTERM)
+            signal_process(proc, signal.SIGTERM)
         self._background = []
         if self.workdir is not None:
             shutil.rmtree(self.workdir, ignore_errors=True)

@@ -36,7 +36,7 @@ from acp.schema import (
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 
-class VerifiersClient(Client):
+class VerifiersACPClient(Client):
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
@@ -142,7 +142,7 @@ def segment_messages(config: dict, is_new: bool) -> list[dict]:
 
 
 async def prompt(
-    client: VerifiersClient,
+    client: VerifiersACPClient,
     connection: Any,
     capabilities: Any,
     session_id: str,
@@ -165,7 +165,7 @@ async def prompt(
 
 
 async def run_once(config: dict) -> str:
-    client = VerifiersClient()
+    client = VerifiersACPClient()
     command = config["command"]
     async with spawn_agent_process(
         client,
@@ -217,7 +217,7 @@ class LiveACPSession:
     """One live ACP process, connection, and session shared by several turns."""
 
     def __init__(self) -> None:
-        self.client = VerifiersClient()
+        self.client = VerifiersACPClient()
         self._reset()
 
     def _reset(self) -> None:
