@@ -11,7 +11,7 @@ from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.harnesses._node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -100,28 +100,28 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
-        env = await self._env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
         return await CODEX_ACP.run(
             runtime,
             env,
             ACP_COMMAND,
             prompt,
             system_prompt=system_prompt,
-            session_path=f"{self._home(trace)}/acp-session",
+            session_path=f"{self.trace_home(trace)}/acp-session",
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        result = await runtime.run(["rm", "-rf", self._home(trace)], {})
+        result = await runtime.run(["rm", "-rf", self.trace_home(trace)], {})
         if result.exit_code != 0:
             raise RuntimeError(
                 f"failed to clean up Codex home: {result.stderr.strip()[-500:]}"
             )
 
     @staticmethod
-    def _home(trace: Trace) -> str:
+    def trace_home(trace: Trace) -> str:
         return f"/tmp/vf-codex-home-{trace.id}"
 
-    async def _env(
+    async def build_env(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -130,7 +130,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
-        home = self._home(trace)
+        home = self.trace_home(trace)
         created = await runtime.run(["mkdir", "-p", home], {})
         if created.exit_code != 0:
             raise RuntimeError(

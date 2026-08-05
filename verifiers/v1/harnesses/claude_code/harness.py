@@ -6,7 +6,7 @@ from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.harnesses._node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -75,7 +75,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        config_dir = self._config_dir(trace)
+        config_dir = self.config_dir(trace)
 
         options: dict[str, object] = {
             "strictMcpConfig": True,
@@ -106,12 +106,12 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        result = await runtime.run(["rm", "-rf", self._config_dir(trace)], {})
+        result = await runtime.run(["rm", "-rf", self.config_dir(trace)], {})
         if result.exit_code != 0:
             raise RuntimeError(
                 f"failed to clean up Claude config: {result.stderr.strip()[-500:]}"
             )
 
     @staticmethod
-    def _config_dir(trace: Trace) -> str:
+    def config_dir(trace: Trace) -> str:
         return f"{CLAUDE_CONFIG_ROOT}/{trace.id}"

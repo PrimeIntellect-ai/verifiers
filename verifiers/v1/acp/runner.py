@@ -196,7 +196,8 @@ async def run_once(config: dict) -> str:
         *command[1:],
         env=os.environ.copy(),
         transport_kwargs={"stderr": None},
-    ) as (connection, _process):
+    ) as agent_process:
+        connection = agent_process[0]
         initialized = await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
             client_capabilities=ClientCapabilities(),
@@ -266,7 +267,7 @@ class LiveACPSession:
     async def start(self, config: dict) -> None:
         command = config["command"]
         try:
-            self.connection, _process = await self.stack.enter_async_context(
+            agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
@@ -275,6 +276,7 @@ class LiveACPSession:
                     transport_kwargs={"stderr": None},
                 )
             )
+            self.connection = agent_process[0]
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
                 client_capabilities=ClientCapabilities(),
