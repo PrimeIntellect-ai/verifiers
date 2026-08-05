@@ -22,36 +22,25 @@ PROVIDER = "intercept"
 KEY_VAR = "CODEX_INTERCEPT_KEY"
 
 CODEX_DIR = "/tmp/vf-codex"
-CODEX_BIN = f"{CODEX_DIR}/bin/codex"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
+CODEX_VERSION = "0.145.0"
 ACP_VERSION = "1.1.7"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
-ACP_COMMAND = [
-    "sh",
-    "-c",
-    f'export PATH="{NODE_BIN_DIR}:$PATH"; exec {ACP_BIN}',
-]
+ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 SKILLS_DIR = ".agents/skills"
 INSTALL = r"""
 set -e
 export PATH="/tmp/vf-node/bin:$PATH"
 versions="$VF_CODEX_VERSION:$VF_CODEX_ACP_VERSION"
 if [ "$(cat /tmp/vf-codex/.versions 2>/dev/null)" = "$versions" ] \
-    && [ -x /tmp/vf-codex/bin/codex ] \
+    && [ -x /tmp/vf-codex/acp/node_modules/.bin/codex ] \
     && [ -x /tmp/vf-codex/acp/node_modules/.bin/codex-acp ]; then
     exit 0
 fi
-command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl >/dev/null; }
-case "$(uname -m)" in aarch64|arm64) arch=aarch64 ;; *) arch=x86_64 ;; esac
-triple="${arch}-unknown-linux-musl"
-mkdir -p /tmp/vf-codex/bin
-curl -fsSL "https://github.com/openai/codex/releases/download/rust-v$VF_CODEX_VERSION/codex-${triple}.tar.gz" \
-    | tar -xz -C /tmp/vf-codex/bin
-mv "/tmp/vf-codex/bin/codex-${triple}" /tmp/vf-codex/bin/codex
-chmod +x /tmp/vf-codex/bin/codex
 npm install --prefix /tmp/vf-codex/acp --ignore-scripts --no-audit --no-fund \
-    --omit=dev --omit=optional \
-    "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" >/dev/null
+    --omit=dev \
+    "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
+    "@openai/codex@$VF_CODEX_VERSION" >/dev/null
 printf %s "$versions" > /tmp/vf-codex/.versions
 """
 
@@ -59,8 +48,6 @@ CODEX_ACP = ACP()
 
 
 class CodexHarnessConfig(HarnessConfig):
-    version: str = "0.145.0"
-    """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
 
@@ -76,7 +63,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         await ensure_node(runtime)
         logger.info(
             "codex: ensuring Codex %s and codex-acp %s are installed",
-            self.config.version,
+            CODEX_VERSION,
             ACP_VERSION,
         )
         guarded = (
@@ -87,7 +74,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         install = await runtime.run(
             ["sh", "-c", guarded],
             {
-                "VF_CODEX_VERSION": self.config.version,
+                "VF_CODEX_VERSION": CODEX_VERSION,
                 "VF_CODEX_ACP_VERSION": ACP_VERSION,
             },
         )
@@ -151,22 +138,6 @@ class CodexHarness(Harness[CodexHarnessConfig]):
                 f"failed to create Codex home: {created.stderr.strip()[-500:]}"
             )
 
-        mcp_config = (
-            "mcp_servers={"
-            + ",".join(
-                (
-                    f"{json.dumps(name, ensure_ascii=False)}="
-                    f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                    f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
-                )
-                for name, url in mcp_urls.items()
-            )
-            + "}"
-            if mcp_urls
-            else ""
-        )
-        await runtime.write(f"{home}/config.toml", mcp_config.encode())
-
         namespace_bases = {
             name: (namespace if namespace.startswith("mcp__") else f"mcp__{namespace}")
             for name in mcp_urls
@@ -220,7 +191,6 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "APP_SERVER_LOGS": f"{home}/logs",
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
-            "CODEX_PATH": CODEX_BIN,
             "DEFAULT_AUTH_REQUEST": json.dumps({"methodId": "api-key"}),
             "INITIAL_AGENT_MODE": "agent-full-access",
             "MODEL_PROVIDER": PROVIDER,
