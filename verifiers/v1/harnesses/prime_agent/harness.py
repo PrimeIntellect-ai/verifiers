@@ -49,7 +49,25 @@ fi
 
 staging="${root}.staging.$$"
 backup="${root}.previous.$$"
-trap 'rm -rf "$staging" "$backup"' EXIT
+had_root=0
+committed=0
+cleanup_install() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    rm -rf "$staging"
+    if [ "$committed" -eq 0 ] && [ "$had_root" -eq 1 ] && [ -e "$backup" ]; then
+        rm -rf "$root"
+        mv "$backup" "$root" || \
+            echo "prime-agent: failed to restore previous install" >&2
+    elif [ "$committed" -eq 1 ]; then
+        rm -rf "$backup"
+    fi
+    exit "$status"
+}
+trap cleanup_install EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 rm -rf "$staging" "$backup"
 mkdir -p "$staging"
 
@@ -72,11 +90,13 @@ npm install --no-audit --no-fund --prefix "$staging" \
 printf %s "$package_sha" > "$staging/.installed"
 
 if [ -e "$root" ]; then
+    had_root=1
     mv "$root" "$backup"
 fi
 mv "$staging" "$root"
+committed=1
 rm -rf "$backup"
-trap - EXIT
+trap - EXIT HUP INT TERM
 """
 
 PRIME_AGENT_ACP = ACP()
