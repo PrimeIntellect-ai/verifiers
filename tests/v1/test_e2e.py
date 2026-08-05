@@ -55,6 +55,8 @@ USER_RUNTIMES = [
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
 ACP_RESUME_PLACEMENTS = [
+    _pair("codex", "docker", "codex-acp-in-docker"),
+    _pair("claude-code", "docker", "claude-code-acp-in-docker"),
     _pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
     _pair("rlm", "docker", "rlm-acp-in-docker"),
     _pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
