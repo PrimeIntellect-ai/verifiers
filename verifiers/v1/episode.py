@@ -22,13 +22,6 @@ class EnvInfo(BaseModel):
     """What the caller knows this env by, when that differs from `id`."""
 
 
-class GroupInfo(BaseModel):
-    """The episodes planned together from one task, compared against each other."""
-
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    size: int = 1
-
-
 class EvalRunInfo(BaseModel):
     """A standalone eval: a model measured against nothing that is training."""
 
@@ -106,8 +99,6 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     env: EnvInfo = Field(default_factory=EnvInfo)
     """The env that produced this episode."""
-    group: GroupInfo | None = None
-    """The group it was planned in, consumer-stamped like `run`."""
     run: RunInfo | None = None
     """The run this episode belongs to (eval or train), consumer-stamped. It lives here rather than
     on each trace because the episode is what a consumer dispatches, and an episode that produced
