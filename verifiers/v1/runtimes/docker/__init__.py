@@ -233,11 +233,16 @@ class DockerRuntime(Runtime):
             return url.replace(host, "host.docker.internal", 1)
         return url
 
-    async def prepare_execution(self, routes: list[str]) -> None:
+    async def prepare_execution(self, routes: list[str] | None) -> None:
         """Allow the declared framework routes, then leave the proxy as the only route."""
         if not self.network_restricted:
             return
         assert self._proxy is not None
+        if routes is None:
+            self._proxy.policy = NetworkPolicy(
+                ["*"], [], [HOST_ALIAS], allow_non_global=True
+            )
+            return
         framework = [
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
             for url in routes
@@ -247,6 +252,8 @@ class DockerRuntime(Runtime):
             self.config.block,
             framework,
         )
+        if self._cut:
+            return
         script = (
             "set -eu; HOST=$1; "
             "PORT=$2; "
@@ -334,7 +341,7 @@ class DockerRuntime(Runtime):
         if run.exit_code != 0:
             raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
 
-    async def read(self, path: str) -> bytes:
+    async def _read(self, path: str) -> bytes:
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",

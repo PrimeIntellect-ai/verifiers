@@ -30,7 +30,7 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from aiohttp import web
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
@@ -416,7 +416,7 @@ class InterceptionServer(Interception):
                     upstream_request = dialect.apply_overrides(
                         body, session.ctx.model, session.ctx.sampling
                     )
-                    call_response = await session.ctx.client.get_response(
+                    call_response = await session.client.get_response(
                         dialect,
                         body,
                         session.ctx.model,
@@ -543,7 +543,7 @@ class InterceptionServer(Interception):
                 upstream_request = dialect.apply_overrides(
                     body, session.ctx.model, session.ctx.sampling
                 )
-                reply = await session.ctx.client.relay(
+                reply = await session.client.relay(
                     dialect,
                     body,
                     session.ctx.model,
@@ -692,7 +692,7 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
-            result = await session.ctx.client.relay_aux(
+            result = await session.client.relay_aux(
                 dialect, route, await request.json(), headers=request.headers
             )
         except RolloutError as e:
@@ -737,7 +737,7 @@ class InterceptionServer(Interception):
         state = session.trace.state
         return web.Response(
             # TypeAdapter emits UTF-8 bytes directly, avoiding a JSON str copy in aiohttp.
-            body=TypeAdapter(type(state)).dump_json(state),
+            body=session.state_adapter.dump_json(state),
             content_type="application/json",
             charset="utf-8",
         )
@@ -768,7 +768,7 @@ class InterceptionServer(Interception):
         state_cls = type(session.trace.state)
         raw = await request.read()
         try:
-            new_state = state_cls.model_validate_json(raw)
+            new_state = session.state_adapter.validate_json(raw)
         except ValidationError as e:
             # Reject malformed, over-nested, or mismatched state before it enters the shared channel.
             logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)

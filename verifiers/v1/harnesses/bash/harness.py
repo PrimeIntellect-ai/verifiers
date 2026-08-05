@@ -101,7 +101,8 @@ class BashHarness(Harness[BashHarnessConfig]):
                 + json.dumps(
                     {
                         "mcpServers": {
-                            name: {"url": url} for name, url in mcp_urls.items()
+                            name: {"url": url, "timeout": self.config.tool_timeout}
+                            for name, url in mcp_urls.items()
                         }
                     }
                 )

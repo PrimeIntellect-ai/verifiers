@@ -19,7 +19,7 @@ import msgpack
 import zmq
 import zmq.asyncio
 
-from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.serve.types import (
     BaseRequest,

@@ -10,11 +10,10 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.output import (
     append_episode,
-    append_trace,
     output_path,
     save_config,
 )
-from verifiers.v1.clients import ModelContext, resolve_client
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode
@@ -26,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
-    client = resolve_client(config.client)
     taskset = env.taskset
     if config.num_tasks is None and taskset.INFINITE:
         raise ValueError(
@@ -36,7 +34,9 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     if config.num_tasks is not None:
         selected = selected.head(config.num_tasks)
     tasks = list(selected)
-    ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
+    ctx = ModelContext(
+        client=config.client, model=config.model, sampling=config.sampling
+    )
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
@@ -76,8 +76,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     write_lock = asyncio.Lock()
 
     async def on_complete(episode: Episode) -> None:
-        for trace in episode.traces:
-            trace.record_run(EvalRunInfo(id=config.uuid))
+        episode.record_run(EvalRunInfo(id=config.uuid))
         await append_episode(out, episode, write_lock)
 
     # Serving resources (shared tool servers, interception) come up once for the
@@ -107,7 +106,6 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
 
                 push_state.started = True
                 await asyncio.to_thread(push_traces, episodes, config, push_state)
-    await client.close()
     return episodes
 
 
@@ -258,9 +256,10 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 )
             records = []
             for trace in traces:
-                trace.record_run(EvalRunInfo(id=config.uuid))
-                await append_trace(out, trace, write_lock, env=config.env_id)
-                records.append(Episode.of(trace))
+                record = Episode.of(trace, env=config.env_id)
+                record.record_run(EvalRunInfo(id=config.uuid))
+                await append_episode(out, record, write_lock)
+                records.append(record)
             return records
 
         async def run_unit(payload: dict) -> list[Episode]:
@@ -271,8 +270,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     sampling=config.sampling,
                     **payload,
                 )
-            for trace in episode.traces:
-                trace.record_run(EvalRunInfo(id=config.uuid))
+            episode.record_run(EvalRunInfo(id=config.uuid))
             await append_episode(out, episode, write_lock)
             return [episode]
 

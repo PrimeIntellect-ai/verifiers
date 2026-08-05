@@ -35,7 +35,7 @@ class AgentConfig(BaseConfig):
     client: ClientConfig | None = None
     """Endpoint override (None = the run's client)."""
     sampling: SamplingConfig | None = None
-    """Sampling override (None = the run's sampling)."""
+    """Sampling values merged onto the run's sampling."""
 
     max_turns: int | None = None
     """Max model turns per run (None = no limit)."""

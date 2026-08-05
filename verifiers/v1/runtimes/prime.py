@@ -181,22 +181,25 @@ class PrimeRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def prepare_execution(self, routes: list[str]) -> None:
+    async def prepare_execution(self, routes: list[str] | None) -> None:
         """Apply the host policy after setup and wait until the platform enforces it."""
         if not self.network_restricted:
             return
         try:
-            hosts = list(
-                dict.fromkeys(
-                    h for h in (urlsplit(route).hostname for route in routes) if h
-                )
-            )
-            if self.config.allow == ["*"]:
-                policy = {"deny": self.config.block}
+            if routes is None:
+                policy = {"allow": ["*"]}
             else:
-                entries = list(dict.fromkeys([*hosts, *self.config.allow]))
-                validate_egress_lists(entries, None)
-                policy = {"allow": entries} if entries else {"deny": ["*"]}
+                hosts = list(
+                    dict.fromkeys(
+                        h for h in (urlsplit(route).hostname for route in routes) if h
+                    )
+                )
+                if self.config.allow == ["*"]:
+                    policy = {"deny": self.config.block}
+                else:
+                    entries = list(dict.fromkeys([*hosts, *self.config.allow]))
+                    validate_egress_lists(entries, None)
+                    policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
             try:
                 async with asyncio.timeout(60):
@@ -217,8 +220,8 @@ class PrimeRuntime(Runtime):
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
-            self.config.allow,
-            self.config.block,
+            policy.get("allow"),
+            policy.get("deny"),
         )
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
@@ -270,7 +273,7 @@ class PrimeRuntime(Runtime):
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
-    async def read(self, path: str) -> bytes:
+    async def _read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (

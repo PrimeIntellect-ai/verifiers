@@ -1,27 +1,32 @@
-"""agentic-judge: a solver plays the task, then a judge verifies the work.
+"""Agentic judging: a solver plays the task, then a judge verifies the work.
 
-A reusable env (`--env.id agentic-judge` over any taskset). The solver plays the
-task in a container provisioned from its runtime policy; the judge then grades
-rubric criteria (`[env.task]`: policy prompt, criteria file) and writes its
-verdicts to `/tmp/verdict.json`, with the solver's full trace record uploaded at
-`/tmp/trace.json`. `finalize()` validates them strictly onto the solver's trace —
-`judge/<name>` metrics plus a weighted-mean `judge` reward, composed with the
-taskset's own rewards via `[env.score]` (judge-only by default).
+Two reusable envs share the grading protocol. `--env.id agentic-judge` provisions
+a fresh box from the solver's runtime policy and restores only the task's collected
+artifacts; `--env.id shared-agentic-judge` explicitly runs the judge in the
+solver's box. The judge grades rubric criteria (`[env.task]`: policy prompt,
+criteria file) and writes its verdicts to `/tmp/verdict.json`, with the solver's
+full trace record uploaded at `/tmp/trace.json`. `finalize()` validates them
+strictly onto the solver's trace — `judge/<name>` metrics plus a weighted-mean
+`judge` reward, composed with the taskset's own rewards via `[env.score]`
+(judge-only by default).
 
-`--env.share-runtime` controls whether the judge uses the solver's runtime. It is
-enabled by default. When disabled, the judge gets a fresh runtime containing the
-task's collected artifacts.
+The environment id selects the runtime boundary; there is no mode boolean whose
+value can disagree with the environment's security and artifact semantics.
 """
 
 import json
-import math
 import re
-import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import FiniteFloat
 
 import verifiers.v1 as vf
+from verifiers.v1.judges.rubric import (
+    Criterion,
+    RubricVerdicts,
+    load_criteria,
+    score_verdicts,
+)
 from verifiers.v1.utils.compile import validate_pairing
 
 VERDICT_FILE = "/tmp/verdict.json"
@@ -36,29 +41,6 @@ TASK_SECTION = """\
 ## The task the agent was given
 
 {prompt}"""
-
-
-class Criterion(BaseModel):
-    """One rubric criterion — the plugged rubric judge's format, mirrored so the
-    same `criteria` files grade both judges."""
-
-    name: str
-    """Key for the criterion's metric (`judge/<name>`)."""
-    text: str
-    weight: float = 1.0
-    """The criterion's share of the reward."""
-    choices: list[str] = Field(default_factory=lambda: ["no", "yes"])
-    """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
-    evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
-
-    @field_validator("choices")
-    @classmethod
-    def _check_choices(cls, v: list[str]) -> list[str]:
-        if len(v) < 2:
-            raise ValueError(f"`choices` needs at least two options, got {v}")
-        if len(set(v)) != len(v):
-            raise ValueError(f"`choices` has duplicate options: {v}")
-        return v
 
 
 SOLVED = Criterion(
@@ -143,7 +125,7 @@ class JudgeTask(vf.Task):
         self,
         data: vf.TaskData,
         files: dict[str, bytes],
-        artifacts: dict[str, bytes],
+        artifacts: dict[str, bytes | None],
     ) -> None:
         super().__init__(data)
         self.files = files
@@ -184,6 +166,8 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
+                network_allow=solved.network_allow,
+                network_block=solved.network_block,
             ),
             files=files,
             artifacts={} if share_runtime else solution.state.artifacts,
@@ -210,7 +194,7 @@ class JudgeTask(vf.Task):
                 f"the judge wrote no verdict to {VERDICT_FILE}; its final act must "
                 'be writing {"verdicts": [{"name", "reason", "verdict"}, ...]} there'
             ) from e
-        trace.info["verdict"] = json.loads(raw)
+        trace.info["verdict"] = RubricVerdicts.model_validate_json(raw).model_dump()
 
 
 class TextFile(vf.BaseConfig):
@@ -259,38 +243,16 @@ class JudgeTaskConfig(vf.BaseConfig):
     def criteria(self) -> list[Criterion]:
         if self.rubric is None:
             return [SOLVED]
-        text = self.rubric.read_text(encoding="utf-8")
-        data = (
-            tomllib.loads(text)
-            if self.rubric.suffix.lower() == ".toml"
-            else json.loads(text)
-        )
-        items = data.get("criteria", []) if isinstance(data, dict) else data
-        criteria = [Criterion.model_validate(item) for item in items]
-        if not criteria:
-            raise ValueError(f"rubric file '{self.rubric}' lists no criteria")
-        names = [criterion.name for criterion in criteria]
-        if len(set(names)) != len(names):
-            raise ValueError(
-                f"rubric file '{self.rubric}' has duplicate criterion names"
-            )
-        if bad := [c.name for c in criteria if not 0 <= c.weight < math.inf]:
-            raise ValueError(
-                f"rubric '{self.rubric}' has negative or non-finite criterion "
-                f"weights: {bad}"
-            )
-        if sum(criterion.weight for criterion in criteria) <= 0:
-            raise ValueError(f"rubric '{self.rubric}' has no positive criterion weight")
-        return criteria
+        return load_criteria(self.rubric)
 
 
 class ScoreConfig(vf.BaseConfig):
     """How the judge's verdict composes with the taskset's own rewards on the
     solver's trace. Judge-only by default."""
 
-    task_weight: float = 0.0
+    task_weight: FiniteFloat = 0.0
     """Scale applied to the taskset's own rewards; 1 keeps them next to the verdict."""
-    judge_weight: float = 1.0
+    judge_weight: FiniteFloat = 1.0
     """Weight of the judge's verdict in the solver's reward."""
 
 
@@ -299,20 +261,22 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     """The solver agent. Its runtime must be a container:
     `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
-    """The judge agent. Its runtime is ignored when `share_runtime` is enabled;
-    otherwise it must be a container."""
-    share_runtime: bool = True
-    """Whether the judge grades in the solver's runtime."""
+    """The judge agent. Its runtime setting is ignored: both judging modes use the
+    solver's resolved runtime policy, either by borrowing its box or provisioning a
+    fresh equivalent one."""
     task: JudgeTaskConfig = JudgeTaskConfig()
     score: ScoreConfig = ScoreConfig()
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
+    """Common agentic-judge protocol; subclasses choose the runtime boundary."""
+
     def __init__(self, config: AgenticJudgeEnvConfig) -> None:
-        if config.share_runtime:
-            config.judge = config.judge.model_copy(
-                update={"runtime": config.solver.runtime}
-            )
+        # Both modes use the solver's policy. Shared judging borrows that exact box;
+        # isolated judging resolves the mirrored JudgeTask into a fresh equivalent.
+        config.judge = config.judge.model_copy(
+            update={"runtime": config.solver.runtime}
+        )
         super().__init__(config)
         self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
@@ -343,21 +307,6 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
-    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        if self.config.share_runtime:
-            async with agents.solver.provision(task) as box:
-                solution = await agents.solver.run(task, runtime=box)
-                judge_task = JudgeTask.from_trace(solution, self.config.task)
-                await agents.judge.run(judge_task, runtime=box)
-            return
-
-        solution = await agents.solver.run(task)
-        if not solution.ok:
-            return
-        await agents.judge.run(
-            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
-        )
-
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent.name: t for t in episode.traces}
         if "judge" not in by_agent:
@@ -367,42 +316,37 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                     reward.weight *= self.config.score.task_weight
             return
         solution, verdict = by_agent["solver"], by_agent["judge"]
-        data = verdict.info.get("verdict")
-        if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
-            raise TypeError(
-                f"no verdicts on the judge's trace (expected {VERDICT_FILE} with a "
-                '"verdicts" list)'
-            )
+        verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.criteria()
-        by_criterion = {c.name: c for c in criteria}
-        answers: dict[str, str] = {}
-        for entry in data["verdicts"]:
-            if not isinstance(entry, dict):
-                raise TypeError(f"verdict entry {entry!r} is not an object")
-            name = str(entry.get("name"))
-            if name in answers:
-                # Contradictory duplicates must not collapse to whichever came last.
-                raise ValueError(f"judge answered criterion {name!r} more than once")
-            answers[name] = str(entry.get("verdict"))
-        if sorted(answers) != sorted(by_criterion):
-            raise ValueError(
-                f"judge verdicts name {sorted(answers)}, expected the rubric's "
-                f"{sorted(by_criterion)}"
-            )
-        scores: dict[str, float] = {}
-        for name, answer in answers.items():
-            choices = by_criterion[name].choices
-            # An off-menu answer is a judge failure, not a zero score.
-            if answer not in choices:
-                raise ValueError(
-                    f"judge answered {answer!r} for '{name}', expected one of {choices}"
-                )
-            scores[name] = choices.index(answer) / (len(choices) - 1)
+        scores = score_verdicts(verdicts, criteria, "the rubric's")
         for criterion in criteria:
             solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
         if self.config.score.task_weight != 1.0:
             for reward in solution.rewards.values():
-                reward.weight *= self.config.score.task_weight
+                if reward is not None:
+                    reward.weight *= self.config.score.task_weight
         total = sum(criterion.weight for criterion in criteria)
         reward = sum(c.weight * scores[c.name] for c in criteria) / total
         solution.record_reward("judge", reward, weight=self.config.score.judge_weight)
+
+
+class SharedAgenticJudgeEnv(AgenticJudgeEnv):
+    """Judge the solver in its runtime, preserving the complete mutable workspace."""
+
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        async with agents.solver.provision(task) as box:
+            solution = await agents.solver.run(task, runtime=box)
+            judge_task = JudgeTask.from_trace(solution, self.config.task)
+            await agents.judge.run(judge_task, runtime=box)
+
+
+class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
+    """Judge only collected artifacts in a fresh box with the solver's policy."""
+
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        solution = await agents.solver.run(task)
+        if not solution.ok:
+            return
+        await agents.judge.run(
+            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
+        )

@@ -129,7 +129,7 @@ def _eval_config(
     runtime: dict | None = None,
     env: dict | None = None,
     pool: dict | None = None,
-    model: str | None = None,
+    model: str | None = "deepseek/deepseek-v4-flash-0731",
     reasoning_effort: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
@@ -216,20 +216,17 @@ def run_v1_server():
 
 @pytest.fixture
 async def live_ctx():
-    """A live `ModelContext` (the e2e default model + endpoint, provider-default
-    sampling) for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
-    from verifiers.v1.clients import EvalClientConfig, ModelContext, resolve_client
+    """The e2e `ModelContext` (default model + endpoint config, provider-default sampling)
+    for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
+    from verifiers.v1.clients import EvalClientConfig, ModelContext
     from verifiers.v1.types import SamplingConfig
 
-    client = resolve_client(EvalClientConfig())
-    try:
-        yield ModelContext(
-            model="deepseek/deepseek-v4-flash",
-            client=client,
-            sampling=SamplingConfig(max_tokens=2048),
-        )
-    finally:
-        await client.close()
+    # Endpoint config only — each rollout builds and closes its own client.
+    yield ModelContext(
+        model="deepseek/deepseek-v4-flash-0731",
+        client=EvalClientConfig(),
+        sampling=SamplingConfig(max_tokens=2048),
+    )
 
 
 @pytest.fixture

@@ -22,7 +22,7 @@ from verifiers.v1.configs.legacy import LegacyEnvConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.serve import (
     ElasticPoolConfig,
-    ServingConfig,
+    ServeConfig,
     StaticPoolConfig,
     pool_serve_kwargs,
 )
@@ -254,7 +254,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Env",
     "SingleAgentEnv",
     "EnvConfig",
-    "ServingConfig",
+    "ServeConfig",
     "LegacyEnvConfig",
     "resolve_env_field",
     "narrowed_env_annotation",
