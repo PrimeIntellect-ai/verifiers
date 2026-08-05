@@ -274,14 +274,8 @@ class PrimeRuntime(Runtime):
                 "persistent harness sessions on Prime require a VM sandbox; "
                 "set runtime.prime.vm=true"
             )
-        open_process = getattr(self._client, "open_process", None)
-        if open_process is None:
-            raise SandboxError(
-                "Prime VM live processes require a prime-sandboxes SDK version "
-                "that provides AsyncSandboxClient.open_process()"
-            )
         try:
-            process = await open_process(
+            process = await self._client.open_process(
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
