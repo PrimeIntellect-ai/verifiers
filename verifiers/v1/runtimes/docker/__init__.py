@@ -9,6 +9,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import uuid
+from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
@@ -19,9 +21,11 @@ from verifiers.v1.runtimes.base import (
     NetworkPolicyConfig,
     ProgramResult,
     Runtime,
+    RuntimeProcess,
     parse_gpu,
 )
 from verifiers.v1.runtimes.docker.egress import HOST_ALIAS, EgressProxy, NetworkPolicy
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,60 @@ class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
     pass
 
 
+async def _read_stream(reader: asyncio.StreamReader) -> AsyncIterator[bytes]:
+    while chunk := await reader.read(64 * 1024):
+        yield chunk
+
+
+class DockerProcess(RuntimeProcess):
+    def __init__(
+        self,
+        process: asyncio.subprocess.Process,
+        container: str,
+        pid: int,
+    ) -> None:
+        self._process = process
+        self._container = container
+        self._pid = pid
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        self._stdin = process.stdin
+        self.stdout = _read_stream(process.stdout)
+        self.stderr = _read_stream(process.stderr)
+
+    async def write(self, data: bytes) -> None:
+        self._stdin.write(data)
+        await self._stdin.drain()
+
+    async def wait(self) -> int:
+        return await self._process.wait()
+
+    async def terminate(self) -> None:
+        await self._signal("TERM")
+
+    async def kill(self) -> None:
+        await self._signal("KILL")
+
+    async def _signal(self, signal: str) -> None:
+        if self._process.returncode is not None:
+            return
+        result = await docker(
+            "exec",
+            self._container,
+            "sh",
+            "-c",
+            'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2"',
+            "vf-signal",
+            signal,
+            str(self._pid),
+        )
+        if result.exit_code != 0 and self._process.returncode is None:
+            raise SandboxError(
+                f"docker exec process signal failed: {result.stderr.strip()}"
+            )
+
+
 async def docker(*args: str) -> ProgramResult:
     proc = await asyncio.create_subprocess_exec(
         "docker",
@@ -54,12 +112,54 @@ async def docker(*args: str) -> ProgramResult:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except BaseException:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        await run_shielded(proc.communicate())
+        raise
     return ProgramResult(
         exit_code=proc.returncode or 0,
         stdout=stdout.decode(errors="replace"),
         stderr=stderr.decode(errors="replace"),
     )
+
+
+async def _abort_process_startup(
+    proc: asyncio.subprocess.Process, container: str, pidfile: str
+) -> str:
+    """Kill a partially opened container process and reap its local docker client."""
+    # The target normally writes its PID immediately, but cancellation can win
+    # that race. Wait briefly for the file before signalling the process group.
+    cleanup = (
+        'i=0; while [ "$i" -lt 20 ]; do '
+        'if [ -s "$1" ]; then pid=$(cat "$1"); '
+        'kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; '
+        'rm -f "$1"; exit 0; fi; '
+        "i=$((i + 1)); sleep 0.05; done; exit 1"
+    )
+    try:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                docker(
+                    "exec",
+                    container,
+                    "sh",
+                    "-c",
+                    cleanup,
+                    "vf-process-cleanup",
+                    pidfile,
+                ),
+                timeout=2,
+            )
+    finally:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        _, stderr = await proc.communicate()
+    return stderr.decode(errors="replace").strip()
 
 
 _PROXY_HOST = "host.docker.internal"
@@ -318,6 +418,67 @@ class DockerRuntime(Runtime):
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         return await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
+        )
+
+    async def open_process(
+        self, argv: list[str], env: dict[str, str]
+    ) -> RuntimeProcess:
+        assert self._container is not None
+        env = {**env, **(self._proxy_env() if self._cut else {})}
+        env_args = [
+            arg for key, value in env.items() for arg in ("--env", f"{key}={value}")
+        ]
+        pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
+        # Give the target its own process group when `setsid -w` is available so
+        # terminate()/kill() reap its descendants while docker exec remains
+        # attached if setsid needs to fork. The inner shell records the
+        # post-setsid PID before exec preserves it as the target PID.
+        wrapper = (
+            "if setsid -w true >/dev/null 2>&1; then "
+            'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
+            'vf-process "$@"; '
+            'fi; echo $$ > "$1"; shift; exec "$@"'
+        )
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "-i",
+            *env_args,
+            "--workdir",
+            self.config.workdir,
+            self._container,
+            "sh",
+            "-c",
+            wrapper,
+            "vf-process",
+            pidfile,
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5
+        try:
+            while True:
+                ready = await docker("exec", self._container, "cat", pidfile)
+                if ready.exit_code == 0 and ready.stdout.strip().isdigit():
+                    return DockerProcess(
+                        proc, self._container, int(ready.stdout.strip())
+                    )
+                if proc.returncode is not None or loop.time() >= deadline:
+                    break
+                await asyncio.sleep(0.05)
+        except BaseException:
+            await run_shielded(_abort_process_startup(proc, self._container, pidfile))
+            raise
+
+        stderr = await run_shielded(
+            _abort_process_startup(proc, self._container, pidfile)
+        )
+        detail = stderr or ready.stderr.strip()
+        raise SandboxError(
+            f"docker live process failed to start: {detail or 'PID unavailable'}"
         )
 
     async def run_background(
