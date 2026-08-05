@@ -160,6 +160,12 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
+        # A resumed segment replays the accreted conversation, and the ACP runner
+        # renders that transcript into the prompt — including the `[system]` block
+        # it rendered on the first segment. Re-emitting the system prompt here
+        # would hand the model the same instructions twice.
+        if trace.branches and trace.branches[-1].messages:
+            system_prompt = None
         agent_dir = f".vf-prime-agent-{trace.id}"
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
