@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 # Model traffic is routed through the interception endpoint, which prime-agent
 # sees as an ordinary OpenAI-compatible provider.
+#
+# The agent-dir env var is derived from the package's own piConfig name, so the
+# published prime-agent release reads PRIME_AGENT_CODING_AGENT_DIR, not the
+# upstream PI_ prefix.
+ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 PROVIDER = "intercept"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 
@@ -25,18 +30,43 @@ PRIME_AGENT_DIR = "/tmp/vf-prime-agent"
 PRIME_AGENT_BIN = f"{PRIME_AGENT_DIR}/node_modules/.bin/prime-agent"
 SKILLS_DIR = ".agents/skills"
 INSTALLER_URL = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/install.sh"
+NODE_VERSION = "22.19.0"
+NODE_BIN = f"{PRIME_AGENT_DIR}/node/bin"
 
 INSTALL = r"""
 set -e
+node="$VF_PRIME_AGENT_DIR/node"
+node_ok() { node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=8 ? 0 : 1)'; }
+
+# Containers do not ship Node, and prime-agent requires >=22.8. Prefer the
+# distro package, otherwise fetch the pinned official build.
+if [ -f /etc/alpine-release ]; then
+    apk add --no-cache curl ca-certificates nodejs-current npm >/dev/null
+    node_bin="$(dirname "$(command -v node)")"
+else
+    command -v curl >/dev/null 2>&1 \
+        || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
+    case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
+    if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_PRIME_AGENT_NODE_VERSION" ]; then
+        case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
+        rm -rf "$node"
+        mkdir -p "$node"
+        curl -fsSL "https://nodejs.org/dist/v$VF_PRIME_AGENT_NODE_VERSION/node-v$VF_PRIME_AGENT_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
+            | tar -xz -C "$node" --strip-components=1
+    fi
+    node_bin="$node/bin"
+fi
+export PATH="$node_bin:$PATH"
+node_ok || { echo "prime-agent requires Node.js 22.8 or newer" >&2; exit 1; }
+
 if [ -x "$VF_PRIME_AGENT_BIN" ]; then
     exit 0
 fi
 mkdir -p "$VF_PRIME_AGENT_DIR"
-cd "$VF_PRIME_AGENT_DIR"
 # The published release tarball is a plain npm package, so install it directly
 # instead of running the interactive installer script.
 npm install --no-audit --no-fund --prefix "$VF_PRIME_AGENT_DIR" \
-    "$VF_PRIME_AGENT_TARBALL"
+    "$VF_PRIME_AGENT_TARBALL" >/dev/null
 """
 
 PRIME_AGENT_ACP = ACP()
@@ -89,6 +119,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "VF_PRIME_AGENT_BIN": PRIME_AGENT_BIN,
                 "VF_PRIME_AGENT_TARBALL": self._tarball(),
+                "VF_PRIME_AGENT_NODE_VERSION": NODE_VERSION,
             },
         )
         if install.exit_code != 0:
@@ -118,7 +149,10 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 PROVIDER: {
                     "baseUrl": endpoint,
                     "api": "openai-completions",
-                    "apiKey": f"${KEY_VAR}",
+                    # prime-agent does NOT expand "$VAR" in models.json: it sends the
+                    # literal string as the bearer token (verified against a capturing
+                    # server). Inline the secret instead of the pi-style indirection.
+                    "apiKey": secret,
                     "models": [
                         {
                             "id": ctx.model,
@@ -134,9 +168,9 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         env = {
             **self.config.resolved_env,
             KEY_VAR: secret,
-            "PI_CODING_AGENT_DIR": agent_dir,
-            "PI_OFFLINE": "1",
-            "PI_TELEMETRY": "0",
+            ENV_AGENT_DIR: agent_dir,
+            "PRIME_AGENT_OFFLINE": "1",
+            "PRIME_AGENT_TELEMETRY": "0",
         }
 
         args = [
@@ -173,8 +207,10 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             wrapper,
             (
                 "#!/bin/sh\n"
-                'PI_CODING_AGENT_DIR="$PWD/$PI_CODING_AGENT_DIR"\n'
-                'export PI_CODING_AGENT_DIR HOME="$PI_CODING_AGENT_DIR"\n'
+                # The bundled Node lives beside the install, not on the container PATH.
+                f'export PATH="{NODE_BIN}:$PATH"\n'
+                f'{ENV_AGENT_DIR}="$PWD/${ENV_AGENT_DIR}"\n'
+                f'export {ENV_AGENT_DIR} HOME="${ENV_AGENT_DIR}"\n'
                 f'exec {shlex.join(args)} "$@"\n'
             ).encode(),
         )
