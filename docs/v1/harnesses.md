@@ -2,15 +2,6 @@
 
 verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled `bash` harness, the CDP-driven `browser_use` harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
 
-## The `browser_use` harness
-
-The `browser_use` harness gives the model one `browser` tool that runs Python against a real Chromium over CDP via [browser-harness](https://github.com/browser-use/browser-harness). One config field, `--env.agent.harness.browser`, picks where the browser comes from:
-
-- `chromium` (default): launch and own a local headless Chromium. Select the harness, Docker, and a browser-capable image with `--env.agent.harness.id browser_use --env.agent.runtime.type docker --env.agent.runtime.image mcr.microsoft.com/playwright/python:v1.61.0-noble@sha256:a9731514f24121d1dcd25d58d0a38146646d290a5998fd80d3e533e7b5e21c69`. This official Playwright Python image was verified with its Python 3.12, the runtime's uv bootstrap, and its installed Chromium. The image is required caller configuration because runtime allocation precedes harness setup.
-- `cdp` (`--env.agent.harness.cdp_url <endpoint>`): the generic backend — attach to any CDP-speaking browser service (a cloud provider, a remote grid, or one you launched yourself) and own nothing. Needs no special image. Model-authored code in the rollout can read this endpoint, so use a scoped, ephemeral connect URL.
-
-A future Browserbase convenience could create sessions automatically; today its connect URL works through `cdp`. Whichever mode, model-authored Python runs in the browser-harness daemon, so the harness sets `NEEDS_CONTAINER` and refuses the bare-host subprocess runtime.
-
 ## A minimal harness implementation
 
 ```python
@@ -32,7 +23,7 @@ class MyHarness(Harness[MyHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     # When the taskset exports a toolset, they are added as MCP. To show that your harness is able to install MCPs, you have to set this flag to true.
     SUPPORTS_MCP = True
-    # Allow transcript-backed resume by relaunching on a Messages prompt.
+    # Allow user simulation, mostly implemented by supporting the ACP protocol.
     SUPPORTS_RESUME = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -65,8 +56,4 @@ class MyHarness(Harness[MyHarnessConfig]):
         }
         # Run the harness to completion inside the selected runtime.
         return await runtime.run_program(["<HARNESS_BINARY>", str(prompt or "")], env)
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        # Remove any per-rollout state that must not survive in a borrowed runtime.
-        ...
 ```

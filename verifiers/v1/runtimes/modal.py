@@ -11,6 +11,8 @@ import asyncio
 import contextlib
 import logging
 import shlex
+import uuid
+from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
 
@@ -22,6 +24,7 @@ from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
     Runtime,
+    RuntimeProcess,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 
@@ -56,6 +59,46 @@ class ModalConfig(BaseConfig):
 
 class ModalRuntimeInfo(ModalConfig, BaseRuntimeInfo):
     pass
+
+
+class ModalProcess(RuntimeProcess):
+    def __init__(self, process, sandbox, pid: int, workdir: str) -> None:
+        self._process = process
+        self._sandbox = sandbox
+        self._pid = pid
+        self._workdir = workdir
+        self.stdout: AsyncIterator[bytes] = process.stdout
+        self.stderr: AsyncIterator[bytes] = process.stderr
+
+    async def write(self, data: bytes) -> None:
+        await self._process.stdin.write.aio(data)
+        await self._process.stdin.drain.aio()
+
+    async def wait(self) -> int:
+        return await self._process.wait.aio()
+
+    async def terminate(self) -> None:
+        await self._signal("TERM")
+
+    async def kill(self) -> None:
+        await self._signal("KILL")
+
+    async def _signal(self, signal: str) -> None:
+        if await self._process.poll.aio() is not None:
+            return
+        proc = await self._sandbox.exec.aio(
+            "sh",
+            "-c",
+            'kill -"$1" "$2"',
+            "vf-signal",
+            signal,
+            str(self._pid),
+            workdir=self._workdir,
+        )
+        stderr = await proc.stderr.read.aio()
+        exit_code = await proc.wait.aio()
+        if exit_code != 0 and await self._process.poll.aio() is None:
+            raise SandboxError(f"modal exec process signal failed: {stderr.strip()}")
 
 
 class ModalRuntime(Runtime):
@@ -145,6 +188,62 @@ class ModalRuntime(Runtime):
             stdout=stdout or "",
             stderr=stderr or "",
         )
+
+    async def open_process(
+        self, argv: list[str], env: dict[str, str]
+    ) -> RuntimeProcess:
+        pidfile = f".vf-process-{uuid.uuid4().hex}.pid"
+        wrapper = 'echo $$ > "$1"; shift; exec "$@"'
+        try:
+            proc = await self._sandbox.exec.aio(
+                "sh",
+                "-c",
+                wrapper,
+                "vf-process",
+                pidfile,
+                *argv,
+                workdir=self.config.workdir,
+                env=env,
+                text=False,
+            )
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5
+            while True:
+                ready = await self.run(["cat", pidfile], {})
+                if ready.exit_code == 0 and ready.stdout.strip().isdigit():
+                    return ModalProcess(
+                        proc,
+                        self._sandbox,
+                        int(ready.stdout.strip()),
+                        self.config.workdir,
+                    )
+                returncode = await proc.poll.aio()
+                if returncode is not None or loop.time() >= deadline:
+                    if returncode is None:
+                        # Modal's ContainerProcess has no signal API. A live
+                        # process without a readable PID cannot be targeted, so
+                        # fail the sandbox closed instead of abandoning it.
+                        sandbox = self._sandbox
+                        try:
+                            await sandbox.terminate.aio()
+                        except Exception:
+                            logger.warning(
+                                "modal: failed to terminate sandbox %s after live "
+                                "process startup timed out",
+                                self.info.id,
+                                exc_info=True,
+                            )
+                        else:
+                            self._sandbox = None
+                    raise SandboxError(
+                        "modal live process failed to start: "
+                        f"{ready.stderr.strip() or 'PID unavailable'}"
+                    )
+                await asyncio.sleep(0.05)
+        except SandboxError:
+            raise
+        except Exception as e:
+            raise SandboxError(f"modal live process failed to start: {e}") from e
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

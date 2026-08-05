@@ -7,11 +7,11 @@ are local-only (their marks are excluded in CI)."""
 
 import pytest
 
-_m = pytest.mark
+mark = pytest.mark
 
 
-def _pair(a: str, b: str, id: str, *extra_marks):
-    marks = [getattr(_m, a.replace("-", "_")), getattr(_m, b.replace("-", "_"))]
+def pair(a: str, b: str, id: str, *extra_marks):
+    marks = [getattr(mark, a.replace("-", "_")), getattr(mark, b.replace("-", "_"))]
     return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
 
 
@@ -20,79 +20,83 @@ def _pair(a: str, b: str, id: str, *extra_marks):
 # provider. codex/claude-code are excluded here (unreliable on a no-op echo chat
 # task) — test_agentic covers them.
 CHAT_PLACEMENTS = [
-    _pair("null", "subprocess", "null-harness-in-subprocess"),
-    _pair("bash", "docker", "bash-harness-in-docker"),
-    _pair("rlm", "docker", "rlm-harness-in-docker"),
-    _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
-    _pair("bash", "prime", "bash-harness-in-prime"),
-    _pair("bash", "modal", "bash-harness-in-modal"),
+    pair("null", "subprocess", "null-harness-in-subprocess"),
+    pair("bash", "docker", "bash-harness-in-docker"),
+    pair("rlm", "docker", "rlm-harness-in-docker"),
+    pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
+    pair("bash", "prime", "bash-harness-in-prime"),
+    pair("bash", "modal", "bash-harness-in-modal"),
 ]
 
 # harness x harness runtime for the shell task: every coding agent once (null is a chat
 # loop with no shell), both local runtimes hit (subprocess only carries bash), one
 # remote row per provider.
 AGENTIC_PLACEMENTS = [
-    _pair("bash", "subprocess", "bash-harness-in-subprocess"),
-    _pair("rlm", "docker", "rlm-harness-in-docker"),
-    _pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
-    _pair("codex", "docker", "codex-harness-in-docker"),
-    _pair("claude-code", "docker", "claude-code-harness-in-docker"),
-    _pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
-    _pair("bash", "prime", "bash-harness-in-prime"),
-    _pair("bash", "modal", "bash-harness-in-modal"),
+    pair("bash", "subprocess", "bash-harness-in-subprocess"),
+    pair("rlm", "docker", "rlm-harness-in-docker"),
+    pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
+    pair("codex", "docker", "codex-harness-in-docker"),
+    pair("claude-code", "docker", "claude-code-harness-in-docker"),
+    pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
+    pair("bash", "prime", "bash-harness-in-prime"),
+    pair("bash", "modal", "bash-harness-in-modal"),
 ]
 
 # The scripted user runs in the eval process itself (no placement axis); the harness
 # runtime is the exchange's only axis.
 USER_RUNTIMES = [
-    pytest.param("subprocess", marks=[_m.subprocess], id="harness-in-subprocess"),
-    pytest.param("docker", marks=[_m.docker], id="harness-in-docker"),
-    pytest.param("prime", marks=[_m.prime], id="harness-in-prime"),
-    pytest.param("modal", marks=[_m.modal], id="harness-in-modal"),
+    pytest.param("subprocess", marks=[mark.subprocess], id="harness-in-subprocess"),
+    pytest.param("docker", marks=[mark.docker], id="harness-in-docker"),
+    pytest.param("prime", marks=[mark.prime], id="harness-in-prime"),
+    pytest.param("modal", marks=[mark.modal], id="harness-in-modal"),
 ]
 
-# ACP-backed harnesses: each must preserve an exchange across process relaunches and
+# ACP-backed harnesses: each must preserve an exchange across interaction segments and
 # retain MCP access after resuming. Cover every harness in the local container runtime,
-# plus one remote placement for the sandbox/tunnel boundary.
+# plus remote placements for the sandbox/tunnel and native-process boundaries.
 ACP_RESUME_PLACEMENTS = [
-    _pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
-    _pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
-    _pair("pi", "docker", "pi-acp-in-docker"),
-    _pair("pool", "docker", "pool-acp-in-docker"),
-    _pair("openclaw", "docker", "openclaw-acp-in-docker"),
-    _pair("pool", "prime", "pool-acp-in-prime"),
+    pair("codex", "docker", "codex-acp-in-docker"),
+    pair("claude-code", "docker", "claude-code-acp-in-docker"),
+    pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
+    pair("rlm", "docker", "rlm-acp-in-docker"),
+    pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
+    pair("pi", "docker", "pi-acp-in-docker"),
+    pair("pool", "docker", "pool-acp-in-docker"),
+    pair("openclaw", "docker", "openclaw-acp-in-docker"),
+    pair("pool", "prime", "pool-acp-in-prime"),
+    pair("rlm", "prime", "rlm-acp-in-prime-vm"),
 ]
 
 # harness runtime x tool placement: every axis value once plus the two-container case
 # (harness and tool in separate docker boxes) and a prime-colocated row (a tool in its
 # OWN prime sandbox needs port exposure; colocated rides the harness's box).
 TOOL_PLACEMENTS = [
-    _pair("subprocess", "colocated", "harness-in-subprocess-with-tool-colocated"),
-    _pair("docker", "colocated", "harness-in-docker-with-tool-colocated"),
-    _pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
-    _pair("docker", "subprocess", "harness-in-docker-with-tool-in-subprocess"),
-    _pair("docker", "docker", "harness-in-docker-with-tool-in-docker"),
-    _pair("prime", "colocated", "harness-in-prime-with-tool-colocated"),
-    _pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
-    _pair("subprocess", "modal", "harness-in-subprocess-with-tool-in-modal"),
+    pair("subprocess", "colocated", "harness-in-subprocess-with-tool-colocated"),
+    pair("docker", "colocated", "harness-in-docker-with-tool-colocated"),
+    pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
+    pair("docker", "subprocess", "harness-in-docker-with-tool-in-subprocess"),
+    pair("docker", "docker", "harness-in-docker-with-tool-in-docker"),
+    pair("prime", "colocated", "harness-in-prime-with-tool-colocated"),
+    pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
+    pair("subprocess", "modal", "harness-in-subprocess-with-tool-in-modal"),
 ]
 
 # The state channel rides the same reachability as TOOL_PLACEMENTS; cover each axis
 # value once rather than re-running the whole list.
 TOOL_STATE_PLACEMENTS = [
-    _pair("subprocess", "colocated", "harness-in-subprocess-with-tool-colocated"),
-    _pair("docker", "subprocess", "harness-in-docker-with-tool-in-subprocess"),
-    _pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
-    _pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
+    pair("subprocess", "colocated", "harness-in-subprocess-with-tool-colocated"),
+    pair("docker", "subprocess", "harness-in-docker-with-tool-in-subprocess"),
+    pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
+    pair("modal", "colocated", "harness-in-modal-with-tool-colocated"),
 ]
 
 # Shared servers always run in their own runtime (colocation is per-rollout, shared is
 # eval-level): same-runtime pairs plus one cross-boundary row.
 SHARED_TOOL_PLACEMENTS = [
-    _pair("subprocess", "subprocess", "harness-in-subprocess-with-tool-in-subprocess"),
-    _pair("docker", "docker", "harness-in-docker-with-tool-in-docker"),
-    _pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
-    _pair("modal", "modal", "harness-in-modal-with-tool-in-modal"),
+    pair("subprocess", "subprocess", "harness-in-subprocess-with-tool-in-subprocess"),
+    pair("docker", "docker", "harness-in-docker-with-tool-in-docker"),
+    pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
+    pair("modal", "modal", "harness-in-modal-with-tool-in-modal"),
 ]
 
 
@@ -215,7 +219,10 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
-        runtime={"type": harness_runtime},
+        runtime={
+            "type": harness_runtime,
+            **({"vm": True} if harness_runtime == "prime" else {}),
+        },
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,
@@ -231,6 +238,8 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert segments[1]["terminated"] is False
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
+    if harness == "rlm":
+        assert "turns_since_last_compaction" in trace.metrics
 
 
 @pytest.mark.e2e
@@ -314,7 +323,6 @@ async def test_tool_response_image(run_v1, tmp_path):
         "tool-response-image-v1",
         harness="null",
         runtime={"type": "subprocess"},
-        model="openai/gpt-5.6-luna",
         reasoning_effort="none",
         output_dir=tmp_path,
         max_turns=4,
@@ -418,24 +426,20 @@ async def test_env_id_best_of_n(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_env_id_agentic_judge(run_v1, tmp_path):
-    """The agentic judge over the echo taskset (needs docker): the box is
-    provisioned once from the solver's runtime policy, the solver plays in it,
-    the judge lands in the SAME box with the graded trace uploaded,
-    investigates with real execution, and its parsed verdict
-    lands on the solver's trace under the spec's reward key. Wiring, not taste:
-    the judge followed the verdict-file contract — the grade itself is the
-    model's call. Exercises the config surface too: a policy-only prompt
-    override (the verdict contract is appended regardless) and
-    reward-composition weights."""
+async def test_env_id_shared_agentic_judge(run_v1, tmp_path):
+    """The shared agentic judge provisions one restricted solver-owned box and
+    safely reuses it for the judge's empirical verification."""
     policy = tmp_path / "judge_policy.txt"
     policy.write_text("Check EMPIRICALLY that the agent echoed the word back.")
     traces = await run_v1(
         "echo-v1",
         harness=None,
         env={
-            "id": "agentic-judge",
-            "solver": {"harness": {"id": "bash"}, "runtime": {"type": "docker"}},
+            "id": "shared-agentic-judge",
+            "solver": {
+                "harness": {"id": "bash"},
+                "runtime": {"type": "docker", "block": ["example.com"]},
+            },
             "judge": {
                 "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
@@ -455,9 +459,57 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     (judge,) = [t for t in traces if t.agent.name == "judge"]
     assert solver.ok and judge.ok
     assert judge.agent.trainable is False
+    assert solver.agent.runtime is not None and judge.agent.runtime is not None
+    assert solver.agent.runtime.id == judge.agent.runtime.id
     # The task's own reward keeps its raw score; the rescale lands on the weight.
     assert solver.rewards["echoed"].score == 1.0
     assert solver.rewards["echoed"].weight == 0.5
+    assert isinstance(judge.info.get("verdict"), dict)
+    assert 0.0 <= solver.rewards["judge"].score <= 1.0
+
+
+@pytest.mark.e2e
+async def test_env_id_agentic_judge(run_v1, tmp_path):
+    """The isolated agentic judge destroys the restricted solver box, transfers
+    its declared artifact, and restores it in a fresh box with the same policy."""
+    policy = tmp_path / "isolated_judge_policy.txt"
+    policy.write_text(
+        "Check EMPIRICALLY that answer.txt contains exactly the requested phrase."
+    )
+    traces = await run_v1(
+        "echo-agentic-v1",
+        harness=None,
+        env={
+            "id": "agentic-judge",
+            "solver": {
+                "harness": {"id": "bash"},
+                "runtime": {"type": "docker", "block": ["example.com"]},
+            },
+            "judge": {
+                "harness": {"id": "bash"},
+                "max_output_tokens": 8192,
+            },
+            "task": {
+                "prompt": {"path": str(policy)},
+                "hint": "Do not rely on README.md",
+            },
+            "score": {"task_weight": 0.5},
+        },
+        output_dir=tmp_path,
+        max_turns=10,
+        rollout_timeout=600,
+    )
+    assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
+    (solver,) = [t for t in traces if t.agent.name == "solver"]
+    (judge,) = [t for t in traces if t.agent.name == "judge"]
+    assert solver.ok and judge.ok
+    assert judge.agent.trainable is False
+    assert solver.agent.runtime is not None and judge.agent.runtime is not None
+    assert solver.agent.runtime.id != judge.agent.runtime.id
+    assert solver.agent.runtime.type == judge.agent.runtime.type == "docker"
+    assert "/app/answer.txt" in solver.state.artifacts
+    assert solver.rewards["wrote_phrase"].score == 1.0
+    assert solver.rewards["wrote_phrase"].weight == 0.5
     assert isinstance(judge.info.get("verdict"), dict)
     assert 0.0 <= solver.rewards["judge"].score <= 1.0
 

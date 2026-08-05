@@ -9,6 +9,7 @@ from verifiers.v1.runtimes.base import (
     NetworkPolicyConfig,
     ProgramResult,
     Runtime,
+    RuntimeProcess,
     register,
 )
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
@@ -85,6 +86,7 @@ __all__ = [
     "Runtime",
     "RuntimeConfig",
     "RuntimeInfo",
+    "RuntimeProcess",
     "SubprocessConfig",
     "SubprocessRuntime",
     "SubprocessRuntimeInfo",
