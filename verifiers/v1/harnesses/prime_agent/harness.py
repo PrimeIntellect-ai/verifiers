@@ -43,8 +43,11 @@ PRIME_AGENT_ACP = ACP()
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    version: str = "0.5.1"
-    """Prime Agent release to install, pinned for reproducibility."""
+    version: str = "0.6.0"
+    """Prime Agent release to install, pinned for reproducibility.
+
+    0.6.0 is the first release with native ACP mode (`--mode acp`).
+    """
 
     tarball_url: str | None = None
     """Override the release tarball URL (defaults to the pinned public release)."""
