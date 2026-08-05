@@ -47,35 +47,43 @@ class PolicySpan(BaseModel):
         return max(0, self.end - self.start)
 
 
-class TrainMetadata(BaseModel):
+class Metadata(BaseModel):
+    """What one episode is to the training run it belongs to."""
+
+    policy: PolicySpan | None = None
+    """`None` when it was not generated from the live policy, as with a frozen sampler."""
+
+
+class TrainMetadata(Metadata):
     """An episode a training run trains on."""
 
     type: Literal["train"] = "train"
     step: int | None = None
     """The batch window it landed in, which is not known until it does."""
 
-    def off_policy_steps(self, policy: PolicySpan) -> int | None:
+    @property
+    def off_policy_steps(self) -> int | None:
         """Versions behind the policy in training, queue time included."""
-        if self.step is None:
+        if self.policy is None or self.step is None:
             return None
-        return max(0, (self.step - 1) - policy.start)
+        return max(0, (self.step - 1) - self.policy.start)
 
 
-class EvalMetadata(BaseModel):
+class EvalMetadata(Metadata):
     """An episode a training run measures itself with."""
 
     type: Literal["eval"] = "eval"
     step: int
     """The step whose eval produced it, known when it is dispatched."""
 
-    def off_policy_steps(self, policy: PolicySpan) -> int:
+    @property
+    def off_policy_steps(self) -> int | None:
         """Versions the policy moved under it. Nothing trains on an eval, so it can only be
         off-policy by drifting — and its `step` is fixed at dispatch, so it cannot say that."""
-        return policy.drift
+        return self.policy.drift if self.policy else None
 
 
 EpisodeMetadata = Annotated[TrainMetadata | EvalMetadata, Field(discriminator="type")]
-"""What an episode is to the training run it belongs to."""
 
 
 class TrainRunInfo(BaseModel):
@@ -85,14 +93,6 @@ class TrainRunInfo(BaseModel):
     type: Literal["train"] = "train"
     id: str
     metadata: EpisodeMetadata = Field(default_factory=TrainMetadata)
-    policy: PolicySpan | None = None
-    """`None` when it was not generated from the live policy, as with a frozen sampler."""
-
-    @property
-    def off_policy_steps(self) -> int | None:
-        if self.policy is None:
-            return None
-        return self.metadata.off_policy_steps(self.policy)
 
 
 RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
