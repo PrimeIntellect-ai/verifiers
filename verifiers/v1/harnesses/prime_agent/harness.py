@@ -222,9 +222,9 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                     # literal string as the bearer token (verified against a capturing
                     # server), so the pi-style indirection cannot be used here. The
                     # secret is substituted by the launch wrapper at exec time instead
-                    # of being written to disk, because concurrent rollouts share a
-                    # runtime and model-executed code could otherwise read another
-                    # rollout's credential out of its models.json.
+                    # of being uploaded in the placeholder config. File modes narrow
+                    # access to the runtime user; same-uid rollout isolation remains a
+                    # runtime-level concern.
                     "apiKey": APIKEY_PLACEHOLDER,
                     "models": [
                         {
@@ -286,8 +286,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 f'export PATH="{NODE_BIN}:$PATH"\n'
                 f'{ENV_AGENT_DIR}="$PWD/${ENV_AGENT_DIR}"\n'
                 f'export {ENV_AGENT_DIR} HOME="${ENV_AGENT_DIR}"\n'
-                # Substitute the bearer token into models.json here, so the plaintext
-                # credential is only readable by this rollout's own agent process.
+                # Substitute the bearer token into models.json only when the agent
+                # starts, after its directory and file have restrictive permissions.
                 # Node rewrites the parsed document rather than a text substitution:
                 # a token carrying a backslash, quote, or `sed` metacharacter would
                 # otherwise corrupt the key or abort the wrapper before exec.
@@ -333,3 +333,6 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             prompt,
             system_prompt=system_prompt,
         )
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        await runtime.run(["rm", "-rf", f".vf-prime-agent-{trace.id}"], {})
