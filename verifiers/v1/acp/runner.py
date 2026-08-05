@@ -196,28 +196,38 @@ async def run_once(config: dict) -> str:
         *command[1:],
         env=os.environ.copy(),
         transport_kwargs={"stderr": None},
-    ) as (connection, _process):
+    ) as agent_process:
+        connection = agent_process[0]
         initialized = await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
             client_capabilities=ClientCapabilities(),
         )
         capabilities = initialized.agent_capabilities
         session_path = Path(config["session_path"]) if config["session_path"] else None
+        session_meta = config["session_meta"]
         is_new = session_path is None or not session_path.exists()
         servers = mcp_servers(config)
         if is_new:
-            session = await connection.new_session(cwd=os.getcwd(), mcp_servers=servers)
+            session = await connection.new_session(
+                cwd=os.getcwd(), mcp_servers=servers, **session_meta
+            )
             session_id = session.session_id
         else:
             session_id = session_path.read_text().strip()
             session_capabilities = capabilities and capabilities.session_capabilities
             if session_capabilities and session_capabilities.resume is not None:
                 await connection.resume_session(
-                    cwd=os.getcwd(), session_id=session_id, mcp_servers=servers
+                    cwd=os.getcwd(),
+                    session_id=session_id,
+                    mcp_servers=servers,
+                    **session_meta,
                 )
             elif capabilities and capabilities.load_session:
                 await connection.load_session(
-                    cwd=os.getcwd(), session_id=session_id, mcp_servers=servers
+                    cwd=os.getcwd(),
+                    session_id=session_id,
+                    mcp_servers=servers,
+                    **session_meta,
                 )
             else:
                 raise RuntimeError("ACP agent does not support resuming sessions")
@@ -251,12 +261,13 @@ class LiveACPSession:
         self.command: list[str] | None = None
         self.server_urls: dict[str, str] | None = None
         self.system_prompt: str | None = None
+        self.session_meta: dict | None = None
         self.is_new = True
 
     async def start(self, config: dict) -> None:
         command = config["command"]
         try:
-            self.connection, _process = await self.stack.enter_async_context(
+            agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
@@ -265,13 +276,16 @@ class LiveACPSession:
                     transport_kwargs={"stderr": None},
                 )
             )
+            self.connection = agent_process[0]
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
                 client_capabilities=ClientCapabilities(),
             )
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(
-                cwd=os.getcwd(), mcp_servers=mcp_servers(config)
+                cwd=os.getcwd(),
+                mcp_servers=mcp_servers(config),
+                **config["session_meta"],
             )
         except BaseException:
             with suppress(BaseException):
@@ -282,6 +296,7 @@ class LiveACPSession:
         self.command = command
         self.server_urls = config["mcp_urls"]
         self.system_prompt = config["system_prompt"]
+        self.session_meta = config["session_meta"]
         self.is_new = True
 
     async def run(self, config: dict) -> str:
@@ -291,6 +306,7 @@ class LiveACPSession:
             config["command"] != self.command
             or config["mcp_urls"] != self.server_urls
             or config["system_prompt"] != self.system_prompt
+            or config["session_meta"] != self.session_meta
         ):
             raise RuntimeError("ACP session configuration changed")
         assert self.session_id is not None
