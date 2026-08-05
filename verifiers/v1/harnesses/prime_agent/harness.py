@@ -31,7 +31,17 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 PRIME_AGENT_DIR = "/tmp/vf-prime-agent"
 PRIME_AGENT_BIN = f"{PRIME_AGENT_DIR}/node_modules/.bin/prime-agent"
 SKILLS_DIR = ".agents/skills"
-INSTALLER_URL = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/install.sh"
+# Release artifacts live under this base; `latest.json` at the root records the
+# current version and each tarball's sha256.
+#
+# This is the artifact base, which is not the same as the user-facing installer at
+# https://app.primeintellect.ai/prime-agent/install.sh. That script is a thin
+# front end: it resolves versions and downloads tarballs from this base, defaulting
+# to it in its own `prime_agent_base_url` and honoring PRIME_AGENT_DOWNLOAD_BASE_URL.
+# The same value is the prime-agent repo's R2_PUBLIC_BASE_URL variable, which its
+# release workflow publishes to. This harness installs the npm tarball directly
+# rather than running that script, so it needs the artifact base.
+RELEASE_BASE_URL = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
 NODE_VERSION = "22.19.0"
 NODE_BIN = f"{PRIME_AGENT_DIR}/node/bin"
 
@@ -131,8 +141,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         if self.config.tarball_url:
             return self.config.tarball_url
         version = self.config.version
-        base = INSTALLER_URL.rsplit("/", 1)[0]
-        return f"{base}/releases/v{version}/prime-agent-{version}.tgz"
+        return f"{RELEASE_BASE_URL}/releases/v{version}/prime-agent-{version}.tgz"
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
