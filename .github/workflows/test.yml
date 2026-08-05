@@ -106,6 +106,11 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Run Kuhn Poker with RLM in Prime VMs
+        run: |
+          uv run eval kuhn-poker-v1 -m deepseek/deepseek-v4-flash-0731 -n 1 -r 1 -c 1 -o /tmp/kuhn-rlm-prime-e2e --no-push --no-rich --sampling.max-tokens 8192 --env.player0.harness.id rlm --env.player0.runtime.type prime --env.player0.runtime.vm true --env.player0.max-turns 8 --env.player0.max-output-tokens 8192 --env.player0.timeout.rollout 600 --env.player1.harness.id rlm --env.player1.runtime.type prime --env.player1.runtime.vm true --env.player1.max-turns 8 --env.player1.max-output-tokens 8192 --env.player1.timeout.rollout 600
+          uv run python -c 'import json; from pathlib import Path; rows = [json.loads(line) for line in Path("/tmp/kuhn-rlm-prime-e2e/traces.jsonl").read_text().splitlines() if line.strip()]; assert len(rows) == 1, rows; row = rows[0]; traces = row["traces"]; assert row["ok"] and len(traces) == 2, row.get("errors"); assert all(t["ok"] and not t["errors"] and t["stop_condition"] == "user_closed" and t["info"]["kuhn"]["forfeited"] is None for t in traces), traces; assert sorted(t["agent"]["name"] for t in traces) == ["player0", "player1"]; assert sum(t["rewards"]["payoff"]["score"] for t in traces) == 0; print(json.dumps([{"agent": t["agent"]["name"], "card": t["info"]["kuhn"]["card"], "history": t["info"]["kuhn"]["history"], "turns": sum(bool(n.get("sampled")) for n in t["nodes"]), "payoff": t["rewards"]["payoff"]["score"]} for t in traces], indent=2))'
+
       - name: Run live v1 E2Es
         run: |
           uv run pytest tests/v1 -vv -n auto -m "e2e and not prime and not modal" --cov=verifiers --cov-report=xml --cov-report=term
