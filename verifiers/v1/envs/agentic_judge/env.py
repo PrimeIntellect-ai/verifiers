@@ -313,7 +313,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             solution = by_agent["solver"]
             if self.config.score.task_weight != 1.0:
                 for reward in solution.rewards.values():
-                    reward.weight *= self.config.score.task_weight
+                    if reward is not None:
+                        reward.weight *= self.config.score.task_weight
             return
         solution, verdict = by_agent["solver"], by_agent["judge"]
         verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
