@@ -44,6 +44,13 @@ node_ok() { node -e 'const [a,b]=process.versions.node.split(".").map(Number); p
 # distro package, otherwise fetch the pinned official build.
 if [ -f /etc/alpine-release ]; then
     apk add --no-cache curl ca-certificates nodejs-current npm >/dev/null
+    if ! node_ok; then
+        # The official Node build is glibc-only, so an Alpine whose own
+        # nodejs-current is too old has to move its repos forward and retry.
+        sed -E -i 's/v[0-9]+\.[0-9]+/v3.22/g' /etc/apk/repositories
+        apk upgrade --available --no-cache >/dev/null
+        apk add --no-cache nodejs-current npm >/dev/null
+    fi
     node_bin="$(dirname "$(command -v node)")"
 else
     command -v curl >/dev/null 2>&1 \
@@ -61,14 +68,21 @@ fi
 export PATH="$node_bin:$PATH"
 node_ok || { echo "prime-agent requires Node.js 22.8 or newer" >&2; exit 1; }
 
-if [ -x "$VF_PRIME_AGENT_BIN" ]; then
+# Concurrent rollouts share the install, so it is keyed on the requested
+# tarball: a changed `version` or `tarball_url` must reinstall rather than
+# silently reuse whatever an earlier rollout left in the shared directory.
+stamp="$VF_PRIME_AGENT_DIR/.installed"
+if [ -x "$VF_PRIME_AGENT_BIN" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$VF_PRIME_AGENT_TARBALL" ]; then
     exit 0
 fi
 mkdir -p "$VF_PRIME_AGENT_DIR"
+# Drop the stamp first so a failed install is never mistaken for a good one.
+rm -f "$stamp"
 # The published release tarball is a plain npm package, so install it directly
 # instead of running the interactive installer script.
 npm install --no-audit --no-fund --prefix "$VF_PRIME_AGENT_DIR" \
     "$VF_PRIME_AGENT_TARBALL" >/dev/null
+printf %s "$VF_PRIME_AGENT_TARBALL" > "$stamp"
 """
 
 PRIME_AGENT_ACP = ACP()
