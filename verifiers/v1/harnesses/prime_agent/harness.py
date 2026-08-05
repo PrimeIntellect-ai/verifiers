@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 # upstream PI_ prefix.
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 PROVIDER = "intercept"
+# Stand-in written to models.json; the launch wrapper swaps in the real secret.
+APIKEY_PLACEHOLDER = "__VF_PRIME_AGENT_KEY__"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 
 PRIME_AGENT_DIR = "/tmp/vf-prime-agent"
@@ -149,10 +151,14 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 PROVIDER: {
                     "baseUrl": endpoint,
                     "api": "openai-completions",
-                    # prime-agent does NOT expand "$VAR" in models.json: it sends the
+                    # prime-agent does not expand "$VAR" in models.json: it sends the
                     # literal string as the bearer token (verified against a capturing
-                    # server). Inline the secret instead of the pi-style indirection.
-                    "apiKey": secret,
+                    # server), so the pi-style indirection cannot be used here. The
+                    # secret is substituted by the launch wrapper at exec time instead
+                    # of being written to disk, because concurrent rollouts share a
+                    # runtime and model-executed code could otherwise read another
+                    # rollout's credential out of its models.json.
+                    "apiKey": APIKEY_PLACEHOLDER,
                     "models": [
                         {
                             "id": ctx.model,
@@ -163,7 +169,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 }
             }
         }
-        await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
+        models_path = f"{agent_dir}/models.json"
+        await runtime.write(models_path, json.dumps(models).encode())
 
         env = {
             **self.config.resolved_env,
@@ -196,8 +203,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 args += ["--autonomous-gate", gate]
         elif self.config.gates:
             raise ValueError("prime-agent gates require autonomous=true")
-        if system_prompt:
-            args += ["--append-system-prompt", system_prompt]
+        # The ACP runner seeds the system prompt into the conversation itself, so
+        # passing --append-system-prompt as well would apply it twice.
 
         # ACP owns stdout, so the agent must be exec'd directly with HOME pinned
         # to the per-trace agent dir: prime-agent writes sessions and kernel state
@@ -207,14 +214,24 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             wrapper,
             (
                 "#!/bin/sh\n"
+                "set -e\n"
                 # The bundled Node lives beside the install, not on the container PATH.
                 f'export PATH="{NODE_BIN}:$PATH"\n'
                 f'{ENV_AGENT_DIR}="$PWD/${ENV_AGENT_DIR}"\n'
                 f'export {ENV_AGENT_DIR} HOME="${ENV_AGENT_DIR}"\n'
+                # Substitute the bearer token into models.json here, so the plaintext
+                # credential is only readable by this rollout's own agent process.
+                f'models="${ENV_AGENT_DIR}/models.json"\n'
+                f"umask 077\n"
+                f'sed "s|{APIKEY_PLACEHOLDER}|${KEY_VAR}|" "$models" > "$models.tmp"\n'
+                f'mv "$models.tmp" "$models"\n'
                 f'exec {shlex.join(args)} "$@"\n'
             ).encode(),
         )
         await runtime.run(["chmod", "+x", wrapper], {})
+        # models.json is world-readable as written; restrict it before it holds a secret.
+        await runtime.run(["chmod", "700", agent_dir], {})
+        await runtime.run(["chmod", "600", models_path], {})
 
         return await PRIME_AGENT_ACP.run(
             runtime,
