@@ -138,6 +138,21 @@ class CodexHarness(Harness[CodexHarnessConfig]):
                 f"failed to create Codex home: {created.stderr.strip()[-500:]}"
             )
 
+        mcp_config = (
+            "mcp_servers={"
+            + ",".join(
+                f"{json.dumps(server_name, ensure_ascii=False)}="
+                f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
+                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
+                for name, url in mcp_urls.items()
+                for server_name in (re.sub(r"\s", "_", name),)
+            )
+            + "}"
+            if mcp_urls
+            else ""
+        )
+        await runtime.write(f"{home}/config.toml", mcp_config.encode())
+
         namespace_bases = {
             name: (namespace if namespace.startswith("mcp__") else f"mcp__{namespace}")
             for name in mcp_urls
