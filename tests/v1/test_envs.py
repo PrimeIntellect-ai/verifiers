@@ -65,10 +65,13 @@ def test_eval(taskset: str):
         for seat in SEATS.get(taskset, ("agent",))
         for flag in (f"--env.{seat}.max-turns", "4")
     ]
-    # Install the example dynamically while keeping its verifiers dependency on this checkout.
-    cmd = [
-        "uv", "run", "--no-sync", "--with-editable", str(ENVIRONMENTS.parent),
+    # NeMo Gym is Python 3.12+ and therefore not in the default examples group.
+    overlays = [
+        "--with-editable", str(ENVIRONMENTS.parent),
         "--with-editable", str(ENVIRONMENTS / taskset),
+    ] if taskset == "nemo_gym_weather_v1" else []  # fmt: skip
+    cmd = [
+        "uv", "run", "--no-sync", *overlays,
         "eval", taskset,
         *model,
         "-n", "1", "-r", "1", *caps,

@@ -65,6 +65,7 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
 
         response = await state.post("seed_session", self.data.row)
         response.raise_for_status()
+        state.cookies.update(response.cookies)
         metadata = response.json().get("mcp")
         if metadata is None:
             return
@@ -162,9 +163,9 @@ class NeMoGymEnv(SingleAgentEnv):
                 try:
                     port = int((await runtime.read("nemo_gym.port")).decode())
                     resources_url = f"http://127.0.0.1:{port}"
-                    if (await client.get(resources_url)).is_success:
-                        config.resources_url = resources_url
-                        return
+                    await client.get(resources_url)
+                    config.resources_url = resources_url
+                    return
                 except (FileNotFoundError, ValueError, httpx.HTTPError):
                     pass
                 await asyncio.sleep(0.5)

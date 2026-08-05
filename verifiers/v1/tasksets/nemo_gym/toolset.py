@@ -38,9 +38,7 @@ class NeMoGymState(State):
             cookies=self.cookies,
             timeout=self.request_timeout,
         ) as client:
-            response = await client.post(f"{self.resources_url}/{path}", json=body)
-        self.cookies.update(response.cookies)
-        return response
+            return await client.post(f"{self.resources_url}/{path}", json=body)
 
     @asynccontextmanager
     async def mcp_session(self) -> AsyncIterator[ClientSession]:
