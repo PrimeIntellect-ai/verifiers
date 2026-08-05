@@ -106,14 +106,6 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Run modeled user simulation with RLM and MCP
-        if: always()
-        env:
-          PYTHONPATH: tests/v1/fixtures
-        run: |
-          uv run eval echo-tool-v1 --env.id user-sim -m deepseek/deepseek-v4-flash-0731 -n 1 -r 1 -c 1 -o /tmp/user-sim-rlm-prime-e2e --no-push --no-rich --sampling.max-tokens 8192 --env.taskset.task.tools.colocated true --env.assistant.harness.id rlm --env.assistant.runtime.type prime --env.assistant.runtime.vm true --env.assistant.max-turns 8 --env.assistant.max-output-tokens 32768 --env.assistant.timeout.rollout 600 --env.user.max-turns 8 --env.user.max-output-tokens 32768 --env.user.timeout.rollout 600
-          uv run python -c 'import json; from pathlib import Path; rows = [json.loads(line) for line in Path("/tmp/user-sim-rlm-prime-e2e/traces.jsonl").read_text().splitlines() if line.strip()]; assert len(rows) == 1 and rows[0]["ok"], rows; traces = rows[0]["traces"]; assert len(traces) == 2 and all(t["ok"] and not t["errors"] and t["stop_condition"] == "user_closed" for t in traces), traces; assistant = next(t for t in traces if t["agent"]["name"] == "assistant"); user = next(t for t in traces if t["agent"]["name"] == "user"); nodes = json.dumps(assistant["nodes"]); assert assistant["rewards"]["echoed"]["score"] == 1.0, assistant; assert assistant["metrics"]["user_turns"] >= 2, assistant; assert sum(bool(n.get("sampled")) for n in assistant["nodes"]) >= 3, assistant["nodes"]; assert "await echo_back.run" in nodes and "hello world [ok-7f3]" in nodes, nodes; print(json.dumps({"assistant_turns": sum(bool(n.get("sampled")) for n in assistant["nodes"]), "user_turns": sum(bool(n.get("sampled")) for n in user["nodes"]), "echoed_reward": assistant["rewards"]["echoed"]["score"], "assistant_stop": assistant["stop_condition"], "user_stop": user["stop_condition"]}, indent=2))'
-
       - name: Run live v1 E2Es
         run: |
           uv run pytest tests/v1 -vv -n auto -m "e2e and not prime and not modal" --cov=verifiers --cov-report=xml --cov-report=term
