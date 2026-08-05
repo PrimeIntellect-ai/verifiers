@@ -99,7 +99,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             runtime,
             env,
             ACP_COMMAND,
-            prompt,
+            prompt or "",
             mcp_urls=mcp_urls,
             session_path=f"{config_dir}/acp-session",
             session_meta=session_meta,
