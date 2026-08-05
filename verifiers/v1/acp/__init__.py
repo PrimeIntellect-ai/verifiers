@@ -19,6 +19,7 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+STDERR_DRAIN_TIMEOUT = 1.0
 
 __all__ = ["ACP"]
 
@@ -289,6 +290,15 @@ class ACPHarnessSession(HarnessSession):
                         exit_code = await asyncio.wait_for(process.wait(), timeout=5)
         finally:
             if stderr_task is not None:
+                if not stderr_task.done():
+                    # Process exit can reach stdout before the remote stderr
+                    # stream flushes its final chunks. Give it a bounded chance
+                    # to close before cancellation discards the crash details.
+                    with contextlib.suppress(BaseException):
+                        await asyncio.wait_for(
+                            asyncio.shield(stderr_task),
+                            timeout=STDERR_DRAIN_TIMEOUT,
+                        )
                 if not stderr_task.done():
                     stderr_task.cancel()
                 with contextlib.suppress(BaseException):

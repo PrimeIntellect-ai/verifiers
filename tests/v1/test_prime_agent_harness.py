@@ -30,14 +30,16 @@ def test_trace_root_encodes_untrusted_trace_id() -> None:
 
 @pytest.mark.asyncio
 async def test_acp_eof_reports_process_exit_and_stderr() -> None:
-    async def stream(*chunks: bytes):
+    async def stream(*chunks: bytes, delay: float = 0):
+        await asyncio.sleep(delay)
         for chunk in chunks:
             yield chunk
-        await asyncio.sleep(0)
 
     class Process:
         stdout = stream()
-        stderr = stream(b"daemon worker received SIGTERM\n")
+        # Reproduce the remote ordering where stdout and process exit arrive
+        # before the final stderr frame.
+        stderr = stream(b"daemon worker received SIGTERM\n", delay=0.01)
 
         async def write(self, data: bytes) -> None:
             del data
