@@ -9,7 +9,7 @@ from pydantic import Field
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
+from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -169,7 +169,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             )
         await PRIME_AGENT_ACP.setup(self, runtime)
 
-    async def launch(
+    async def session(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -178,14 +178,36 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> ProgramResult:
+    ) -> HarnessSession:
+        if not runtime.supports_live_processes:
+            return await super().session(
+                ctx, trace, runtime, endpoint, secret, mcp_urls, data
+            )
         system_prompt, prompt = self.resolve_prompt(data)
-        # A resumed segment replays the accreted conversation, and the ACP runner
-        # renders that transcript into the prompt — including the `[system]` block
-        # it rendered on the first segment. Re-emitting the system prompt here
-        # would hand the model the same instructions twice.
-        if trace.branches and trace.branches[-1].messages:
-            system_prompt = None
+        env, command = await self._prepare(ctx, trace, runtime, endpoint, secret)
+        return PRIME_AGENT_ACP.session(
+            self,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            data,
+            env=env,
+            command=command,
+            prompt=prompt,
+            system_prompt=system_prompt,
+        )
+
+    async def _prepare(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+    ) -> tuple[dict[str, str], list[str]]:
         agent_dir = f".vf-prime-agent-{trace.id}"
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
@@ -283,11 +305,31 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         # models.json is world-readable as written; restrict it before it holds a secret.
         await runtime.run(["chmod", "700", agent_dir], {})
         await runtime.run(["chmod", "600", models_path], {})
+        return env, ["sh", "-c", f'exec "$PWD/{wrapper}"']
+
+    async def launch(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> ProgramResult:
+        system_prompt, prompt = self.resolve_prompt(data)
+        # A resumed segment replays the accreted conversation, and the ACP runner
+        # renders that transcript into the prompt — including the `[system]` block
+        # it rendered on the first segment. Re-emitting the system prompt here
+        # would hand the model the same instructions twice.
+        if trace.branches and trace.branches[-1].messages:
+            system_prompt = None
+        env, command = await self._prepare(ctx, trace, runtime, endpoint, secret)
 
         return await PRIME_AGENT_ACP.run(
             runtime,
             env,
-            ["sh", "-c", f'exec "$PWD/{wrapper}"'],
+            command,
             prompt,
             system_prompt=system_prompt,
         )
