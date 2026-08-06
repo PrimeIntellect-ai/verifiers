@@ -153,10 +153,26 @@ class _PacketReader:
         return data
 
     async def read(self) -> dict:
-        size = int.from_bytes(await self._readexactly(8), "big")
-        if size > MAX_PACKET_BYTES:
-            raise ValueError(f"ACP session packet is too large: {size} bytes")
-        return json.loads((await self._readexactly(size)).decode())
+        while True:
+            size = int.from_bytes(await self._readexactly(8), "big")
+            if size > MAX_PACKET_BYTES:
+                raise ValueError(f"ACP session packet is too large: {size} bytes")
+            packet = json.loads((await self._readexactly(size)).decode())
+            if packet.get("type") != "keepalive":
+                return packet
+
+
+def _new_segment(messages: list[dict]) -> list[dict]:
+    """Return only the messages that follow the last agent reply."""
+    last_assistant = max(
+        (
+            index
+            for index, message in enumerate(messages)
+            if message.get("role") == "assistant"
+        ),
+        default=-1,
+    )
+    return messages[last_assistant + 1 :]
 
 
 class ACPHarnessSession(HarnessSession):
@@ -187,6 +203,7 @@ class ACPHarnessSession(HarnessSession):
         self._stderr_tail = bytearray()
         self._stderr_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._completed_turns = 0
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -216,6 +233,10 @@ class ACPHarnessSession(HarnessSession):
             if isinstance(prompt, str)
             else [message_to_wire(message) for message in prompt]
         )
+        if self._completed_turns:
+            # The live ACP session already owns the preceding conversation. Do
+            # not send it again through the runtime's stdin control RPC.
+            wire_messages = _new_segment(wire_messages)
         config = {
             "command": self.command,
             "messages": wire_messages,
@@ -253,6 +274,7 @@ class ACPHarnessSession(HarnessSession):
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
+        self._completed_turns += 1
         return ProgramResult(exit_code=0, stdout=response.get("reply", ""), stderr="")
 
     async def _stop(self, *, graceful: bool) -> int | None:

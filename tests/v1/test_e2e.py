@@ -67,6 +67,7 @@ ACP_RESUME_PLACEMENTS = [
 
 PRIME_AGENT_RESUME_PLACEMENTS = [
     _pair("prime-agent", "docker", "prime-agent-acp-in-docker"),
+    _pair("prime-agent", "prime", "prime-agent-acp-in-prime-vm"),
 ]
 
 # harness runtime x tool placement: every axis value once plus the two-container case
@@ -280,7 +281,10 @@ async def test_prime_agent_acp_resume(run_v1, harness, harness_runtime, tmp_path
     (trace,) = await run_v1(
         "prime-agent-acp-resume-v1",
         harness=harness,
-        runtime={"type": harness_runtime},
+        runtime={
+            "type": harness_runtime,
+            **({"vm": True} if harness_runtime == "prime" else {}),
+        },
         output_dir=tmp_path,
         max_turns=8,
         max_tokens=8192,

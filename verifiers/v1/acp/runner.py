@@ -10,6 +10,7 @@ import os
 import signal
 import sys
 import traceback
+from collections.abc import Awaitable
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+KEEPALIVE_INTERVAL_SECONDS = 15.0
 
 
 class VerifiersACPClient(Client):
@@ -339,9 +341,30 @@ def write_packet(stream: Any, value: dict) -> None:
     data = json.dumps(value, ensure_ascii=False).encode()
     if len(data) > MAX_PACKET_BYTES:
         raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
-    stream.write(len(data).to_bytes(8, "big"))
-    stream.write(data)
+    stream.write(len(data).to_bytes(8, "big") + data)
     stream.flush()
+
+
+async def with_keepalives(
+    awaitable: Awaitable[str],
+    stream: Any,
+    *,
+    interval: float = KEEPALIVE_INTERVAL_SECONDS,
+) -> str:
+    """Keep the outer process stream active during a silent agent turn."""
+
+    async def emit() -> None:
+        while True:
+            await asyncio.sleep(interval)
+            write_packet(stream, {"type": "keepalive"})
+
+    task = asyncio.create_task(emit())
+    try:
+        return await awaitable
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def serve_stream() -> None:
@@ -360,7 +383,9 @@ async def serve_stream() -> None:
                 if operation == "prompt":
                     response = {
                         "ok": True,
-                        "reply": await session.run(request["config"]),
+                        "reply": await with_keepalives(
+                            session.run(request["config"]), sys.stdout.buffer
+                        ),
                     }
                 elif operation == "shutdown":
                     await session.close()
