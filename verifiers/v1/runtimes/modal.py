@@ -53,7 +53,7 @@ class ModalConfig(BaseConfig):
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
     creates_per_sec: float | None = 40.0
-    """Pace sandbox creation to this many per second, enforced host-wide across every
+    """Pace sandbox creation to this many per second, enforced user-wide across every
     env-server worker process (None/<= 0 disables it)."""
 
 
