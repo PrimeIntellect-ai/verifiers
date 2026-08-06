@@ -1,0 +1,5 @@
+{"responses_create_params":{"input":[{"role":"user","content":"Use the get_weather MCP tool for Paris, then answer with exactly the weather sentence returned by the tool."}],"tools":[]},"verifier_metadata":{"expected_city":"Paris"}}
+{"responses_create_params":{"input":[{"role":"user","content":"Use the get_weather MCP tool for Tokyo, then answer with exactly the weather sentence returned by the tool."}],"tools":[]},"verifier_metadata":{"expected_city":"Tokyo"}}
+{"responses_create_params":{"input":[{"role":"user","content":"Use the get_weather MCP tool for Seattle, then answer with exactly the weather sentence returned by the tool."}],"tools":[]},"verifier_metadata":{"expected_city":"Seattle"}}
+{"responses_create_params":{"input":[{"role":"user","content":"Use the get_weather MCP tool for Nairobi, then answer with exactly the weather sentence returned by the tool."}],"tools":[]},"verifier_metadata":{"expected_city":"Nairobi"}}
+{"responses_create_params":{"input":[{"role":"user","content":"Use the get_weather MCP tool for Toronto, then answer with exactly the weather sentence returned by the tool."}],"tools":[]},"verifier_metadata":{"expected_city":"Toronto"}}

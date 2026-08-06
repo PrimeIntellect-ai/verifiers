@@ -266,7 +266,8 @@ class ServerBase(Generic[ConfigT, StateT]):
     async def setup_task(self, task) -> None:
         """Initialize per-task state; taskset-scoped servers skip this hook."""
 
-    def _register(self, mcp: FastMCP) -> None:
+    def register(self, mcp: FastMCP) -> None:
+        """Register this server's MCP handlers."""
         raise NotImplementedError
 
     def _serve(self) -> None:
@@ -311,7 +312,7 @@ class ServerBase(Generic[ConfigT, StateT]):
                         stateless_http=True,
                         transport_security=security,
                     )
-                    self._register(mcp)
+                    self.register(mcp)
                     app = mcp.streamable_http_app()
                     server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
                     await server.serve(sockets=[sock])
