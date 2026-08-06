@@ -10,7 +10,6 @@ import os
 import signal
 import sys
 import traceback
-from collections.abc import Awaitable
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any
@@ -383,26 +382,19 @@ def write_packet(stream: Any, value: dict) -> None:
     stream.flush()
 
 
-async def with_keepalives(
-    awaitable: Awaitable[str],
+async def emit_keepalives(
     stream: Any,
     *,
     interval: float = KEEPALIVE_INTERVAL_SECONDS,
-) -> str:
-    """Keep the outer process stream active during a silent agent turn."""
+) -> None:
+    """Keep the outer process stream active while the session lives.
 
-    async def emit() -> None:
-        while True:
-            await asyncio.sleep(interval)
-            write_packet(stream, {"type": "keepalive"})
-
-    task = asyncio.create_task(emit())
-    try:
-        return await awaitable
-    finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+    The gateway reaps connections that carry no data for about 30 minutes,
+    and a seat sits idle far longer between panel turns. Keepalives must
+    flow for the whole session, not only during turns."""
+    while True:
+        await asyncio.sleep(interval)
+        write_packet(stream, {"type": "keepalive"})
 
 
 async def serve_stream() -> None:
@@ -413,6 +405,7 @@ async def serve_stream() -> None:
     await asyncio.get_running_loop().connect_read_pipe(
         lambda: protocol, sys.stdin.buffer
     )
+    keepalive = asyncio.create_task(emit_keepalives(sys.stdout.buffer))
     try:
         while request := await read_packet(reader):
             stop = False
@@ -421,9 +414,7 @@ async def serve_stream() -> None:
                 if operation == "prompt":
                     response = {
                         "ok": True,
-                        "reply": await with_keepalives(
-                            session.run(request["config"]), sys.stdout.buffer
-                        ),
+                        "reply": await session.run(request["config"]),
                     }
                 elif operation == "shutdown":
                     await session.close()
@@ -442,6 +433,9 @@ async def serve_stream() -> None:
             if stop:
                 break
     finally:
+        keepalive.cancel()
+        with suppress(asyncio.CancelledError):
+            await keepalive
         if not closed:
             await session.close()
 

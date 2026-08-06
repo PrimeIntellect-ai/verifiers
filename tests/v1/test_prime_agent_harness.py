@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import io
 import json
@@ -411,11 +412,13 @@ def _load_acp_runner(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_acp_runner_emits_keepalives_during_silent_turn(
+async def test_acp_runner_emits_keepalives_while_the_session_lives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Keepalives must flow between turns too: the gateway reaps connections
+    # that carry no data for ~30 minutes, and idle panel seats sit far longer.
     namespace = _load_acp_runner(monkeypatch)
-    with_keepalives = namespace["with_keepalives"]
+    emit_keepalives = namespace["emit_keepalives"]
 
     class Stream:
         def __init__(self) -> None:
@@ -427,14 +430,13 @@ async def test_acp_runner_emits_keepalives_during_silent_turn(
         def flush(self) -> None:
             pass
 
-    async def delayed_reply() -> str:
-        await asyncio.sleep(0.03)
-        return "finished"
-
     stream = Stream()
-    reply = await with_keepalives(delayed_reply(), stream, interval=0.005)
+    task = asyncio.create_task(emit_keepalives(stream, interval=0.005))
+    await asyncio.sleep(0.03)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
-    assert reply == "finished"
     keepalive = _packet({"type": "keepalive"})
     assert len(stream.data) >= len(keepalive) * 3
     assert len(stream.data) % len(keepalive) == 0
