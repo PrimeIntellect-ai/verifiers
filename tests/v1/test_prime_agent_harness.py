@@ -507,6 +507,7 @@ async def test_acp_runner_accepts_a_completed_tool_only_turn(
         def __init__(self) -> None:
             self.visible_reply = ""
             self.tool_calls = {"call-1": "completed"}
+            self.output_changed = asyncio.Condition()
 
         def reset(self) -> None:
             pass

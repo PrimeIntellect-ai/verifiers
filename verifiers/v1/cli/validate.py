@@ -2,16 +2,23 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 import sys
 import time
+import tomllib
+from collections import Counter, defaultdict
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from pydantic_config import cli
+from pydantic_core import from_json
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
+from verifiers.v1.cli.output import CONFIG_FILE, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_taskset_config,
@@ -19,11 +26,13 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
+from verifiers.v1.cli.resume import distribute, split_resume, task_key
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.interrupt import install_interrupt
@@ -31,10 +40,19 @@ from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
 
+RESULTS_FILE = "results.jsonl"
+SUMMARY_FILE = "summary.json"
+LOG_FILE = "validate.log"
+FINAL_REASONS = frozenset({"valid", "invalid"})
+REASONS = ("valid", "invalid", "error", "timeout")
+
+ResultRow = dict[str, Any]
+
 USAGE = (
     "usage: uv run validate [<taskset-id>] [--only-setup | --only-gold] "
-    "[--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       runs the gold and setup-only checks per task (no model)"
+    "[-o <output-dir>] [--runtime.type subprocess] [options] [@ file.toml]\n"
+    "       uv run validate --resume <output-dir>\n"
+    "       runs persisted gold and setup-only checks per task (no model)"
 )
 
 
@@ -45,7 +63,149 @@ def _narrow(argv: list[str]) -> type[ValidateConfig]:
     return narrow_taskset_config(ValidateConfig, extract_id(argv, "taskset"))
 
 
-ResultRow = dict[str, Any]
+def validation_mode(config: ValidateConfig) -> str:
+    if config.only_gold:
+        return "gold"
+    if config.only_setup:
+        return "setup"
+    return "all"
+
+
+def output_path(config: ValidateConfig) -> Path:
+    if config.output_dir is not None:
+        return config.output_dir
+    return Path("outputs") / f"{config.name}--validate" / config.uuid
+
+
+def _write_rows(path: Path, rows: Sequence[ResultRow]) -> None:
+    tmp = path.with_suffix(f"{path.suffix}.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+    tmp.replace(path)
+
+
+def append_result(results_dir: Path, row: ResultRow) -> None:
+    data = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+    with (results_dir / RESULTS_FILE).open("ab") as f:
+        f.write(data + b"\n")
+
+
+def _is_final(row: object, key: str, mode: str) -> bool:
+    if not isinstance(row, dict):
+        return False
+    reason = row.get("reason")
+    return (
+        row.get("task_key") == key
+        and row.get("mode") == mode
+        and reason in FINAL_REASONS
+        and row.get("valid") is (reason == "valid")
+    )
+
+
+def load_results(
+    results_dir: Path, selected_keys: list[str], mode: str
+) -> tuple[list[ResultRow], dict[str, int]]:
+    """Keep final rows by eval task-content key; return counts owed per key."""
+    path = results_dir / RESULTS_FILE
+    targets = Counter(selected_keys)
+    good: dict[str, list[ResultRow]] = defaultdict(list)
+    if path.exists():
+        with path.open("rb") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    row = from_json(line)
+                except ValueError:
+                    try:
+                        row = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                if not isinstance(row, dict):
+                    continue
+                key = row.get("task_key")
+                if (
+                    isinstance(key, str)
+                    and key in targets
+                    and len(good[key]) < targets[key]
+                    and _is_final(row, key, mode)
+                ):
+                    good[key].append(row)
+
+    owed = {
+        key: target - len(good.get(key, []))
+        for key, target in targets.items()
+        if len(good.get(key, [])) < target
+    }
+    # Eval spreads debt over content-identical selected tasks in order. Assign the
+    # interchangeable kept rows to the remaining positions so reporting positions
+    # stay unique even when duplicate task content exists.
+    counts = distribute(selected_keys, owed, 1)
+    rows = []
+    used = Counter()
+    for position, (key, count) in enumerate(zip(selected_keys, counts)):
+        if count:
+            continue
+        row = good[key][used[key]]
+        used[key] += 1
+        rows.append({**row, "task_position": position})
+    _write_rows(path, rows)
+    return rows, owed
+
+
+def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any]:
+    counts = Counter(row.get("reason") for row in rows)
+    missing = max(0, total - len(rows))
+    outcomes = {reason: counts[reason] for reason in REASONS}
+    outcomes["missing"] = missing
+    terminal = outcomes["valid"] + outcomes["invalid"]
+    summary: dict[str, Any] = {
+        "mode": mode,
+        "total": total,
+        "recorded": len(rows),
+        "terminal": terminal,
+        "owed": missing + outcomes["error"] + outcomes["timeout"],
+        "outcomes": outcomes,
+        "valid_rate": round(outcomes["valid"] / total, 6) if total else None,
+    }
+    if mode == "all":
+        checks: dict[str, dict[str, int]] = {}
+        for check in ("gold", "setup"):
+            check_counts = Counter(
+                row.get(check, {}).get("reason")
+                for row in rows
+                if isinstance(row.get(check), dict)
+            )
+            checks[check] = {reason: check_counts[reason] for reason in REASONS}
+            checks[check]["missing"] = missing
+        summary["checks"] = checks
+    return summary
+
+
+def write_summary(results_dir: Path, summary: Mapping[str, Any]) -> None:
+    path = results_dir / SUMMARY_FILE
+    tmp = path.with_suffix(f"{path.suffix}.tmp")
+    tmp.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+def save_run(config: ValidateConfig, results_dir: Path, total: int) -> None:
+    write_config(config, results_dir)
+    (results_dir / RESULTS_FILE).write_text("")
+    write_summary(results_dir, summarize([], total, validation_mode(config)))
+
+
+def load_resume_config(resume_dir: Path) -> ValidateConfig:
+    path = resume_dir / CONFIG_FILE
+    if not path.exists():
+        raise SystemExit(
+            f"--resume: no config.toml in {resume_dir} - not a validate output dir"
+        )
+    config = ValidateConfig.model_validate(tomllib.loads(path.read_text()))
+    config.resume = resume_dir
+    config.output_dir = resume_dir
+    return config
 
 
 def _classify(valid: bool, exc: BaseException | None) -> str:
@@ -217,27 +377,64 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         raise SystemExit(
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
         )
-    checks = (
-        "gold" if config.only_gold else "setup" if config.only_setup else "gold+setup"
-    )
+    mode = validation_mode(config)
+    checks = "gold+setup" if mode == "all" else mode
+    out = output_path(config)
+    selected_keys = [
+        task_key(task.data.model_dump(mode="json", exclude_none=True)) for task in tasks
+    ]
+    if config.resume is None:
+        save_run(config, out, len(tasks))
+        rows: list[ResultRow] = []
+        counts = [1] * len(tasks)
+    else:
+        rows, owed = load_results(out, selected_keys, mode)
+        counts = distribute(selected_keys, owed, 1)
+        write_summary(out, summarize(rows, len(tasks), mode))
+    plan = [
+        (position, task, key)
+        for position, (task, key, count) in enumerate(zip(tasks, selected_keys, counts))
+        if count
+    ]
     logger.info(
-        "validating %d task(s) from %s on the %s runtime (%s)",
+        "%s %d/%d task(s) from %s on the %s runtime (%s)",
+        "resuming" if config.resume is not None else "validating",
+        len(plan),
         len(tasks),
         config.name,
         config.runtime.type,
         checks,
     )
+    logger.info("results: %s", out)
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     states = [TaskProgress(idx=t.data.idx, name=t.data.name) for t in tasks]
-    state_by_idx = {s.idx: s for s in states}
+    for row in rows:
+        state = states[row["task_position"]]
+        state.state = row["reason"]
 
-    async def _one(task) -> dict:
-        st = state_by_idx[task.data.idx]
+    write_lock = asyncio.Lock()
+
+    async def _one(position: int, task: Task, key: str) -> ResultRow:
+        st = states[position]
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             st.state = "running"
             row = await _validate_task(task, config)
+        row["task_position"] = position
+        row["task_key"] = key
+
+        async def persist() -> None:
+            async with write_lock:
+                await asyncio.to_thread(append_result, out, row)
+                rows.append(row)
+                await asyncio.to_thread(
+                    write_summary,
+                    out,
+                    summarize(rows, len(tasks), mode),
+                )
+
+        await run_shielded(persist())
         st.end, st.state = time.time(), row["reason"]
         if not config.rich:  # the dashboard shows this live; otherwise log each task
             detail = f" - {row['error']}" if row["error"] else ""
@@ -257,7 +454,17 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         else contextlib.nullcontext()
     )
     async with display:
-        return await asyncio.gather(*(_one(t) for t in tasks))
+        if not plan:
+            logger.info(
+                "nothing to resume: all %d task(s) are valid or invalid", len(tasks)
+            )
+            return rows
+        await asyncio.gather(
+            *(_one(position, task, key) for position, task, key in plan)
+        )
+    rows.sort(key=lambda row: row["task_position"])
+    write_summary(out, summarize(rows, len(tasks), mode))
+    return rows
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -271,27 +478,46 @@ def main(argv: list[str] | None = None) -> None:
         with plugin_errors():
             cli(_narrow(argv))  # full option help, narrowed to the given taskset
         return
-    if not extract_id(argv, "taskset") and not references_config_file(argv):
-        raise SystemExit(
-            USAGE
-        )  # need a taskset (positional / --taskset.id) or a @ file.toml
+    resume_dir, rest = split_resume(argv, "validate")
+    if resume_dir is not None:
+        if rest:
+            raise SystemExit(
+                f"{USAGE}\n--resume replays the saved config and takes no other arguments"
+            )
+        with plugin_errors():
+            config = load_resume_config(resume_dir)
+    else:
+        if not extract_id(argv, "taskset") and not references_config_file(argv):
+            raise SystemExit(
+                USAGE
+            )  # need a taskset (positional / --taskset.id) or a @ file.toml
 
-    with plugin_errors():
-        config_type = _narrow(argv)
-        sys.argv = [
-            sys.argv[0],
-            *argv,
-        ]  # let prime-pydantic-config render help/errors
-        config = cli(config_type)
-    # Nothing is persisted, so logs are the whole output. Under `--rich` the dashboard owns the
-    # screen, so keep logs off the console (else stray records print over the UI).
-    setup_logging("DEBUG" if config.verbose else "INFO", console=not config.rich)
+        with plugin_errors():
+            config_type = _narrow(argv)
+            sys.argv = [
+                sys.argv[0],
+                *argv,
+            ]  # let prime-pydantic-config render help/errors
+            config = cli(config_type)
+    out = output_path(config)
+    setup_logging(
+        "DEBUG" if config.verbose else "INFO",
+        log_file=str(out / LOG_FILE),
+        console=not config.rich,
+    )
     if config.rich:
         logging.lastResort = None  # drop stdlib records that bypass loguru
     # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`
     # (containers/sandboxes); a second is swallowed so it can't orphan them mid-cleanup.
     install_interrupt()
-    asyncio.run(run_validate(config))
+    try:
+        asyncio.run(run_validate(config))
+    except KeyboardInterrupt:
+        print(f"interrupted; partial results: {out}", file=sys.stderr)
+        raise SystemExit(130)
+    summary = json.loads((out / SUMMARY_FILE).read_text())
+    print(f"results: {out}")
+    print(json.dumps(summary, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

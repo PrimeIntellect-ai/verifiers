@@ -16,6 +16,7 @@ from verifiers.envs.experimental.utils.file_locks import (
     exclusive_path_lock,
     sibling_lock_path,
 )
+from verifiers.utils.path_utils import CACHE_DIR
 
 _IN_USE_LOCK_SUFFIX = ".in-use.lock"
 
@@ -23,7 +24,7 @@ _IN_USE_LOCK_SUFFIX = ".in-use.lock"
 # resolved checkout's in-use lock file. See ``_acquire_in_use_lock``.
 _held_in_use_locks: dict[Path, IO] = {}
 
-DEFAULT_GIT_CHECKOUT_CACHE_ROOT = Path.home() / ".cache" / "verifiers" / "git-checkouts"
+DEFAULT_GIT_CHECKOUT_CACHE_ROOT = CACHE_DIR / "git-checkouts"
 _FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 logger = logging.getLogger(__name__)

@@ -47,6 +47,7 @@ class ACP:
         command: list[str],
         prompt: str | Messages | None,
         system_prompt: str | None = None,
+        session_meta: dict | None = None,
         allow_empty_tool_reply: bool = False,
     ) -> "ACPHarnessSession":
         """Create a persistent ACP-backed handle owned by one rollout."""
@@ -63,6 +64,7 @@ class ACP:
             command=command,
             prompt=prompt,
             system_prompt=system_prompt,
+            session_meta=session_meta,
             allow_empty_tool_reply=allow_empty_tool_reply,
         )
 
@@ -76,6 +78,7 @@ class ACP:
         mcp_urls: dict[str, str] | None = None,
         system_prompt: str | None = None,
         session_path: str | None = None,
+        session_meta: dict | None = None,
         allow_empty_tool_reply: bool = False,
     ) -> ProgramResult:
         """Run one ACP segment without retaining its process."""
@@ -87,6 +90,7 @@ class ACP:
             mcp_urls=mcp_urls,
             system_prompt=system_prompt,
             session_path=session_path,
+            session_meta=session_meta,
             allow_empty_tool_reply=allow_empty_tool_reply,
         )
 
@@ -100,6 +104,7 @@ class ACP:
         mcp_urls: dict[str, str] | None = None,
         system_prompt: str | None = None,
         session_path: str | None = None,
+        session_meta: dict | None = None,
         allow_empty_tool_reply: bool = False,
     ) -> ProgramResult:
         if prompt is None:
@@ -115,6 +120,7 @@ class ACP:
             "mcp_urls": mcp_urls or {},
             "system_prompt": system_prompt or "",
             "session_path": session_path,
+            "session_meta": session_meta or {},
             "allow_empty_tool_reply": allow_empty_tool_reply,
         }
         program = await runtime.prepare_uv_script(
@@ -194,6 +200,7 @@ class ACPHarnessSession(HarnessSession):
         command: list[str],
         prompt: str | Messages | None,
         system_prompt: str | None,
+        session_meta: dict | None = None,
         allow_empty_tool_reply: bool = False,
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
@@ -201,6 +208,7 @@ class ACPHarnessSession(HarnessSession):
         self.command = command
         self.prompt = prompt
         self.system_prompt = system_prompt
+        self.session_meta = session_meta or {}
         self.allow_empty_tool_reply = allow_empty_tool_reply
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
@@ -247,6 +255,7 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.system_prompt or "",
             "session_path": None,
+            "session_meta": self.session_meta,
             "allow_empty_tool_reply": self.allow_empty_tool_reply,
         }
         async with self._lock:

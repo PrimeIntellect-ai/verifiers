@@ -38,6 +38,7 @@ from acp.schema import (
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 KEEPALIVE_INTERVAL_SECONDS = 15.0
+LATE_UPDATE_GRACE_SECONDS = 1.0
 
 
 class VerifiersACPClient(Client):
@@ -45,6 +46,7 @@ class VerifiersACPClient(Client):
         self.visible_reply = ""
         self.message_id: str | None = None
         self.tool_calls: dict[str, str] = {}
+        self.output_changed = asyncio.Condition()
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -52,22 +54,23 @@ class VerifiersACPClient(Client):
         self.tool_calls = {}
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        if isinstance(update, ToolCall):
-            self.tool_calls[update.tool_call_id] = update.status or "pending"
-            return
-        if isinstance(update, ToolCallUpdate):
-            if update.status:
-                self.tool_calls[update.tool_call_id] = update.status
-            return
-        if not isinstance(update, AgentMessageChunk) or not isinstance(
-            update.content, TextContentBlock
-        ):
-            return
-        message_id = getattr(update, "message_id", None)
-        if message_id is not None and message_id != self.message_id:
-            self.visible_reply = ""
-            self.message_id = message_id
-        self.visible_reply += update.content.text
+        async with self.output_changed:
+            if isinstance(update, ToolCall):
+                self.tool_calls[update.tool_call_id] = update.status or "pending"
+            elif isinstance(update, ToolCallUpdate):
+                if update.status:
+                    self.tool_calls[update.tool_call_id] = update.status
+            elif isinstance(update, AgentMessageChunk) and isinstance(
+                update.content, TextContentBlock
+            ):
+                message_id = getattr(update, "message_id", None)
+                if message_id is not None and message_id != self.message_id:
+                    self.visible_reply = ""
+                    self.message_id = message_id
+                self.visible_reply += update.content.text
+            else:
+                return
+            self.output_changed.notify_all()
 
     async def request_permission(
         self,
@@ -174,6 +177,25 @@ async def prompt(
     except RequestError as error:
         detail = error.data.get("details") if isinstance(error.data, dict) else None
         raise RuntimeError(detail or str(error)) from error
+
+    # ACP 0.11 dispatches notifications in background tasks but resolves a request
+    # response directly in its receive loop. An agent that sends its final
+    # session/update immediately before session/prompt returns can therefore wake
+    # this coroutine before the update handler has run. Wait specifically for text:
+    # a completed tool update may also arrive first and must not hide a later reply.
+    def has_visible_reply() -> bool:
+        return bool(client.visible_reply.strip())
+
+    if not has_visible_reply():
+        async with client.output_changed:
+            try:
+                await asyncio.wait_for(
+                    client.output_changed.wait_for(has_visible_reply),
+                    timeout=LATE_UPDATE_GRACE_SECONDS,
+                )
+            except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+                pass
+
     tool_statuses = list(client.tool_calls.values())
     completed_tool_turn = (
         config.get("allow_empty_tool_reply", False)
@@ -181,7 +203,7 @@ async def prompt(
         and bool(tool_statuses)
         and all(status in ("completed", "failed") for status in tool_statuses)
     )
-    if not client.visible_reply.strip() and not completed_tool_turn:
+    if not has_visible_reply() and not completed_tool_turn:
         raise RuntimeError(
             "ACP agent produced no visible reply "
             f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
@@ -198,28 +220,38 @@ async def run_once(config: dict) -> str:
         *command[1:],
         env=os.environ.copy(),
         transport_kwargs={"stderr": None},
-    ) as (connection, _process):
+    ) as agent_process:
+        connection = agent_process[0]
         initialized = await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
             client_capabilities=ClientCapabilities(),
         )
         capabilities = initialized.agent_capabilities
         session_path = Path(config["session_path"]) if config["session_path"] else None
+        session_meta = config["session_meta"]
         is_new = session_path is None or not session_path.exists()
         servers = mcp_servers(config)
         if is_new:
-            session = await connection.new_session(cwd=os.getcwd(), mcp_servers=servers)
+            session = await connection.new_session(
+                cwd=os.getcwd(), mcp_servers=servers, **session_meta
+            )
             session_id = session.session_id
         else:
             session_id = session_path.read_text().strip()
             session_capabilities = capabilities and capabilities.session_capabilities
             if session_capabilities and session_capabilities.resume is not None:
                 await connection.resume_session(
-                    cwd=os.getcwd(), session_id=session_id, mcp_servers=servers
+                    cwd=os.getcwd(),
+                    session_id=session_id,
+                    mcp_servers=servers,
+                    **session_meta,
                 )
             elif capabilities and capabilities.load_session:
                 await connection.load_session(
-                    cwd=os.getcwd(), session_id=session_id, mcp_servers=servers
+                    cwd=os.getcwd(),
+                    session_id=session_id,
+                    mcp_servers=servers,
+                    **session_meta,
                 )
             else:
                 raise RuntimeError("ACP agent does not support resuming sessions")
@@ -253,12 +285,13 @@ class LiveACPSession:
         self.command: list[str] | None = None
         self.server_urls: dict[str, str] | None = None
         self.system_prompt: str | None = None
+        self.session_meta: dict | None = None
         self.is_new = True
 
     async def start(self, config: dict) -> None:
         command = config["command"]
         try:
-            self.connection, _process = await self.stack.enter_async_context(
+            agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
@@ -267,13 +300,16 @@ class LiveACPSession:
                     transport_kwargs={"stderr": None},
                 )
             )
+            self.connection = agent_process[0]
             initialized = await self.connection.initialize(
                 protocol_version=PROTOCOL_VERSION,
                 client_capabilities=ClientCapabilities(),
             )
             self.capabilities = initialized.agent_capabilities
             session = await self.connection.new_session(
-                cwd=os.getcwd(), mcp_servers=mcp_servers(config)
+                cwd=os.getcwd(),
+                mcp_servers=mcp_servers(config),
+                **config["session_meta"],
             )
         except BaseException:
             with suppress(BaseException):
@@ -284,6 +320,7 @@ class LiveACPSession:
         self.command = command
         self.server_urls = config["mcp_urls"]
         self.system_prompt = config["system_prompt"]
+        self.session_meta = config["session_meta"]
         self.is_new = True
 
     async def run(self, config: dict) -> str:
@@ -293,6 +330,7 @@ class LiveACPSession:
             config["command"] != self.command
             or config["mcp_urls"] != self.server_urls
             or config["system_prompt"] != self.system_prompt
+            or config["session_meta"] != self.session_meta
         ):
             raise RuntimeError("ACP session configuration changed")
         assert self.session_id is not None
