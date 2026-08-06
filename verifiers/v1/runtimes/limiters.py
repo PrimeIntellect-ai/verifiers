@@ -1,31 +1,32 @@
-"""Host-global creation-rate limiters for the remote runtimes.
+"""User-global creation-rate limiters for the remote runtimes.
 
-A leaky bucket backed by a lock file, so a provider's per-account creation rate (Modal
-sandboxes, Prime tunnels) is enforced across EVERY process on the host — the single-process
-eval and all the elastically-spawned env-server worker processes alike — not just within one
-process. So the configured rate is the actual account-wide rate (assuming one env-server
-host). Keyed by name: one bucket file per name, shared by every process (and run) on the host.
+A leaky bucket backed by a lock file under ``~/.cache/verifiers``, so a provider's per-account
+creation rate (Modal sandboxes, Prime tunnels) is enforced across EVERY process for the user —
+the single-process eval and all the elastically-spawned env-server worker processes alike — not
+just within one process. Keyed by name: one bucket file per name, shared by every process (and
+run) for the user.
 """
 
 import asyncio
 import fcntl
 import os
-import tempfile
 import time
+from pathlib import Path
 from typing import Self
 
-_LIMITER_DIR = os.path.join(tempfile.gettempdir(), "vf-rate-limiters")
+_LIMITER_DIR = Path.home() / ".cache" / "verifiers" / "limiter"
 
 
 class CreationLimiter:
     """An async leaky bucket shared across processes via a lock file: each `async with`
     reserves the next `1/per_sec`-spaced slot (advancing the on-disk cursor under an exclusive
-    flock) and sleeps until it, so the aggregate creation rate across all host processes stays
-    at `per_sec`. The reservation runs off the event loop; the wait does not hold the lock."""
+    flock) and sleeps until it, so the aggregate creation rate across all of the user's
+    processes stays at `per_sec`. The reservation runs off the event loop; the wait does not
+    hold the lock."""
 
     def __init__(self, name: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
-        self._path = os.path.join(_LIMITER_DIR, f"{name}.bucket")
+        self._path = _LIMITER_DIR / f"{name}.bucket"
 
     def _reserve(self) -> float:
         os.makedirs(_LIMITER_DIR, exist_ok=True)
@@ -59,7 +60,7 @@ _creation_limiters: dict[str, CreationLimiter] = {}
 
 
 def creation_limiter(per_sec: float | None, name: str) -> CreationLimiter | None:
-    """A host-global limiter pacing `name`'s creation to `per_sec`/s (None/<= 0 disables).
+    """A user-global limiter pacing `name`'s creation to `per_sec`/s (None/<= 0 disables).
 
     All callers (and processes) sharing a `name` share one bucket, so use one rate per name."""
     if not per_sec or per_sec <= 0:
