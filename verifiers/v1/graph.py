@@ -63,29 +63,11 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
-_PROCESSED_MM_KEYS = frozenset({"pixel_values", "image_embeds", "image_features"})
-
-
-def _contains_processed_mm_key(value: Any) -> bool:
-    if isinstance(value, dict):
-        return bool(_PROCESSED_MM_KEYS.intersection(value)) or any(
-            _contains_processed_mm_key(v) for v in value.values()
-        )
-    if isinstance(value, (list, tuple)):
-        return any(_contains_processed_mm_key(v) for v in value)
-    return False
-
-
 def _validate_raw_mm_item(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise TypeError(
             "v1 multimodal sidecars must be raw image descriptor dicts, "
             f"got {type(item).__name__}"
-        )
-    if _contains_processed_mm_key(item):
-        raise TypeError(
-            "v1 multimodal sidecars must be raw image descriptors, "
-            "not processed multimodal payloads"
         )
     if not isinstance(item.get("raw_image_uri"), str) or not item["raw_image_uri"]:
         raise ValueError("v1 multimodal sidecars require raw_image_uri")
@@ -153,9 +135,9 @@ class MessageNode(BaseModel):
     multi_modal_data: SkipJsonSchema[MultiModalData | None] = None
     """The renderer items for images this message introduces.
 
-    With the raw-image path, items are lightweight descriptors (hashes, grid metadata, and
-    optional run-image refs), not image processor tensors. `Branch.multi_modal_data` concatenates
-    them along the path for the trainer. Old processed-payload sidecars are rejected.
+    Items are raw descriptors (hashes, grid metadata, ``raw_image_uri``), not
+    image-processor tensors. ``Branch.multi_modal_data`` concatenates them along
+    the path for the trainer.
     """
     usage: Usage | None = None
     """Provider-reported token usage for this message's response (assistant nodes). Preserved on
