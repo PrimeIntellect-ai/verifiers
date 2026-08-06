@@ -117,12 +117,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        # Reasoning replay is opt-in (`sampling.reasoning_effort`), never guessed from
-        # the model name. With `reasoning` on, OpenClaw asks for
-        # `reasoning.encrypted_content` and replays it from its persisted transcript on
-        # resume — where its secret redaction masks Prime's dotted `<token>.<metadata>`
-        # payloads (they fail OpenClaw's opaque-token allowlist), so every resumed
-        # session then dies on an upstream 400 replaying the mangled token.
+        # Opt-in via sampling: OpenClaw redacts persisted encrypted reasoning, so resumed sessions 400 replaying it.
         reasoning = ctx.sampling.reasoning_effort not in (None, "none")
         directory = OPENCLAW_DIR.format(version=self.config.version)
         state_dir = f".vf-openclaw/{trace.id}"

@@ -37,10 +37,7 @@ class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
 
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
-        # A stamped TOOL result proves the model called the MCP tool with the phrase —
-        # wherever in the exchange that happened. Scoring the assistant's relay instead
-        # would grade model obedience (a conversational reply may drop the stamp), not
-        # the tool loop this fixture exists to prove.
+        # A stamped TOOL result proves the tool really ran with the phrase.
         results = (content_text(m.content).lower() for m in trace.tool_messages)
         return float(any(PHRASE in r and ECHO_TOKEN in r for r in results))
 

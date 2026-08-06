@@ -141,9 +141,7 @@ def _content_to_wire(content):
 
 def message_to_wire(message: Message) -> dict:
     if message.role == "assistant":
-        # An empty completion records `content=None`; replayed as `"content": null`
-        # without tool calls, strict providers reject the whole request (422) — an
-        # empty string is the lossless wire form.
+        # Strict providers reject `content: null` without tool calls.
         content = message.content
         if content is None and not message.tool_calls:
             content = ""
