@@ -10,7 +10,6 @@ A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
-import asyncio
 import json
 import threading
 from collections.abc import Mapping
