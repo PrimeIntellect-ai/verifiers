@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import shlex
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -32,11 +33,20 @@ DEFAULT_TARBALL_SHA256 = (
 )
 INSTALL_ROOT = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent"
+HARNESS_STATE_FILENAME = "harness_state.json"
+REFINEMENT_HISTORY_FILENAME = "refinements.jsonl"
 NODE_VERSION = "22.19.0"
-NODE_ROOT = f"{INSTALL_ROOT}/node-{NODE_VERSION}"
-NODE_BIN_DIR = f"{NODE_ROOT}/bin"
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+_SEMVER_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+_SEMVER = re.compile(
+    rf"(?:0|[1-9][0-9]*)\."
+    rf"(?:0|[1-9][0-9]*)\."
+    rf"(?:0|[1-9][0-9]*)"
+    rf"(?:-{_SEMVER_IDENTIFIER}(?:\.{_SEMVER_IDENTIFIER})*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
 
 INSTALL = r"""
 set -eu
@@ -150,51 +160,38 @@ PRIME_AGENT_ACP = ACP()
 
 
 def _guarded_install(root: str, lock: str, command: str) -> str:
-    """Guard an install with a lock tied to one Linux process lifetime."""
+    """Serialize an install without PID files or stale-lock deletion races."""
     return (
         "set -eu\n"
         f"mkdir -p {shlex.quote(root)}\n"
         f"lock={shlex.quote(lock)}\n"
-        "self_start=$(awk '{print $22}' \"/proc/$$/stat\")\n"
-        'case "$self_start" in\n'
-        "  ''|*[!0-9]*) echo 'prime-agent: cannot identify installer process' >&2; "
-        "exit 1 ;;\n"
-        "esac\n"
-        'owner="$$:$self_start"\n'
-        'while ! ln -s "$owner" "$lock" 2>/dev/null; do\n'
-        '  current=$(readlink "$lock" 2>/dev/null || true)\n'
-        "  stale=0\n"
-        '  case "$current" in\n'
-        "    *:*)\n"
-        "      pid=${current%%:*}\n"
-        "      start=${current#*:}\n"
-        '      case "$pid" in\n'
-        "        ''|*[!0-9]*) stale=1 ;;\n"
-        "      esac\n"
-        '      case "$start" in\n'
-        "        ''|*[!0-9]*) stale=1 ;;\n"
-        "      esac\n"
-        '      if [ "$stale" -eq 0 ]; then\n'
-        "        live_start=$(awk '{print $22}' \"/proc/$pid/stat\" "
-        "2>/dev/null || true)\n"
-        '        [ "$live_start" = "$start" ] || stale=1\n'
-        "      fi\n"
-        "      ;;\n"
-        "    *) stale=1 ;;\n"
-        "  esac\n"
-        '  if [ "$stale" -eq 1 ] \\\n'
-        '      && [ "$(readlink "$lock" 2>/dev/null || true)" = "$current" ]; then\n'
-        '    rm -f "$lock"\n'
-        "  fi\n"
-        "  sleep 0.1\n"
-        "done\n"
-        "release_install_lock() {\n"
-        '  if [ "$(readlink "$lock" 2>/dev/null || true)" = "$owner" ]; then\n'
-        '    rm -f "$lock"\n'
-        "  fi\n"
-        "}\n"
-        "trap release_install_lock EXIT\n"
-        f"{command}\n"
+        "if command -v flock >/dev/null 2>&1; then\n"
+        "  (\n"
+        "    flock -x 9\n"
+        f"    {command}\n"
+        '  ) 9>"$lock"\n'
+        "else\n"
+        '  lock_dir="${lock}.d"\n'
+        "  waited=0\n"
+        '  while ! mkdir "$lock_dir" 2>/dev/null; do\n'
+        '    if [ "$waited" -ge 300 ]; then\n'
+        "      echo 'prime-agent: timed out waiting for install lock' >&2\n"
+        "      exit 1\n"
+        "    fi\n"
+        "    waited=$((waited + 1))\n"
+        "    sleep 1\n"
+        "  done\n"
+        "  release_install_lock() {\n"
+        '    rmdir "$lock_dir" 2>/dev/null || true\n'
+        "  }\n"
+        "  trap release_install_lock EXIT\n"
+        "  trap 'exit 129' HUP\n"
+        "  trap 'exit 130' INT\n"
+        "  trap 'exit 143' TERM\n"
+        f"  {command}\n"
+        '  rmdir "$lock_dir"\n'
+        "  trap - EXIT HUP INT TERM\n"
+        "fi\n"
     )
 
 
@@ -219,6 +216,14 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     save_session: bool = False
     max_depth: int = Field(default=0, strict=True, ge=0)
 
+    harness_state_dir: Path | None = None
+    """Host directory with ``harness_state.json`` and optional refinement history.
+
+    The files seed Prime Agent's global continual harness state for this run. An
+    environment can harvest the corresponding runtime directory before cleanup
+    when it owns cross-run publication.
+    """
+
     autonomous: bool = False
     gates: list[str] = Field(default_factory=list)
     autonomous_gate_retries: int | None = Field(default=None, strict=True, gt=0)
@@ -235,7 +240,7 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     @classmethod
     def normalize_version(cls, value: str) -> str:
         version = value.removeprefix("v")
-        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", version):
+        if not _SEMVER.fullmatch(version):
             raise ValueError("version must be a semantic version")
         return version
 
@@ -305,6 +310,13 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             f"{INSTALL_ROOT}/kernels/{self.config.version}-{self.tarball_sha256()[:16]}"
         )
 
+    def node_root(self) -> str:
+        identity = f"{self.config.version}-{self.tarball_sha256()[:16]}"
+        return f"{INSTALL_ROOT}/nodes/{identity}/node-{NODE_VERSION}"
+
+    def node_bin_dir(self) -> str:
+        return f"{self.node_root()}/bin"
+
     @staticmethod
     def trace_root(trace: Trace) -> str:
         # Keep nested Unix socket paths short while retaining a 128-bit key.
@@ -323,10 +335,73 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
     def temp_dir(cls, trace: Trace) -> str:
         return f"{cls.trace_root(trace)}/tmp"
 
+    @classmethod
+    def runtime_harness_state_dir(cls, trace: Trace) -> str:
+        return f"{cls.agent_dir(trace)}/harness"
+
+    @classmethod
+    def harness_state_path(cls, trace: Trace) -> str:
+        return f"{cls.runtime_harness_state_dir(trace)}/{HARNESS_STATE_FILENAME}"
+
+    @classmethod
+    def refinement_history_path(cls, trace: Trace) -> str:
+        return f"{cls.runtime_harness_state_dir(trace)}/{REFINEMENT_HISTORY_FILENAME}"
+
+    async def install_harness_state(self, runtime: Runtime, trace: Trace) -> None:
+        source = self.config.harness_state_dir
+        if source is None:
+            return
+        if source.is_symlink():
+            raise ValueError(f"harness_state_dir {str(source)!r} is not a folder")
+        source = source.resolve()
+        if not source.is_dir():
+            raise ValueError(f"harness_state_dir {str(source)!r} is not a folder")
+        destination = self.runtime_harness_state_dir(trace)
+        created = await runtime.run(["mkdir", "-p", "-m", "700", destination], {})
+        if created.exit_code != 0:
+            raise RuntimeError(
+                "prime-agent harness state directory failed: "
+                f"{created.stderr.strip()[-500:]}"
+            )
+        for name in (HARNESS_STATE_FILENAME, REFINEMENT_HISTORY_FILENAME):
+            path = source / name
+            if not path.exists():
+                continue
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"harness state file {str(path)!r} is not a file")
+            target = f"{destination}/{name}"
+            present = await runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    'if [ -L "$1" ]; then exit 2; fi; [ -e "$1" ]',
+                    "prime-agent-harness-state",
+                    target,
+                ],
+                {},
+            )
+            if present.exit_code == 0:
+                continue
+            if present.exit_code == 2:
+                raise RuntimeError(
+                    f"prime-agent harness state target is a symlink: {target}"
+                )
+            if present.exit_code != 1:
+                raise RuntimeError(
+                    f"prime-agent harness state could not be checked: {target}"
+                )
+            await runtime.write(target, path.read_bytes())
+        restricted = await runtime.run(["chmod", "-R", "go-rwx", destination], {})
+        if restricted.exit_code != 0:
+            raise RuntimeError(
+                "prime-agent harness state permissions failed: "
+                f"{restricted.stderr.strip()[-500:]}"
+            )
+
     async def setup(self, runtime: Runtime) -> None:
         logger.info("prime-agent: ensuring %s is installed", self.config.version)
         install_dir = self.install_dir()
-        lock = f"{install_dir}.install.lock"
+        lock = f"{install_dir}.install.flock"
         guarded = _guarded_install(
             INSTALL_ROOT,
             lock,
@@ -336,8 +411,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             ["sh", "-c", guarded],
             {
                 **self.config.resolved_env,
-                "VF_NODE_BIN_DIR": NODE_BIN_DIR,
-                "VF_NODE_ROOT": NODE_ROOT,
+                "VF_NODE_BIN_DIR": self.node_bin_dir(),
+                "VF_NODE_ROOT": self.node_root(),
                 "VF_NODE_VERSION": NODE_VERSION,
                 "VF_PRIME_AGENT_BIN": self.prime_agent_bin(),
                 "VF_PRIME_AGENT_INSTALL_DIR": install_dir,
@@ -421,6 +496,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
 
         skills_dir = f"{agent_dir}/skills"
         await self.install_skills(runtime, skills_dir)
+        await self.install_harness_state(runtime, trace)
         thinking = self.thinking_level(ctx)
         reasoning = thinking not in (None, "off") or (
             thinking is None
@@ -467,7 +543,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             wrapper,
             (
                 "#!/bin/sh\n"
-                f'export PATH="{NODE_BIN_DIR}:$PATH"\n'
+                f'export PATH="{self.node_bin_dir()}:$PATH"\n'
                 f'exec {shlex.quote(self.prime_agent_bin())} "$@"\n'
             ).encode(),
         )

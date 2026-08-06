@@ -63,6 +63,8 @@ class PrimeConfig(NetworkPolicyConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
+    lifetime_timeout: float = Field(default=MAX_LIFETIME, gt=0, le=MAX_LIFETIME)
+    """Maximum sandbox lifetime in seconds."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
@@ -88,10 +90,14 @@ class PrimeConfig(NetworkPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_idle_timeout(self) -> "PrimeConfig":
-        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
+        if (
+            not self.vm
+            and self.idle_timeout is not None
+            and self.idle_timeout > self.lifetime_timeout
+        ):
             raise ValueError(
                 f"idle_timeout ({self.idle_timeout}s) must not exceed the "
-                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
+                f"lifetime_timeout ({self.lifetime_timeout}s)"
             )
         return self
 
@@ -158,7 +164,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": MAX_LIFETIME // 60,
+            "timeout_minutes": max(1, math.ceil(self.config.lifetime_timeout / 60)),
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
@@ -254,7 +260,7 @@ class PrimeRuntime(Runtime):
             result = await self._client.run_background_job(
                 self.info.id,
                 shlex.join(argv),
-                timeout=MAX_LIFETIME,
+                timeout=self.config.lifetime_timeout,
                 working_dir=self.config.workdir,
                 env=env,
                 poll_interval=1,

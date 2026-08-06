@@ -10,9 +10,12 @@ import pytest
 
 from verifiers.v1.acp import ACPHarnessSession
 from verifiers.v1.harnesses.prime_agent.harness import (
+    HARNESS_STATE_FILENAME,
     INSTALL,
+    REFINEMENT_HISTORY_FILENAME,
     STATE_ROOT,
     PrimeAgentHarness,
+    PrimeAgentHarnessConfig,
     _guarded_install,
 )
 from verifiers.v1.task import TaskData
@@ -26,6 +29,60 @@ def test_trace_root_encodes_untrusted_trace_id() -> None:
 
     assert root.parent == PurePosixPath(STATE_ROOT)
     assert root.name == hashlib.sha256(trace.id.encode()).hexdigest()[:32]
+
+
+@pytest.mark.asyncio
+async def test_harness_state_directory_is_staged(tmp_path) -> None:
+    state = b'{"schema":1,"entries":{},"refinements":[]}\n'
+    history = b'{"id":"ref-1","appliedEdits":[]}\n'
+    (tmp_path / HARNESS_STATE_FILENAME).write_bytes(state)
+    (tmp_path / REFINEMENT_HISTORY_FILENAME).write_bytes(history)
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.writes: dict[str, bytes] = {}
+
+        async def run(self, argv: list[str], env: dict[str, str]):
+            del env
+            if argv[:2] == ["sh", "-c"] and argv[3] == "prime-agent-harness-state":
+                target = argv[4]
+                code = 0 if target in self.writes else 1
+                return SimpleNamespace(exit_code=code, stdout="", stderr="")
+            return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+        async def write(self, path: str, data: bytes) -> None:
+            self.writes[path] = data
+
+    trace = Trace.model_construct(id="trace")
+    runtime = Runtime()
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(harness_state_dir=tmp_path))
+
+    await harness.install_harness_state(runtime, trace)
+
+    root = PrimeAgentHarness.runtime_harness_state_dir(trace)
+    assert runtime.writes == {
+        f"{root}/{HARNESS_STATE_FILENAME}": state,
+        f"{root}/{REFINEMENT_HISTORY_FILENAME}": history,
+    }
+
+    (tmp_path / HARNESS_STATE_FILENAME).write_bytes(b"replacement")
+    await harness.install_harness_state(runtime, trace)
+
+    assert runtime.writes[f"{root}/{HARNESS_STATE_FILENAME}"] == state
+
+
+@pytest.mark.asyncio
+async def test_harness_state_directory_rejects_symlink(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(source, target_is_directory=True)
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(harness_state_dir=link))
+
+    with pytest.raises(ValueError, match="is not a folder"):
+        await harness.install_harness_state(
+            SimpleNamespace(), Trace.model_construct(id="trace")
+        )
 
 
 @pytest.mark.asyncio
@@ -85,15 +142,15 @@ async def test_acp_eof_reports_process_exit_and_stderr() -> None:
     assert "daemon worker received SIGTERM" in str(caught.value)
 
 
-@pytest.mark.parametrize("owner", [str(os.getpid()), f"{os.getpid()}:0"])
-def test_install_lock_recovers_from_live_reused_pid(tmp_path, owner: str) -> None:
+def test_install_lock_uses_process_lifetime_lock(tmp_path) -> None:
     lock = tmp_path / "install.lock"
     marker = tmp_path / "installed"
-    lock.symlink_to(owner)
+    lock.write_text("a leftover advisory lock file is not held")
     command = f": > {shlex.quote(str(marker))}"
+    script = _guarded_install(str(tmp_path), str(lock), command)
 
     result = subprocess.run(
-        ["sh", "-c", _guarded_install(str(tmp_path), str(lock), command)],
+        ["sh", "-c", script],
         capture_output=True,
         text=True,
         timeout=2,
@@ -102,7 +159,60 @@ def test_install_lock_recovers_from_live_reused_pid(tmp_path, owner: str) -> Non
 
     assert result.returncode == 0, result.stderr
     assert marker.exists()
-    assert not lock.is_symlink()
+    assert "/proc/" not in script
+    assert 'rm -f "$lock"' not in script
+
+
+def test_install_lock_serializes_concurrent_installers(tmp_path) -> None:
+    lock = tmp_path / "install.lock"
+    critical = tmp_path / "critical"
+    visits = tmp_path / "visits"
+    command = (
+        f"mkdir {shlex.quote(str(critical))}; "
+        f"printf x >> {shlex.quote(str(visits))}; "
+        "sleep 0.2; "
+        f"rmdir {shlex.quote(str(critical))}"
+    )
+    script = _guarded_install(str(tmp_path), str(lock), command)
+
+    first = subprocess.Popen(["sh", "-c", script], stderr=subprocess.PIPE, text=True)
+    second = subprocess.Popen(["sh", "-c", script], stderr=subprocess.PIPE, text=True)
+    _, first_error = first.communicate(timeout=3)
+    _, second_error = second.communicate(timeout=3)
+
+    assert first.returncode == 0, first_error
+    assert second.returncode == 0, second_error
+    assert visits.read_text() == "xx"
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["1.2.3", "v1.2.3", "1.2.3-rc.1", "1.2.3-rc.1+build.7"],
+)
+def test_prime_agent_version_accepts_semver(version: str) -> None:
+    config = PrimeAgentHarnessConfig(
+        version=version,
+        tarball_sha256="a" * 64,
+    )
+
+    assert config.version == version.removeprefix("v")
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["01.2.3", "1.02.3", "1.2.03", "1.2.3-01", "1.2.3-.."],
+)
+def test_prime_agent_version_rejects_invalid_semver(version: str) -> None:
+    with pytest.raises(ValueError, match="semantic version"):
+        PrimeAgentHarnessConfig(version=version, tarball_sha256="a" * 64)
+
+
+def test_node_install_is_scoped_to_prime_agent_identity() -> None:
+    first = PrimeAgentHarness(PrimeAgentHarnessConfig(tarball_sha256="a" * 64))
+    second = PrimeAgentHarness(PrimeAgentHarnessConfig(tarball_sha256="b" * 64))
+
+    assert first.node_root() != second.node_root()
+    assert first.node_bin_dir().startswith(first.node_root())
 
 
 @pytest.mark.parametrize("failed_move", [0, 1, 2])
