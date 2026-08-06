@@ -1,8 +1,8 @@
 """Push a finished eval run to the Prime Intellect platform (`--no-push` to skip).
 
-Converts each v1 `Trace` to the platform's (v0) eval-sample schema and uploads the
-run over the `/evaluations/` API (create -> push samples -> finalize) — the same
-contract as `prime eval push`, done inline at the end of a run. Auth + base URL
+Uploads one sample per v1 `Episode` over the `/evaluations/` API (create -> push
+samples -> finalize). Each sample keeps the complete native Episode as its source
+of truth and includes a flat summary for older Platform consumers. Auth + base URL
 come from `$PRIME_API_KEY` / `~/.prime/config.json`.
 """
 
@@ -25,6 +25,17 @@ DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 # Repeated /samples posts append; match the Prime Evals client's request ceiling.
 _MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _json_bytes(value: Any) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
 
 
 @dataclass
@@ -150,22 +161,46 @@ def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]
 
 
 def _build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
-    """One platform sample per trace, with one `rollout_number` per EPISODE: a
-    multi-agent rollout's seats are the same attempt at the task, not attempts
-    1..n. The grouping is the episode envelope — every trace in one episode shares
-    its `rollout_number` and `episode_id`."""
+    """One Platform sample per Episode, with a legacy-compatible trace summary.
+
+    The native Episode in `info.native_wrapper` is authoritative. The selected
+    trainable trace (or first trace) only supplies flat fields used by older list,
+    metric, and download consumers. `native_trace_index` tells the native viewer
+    which trace that summary represents.
+    """
     counts: dict[int, int] = {}
-    episode_numbers: dict[str, int] = {}
     samples = []
     for episode in episodes:
-        # One rollout_number per episode: all its seats are the same attempt.
-        number = episode_numbers.get(episode.id)
-        for trace in episode.traces:
-            if number is None:
-                idx = trace.task.data.idx
-                counts[idx] = number = counts.get(idx, 0) + 1
-                episode_numbers[episode.id] = number
-            samples.append(trace_to_sample(trace, number, episode.id))
+        if not episode.traces:
+            continue
+        trace_index, trace = next(
+            (
+                (index, candidate)
+                for index, candidate in enumerate(episode.traces)
+                if candidate.agent.trainable
+            ),
+            (0, episode.traces[0]),
+        )
+        idx = trace.task.data.idx
+        counts[idx] = number = counts.get(idx, 0) + 1
+        sample = trace_to_sample(trace, number, episode.id)
+        sample["sample_id"] = episode.id
+        sample["info"] = {
+            **(sample["info"] or {}),
+            "native_wrapper": episode.model_dump(mode="json", exclude_none=True),
+            "native_trace_index": trace_index,
+        }
+        if len(b'{"samples":[]}') + _json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
+            samples.append(sample)
+            continue
+        logger.warning(
+            "Episode %s exceeds the Platform sample limit; uploading projected traces",
+            episode.id,
+        )
+        samples.extend(
+            trace_to_sample(candidate, number, episode.id)
+            for candidate in episode.traces
+        )
     return samples
 
 
@@ -196,7 +231,6 @@ def push_traces(
     traces = [trace for episode in episodes for trace in episode.traces]
     env_name = (config.env.taskset.id) or config.legacy.id
     metrics = _run_metrics(episodes, traces)
-    samples = _build_samples(episodes)
     num_examples = len({t.task.data.idx for t in traces})
     metadata = {
         "framework": "verifiers",
@@ -213,18 +247,12 @@ def push_traces(
     # The run is done and its results saved; a network blip here must not crash it
     # — log and skip the upload instead.
     try:
+        samples = _build_samples(episodes)
         batches: list[list[dict[str, Any]]] = []
         batch: list[dict[str, Any]] = []
         payload_bytes = len(b'{"samples":[]}')
         for i, sample in enumerate(samples):
-            sample_bytes = len(
-                json.dumps(
-                    sample,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8")
-            )
+            sample_bytes = _json_bytes(sample)
             sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
             if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
                 raise ValueError(
