@@ -309,8 +309,6 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent.name: t for t in episode.traces}
-        if "judge" not in by_agent:
-            return
         solution, verdict = by_agent["solver"], by_agent["judge"]
         verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.criteria()
@@ -332,6 +330,10 @@ class SharedAgenticJudgeEnv(AgenticJudgeEnv):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
+            if not solution.ok:
+                raise RuntimeError(
+                    "the solver's rollout failed, so the judge never ran"
+                )
             judge_task = JudgeTask.from_trace(solution, self.config.task)
             await agents.judge.run(judge_task, runtime=box)
 
@@ -342,7 +344,7 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         solution = await agents.solver.run(task)
         if not solution.ok:
-            return
+            raise RuntimeError("the solver's rollout failed, so the judge never ran")
         await agents.judge.run(
             JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
         )
