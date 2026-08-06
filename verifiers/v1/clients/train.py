@@ -12,6 +12,7 @@ from typing import Any, ClassVar, TypeVar
 from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
+from renderers.base import ToolCallParseStatus
 
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
@@ -114,7 +115,14 @@ def response_from_generate(
             else json.dumps(tc.arguments or {}),
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
+        # Only OK-status calls reach the agent: renderers keeps non-OK attempts
+        # (UNKNOWN_TOOL, MALFORMED_*) on the response for inspection, but vLLM's
+        # glm45 parser drops the same calls server-side on the eval path. Passing
+        # them through here makes a malformed call recoverable in train and
+        # terminal in eval, and the policy drifts into the malformed syntax that
+        # eval then kills.
         if getattr(tc, "name", None)
+        and getattr(tc, "status", ToolCallParseStatus.OK) == ToolCallParseStatus.OK
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
