@@ -125,12 +125,30 @@ def _tool_calls(raw: Any) -> list[ToolCall] | None:
     return calls or None
 
 
+_LEGACY_MM_UNSUPPORTED = (
+    "The v1 legacy (v0) bridge does not support multimodal rollouts; "
+    "use a native v1 TrainClient environment instead."
+)
+
+
+def _content_has_image(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        part = _as_dict(part)
+        if isinstance(part, dict) and part.get("type") in ("image", "image_url"):
+            return True
+    return False
+
+
 def _to_v1_messages(msgs: Any) -> list:
     out: list = []
     for m in msgs or []:
         m = _as_dict(m)
         if not isinstance(m, dict):
             continue
+        if _content_has_image(m.get("content")):
+            raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
         role = m.get("role")
         if role == "system":
             out.append(SystemMessage(content=content_to_parts(m.get("content"))))
@@ -190,6 +208,8 @@ def _to_v1_response(raw: Any, model: str, tokens: TurnTokens | None = None) -> R
 def _to_v1_tokens(raw: Any) -> TurnTokens | None:
     if not isinstance(raw, dict):
         return None
+    if raw.get("multi_modal_data") is not None:
+        raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
     if not raw.get("completion_ids") and not raw.get("prompt_ids"):
         return None
     return TurnTokens(
@@ -197,40 +217,6 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
         completion_ids=list(raw.get("completion_ids") or []),
         completion_logprobs=list(raw.get("completion_logprobs") or []),
     )
-
-
-_LEGACY_MM_UNSUPPORTED = (
-    "The v1 legacy (v0) bridge does not support multimodal rollouts; "
-    "use a native v1 TrainClient environment instead."
-)
-
-
-def _content_has_image(content: Any) -> bool:
-    if not isinstance(content, list):
-        return False
-    for part in content:
-        part = _as_dict(part)
-        if isinstance(part, dict) and part.get("type") in ("image", "image_url"):
-            return True
-    return False
-
-
-def _reject_multimodal_rollout(out: dict) -> None:
-    """Fail fast: multimodal is native v1 only."""
-    for msg in out.get("prompt") or []:
-        msg = _as_dict(msg)
-        if isinstance(msg, dict) and _content_has_image(msg.get("content")):
-            raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
-    for step in out.get("trajectory") or []:
-        if not isinstance(step, dict):
-            continue
-        tokens = step.get("tokens")
-        if isinstance(tokens, dict) and tokens.get("multi_modal_data") is not None:
-            raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
-        for msg in step.get("prompt") or []:
-            msg = _as_dict(msg)
-            if isinstance(msg, dict) and _content_has_image(msg.get("content")):
-                raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
 
 
 def _timing(raw: Any) -> Timing:
@@ -290,9 +276,8 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     mapped to a v1 truncation stop condition (see ``_v1_stop_condition``) so
     ``Trace.is_truncated`` derives ``True``.
 
-    Multimodal rollouts are rejected — see ``_reject_multimodal_rollout``.
+    Multimodal rollouts are rejected at ``_to_v1_messages`` / ``_to_v1_tokens``.
     """
-    _reject_multimodal_rollout(out)
     model = str(out.get("model") or "")
 
     error = None
