@@ -321,6 +321,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Unique ID for this trace, auto-generated."""
     verifiers: VersionInfo = Field(default_factory=_current_build)
     """The verifiers version that produced this trace."""
+    run: RunInfo | None = None
+    """The run this trace belongs to (eval or train), consumer-stamped."""
+
     task: TraceTask[DataT]
     """The task data that seeded this trace."""
     agent: AgentInfo[AgentConfigT]
@@ -493,6 +496,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.info.setdefault("judge", []).append(response.model_dump())
         if response.usage is not None:
             self.extra_usage.append(response.usage)
+
+    def record_run(self, run: RunInfo | None = None, **info: Any) -> None:
+        """Record the run identity (eval / train), and optional extra info."""
+        if run is not None:
+            self.run = run
+        self.info.update(info)
 
     def stop(self, condition: str) -> None:
         """Stop the trace, optionally with a stop condition."""
