@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 import shlex
 from pathlib import Path
 
@@ -67,8 +68,11 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     @field_validator("version")
     @classmethod
     def _semver(cls, value: str) -> str:
-        parts = value.split(".")
-        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        if not re.fullmatch(
+            r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+            r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            value,
+        ):
             raise ValueError("version must be a semantic version, e.g. 0.7.0")
         return value
 
@@ -338,7 +342,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         wrapper = f"{root}/prime-agent"
         await runtime.write(wrapper, f"#!/bin/sh\nset -eu\n{command}".encode())
         await runtime.run(["chmod", "700", wrapper], {})
-        return self._run_env(trace, ""), ["sh", "-c", f"exec {shlex.quote(wrapper)}"]
+        return ["sh", "-c", f"exec {shlex.quote(wrapper)}"]
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self.trace_root(trace)

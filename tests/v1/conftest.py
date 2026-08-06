@@ -26,7 +26,7 @@ Every combination carries its axes' pytest marks, so subsets select with `-m`:
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
 harnesses `null` / `bash` / `rlm` / `kimi_code` / `pi` / `pool` / `openclaw` / `codex` /
-`claude_code` / `hermes_agent`.
+`claude_code` / `hermes_agent` / `prime_agent`.
 A mark is applied per axis, so it selects every case touching that value on ANY axis; for one exact
 combination use `-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`).
 prime/modal provision real remote sandboxes (slow, infra-flaky, need setup), so they're local-only.
