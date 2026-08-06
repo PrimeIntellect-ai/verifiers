@@ -31,14 +31,12 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
 from verifiers.v1.types import (
     AssistantMessage,
-    FinishReason,
     KeptTokens,
     Message,
     Response,
     TextContentPart,
     Tool,
     ToolMessage,
-    Usage,
 )
 
 if TYPE_CHECKING:
@@ -125,8 +123,6 @@ class MessageNode(BaseModel):
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
-    finish_reason: FinishReason = None
-    """The response's finish reason (assistant nodes only) — kept for truncation detection."""
     advantages: list[float] | None = None
     """Per-token credit over the sampled tokens, same layout as `logprobs`. `None` until a
     consumer's RL algorithm assigns it, which is not the same as a credit of zero: a group whose
@@ -139,10 +135,6 @@ class MessageNode(BaseModel):
     image-processor tensors. ``Branch.multi_modal_data`` concatenates them along
     the path for the trainer.
     """
-    usage: Usage | None = None
-    """Provider-reported token usage for this message's response (assistant nodes). Preserved on
-    the wire and on disk so dashboards can show token counts and cost even when the endpoint
-    returns no token ids."""
     routed_experts: SkipJsonSchema[np.ndarray | None] = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
