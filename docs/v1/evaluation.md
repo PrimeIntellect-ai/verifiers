@@ -52,41 +52,6 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 
 `--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `traces.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.
 
-## Model-free task validation
-
-Validate task setup and gold patches without running a model:
-
-```bash
-uv run validate primeintellect/terminal-bench-2 --runtime.type prime
-```
-
-The default runs both checks, each in a fresh runtime. `--only-gold` runs task setup
-followed by `Task.validate`; `--only-setup` runs setup alone. Both narrow modes use the
-same output, summary, and resume behavior.
-
-Every run gets a fresh `outputs/<taskset>--validate/<uuid>/` directory by default. Use
-`-o` / `--output-dir` for an exact directory. A run contains:
-
-```text
-config.toml       # resolved, replayable config
-results.jsonl     # one result appended as each task finishes
-summary.json      # aggregate outcomes and remaining resume debt
-validate.log
-```
-
-The JSONL records preserve the task's dataset `index`, selected-run position, and a
-content identity. A completed `valid` or `invalid` result is final. `error`, `timeout`,
-missing, malformed, or torn records are work still owed. Resume reloads the saved config
-verbatim, removes retryable and duplicate rows, and schedules only that owed work:
-
-```bash
-uv run validate --resume outputs/<taskset>--validate/<uuid>
-```
-
-`--resume` takes no other arguments. `summary.json` is refreshed after every completed
-task, reports all four outcomes plus missing work, and includes separate gold/setup
-counts when both checks run.
-
 ## Disabling tools
 
 Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
