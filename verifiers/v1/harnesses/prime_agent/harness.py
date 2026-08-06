@@ -211,7 +211,6 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             env=self._run_env(trace, secret),
             command=command,
             prompt=prompt,
-            allow_empty_tool_reply=True,
         )
 
     async def launch(
