@@ -19,6 +19,35 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+_UV_SCRIPT_ENV = (
+    "PATH",
+    "VIRTUAL_ENV",
+    "UV_INSTALL_DIR",
+    "UV_RUN_RECURSION_DEPTH",
+)
+_ORIGINAL_ENV_PREFIX = "_VF_ACP_ORIGINAL_"
+
+
+def _capture_agent_env(program: list[str]) -> list[str]:
+    """Snapshot env values before ``prepare_uv_script``'s wrapper changes them."""
+    commands = []
+    for name in _UV_SCRIPT_ENV:
+        original = f"{_ORIGINAL_ENV_PREFIX}{name}"
+        commands.append(
+            f'if [ "${{{name}+x}}" = x ]; then '
+            f'export {original}_SET=1 {original}="${{{name}}}"; '
+            f"else export {original}_SET=0; unset {original}; fi"
+        )
+    command = "; ".join([*commands, 'exec "$@"'])
+    return ["sh", "-c", command, "vf-acp-env", *program]
+
+
+async def _runner_program(runtime: Runtime, env: dict[str, str]) -> list[str]:
+    program = await runtime.prepare_uv_script(ACP_SOURCE, {**env, "UV_FROZEN": "false"})
+    # This shell runs outside prepare_uv_script's shell, so it sees the sandbox
+    # environment before the inner wrapper adds its private uv-script environment.
+    return _capture_agent_env(program)
+
 
 __all__ = ["ACP"]
 
@@ -120,9 +149,7 @@ class ACP:
             "session_meta": session_meta or {},
             "allow_empty_tool_reply": allow_empty_tool_reply,
         }
-        program = await runtime.prepare_uv_script(
-            ACP_SOURCE, {**env, "UV_FROZEN": "false"}
-        )
+        program = await _runner_program(runtime, env)
         directory = f".vf-acp-{secrets.token_hex(8)}"
         created = await runtime.run(["mkdir", "-m", "700", directory], {})
         if created.exit_code != 0:
@@ -197,9 +224,7 @@ class ACPHarnessSession(HarnessSession):
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
-        program = await self.runtime.prepare_uv_script(
-            ACP_SOURCE, {**self.env, "UV_FROZEN": "false"}
-        )
+        program = await _runner_program(self.runtime, self.env)
         process = await self.runtime.open_process([*program, "stream"], self.env)
         self._process = process
         self._reader = _PacketReader(process.stdout)

@@ -37,6 +37,13 @@ from acp.schema import (
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 LATE_UPDATE_GRACE_SECONDS = 1.0
+_UV_SCRIPT_ENV = (
+    "PATH",
+    "VIRTUAL_ENV",
+    "UV_INSTALL_DIR",
+    "UV_RUN_RECURSION_DEPTH",
+)
+_ORIGINAL_ENV_PREFIX = "_VF_ACP_ORIGINAL_"
 
 
 class VerifiersACPClient(Client):
@@ -209,6 +216,22 @@ async def prompt(
     return client.visible_reply
 
 
+def _agent_process_env() -> dict[str, str]:
+    """Restore the environment captured outside this client's uv wrapper."""
+    env = os.environ.copy()
+    for name in _UV_SCRIPT_ENV:
+        original = f"{_ORIGINAL_ENV_PREFIX}{name}"
+        state = env.pop(f"{original}_SET", None)
+        value = env.pop(original, None)
+        if state == "1" and value is not None:
+            env[name] = value
+        elif state == "0" and value is None:
+            env.pop(name, None)
+        else:
+            raise RuntimeError(f"invalid original environment snapshot for {name}")
+    return env
+
+
 async def run_once(config: dict) -> str:
     client = VerifiersACPClient()
     command = config["command"]
@@ -216,7 +239,7 @@ async def run_once(config: dict) -> str:
         client,
         command[0],
         *command[1:],
-        env=os.environ.copy(),
+        env=_agent_process_env(),
         transport_kwargs={"stderr": None},
     ) as agent_process:
         connection = agent_process[0]
@@ -294,7 +317,7 @@ class LiveACPSession:
                     self.client,
                     command[0],
                     *command[1:],
-                    env=os.environ.copy(),
+                    env=_agent_process_env(),
                     transport_kwargs={"stderr": None},
                 )
             )
