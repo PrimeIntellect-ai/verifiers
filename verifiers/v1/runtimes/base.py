@@ -286,7 +286,11 @@ class Runtime(ABC):
         raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
 
     async def delete_snapshot(self, ref: str) -> None:
-        """Release a snapshot previously returned by this runtime type."""
+        """Release a snapshot previously returned by this runtime type.
+
+        This must not require a live runtime: callers may delete through a stopped or
+        unstarted compatible instance after the runtime that captured `ref` is gone.
+        """
         raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
 
     async def prepare_uv_script(
