@@ -18,7 +18,6 @@ from pydantic_core import from_json
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
-from verifiers.v1.cli.eval.resume import distribute, task_key
 from verifiers.v1.cli.output import CONFIG_FILE, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
@@ -27,6 +26,7 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
+from verifiers.v1.cli.resume import distribute, split_resume, task_key
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
@@ -194,19 +194,6 @@ def save_run(config: ValidateConfig, results_dir: Path, total: int) -> None:
     write_config(config, results_dir)
     (results_dir / RESULTS_FILE).write_text("")
     write_summary(results_dir, summarize([], total, validation_mode(config)))
-
-
-def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
-    for i, arg in enumerate(argv):
-        if arg == "--resume":
-            if i + 1 >= len(argv):
-                raise SystemExit(
-                    "--resume needs an output dir: uv run validate --resume <dir>"
-                )
-            return Path(argv[i + 1]), argv[:i] + argv[i + 2 :]
-        if arg.startswith("--resume="):
-            return Path(arg.split("=", 1)[1]), argv[:i] + argv[i + 1 :]
-    return None, argv
 
 
 def load_resume_config(resume_dir: Path) -> ValidateConfig:
@@ -491,7 +478,7 @@ def main(argv: list[str] | None = None) -> None:
         with plugin_errors():
             cli(_narrow(argv))  # full option help, narrowed to the given taskset
         return
-    resume_dir, rest = split_resume(argv)
+    resume_dir, rest = split_resume(argv, "validate")
     if resume_dir is not None:
         if rest:
             raise SystemExit(

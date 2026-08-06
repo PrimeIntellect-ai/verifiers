@@ -11,7 +11,6 @@ changed since the interrupted run re-runs, and nothing depends on `data.idx`. Th
 legacy (v0) bridge still matches by row index (`key_of`).
 """
 
-import hashlib
 import json
 import tomllib
 from collections import Counter, defaultdict
@@ -22,48 +21,12 @@ from typing import TypeVar
 from pydantic_core import from_json
 
 from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, sniff_episode
+from verifiers.v1.cli.resume import task_key
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import WireTrace
 
 K = TypeVar("K", bound=Hashable)
-
-
-def task_key(data: Mapping) -> str:
-    """Content identity of one task's wire data — an `exclude_none` dump, the shape
-    saved rows already have on disk. `sort_keys` so field order can't split identity."""
-    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
-
-
-def distribute(
-    selected_keys: list[K], owed: dict[K, int], num_rollouts: int
-) -> list[int]:
-    """Spread each key's owed rollouts over its selection instances, in order —
-    content-identical tasks are interchangeable, so any instance can absorb the
-    debt (capped at `num_rollouts` each). Returns one count per selection."""
-    remaining = dict(owed)
-    counts: list[int] = []
-    for key in selected_keys:
-        take = min(num_rollouts, remaining.get(key, 0))
-        if take:
-            remaining[key] -= take
-        counts.append(take)
-    return counts
-
-
-def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
-    """Pull `--resume <dir>` / `--resume=<dir>` out of argv, returning (dir, the other args).
-    The caller rejects any leftover args, since resume re-runs the saved config verbatim."""
-    for i, arg in enumerate(argv):
-        if arg == "--resume":
-            if i + 1 >= len(argv):
-                raise SystemExit(
-                    "--resume needs an output dir: uv run eval --resume <dir>"
-                )
-            return Path(argv[i + 1]), argv[:i] + argv[i + 2 :]
-        if arg.startswith("--resume="):
-            return Path(arg.split("=", 1)[1]), argv[:i] + argv[i + 1 :]
-    return None, argv
 
 
 def load_resume_config(resume_dir: Path) -> EvalConfig:

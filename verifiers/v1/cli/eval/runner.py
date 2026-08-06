@@ -14,6 +14,7 @@ from verifiers.v1.cli.output import (
     output_path,
     save_config,
 )
+from verifiers.v1.cli.resume import distribute, task_key
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
@@ -47,14 +48,13 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     finished: list[Episode] = []
     if config.resume is not None:
         keys = [
-            resume.task_key(t.data.model_dump(mode="json", exclude_none=True))
-            for t in tasks
+            task_key(t.data.model_dump(mode="json", exclude_none=True)) for t in tasks
         ]
         finished, owed = resume.load(out, keys, config.num_rollouts, env.complete)
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
-        counts = resume.distribute(keys, owed, config.num_rollouts)
+        counts = distribute(keys, owed, config.num_rollouts)
         plan = [(task, n) for task, n in zip(tasks, counts) if n]
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
@@ -179,7 +179,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         # A v1 run dispatches — and resumes — tasks by content: the client owns them,
-        # and `resume.task_key` is their identity. Only the legacy bridge is addressed
+        # and `task_key` is their identity. Only the legacy bridge is addressed
         # by dataset row (its dataset lives server-side, reported via `info`), and
         # only a legacy env group-scores; a v1 env scores siblings in its own rollout.
         if legacy:
@@ -209,14 +209,14 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     whole_task=group_scored,
                     key_of=lambda data: data.get("idx"),
                 )
-                counts = resume.distribute(idxs, owed, config.num_rollouts)
+                counts = distribute(idxs, owed, config.num_rollouts)
             else:
                 keys = [
-                    resume.task_key(t.data.model_dump(mode="json", exclude_none=True))
+                    task_key(t.data.model_dump(mode="json", exclude_none=True))
                     for t in tasks
                 ]
                 finished, owed = resume.load(out, keys, config.num_rollouts)
-                counts = resume.distribute(keys, owed, config.num_rollouts)
+                counts = distribute(keys, owed, config.num_rollouts)
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(plan), config.num_rollouts))
                 raise SystemExit(0)
