@@ -339,7 +339,12 @@ class PrimeRuntime(Runtime):
 
         client = self._client
         sandbox_id = self.info.id
-        transport = HTTPTransport()
+        try:
+            # pyqwest >= 0.7 leaves system CA trust off for bare transports; a
+            # bare HTTPTransport() there fails TLS with "UnknownIssuer".
+            transport = HTTPTransport(tls_include_system_certs=True)
+        except TypeError:  # pyqwest 0.6.x trusts system CAs by default
+            transport = HTTPTransport()
         http_client = HTTPClient(transport=transport)
 
         async def authed_target() -> tuple[str, dict[str, str]]:
