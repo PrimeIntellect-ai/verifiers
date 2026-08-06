@@ -116,7 +116,7 @@ def response_from_generate(
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
         if getattr(tc, "name", None)
-        and getattr(tc, "status", ToolCallParseStatus.OK) == ToolCallParseStatus.OK
+        and getattr(tc, "status", None) != ToolCallParseStatus.UNKNOWN_TOOL
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
