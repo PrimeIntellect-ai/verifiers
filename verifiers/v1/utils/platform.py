@@ -17,7 +17,7 @@ import httpx
 from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,11 @@ def _build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
         sample["sample_id"] = episode.id
         sample["info"] = {
             **(sample["info"] or {}),
-            "native_wrapper": episode.model_dump(mode="json", exclude_none=True),
+            "native_wrapper": episode.model_dump(
+                mode="json",
+                exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+                exclude_none=True,
+            ),
             "native_trace_index": trace_index,
         }
         if len(b'{"samples":[]}') + _json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
