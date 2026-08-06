@@ -12,6 +12,7 @@ from typing import Any, ClassVar, TypeVar
 from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
+from renderers.base import ToolCallParseStatus
 
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
@@ -114,7 +115,16 @@ def response_from_generate(
             else json.dumps(tc.arguments or {}),
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
+        # Only OK-status calls become real tool calls. renderers keeps non-OK
+        # attempts (UNKNOWN_TOOL, MALFORMED_STRUCTURE, INVALID_JSON, ...) on the
+        # response for inspection and withholds the stop->tool_calls finish-reason
+        # promotion for them; vLLM's glm45/glm47 parsers drop the same calls
+        # server-side, so the chat-completions path never sees them. Promoting
+        # them here makes a malformed call a recoverable "unknown tool" turn in
+        # training while the identical bytes end the episode under an engine-side
+        # parser.
         if getattr(tc, "name", None)
+        and getattr(tc, "status", ToolCallParseStatus.OK) == ToolCallParseStatus.OK
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
