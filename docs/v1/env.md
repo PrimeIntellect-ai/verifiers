@@ -73,6 +73,10 @@ class MyTask(vf.Task[MyData]):
 
 Declared paths must exist when collected. The implicit directory is optional.
 
+Collected archives spool to host disk. An env that restores them elsewhere owns
+their lifetime: call `vf.discard(trace.state.artifacts)` once grading has
+consumed them, or they stay on disk until the process exits.
+
 ## Concurrency
 
 Write independent agents as independent (`asyncio.gather`, a `TaskGroup`) — how many actually run at once is the run's call, not the env's. Two knobs bound it, and the **episode is the unit** at the outer one:

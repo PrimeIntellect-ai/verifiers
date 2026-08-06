@@ -508,7 +508,8 @@ async def test_env_id_agentic_judge(run_v1, tmp_path):
     assert solver.agent.runtime is not None and judge.agent.runtime is not None
     assert solver.agent.runtime.id != judge.agent.runtime.id
     assert solver.agent.runtime.type == judge.agent.runtime.type == "docker"
-    assert "/app/answer.txt" in solver.state.artifacts
+    # Collected (key present), then discarded after judging (spool file dropped).
+    assert solver.state.artifacts["/app/answer.txt"] is None
     assert solver.rewards["wrote_phrase"].score == 1.0
     assert solver.rewards["wrote_phrase"].weight == 0.5
     assert isinstance(judge.info.get("verdict"), dict)

@@ -329,17 +329,16 @@ class PrimeRuntime(Runtime):
     async def _read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
-        try:
-            with tempfile.TemporaryDirectory() as directory:
-                download = Path(directory) / "download"
-                await self.read_to(path, download)
-                return await asyncio.to_thread(download.read_bytes)
-        except Exception as e:
-            raise SandboxError(f"read {path!r}: {e}") from e
+        with tempfile.TemporaryDirectory() as directory:
+            download = Path(directory) / "download"
+            await self.read_to(path, download)
+            return await asyncio.to_thread(download.read_bytes)
 
     async def read_to(self, path: str, local: Path) -> None:
-        # The SDK downloads file-to-file, so a large artifact streams to host disk
-        # without ever being held in host memory.
+        # File-to-file via the SDK. NOTE: prime-sandboxes buffers the whole transfer
+        # in memory in transit (no streaming API yet), so this bounds memory to one
+        # transfer at a time rather than eliminating it; the bytes are freed as soon
+        # as the file lands instead of living on the trace.
         target = self._abs(path)
         try:
             await self._client.download_file(self.info.id, target, str(local))
@@ -347,6 +346,7 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write_from(self, path: str, local: Path) -> None:
+        # Same in-transit buffering caveat as `read_to`.
         target = self._abs(path)
         try:
             await self._client.execute_command(

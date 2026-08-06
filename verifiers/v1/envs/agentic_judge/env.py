@@ -332,6 +332,9 @@ class SharedAgenticJudgeEnv(AgenticJudgeEnv):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
+            # The judge works in the solver's box, where the artifacts already
+            # live on disk — a spooled copy has no consumer here.
+            vf.discard(solution.state.artifacts)
             judge_task = JudgeTask.from_trace(solution, self.config.task)
             await agents.judge.run(judge_task, runtime=box)
 
@@ -341,9 +344,13 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         solution = await agents.solver.run(task)
-        if not solution.ok:
-            return
-        await agents.judge.run(
-            JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
-        )
-        vf.discard(solution.state.artifacts)  # judged; nothing can grade them again
+        # The judge is this collection's only consumer, so it ends here either
+        # way: judged, failed solve, or a judge that never got off the ground.
+        try:
+            if not solution.ok:
+                return
+            await agents.judge.run(
+                JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
+            )
+        finally:
+            vf.discard(solution.state.artifacts)

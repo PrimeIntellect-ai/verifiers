@@ -79,11 +79,16 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
         if not isinstance(task, HarborTask) or task.data.verifier is None:
             return
         solution = episode.traces[0]
-        if not solution.ok:
-            return
-        grader = HarborTask(verifier_box_data(task.data))
-        scores = await self._grade(self._verifier_config(task), grader, solution)
-        discard(solution.state.artifacts)  # scored; nothing can grade them again
+        # Grading is this collection's only consumer, so it ends here either way:
+        # scored, failed solve, or out of retries. (The `finally` sits outside
+        # `_grade`'s retry loop, whose attempts re-restore the same archives.)
+        try:
+            if not solution.ok:
+                return
+            grader = HarborTask(verifier_box_data(task.data))
+            scores = await self._grade(self._verifier_config(task), grader, solution)
+        finally:
+            discard(solution.state.artifacts)
         items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
         for name, value in items:
             solution.record_reward(name, value)

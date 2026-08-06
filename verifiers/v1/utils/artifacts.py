@@ -103,19 +103,25 @@ async def collect(
 
     collected: dict[str, Path | None] = {}
     budget = MAX_ARTIFACT_BYTES
-    for artifact in entries:
-        source = artifact.source
-        exists = f"test -e {shlex.quote(source)} || test -L {shlex.quote(source)}"
-        if (await runtime.run(["sh", "-c", exists], {})).exit_code != 0:
-            if not artifact.required:
-                collected[source] = None
-                continue
-            raise RuntimeError(
-                f"declared artifact {source!r} does not exist in the runtime"
-            )
-        archive = await _tar_out(runtime, artifact, budget)
-        budget -= archive.stat().st_size
-        collected[source] = archive
+    try:
+        for artifact in entries:
+            source = artifact.source
+            exists = f"test -e {shlex.quote(source)} || test -L {shlex.quote(source)}"
+            if (await runtime.run(["sh", "-c", exists], {})).exit_code != 0:
+                if not artifact.required:
+                    collected[source] = None
+                    continue
+                raise RuntimeError(
+                    f"declared artifact {source!r} does not exist in the runtime"
+                )
+            archive = await _tar_out(runtime, artifact, budget)
+            budget -= archive.stat().st_size
+            collected[source] = archive
+    except BaseException:
+        # A failed collection grades nothing: drop what already spooled rather
+        # than leaving unreachable files until the run's exit sweep.
+        discard(collected)
+        raise
 
     logger.debug("collected artifact roots: %s", list(collected))
     return collected
@@ -170,7 +176,11 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> Path:
                 "or add `exclude` patterns."
             )
         spooled = _spool_dir() / f"{uuid.uuid4().hex}.tar"
-        await runtime.read_to(path, spooled)
+        try:
+            await runtime.read_to(path, spooled)
+        except BaseException:
+            spooled.unlink(missing_ok=True)  # a partial download grades nothing
+            raise
         return spooled
     finally:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
