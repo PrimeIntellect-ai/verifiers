@@ -5,6 +5,7 @@
       "group": "Verifiers",
       "pages": [
         "overview",
+        "publishing",
         {
           "group": "Verifiers v1",
           "pages": [
