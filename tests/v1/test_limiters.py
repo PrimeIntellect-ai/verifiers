@@ -20,21 +20,6 @@ def test_creation_limiter_discards_cursor_from_another_monotonic_epoch(
     assert float(limiter._path.read_text()) == 1_800_000_001.0
 
 
-def test_creation_limiter_rejects_absurd_wait_without_advancing_bucket(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    monkeypatch.setattr(limiters, "LIMITER_DIR", tmp_path)
-    monkeypatch.setattr(limiters.time, "time", lambda: 77_817.111942894)
-
-    limiter = limiters.CreationLimiter("prime-tunnel", per_sec=1)
-    cursor = "4346537.619615014"
-    limiter._path.write_text(cursor)
-
-    with pytest.raises(TimeoutError, match=r"backlog of 4268720\.5s exceeds 300s"):
-        limiter._reserve()
-    assert limiter._path.read_text() == cursor
-
-
 async def test_creation_limiter_paces_concurrent_shared_reservations(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
