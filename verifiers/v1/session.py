@@ -2,8 +2,8 @@
 
 One `RolloutSession` per rollout, registered on an interception server under the rollout's
 secret. The rollout constructs it (model ctx, trace, task `@stop`s, limits) and the server
-drives it: routes each intercepted model call to it, runs `refused()` before each turn,
-and stashes the real failure on `error`. `RolloutLimits` is the framework's per-rollout
+drives it: assigns its model client at register, routes each intercepted model call to it,
+runs `refused()` before each turn, and stashes the real failure on `error`. `RolloutLimits` is the framework's per-rollout
 budget (turns / tokens), checked between turns.
 """
 
@@ -64,10 +64,13 @@ class RolloutLimits:
 @dataclass
 class RolloutSession:
     ctx: ModelContext
-    client: Client
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    client: Client | None = None
+    """The model client serving this rollout's turns. The interception server assigns it at
+    `register` (one server-owned client per distinct endpoint config), so every rollout it
+    multiplexes shares one keepalive connection pool instead of opening its own."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the

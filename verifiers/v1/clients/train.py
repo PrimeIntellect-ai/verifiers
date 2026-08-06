@@ -299,8 +299,9 @@ class ElasticRendererPool:
 class TrainClient(Client):
     """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine.
 
-    One client per rollout: it owns its engine connection and takes a slot on the shared
-    `ElasticRendererPool` for each turn."""
+    Owned by the interception server and shared by the rollouts it multiplexes: they reuse
+    its engine connection pool, and each turn takes a slot on the shared
+    `ElasticRendererPool`."""
 
     def __init__(self, config: TrainClientConfig) -> None:
         self.config = config
