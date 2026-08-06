@@ -24,7 +24,7 @@ class CreationLimiter:
     reserves the next `1/per_sec`-spaced slot (advancing the on-disk cursor under an exclusive
     flock) and sleeps until it, so the aggregate creation rate across all of the user's
     processes stays at `per_sec`. The reservation runs off the event loop; the wait does not
-    hold the lock."""
+    hold the lock. Backlogs over five minutes fail rather than silently stalling creation."""
 
     def __init__(self, name: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
@@ -32,8 +32,7 @@ class CreationLimiter:
 
     def _reserve(self) -> float:
         os.makedirs(LIMITER_DIR, exist_ok=True)
-        # Wall clock persists across reboots (monotonic does not), so a cursor left in
-        # ~/.cache from a previous boot cannot turn into a huge stale wait.
+        # Shared buckets require a clock comparable across hosts and boots.
         with open(self._path, "a+") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
@@ -41,11 +40,17 @@ class CreationLimiter:
                 data = f.read().strip()
                 now = time.time()
                 slot = max(now, float(data) if data else 0.0)
+                wait = slot - now
+                if wait > 5 * 60:
+                    raise TimeoutError(
+                        f"{self._path.stem} creation limiter backlog of {wait:.1f}s "
+                        f"exceeds 300s ({self._path})"
+                    )
                 f.seek(0)
                 f.truncate()
                 f.write(repr(slot + self._interval))
                 f.flush()
-                return slot - now
+                return wait
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
