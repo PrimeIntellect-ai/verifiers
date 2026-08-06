@@ -1,7 +1,8 @@
 """User-global creation-rate limiters for the remote runtimes.
 
-A leaky bucket backed by a lock file under ``~/.cache/verifiers``, so a provider's per-account
-creation rate (Modal sandboxes, Prime tunnels) is enforced across EVERY process for the user —
+A leaky bucket backed by a lock file under the user cache (``~/.cache/verifiers``, falling
+back to the temp dir when no home is resolvable), so a provider's per-account creation rate
+(Modal sandboxes, Prime tunnels) is enforced across EVERY process for the user —
 the single-process eval and all the elastically-spawned env-server worker processes alike — not
 just within one process. Keyed by name: one bucket file per name, shared by every process (and
 run) for the user.
@@ -11,10 +12,11 @@ import asyncio
 import fcntl
 import os
 import time
-from pathlib import Path
 from typing import Self
 
-_LIMITER_DIR = Path.home() / ".cache" / "verifiers" / "limiter"
+from verifiers.utils.path_utils import CACHE_DIR
+
+LIMITER_DIR = CACHE_DIR / "limiter"
 
 
 class CreationLimiter:
@@ -26,17 +28,18 @@ class CreationLimiter:
 
     def __init__(self, name: str, per_sec: float) -> None:
         self._interval = 1 / per_sec
-        self._path = _LIMITER_DIR / f"{name}.bucket"
+        self._path = LIMITER_DIR / f"{name}.bucket"
 
     def _reserve(self) -> float:
-        os.makedirs(_LIMITER_DIR, exist_ok=True)
-        # monotonic is host-wide on Linux, so the cursor is comparable across processes.
+        os.makedirs(LIMITER_DIR, exist_ok=True)
+        # Wall clock persists across reboots (monotonic does not), so a cursor left in
+        # ~/.cache from a previous boot cannot turn into a huge stale wait.
         with open(self._path, "a+") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
                 f.seek(0)
                 data = f.read().strip()
-                now = time.monotonic()
+                now = time.time()
                 slot = max(now, float(data) if data else 0.0)
                 f.seek(0)
                 f.truncate()
