@@ -25,7 +25,7 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -36,6 +36,11 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1 import graph
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
+from verifiers.v1.dialects.chat import (
+    alias_chat_tool_names,
+    restore_chat_sse_tool_names,
+    restore_chat_tool_names,
+)
 from verifiers.v1.errors import (
     OverlongPromptError,
     ProviderError,
@@ -312,6 +317,12 @@ class InterceptionServer(Interception):
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
+        try:
+            body, tool_aliases = alias_chat_tool_names(
+                body, session.trace._tool_aliases
+            )
+        except ValueError as e:
+            return web.json_response(dialect.error_body(str(e)), status=400)
         streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
@@ -336,7 +347,15 @@ class InterceptionServer(Interception):
         # coalescing cache, as it was before in-flight retries were introduced.
         if streaming:
             prompt, tools = dialect.parse_request(body)
-            return await self._stream(request, session, dialect, body, prompt, tools)
+            return await self._stream(
+                request,
+                session,
+                dialect,
+                body,
+                prompt,
+                tools,
+                tool_aliases,
+            )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
@@ -366,10 +385,11 @@ class InterceptionServer(Interception):
             # `Response.raw` is the full native provider object (or the renderer's synthesized
             # completion) that the server serializes back to the program.
             session.last_request = req_hash
-            session.last_response = response.raw
+            completion = restore_chat_tool_names(response.raw, tool_aliases)
+            session.last_response = completion
             if not fut.done():
-                fut.set_result(response.raw)
-            return _completion_response(response.raw)
+                fut.set_result(completion)
+            return _completion_response(completion)
 
         try:
             # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
@@ -509,7 +529,8 @@ class InterceptionServer(Interception):
         dialect: Dialect,
         body: dict,
         prompt: Messages,
-        tools: list[Tool] | None = None,
+        tools: list[Tool] | None,
+        tool_aliases: Mapping[str, str],
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace (the only client that
@@ -626,9 +647,11 @@ class InterceptionServer(Interception):
                             except Exception as e:  # noqa: BLE001 - defer parser failure
                                 parser_error = e
                         # forwarded after the turn is committed, below
-                        deferred.append(chunk)
+                        deferred.append(
+                            restore_chat_sse_tool_names(chunk, tool_aliases)
+                        )
                         continue
-                    await resp.write(chunk)
+                    await resp.write(restore_chat_sse_tool_names(chunk, tool_aliases))
                     if parser_error is None:
                         try:
                             feed_event(chunk)

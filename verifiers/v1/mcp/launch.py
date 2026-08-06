@@ -375,6 +375,15 @@ class SharedToolServer:
     external: bool = False
     runtime: Runtime | None = field(default=None, repr=False)
     state_secret: str = field(default="", repr=False)
+    tool_names: tuple[str, ...] = field(default=(), repr=False)
+
+
+class MCPUrls(dict[str, str]):
+    """Harness-facing MCP URLs with the tool names advertised by each server."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tool_names: dict[str, tuple[str, ...]] = {}
 
 
 @contextlib.asynccontextmanager
@@ -408,7 +417,10 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                 )
             if cfg.url:  # already running remotely; nothing launched, nothing to bridge
                 servers[name] = SharedToolServer(
-                    url=cfg.url, local=False, external=True
+                    url=cfg.url,
+                    local=False,
+                    external=True,
+                    tool_names=toolset.tool_names,
                 )
             else:
                 state_secret = (
@@ -426,6 +438,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     local=served.runtime.is_local,
                     runtime=served.runtime,
                     state_secret=state_secret,
+                    tool_names=toolset.tool_names,
                 )
             logger.info("shared tool server '%s': %s", name, servers[name].url)
         yield servers
@@ -471,9 +484,10 @@ async def serve_tools(
     `state_secret` is private to task-scoped servers; shared servers keep an
     eval-level service secret and receive only signed `state_route` coordinates.
     `state_base` is universally reachable from either placement."""
-    urls: dict[str, str] = {}
+    urls = MCPUrls()
     async with contextlib.AsyncExitStack() as stack:
         for name, server in (shared or {}).items():
+            urls.tool_names[name] = server.tool_names
             if server.external:
                 # Not ours: a pre-existing endpoint with no vf state channel. Pass the URL
                 # through bare — a state tag would be useless, and the per-rollout secret
@@ -492,6 +506,7 @@ async def serve_tools(
                     f"and task-scoped — pick one scope, or give one a distinct TOOL_PREFIX"
                 )
             cfg = toolset.config
+            urls.tool_names[name] = toolset.tool_names
             if cfg.url:
                 urls[name] = harness_runtime.host_url(cfg.url)
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)

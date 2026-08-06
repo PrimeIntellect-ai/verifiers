@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import shlex
 
 from verifiers.v1.acp import ACP
@@ -22,6 +23,7 @@ ACP_COMMAND = [
     f'KIMI_CODE_HOME="$PWD/$KIMI_CODE_HOME" exec {BINARY} acp',
 ]
 SKILLS_DIR = f"{KIMI_HOME}/skills"
+BARE_MCP_SERVER = "verifiers-bare-tools"
 
 INSTALL = r"""
 set -e
@@ -106,6 +108,38 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             "KIMI_DISABLE_TELEMETRY": "1",
             "KIMI_CODE_NO_AUTO_UPDATE": "1",
         }
+        tool_aliases = {}
+        if "" in mcp_urls:
+            if BARE_MCP_SERVER in mcp_urls:
+                raise ValueError(
+                    f"MCP server name {BARE_MCP_SERVER!r} is reserved by the Kimi harness"
+                )
+            names_by_server = getattr(mcp_urls, "tool_names", None)
+            if names_by_server is None or "" not in names_by_server:
+                raise ValueError(
+                    "bare MCP tool names are unavailable to the Kimi harness"
+                )
+            aliases = {}
+            for visible in names_by_server[""]:
+                tool = re.sub(r"_+", "_", re.sub(r"[^a-zA-Z0-9_-]", "_", visible))
+                internal = f"mcp__{BARE_MCP_SERVER}__{tool}"
+                if len(internal) > 64:
+                    hash_value = 2166136261
+                    for character in internal:
+                        hash_value ^= ord(character)
+                        hash_value = ((hash_value * 16777619 + 2**31) % 2**32) - 2**31
+                    suffix = format(hash_value, "x").rjust(8, "0")
+                    internal = f"{internal[: 63 - len(suffix)]}_{suffix}"
+                if internal in aliases:
+                    raise ValueError(
+                        "bare MCP tool names collide after Kimi normalization"
+                    )
+                aliases[internal] = visible
+            tool_aliases = aliases
+            mcp_urls = {
+                BARE_MCP_SERVER if name == "" else name: url
+                for name, url in mcp_urls.items()
+            }
         # Values are Kimi permission patterns such as `Bash` or `Bash(rm -rf*)`.
         # https://moonshotai.github.io/kimi-code/en/configuration/config-files#permission
         permission_rules = "\n".join(
@@ -122,12 +156,16 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         )
         if permission_rules:
             await runtime.write(f"{kimi_home}/config.toml", permission_rules.encode())
-        return await KIMI_ACP.run(
-            runtime,
-            env,
-            ACP_COMMAND,
-            prompt,
-            mcp_urls=mcp_urls,
-            system_prompt=system_prompt,
-            session_path=f"{kimi_home}/acp-session",
-        )
+        trace._tool_aliases = tool_aliases
+        try:
+            return await KIMI_ACP.run(
+                runtime,
+                env,
+                ACP_COMMAND,
+                prompt,
+                mcp_urls=mcp_urls,
+                system_prompt=system_prompt,
+                session_path=f"{kimi_home}/acp-session",
+            )
+        finally:
+            trace._tool_aliases = {}

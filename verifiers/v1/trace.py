@@ -361,6 +361,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder."""
+    _tool_aliases: dict[str, str] = PrivateAttr(default_factory=dict)
+    """Harness-internal -> model-visible tool names for the interception boundary."""
 
     @property
     def reward(self) -> float:
