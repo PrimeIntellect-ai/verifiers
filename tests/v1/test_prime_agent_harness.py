@@ -1,10 +1,12 @@
 import asyncio
 import hashlib
+import io
 import json
 import os
 import shlex
 import subprocess
 import sys
+import tarfile
 from pathlib import PurePosixPath
 from types import ModuleType, SimpleNamespace
 
@@ -31,6 +33,66 @@ def test_trace_root_encodes_untrusted_trace_id() -> None:
 
     assert root.parent == PurePosixPath(STATE_ROOT)
     assert root.name == hashlib.sha256(trace.id.encode()).hexdigest()[:32]
+
+
+@pytest.mark.asyncio
+async def test_skills_use_one_archive_upload(tmp_path) -> None:
+    first = tmp_path / "first"
+    first.mkdir()
+    (first / "SKILL.md").write_text("first skill")
+    script = first / "scripts" / "run.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o700)
+    second = tmp_path / "second"
+    second.mkdir()
+    (second / "SKILL.md").write_text("second skill")
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.writes: list[tuple[str, bytes]] = []
+            self.runs: list[list[str]] = []
+
+        async def write(self, path: str, data: bytes) -> None:
+            self.writes.append((path, data))
+
+        async def run(self, argv: list[str], env: dict[str, str]):
+            del env
+            self.runs.append(argv)
+            return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+    runtime = Runtime()
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(skills=[first, second]))
+
+    await harness.install_skills(runtime, "/tmp/agent/skills")
+
+    assert len(runtime.writes) == 1
+    archive_path, archive = runtime.writes[0]
+    assert archive_path == "/tmp/agent/skills.tar.gz"
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as packed:
+        assert packed.getnames() == [
+            "first",
+            "first/SKILL.md",
+            "first/scripts",
+            "first/scripts/run.sh",
+            "second",
+            "second/SKILL.md",
+        ]
+        assert packed.extractfile("first/SKILL.md").read() == b"first skill"
+        assert packed.getmember("first/scripts/run.sh").mode == 0o755
+    local_archive = tmp_path / "skills.tar.gz"
+    local_archive.write_bytes(archive)
+    extracted = tmp_path / "extracted"
+    extracted.mkdir()
+    process = await asyncio.create_subprocess_exec(
+        "tar", "-xzf", str(local_archive), "-C", str(extracted)
+    )
+    assert await process.wait() == 0
+    assert (
+        (extracted / "first" / "scripts" / "run.sh").read_text().startswith("#!/bin/sh")
+    )
+    assert len(runtime.runs) == 1
+    assert runtime.runs[0][-2:] == [archive_path, "/tmp/agent/skills"]
 
 
 @pytest.mark.asyncio

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
+import os
 import re
 import shlex
+import tarfile
 from pathlib import Path
 from typing import Literal
 
@@ -397,6 +400,92 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 "prime-agent harness state permissions failed: "
                 f"{restricted.stderr.strip()[-500:]}"
             )
+
+    def _skills_archive(self) -> bytes | None:
+        """Pack configured skills for one gateway upload.
+
+        Prime runtime writes require one command RPC and one upload RPC per file.
+        A skill set can contain dozens of small files, so per-file writes can use
+        the full setup budget before Prime Agent starts. The archive contains only
+        regular file data from the configured folders. Symlinks are dereferenced,
+        which matches ``Harness.install_skills``.
+        """
+        if not self.config.skills:
+            return None
+        output = io.BytesIO()
+        with tarfile.open(
+            fileobj=output, mode="w:gz", format=tarfile.PAX_FORMAT
+        ) as tar:
+            for configured in self.config.skills:
+                skill = configured.resolve()
+                if not skill.is_dir():
+                    raise ValueError(f"skill {str(skill)!r} is not a folder")
+                directories = {skill.name}
+                root = tarfile.TarInfo(skill.name)
+                root.type = tarfile.DIRTYPE
+                root.mode = 0o755
+                root.mtime = 0
+                tar.addfile(root)
+                for file in sorted(skill.rglob("*")):
+                    if not file.is_file():
+                        continue
+                    data = file.read_bytes()
+                    relative = file.relative_to(skill).as_posix()
+                    parent = skill.name
+                    for part in file.relative_to(skill).parts[:-1]:
+                        parent = f"{parent}/{part}"
+                        if parent in directories:
+                            continue
+                        directories.add(parent)
+                        directory = tarfile.TarInfo(parent)
+                        directory.type = tarfile.DIRTYPE
+                        directory.mode = 0o755
+                        directory.mtime = 0
+                        tar.addfile(directory)
+                    member = tarfile.TarInfo(f"{skill.name}/{relative}")
+                    member.size = len(data)
+                    member.mode = 0o755 if os.access(file, os.X_OK) else 0o644
+                    member.mtime = 0
+                    member.uid = 0
+                    member.gid = 0
+                    member.uname = ""
+                    member.gname = ""
+                    tar.addfile(member, io.BytesIO(data))
+        return output.getvalue()
+
+    async def install_skills(self, runtime: Runtime, dest: str) -> None:
+        archive = self._skills_archive()
+        if archive is None:
+            return
+        archive_path = f"{dest}.tar.gz"
+        await runtime.write(archive_path, archive)
+        extracted = await runtime.run(
+            [
+                "sh",
+                "-c",
+                (
+                    "set -eu\n"
+                    "archive=$1\n"
+                    "dest=$2\n"
+                    "cleanup_skills_archive() {\n"
+                    "  status=$?\n"
+                    "  trap - EXIT\n"
+                    '  rm -f "$archive"\n'
+                    '  exit "$status"\n'
+                    "}\n"
+                    "trap cleanup_skills_archive EXIT\n"
+                    'mkdir -p -m 700 "$dest"\n'
+                    'tar -xzf "$archive" -C "$dest"\n'
+                ),
+                "prime-agent-skills",
+                archive_path,
+                dest,
+            ],
+            {},
+        )
+        if extracted.exit_code != 0:
+            detail = (extracted.stderr or extracted.stdout).strip()[-1000:]
+            raise RuntimeError(f"prime-agent skill extraction failed: {detail}")
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("prime-agent: ensuring %s is installed", self.config.version)
