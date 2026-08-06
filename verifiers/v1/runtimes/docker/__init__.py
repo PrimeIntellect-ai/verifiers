@@ -162,6 +162,8 @@ async def _archive_workspace(container: str, workdir: str, path: Path) -> None:
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
+            "--user",
+            "0",
             "--workdir",
             "/",
             container,
@@ -194,6 +196,8 @@ async def _extract_workspace(container: str, workdir: str, path: Path) -> None:
             "docker",
             "exec",
             "-i",
+            "--user",
+            "0",
             "--workdir",
             "/",
             container,
@@ -631,22 +635,85 @@ class DockerRuntime(Runtime):
         if not path.is_file():
             raise SandboxError(f"Docker workspace snapshot is unavailable: {ref}")
         workdir = self._snapshot_workdir()
-        clear = await docker(
+        nonce = uuid.uuid4().hex
+        staging = f"{workdir}.vf-restore-{nonce}"
+        backup = f"{workdir}.vf-backup-{nonce}"
+        prepare = await docker(
             "exec",
+            "--user",
+            "0",
             "--workdir",
-            workdir,
+            "/",
             self._container,
-            "sh",
-            "-c",
-            "find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+            "mkdir",
+            "--",
+            staging,
         )
-        if clear.exit_code != 0:
+        if prepare.exit_code != 0:
             raise SandboxError(
-                f"docker workspace restore failed to clear {workdir}: "
-                f"{(clear.stderr or clear.stdout).strip()}"
+                "docker workspace restore failed to create staging directory: "
+                f"{(prepare.stderr or prepare.stdout).strip()}"
             )
-        await _extract_workspace(self._container, workdir, path)
+        try:
+            await _extract_workspace(self._container, staging, path)
+        except BaseException:
+            await run_shielded(self._remove_restore_staging(staging))
+            raise
+
+        swap = await run_shielded(
+            docker(
+                "exec",
+                "--user",
+                "0",
+                "--workdir",
+                "/",
+                self._container,
+                "sh",
+                "-c",
+                (
+                    "work=$1 staging=$2 backup=$3; "
+                    'if ! mv -- "$work" "$backup"; then '
+                    'echo "failed to preserve existing workspace" >&2; exit 1; fi; '
+                    'mv -- "$staging" "$work"; rc=$?; '
+                    'if [ "$rc" -eq 0 ]; then rm -rf -- "$backup" || true; exit 0; fi; '
+                    'if mv -- "$backup" "$work"; then '
+                    'echo "failed to install snapshot; original workspace restored" >&2; '
+                    'else echo "failed to install snapshot; original workspace retained at $backup" >&2; fi; '
+                    'exit "$rc"'
+                ),
+                "vf-restore",
+                workdir,
+                staging,
+                backup,
+            )
+        )
+        if swap.exit_code != 0:
+            await self._remove_restore_staging(staging)
+            raise SandboxError(
+                f"docker workspace restore failed to swap {workdir}: "
+                f"{(swap.stderr or swap.stdout).strip()}"
+            )
         logger.info("docker: restored workspace %s <- %s", self._container, ref)
+
+    async def _remove_restore_staging(self, staging: str) -> None:
+        cleanup = await docker(
+            "exec",
+            "--user",
+            "0",
+            "--workdir",
+            "/",
+            self._container,
+            "rm",
+            "-rf",
+            "--",
+            staging,
+        )
+        if cleanup.exit_code != 0:
+            logger.warning(
+                "docker: failed to remove restore staging %s: %s",
+                staging,
+                (cleanup.stderr or cleanup.stdout).strip(),
+            )
 
     async def delete_snapshot(self, ref: str) -> None:
         """Delete a process-local Docker workspace snapshot, idempotently."""
