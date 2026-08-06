@@ -316,6 +316,13 @@ class ACPHarnessSession(HarnessSession):
                     stderr_task.cancel()
                 with contextlib.suppress(BaseException):
                     await stderr_task
+            # A process abandoned without its exit event still holds its remote
+            # stream open (on Prime, one gateway HTTP/2 stream slot plus its
+            # dedicated connection) until the sandbox dies. Always release it.
+            closer = getattr(process, "aclose", None)
+            if closer is not None:
+                with contextlib.suppress(BaseException):
+                    await closer()
         if failure is not None:
             detail = str(failure)
             if stderr := self._stderr():
