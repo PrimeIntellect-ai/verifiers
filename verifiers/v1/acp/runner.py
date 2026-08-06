@@ -210,6 +210,35 @@ async def prompt(
     return client.visible_reply
 
 
+
+def _agent_process_env() -> dict[str, str]:
+    """Env for the agent process — never this client's own uv-script env.
+
+    ``Runtime.prepare_uv_script`` execs this module with the script's ephemeral
+    uv environment's ``bin/`` prepended to PATH and VIRTUAL_ENV pointing at it
+    (uv run parity). That is right for this leaf process: it needs the pinned
+    ``agent-client-protocol`` dependency, which base-task images do not carry.
+    It is wrong for the agent process it spawns: the agent performs task work
+    and must see the sandbox image's toolchain (e.g. the image python3 with
+    pip or pytest). A child that inherits the client's env sees the bare uv
+    interpreter instead — no pip, no pytest — so any task-side
+    `python3 -c 'import pytest'` gate fails and provisioning fallbacks error
+    with "No module named pip".
+
+    Strip the uv-injected vars and pass everything else (image env plus the
+    harness's configured vars) through unchanged.
+    """
+    env = os.environ.copy()
+    venv = env.pop("VIRTUAL_ENV", None)
+    if venv and env.get("PATH"):
+        bin_dir = os.path.join(venv, "bin")
+        env["PATH"] = os.pathsep.join(
+            part for part in env["PATH"].split(os.pathsep) if part != bin_dir
+        )
+    env.pop("UV_RUN_RECURSION_DEPTH", None)
+    return env
+
+
 async def run_once(config: dict) -> str:
     client = VerifiersACPClient()
     command = config["command"]
@@ -217,7 +246,7 @@ async def run_once(config: dict) -> str:
         client,
         command[0],
         *command[1:],
-        env=os.environ.copy(),
+        env=_agent_process_env(),
         transport_kwargs={"stderr": None},
     ) as agent_process:
         connection = agent_process[0]
@@ -295,7 +324,7 @@ class LiveACPSession:
                     self.client,
                     command[0],
                     *command[1:],
-                    env=os.environ.copy(),
+                    env=_agent_process_env(),
                     transport_kwargs={"stderr": None},
                 )
             )
