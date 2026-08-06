@@ -308,11 +308,6 @@ class PrimeRuntime(Runtime):
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
-        # Do not add an inner `sh -c "... &"` layer: it exits after spawning, and
-        # services using PR_SET_PDEATHSIG (including Verifiers' MCP servers) die with
-        # it. `exec` keeps the service in the SDK-managed background job instead.
-        if self._client is None or self.info.id is None:
-            raise SandboxError("prime background launch requires a live sandbox")
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
         try:
             await self._client.start_background_job(
