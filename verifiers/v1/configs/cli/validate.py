@@ -1,5 +1,8 @@
 """Configuration for model-free task validation."""
 
+from pathlib import Path
+from uuid import uuid4
+
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
@@ -16,6 +19,9 @@ class CheckTimeoutConfig(BaseConfig):
 
 
 class ValidateConfig(BaseConfig):
+    uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
+    """Auto-generated run id — the default output directory leaf. Excluded from the
+    saved config so re-running it starts a fresh run."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     runtime: RuntimeConfig = DockerConfig()
     """Where each task's validation hooks run."""
@@ -40,6 +46,14 @@ class ValidateConfig(BaseConfig):
     """Log at debug level instead of the default info."""
     rich: bool = True
     """Show a live dashboard (one row per task) instead of per-task log lines."""
+    output_dir: Path | None = Field(
+        None, validation_alias=AliasChoices("output_dir", "o")
+    )
+    """Where to write config.toml, results.jsonl, summary.json, and validate.log. None
+    creates a fresh run under outputs/<taskset>--validate/<uuid>."""
+    resume: Path | None = Field(None, exclude=True)
+    """Set by --resume: re-run missing, errored, and timed-out tasks in this directory.
+    The saved config is replayed verbatim, so resume takes no other arguments."""
 
     @property
     def name(self) -> str:
