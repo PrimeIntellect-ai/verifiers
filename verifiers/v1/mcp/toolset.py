@@ -25,10 +25,19 @@ class SharedToolsetConfig(BaseConfig):
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
+    @property
+    def tool_names(self) -> tuple[str, ...]:
+        return tuple(
+            getattr(fn, "tool_name", None) or fn.__name__
+            for fn in discover_decorated(self, "tool")
+        )
+
     def _register(self, mcp: FastMCP) -> None:
-        for fn in discover_decorated(self, "tool"):
+        for fn, name in zip(
+            discover_decorated(self, "tool"), self.tool_names, strict=True
+        ):
             mcp.add_tool(
                 self._with_state(fn),
-                name=getattr(fn, "tool_name", None) or fn.__name__,
+                name=name,
                 description=(fn.__doc__ or "").strip() or None,
             )

@@ -14,6 +14,7 @@ build-backend = "hatchling.build"
 # never get installed.
 [tool.hatch.build]
 include = [
+    "bare_submit_tool_v1.py",
     "counter_tool_v1.py",
     "echo_acp_resume_v1.py",
     "echo_tool_v1.py",

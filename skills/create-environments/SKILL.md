@@ -179,6 +179,10 @@ if __name__ == "__main__":
     SearchToolset.run()
 ```
 
+Set `TOOL_PREFIX = None` when the model must see the decorated tool names bare. Bare
+names work across MCP-capable harnesses; the task author is responsible for avoiding
+collisions with harness-native tools and other bare servers.
+
 Choose placement from the tool's lifetime and filesystem needs:
 
 - **Task-scoped, own runtime:** construct the server in `Task.toolsets` with a `vf.ToolsetConfig` field. One server is launched per rollout. The default subprocess runtime is inexpensive and host-side.

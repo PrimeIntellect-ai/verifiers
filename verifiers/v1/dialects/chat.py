@@ -6,6 +6,8 @@ and responses (`parse_response`). Reasoning extraction mirrors the v0 chat clien
 read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning_details`).
 """
 
+import copy
+import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -48,6 +50,129 @@ FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
 # Fireworks / Kimi), `reasoning_details` (OpenRouter / MiniMax).
 REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
+
+
+def alias_chat_tool_names(
+    body: dict, aliases: Mapping[str, str]
+) -> tuple[dict, dict[str, str]]:
+    """Apply harness-provided internal -> model-visible chat tool aliases.
+
+    Returns the model-facing request and visible -> internal names for translating the
+    model's response back to the harness.
+    """
+    if not aliases:
+        return body, {}
+
+    names = []
+    for tool in body.get("tools") or []:
+        function = tool.get("function") or {}
+        if isinstance(function.get("name"), str):
+            names.append(function["name"])
+    for message in body.get("messages") or []:
+        if isinstance(message.get("name"), str):
+            names.append(message["name"])
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            if isinstance(function.get("name"), str):
+                names.append(function["name"])
+    tool_choice = body.get("tool_choice")
+    if isinstance(tool_choice, dict):
+        function = tool_choice.get("function") or {}
+        if isinstance(function.get("name"), str):
+            names.append(function["name"])
+
+    internal_to_visible = {name: aliases[name] for name in names if name in aliases}
+    if not internal_to_visible:
+        return body, {}
+    if len(set(internal_to_visible.values())) != len(internal_to_visible):
+        raise ValueError("bare MCP tools have duplicate model-visible names")
+    visible_names = set(names) - set(internal_to_visible)
+    collisions = visible_names & set(internal_to_visible.values())
+    if collisions:
+        names = ", ".join(sorted(collisions))
+        raise ValueError(f"bare MCP tools collide with harness tools: {names}")
+
+    aliased = copy.deepcopy(body)
+    for tool in aliased.get("tools") or []:
+        function = tool.get("function") or {}
+        name = function.get("name")
+        if name in internal_to_visible:
+            function["name"] = internal_to_visible[name]
+    for message in aliased.get("messages") or []:
+        name = message.get("name")
+        if name in internal_to_visible:
+            message["name"] = internal_to_visible[name]
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            name = function.get("name")
+            if name in internal_to_visible:
+                function["name"] = internal_to_visible[name]
+    tool_choice = aliased.get("tool_choice")
+    if isinstance(tool_choice, dict):
+        function = tool_choice.get("function") or {}
+        name = function.get("name")
+        if name in internal_to_visible:
+            function["name"] = internal_to_visible[name]
+    return aliased, {
+        visible: internal for internal, visible in internal_to_visible.items()
+    }
+
+
+def restore_chat_tool_names(raw: dict, aliases: Mapping[str, str]) -> dict:
+    """Restore model-visible tool names in one completion for its harness."""
+    if not aliases:
+        return raw
+    restored = copy.deepcopy(raw)
+    for choice in restored.get("choices") or []:
+        for field in ("message", "delta"):
+            message = choice.get(field) or {}
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") or {}
+                name = function.get("name")
+                if name in aliases:
+                    function["name"] = aliases[name]
+    return restored
+
+
+def restore_chat_sse_tool_names(raw: bytes, aliases: Mapping[str, str]) -> bytes:
+    """Restore tool names in one complete chat SSE event."""
+    if not aliases:
+        return raw
+    if raw.endswith(b"\r\n\r\n"):
+        newline, terminator = b"\r\n", b"\r\n\r\n"
+    elif raw.endswith(b"\n\n"):
+        newline, terminator = b"\n", b"\n\n"
+    elif raw.endswith(b"\r\r"):
+        newline, terminator = b"\r", b"\r\r"
+    else:
+        newline = b"\r\n" if b"\r\n" in raw else b"\r" if b"\r" in raw else b"\n"
+        terminator = b""
+    content = raw[: -len(terminator)] if terminator else raw
+    lines = content.split(newline)
+    data = [
+        line.removeprefix(b"data:").lstrip()
+        for line in lines
+        if line.startswith(b"data:")
+    ]
+    if not data or data == [b"[DONE]"]:
+        return raw
+    try:
+        event = json.loads(b"\n".join(data))
+    except ValueError:
+        return raw
+    restored = restore_chat_tool_names(event, aliases)
+    if restored == event:
+        return raw
+    replacement = b"data: " + json.dumps(restored, separators=(",", ":")).encode()
+    output = []
+    for line in lines:
+        if line.startswith(b"data:"):
+            if replacement is not None:
+                output.append(replacement)
+                replacement = None
+        else:
+            output.append(line)
+    return newline.join(output) + terminator
 
 
 def reasoning_text(data: Mapping[str, Any]) -> str | None:

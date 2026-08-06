@@ -10,6 +10,8 @@ trivial when the infra works, impossible when it doesn't. The tool is task-agnos
 so it would also serve taskset-scoped (`Taskset.toolsets`).
 """
 
+from bare_submit_tool_v1 import BareSubmitToolset
+
 import verifiers.v1 as vf
 from verifiers.v1.types import content_text
 
@@ -28,12 +30,14 @@ class EchoToolset(vf.Toolset[vf.ToolsetConfig]):
 
 class EchoToolTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    bare: bool = False
 
 
 class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
     @classmethod
     def toolsets(cls, config: EchoToolTaskConfig) -> list[vf.Toolset]:
-        return [EchoToolset(config.tools)]
+        toolset = BareSubmitToolset if config.bare else EchoToolset
+        return [toolset(config.tools)]
 
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
@@ -48,14 +52,21 @@ class EchoToolConfig(vf.TasksetConfig):
 
 class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
     def load(self) -> list[EchoToolTask]:
+        if self.config.task.bare:
+            prompt = (
+                "Call the `submit__now` tool, then reply with exactly what it returns "
+                "inside <answer></answer> tags."
+            )
+        else:
+            prompt = (
+                f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
+                "with exactly what it returns inside <answer></answer> tags."
+            )
         return [
             EchoToolTask(
                 vf.TaskData(
                     idx=0,
-                    prompt=(
-                        f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
-                        "with exactly what it returns inside <answer></answer> tags."
-                    ),
+                    prompt=prompt,
                 ),
                 self.config.task,
             )

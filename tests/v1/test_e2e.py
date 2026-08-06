@@ -271,6 +271,29 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.kimi_code
+@pytest.mark.docker
+async def test_kimi_bare_tool(run_v1, tmp_path):
+    """Kimi preserves TOOL_PREFIX=None even when it normalizes the MCP name."""
+    (trace,) = await run_v1(
+        "echo-tool-v1",
+        harness="kimi-code",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=6,
+        max_tokens=4096,
+        rollout_timeout=600,
+        taskset_overrides={"task": {"bare": True, "tools": {"colocated": True}}},
+    )
+    assert trace.ok, trace.errors
+    assert trace.reward == 1.0
+    assert [tool.name for tool in trace.tools if tool.name == "submit__now"] == [
+        "submit__now"
+    ]
+    assert any(message.name == "submit__now" for message in trace.tool_messages)
+
+
+@pytest.mark.e2e
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime", TOOL_STATE_PLACEMENTS, indirect=True
 )
