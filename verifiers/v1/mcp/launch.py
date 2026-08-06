@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SDIST_BUILD_TIMEOUT_SECONDS = 300
+_SDIST_BUILD_LOCK = threading.Lock()
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
@@ -115,6 +117,11 @@ def _build_sdist(src: Path) -> tuple[str, bytes]:
         return artifact.name, artifact.read_bytes()
 
 
+def _locked_sdist(src: Path) -> tuple[str, bytes]:
+    with _SDIST_BUILD_LOCK:
+        return _build_sdist(src)
+
+
 def _verifiers_root() -> Path:
     import verifiers
 
@@ -143,11 +150,11 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
     vf, env = _verifiers_root(), Path(source_dir)
-    vf_name, vf_data = await asyncio.to_thread(_build_sdist, vf)
+    vf_name, vf_data = await asyncio.to_thread(_locked_sdist, vf)
     if env == vf:
         env_name, env_data = vf_name, vf_data
     else:
-        env_name, env_data = await asyncio.to_thread(_build_sdist, env)
+        env_name, env_data = await asyncio.to_thread(_locked_sdist, env)
     vf_remote = f"{root}/{vf_name}"
     env_remote = f"{root}/{env_name}"
     await runtime.write(vf_remote, vf_data)
