@@ -9,11 +9,13 @@ is served over the **same** v1 ZMQ protocol as a native v1 env, returning v1
 rollout through a token-recording renderer client (so training keeps per-turn ids + logprobs),
 and maps the v0 ``RolloutOutput`` into a v1 ``Trace`` via ``rollout_output_to_trace``.
 
+Multimodal rollouts are out of scope: raw image offload and v1 MM sidecars are
+native-``TrainClient`` only. Bridging a multimodal v0 trajectory raises.
+
 This is the only place that imports the v0 ``verifiers`` API; all imports of it are lazy so
 v1 stays importable without the v0 package present.
 """
 
-import asyncio
 import contextlib
 import logging
 from pathlib import Path
@@ -194,8 +196,41 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
         prompt_ids=list(raw.get("prompt_ids") or []),
         completion_ids=list(raw.get("completion_ids") or []),
         completion_logprobs=list(raw.get("completion_logprobs") or []),
-        multi_modal_data=raw.get("multi_modal_data"),
     )
+
+
+_LEGACY_MM_UNSUPPORTED = (
+    "The v1 legacy (v0) bridge does not support multimodal rollouts; "
+    "use a native v1 TrainClient environment instead."
+)
+
+
+def _content_has_image(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        part = _as_dict(part)
+        if isinstance(part, dict) and part.get("type") in ("image", "image_url"):
+            return True
+    return False
+
+
+def _reject_multimodal_rollout(out: dict) -> None:
+    """Fail fast: multimodal is native v1 only."""
+    for msg in out.get("prompt") or []:
+        msg = _as_dict(msg)
+        if isinstance(msg, dict) and _content_has_image(msg.get("content")):
+            raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
+    for step in out.get("trajectory") or []:
+        if not isinstance(step, dict):
+            continue
+        tokens = step.get("tokens")
+        if isinstance(tokens, dict) and tokens.get("multi_modal_data") is not None:
+            raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
+        for msg in step.get("prompt") or []:
+            msg = _as_dict(msg)
+            if isinstance(msg, dict) and _content_has_image(msg.get("content")):
+                raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
 
 
 def _timing(raw: Any) -> Timing:
@@ -253,7 +288,11 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, the rollout's
     ``info``, and the task's system prompt / prompt / answer. A truncated v0 rollout is
     mapped to a v1 truncation stop condition (see ``_v1_stop_condition``) so
-    ``Trace.is_truncated`` derives ``True``."""
+    ``Trace.is_truncated`` derives ``True``.
+
+    Multimodal rollouts are rejected — see ``_reject_multimodal_rollout``.
+    """
+    _reject_multimodal_rollout(out)
     model = str(out.get("model") or "")
 
     error = None
@@ -430,20 +469,6 @@ class LegacyEnvServer(EnvServer):
             self._clients[key] = resolve_client(v0_config)
         return self._clients[key]
 
-    async def _state_output_with_live_trajectory(self, state: Any) -> dict:
-        """Build v0 rollout output metadata while preserving live trajectory sidecars.
-
-        The JSON save path deltas ``tokens.multi_modal_data`` to avoid repeated
-        cumulative multimodal sidecars. Trace reconstruction needs the live,
-        cumulative sidecar for each turn so image descriptors align with the
-        full prompt the renderer saw.
-        """
-        from verifiers.utils.save_utils import state_to_output
-
-        out = await asyncio.to_thread(state_to_output, state, [])
-        out["trajectory"] = state.get("trajectory", [])
-        return out
-
     async def _run_v0(
         self,
         task_idx: int,
@@ -452,13 +477,13 @@ class LegacyEnvServer(EnvServer):
         sampling: SamplingConfig,
     ) -> dict:
         client = self._v0_client(client_config, model)
-        state = await self.env._run_rollout_state(
+        return await self.env.run_rollout(
             input=dict(self.dataset[task_idx]),
             client=client,
             model=model,
             sampling_args=sampling.model_dump(exclude_none=True),
+            state_columns=["trajectory"],
         )
-        return await self._state_output_with_live_trajectory(state)
 
     @staticmethod
     def _row(req: RunRequest) -> int:
@@ -483,14 +508,12 @@ class LegacyEnvServer(EnvServer):
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         client = self._v0_client(req.client, req.model)
         # run_group scores the rollouts together so group/preference reward funcs apply.
-        states = await self.env._run_group_states(
+        outs = await self.env.run_group(
             group_inputs=[dict(self.dataset[req.task_idx]) for _ in range(req.n)],
             client=client,
             model=req.model,
             sampling_args=req.sampling.model_dump(exclude_none=True),
-        )
-        outs = await asyncio.gather(
-            *(self._state_output_with_live_trajectory(state) for state in states)
+            state_columns=["trajectory"],
         )
         traces = [
             rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
