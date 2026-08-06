@@ -6,6 +6,7 @@ and responses (`parse_response`). Reasoning extraction mirrors the v0 chat clien
 read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning_details`).
 """
 
+import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -219,6 +220,10 @@ class ChatStreamParser(StreamParser):
     finish_reason: str | None = None
     usage: dict | None = None
     head: dict | None = None
+    complete: bool = False
+
+    def on_done(self) -> None:
+        self.complete = True
 
     def feed(self, raw: bytes) -> None:
         chunk = parse_sse_event(raw)
@@ -263,6 +268,8 @@ class ChatStreamParser(StreamParser):
                 )
 
     def finish(self) -> Response:
+        if not self.complete:
+            raise ValueError("Chat stream ended without a DONE event")
         for key, parts in self.message_parts.items():
             if parts:
                 self.message[key] = "".join(parts)
@@ -291,7 +298,9 @@ class ChatStreamParser(StreamParser):
             ],
             "usage": self.usage,
         }
-        return response_from_wire(ModdedChatCompletion.model_validate(completion))
+        response = response_from_wire(ModdedChatCompletion.model_validate(completion))
+        response.raw = completion
+        return response
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
@@ -347,6 +356,34 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
+
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        for choice in raw.get("choices") or []:
+            choice["message"] = {"role": "assistant", "content": text}
+            choice["finish_reason"] = "stop"
+            choice.pop("logprobs", None)
+
+    def stream_events(self, response: Response, text: str) -> list[bytes]:
+        chunk = {
+            "id": response.id or "vf-intercept",
+            "object": "chat.completion.chunk",
+            "created": response.created or int(time.time()),
+            "model": response.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        events = [chunk]
+        if response.raw and (usage := response.raw.get("usage")):
+            events.append({**chunk, "choices": [], "usage": usage})
+        return [
+            *(f"data: {json.dumps(event)}\n\n".encode() for event in events),
+            b"data: [DONE]\n\n",
+        ]
 
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()

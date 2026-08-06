@@ -49,9 +49,15 @@ from verifiers.v1.interception.tunnel import (
     TunnelConfig,
     make_tunnel,
 )
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import RolloutSession, StreamReplay
 from verifiers.v1.trace import Error, ModelCall, TimeSpan
-from verifiers.v1.types import FinishReason, Messages, Response, Tool, Usage
+from verifiers.v1.types import (
+    FinishReason,
+    Messages,
+    Response,
+    Tool,
+    Usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +307,17 @@ class InterceptionServer(Interception):
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
+        if session.released:
+            return web.json_response(
+                dialect.error_body("rollout concluded"), status=409
+            )
+        if session.terminated:
+            return web.json_response(
+                dialect.error_body(
+                    f"rollout stopped: {session.trace.stop_condition or 'intercepted'}"
+                ),
+                status=400,
+            )
         session.adopt(asyncio.current_task())
         raw = await request.read()
         try:
@@ -336,7 +353,26 @@ class InterceptionServer(Interception):
         # coalescing cache, as it was before in-flight retries were introduced.
         if streaming:
             prompt, tools = dialect.parse_request(body)
-            return await self._stream(request, session, dialect, body, prompt, tools)
+            stream_key = None
+            if (
+                session.intercepts
+                and session.matching_intercepts("response", raw=False)
+                and (request_id := request.headers.get("Idempotency-Key"))
+            ):
+                stream_key = request_id, (request.path, req_hash)
+            return await self._stream(
+                request,
+                session,
+                dialect,
+                body,
+                prompt,
+                tools,
+                stream_key=stream_key,
+                intercept_response=bool(
+                    session.intercepts
+                    and session.matching_intercepts("response", raw=False)
+                ),
+            )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
@@ -434,9 +470,44 @@ class InterceptionServer(Interception):
                         return web.json_response(
                             dialect.error_body("rollout concluded"), status=409
                         )
+                    response_records = []
+                    if session.intercepts and session.matching_intercepts(
+                        "response", raw=False
+                    ):
+                        (
+                            call_response,
+                            decision,
+                            replacement,
+                        ) = await session.intercept_response(
+                            turn.scoped_trace(call_response),
+                            call_response,
+                        )
+                        response_records = decision.records
+                        if replacement is not None:
+                            assert call_response.raw is not None
+                            dialect.rewrite_response(call_response.raw, replacement)
+                        if decision.termination is not None:
+                            if session.terminated:
+                                return web.json_response(
+                                    dialect.error_body("rollout terminated"), status=400
+                                )
+                            node = turn.commit(call_response, tools)
+                            session.trace.interceptions.extend(response_records)
+                            session.terminate(decision.termination)
+                            return web.json_response(
+                                dialect.error_body(
+                                    f"rollout terminated: {decision.termination.reason}"
+                                ),
+                                status=400,
+                            )
+                    if session.terminated:
+                        return web.json_response(
+                            dialect.error_body("rollout terminated"), status=400
+                        )
                     # One node per new message; branches fall out of walking the
                     # graph (see Trace.branches / verifiers.v1.graph).
                     node = turn.commit(call_response, tools)
+                    session.trace.interceptions.extend(response_records)
                 except OverlongPromptError as e:
                     # An overlong prompt is a budget limit, not a crash: end the rollout
                     # cleanly as a truncation — refuse the call to halt the harness (same
@@ -510,6 +581,9 @@ class InterceptionServer(Interception):
         body: dict,
         prompt: Messages,
         tools: list[Tool] | None = None,
+        *,
+        stream_key: tuple[str, tuple[str, bytes]] | None = None,
+        intercept_response: bool = False,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace (the only client that
@@ -518,18 +592,56 @@ class InterceptionServer(Interception):
             return web.json_response(
                 dialect.error_body("rollout concluded"), status=409
             )
+        stream_owner: tuple[str, asyncio.Future[StreamReplay | None]] | None = None
+        if stream_key is not None:
+            request_id, identity = stream_key
+            if existing := session.stream_replays.get(request_id):
+                if existing[0] != identity:
+                    return web.json_response(
+                        dialect.error_body(
+                            "Idempotency-Key was already used for a different request"
+                        ),
+                        status=409,
+                    )
+                replay = await asyncio.shield(existing[1])
+                if replay is None:
+                    return web.json_response(
+                        dialect.error_body("upstream attempt failed"), status=503
+                    )
+                return web.Response(
+                    body=replay.body,
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    },
+                    content_type=replay.content_type,
+                )
+            owner: asyncio.Future[StreamReplay | None] = (
+                asyncio.get_running_loop().create_future()
+            )
+            session.stream_replays[request_id] = identity, owner
+            stream_owner = request_id, owner
+        admitted = False
         try:
-            refused = await session.refused()
-        except RolloutError as e:
-            return self._fail(session, dialect, e)
-        except Exception as e:  # noqa: BLE001 - surface any task hook failure
-            return self._fail(
-                session, dialect, TaskError(f"@stop failed: {type(e).__name__}: {e}")
-            )
-        if refused is not None:
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {refused}"), status=400
-            )
+            try:
+                refused = await session.refused()
+            except RolloutError as e:
+                return self._fail(session, dialect, e)
+            except Exception as e:  # noqa: BLE001 - surface any task hook failure
+                return self._fail(
+                    session,
+                    dialect,
+                    TaskError(f"@stop failed: {type(e).__name__}: {e}"),
+                )
+            if refused is not None:
+                return web.json_response(
+                    dialect.error_body(f"rollout stopped: {refused}"), status=400
+                )
+            admitted = True
+        finally:
+            if stream_owner is not None and not admitted:
+                stream_owner[1].set_result(None)
+                session.stream_replays.pop(stream_owner[0], None)
         session.error = None
         upstream_request: dict | None = None
         reply = None
@@ -574,6 +686,73 @@ class InterceptionServer(Interception):
                 error = e
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
+
+            if intercept_response:
+                chunks: list[bytes] = []
+                parser = dialect.stream_parser()
+                try:
+                    async for chunk in reply.chunks:
+                        chunks.append(chunk)
+                        if not any(
+                            line.startswith(b"data:") for line in chunk.splitlines()
+                        ):
+                            continue
+                        if parser.on_done is not None and is_sse_done_event(chunk):
+                            parser.on_done()
+                        parser.feed(chunk)
+                    response = parser.finish()
+                except Exception as e:  # noqa: BLE001 - malformed provider stream
+                    error = e if isinstance(e, RolloutError) else ProviderError(str(e))
+                    session.error = error
+                    return self._fail(session, dialect, error)
+                finally:
+                    await reply.close()
+
+                try:
+                    response, decision, replacement = await session.intercept_response(
+                        turn.scoped_trace(response), response
+                    )
+                except RolloutError as e:
+                    error = e
+                    return self._fail(session, dialect, e)
+                if session.released:
+                    return web.json_response(
+                        dialect.error_body("rollout concluded"), status=409
+                    )
+                if session.terminated:
+                    return web.json_response(
+                        dialect.error_body("rollout terminated"), status=400
+                    )
+                node = turn.commit(response, tools)
+                session.trace.interceptions.extend(decision.records)
+                if decision.termination is not None:
+                    session.terminate(decision.termination)
+                    return web.json_response(
+                        dialect.error_body(
+                            f"rollout terminated: {decision.termination.reason}"
+                        ),
+                        status=400,
+                    )
+
+                content_type = reply.content_type.split(";")[0].strip()
+                wire = b"".join(
+                    dialect.stream_events(response, replacement)
+                    if replacement is not None
+                    else chunks
+                )
+                if stream_owner is not None:
+                    stream_owner[1].set_result(
+                        StreamReplay(content_type=content_type, body=wire)
+                    )
+                return web.Response(
+                    body=wire,
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    },
+                    content_type=content_type,
+                )
+
             resp = web.StreamResponse(
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
             )
@@ -650,14 +829,15 @@ class InterceptionServer(Interception):
                 if parser_error is not None:
                     raise parser_error
                 response = parser.finish()
-                if not session.released:  # concluded mid-stream — seal holds
+                if not session.released and not session.terminated:
                     node = turn.commit(response, tools)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
             finally:
                 # Release the withheld events only now — after the commit — then close.
                 with contextlib.suppress(ConnectionResetError):
-                    for event in deferred:
-                        await resp.write(event)
+                    if node is not None or not session.terminated:
+                        for event in deferred:
+                            await resp.write(event)
                     await resp.write_eof()
             return resp
         except BaseException as e:
@@ -680,6 +860,11 @@ class InterceptionServer(Interception):
                 usage=response.usage if response is not None else None,
                 error=error,
             )
+            if stream_owner is not None and not stream_owner[1].done():
+                stream_owner[1].set_result(None)
+                entry = session.stream_replays.get(stream_owner[0])
+                if entry is not None and entry[1] is stream_owner[1]:
+                    session.stream_replays.pop(stream_owner[0])
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str
