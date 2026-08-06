@@ -13,7 +13,7 @@ import logging
 import shlex
 import uuid
 from collections.abc import AsyncIterator
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
@@ -278,6 +278,25 @@ class ModalRuntime(Runtime):
                 str(PurePosixPath(target).parent)
             )
             await self._sandbox.filesystem.write_bytes.aio(data, target)
+        except Exception as e:
+            raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def read_to(self, path: str, local: Path) -> None:
+        # `copy_to_local` streams in chunks, so a large artifact lands on host
+        # disk without ever being held whole in host memory.
+        try:
+            await self._sandbox.filesystem.copy_to_local.aio(self._abs(path), local)
+        except Exception as e:
+            raise SandboxError(f"read {path!r}: {e}") from e
+
+    async def write_from(self, path: str, local: Path) -> None:
+        # Mirror of `read_to` via the streaming `copy_from_local`.
+        target = self._abs(path)
+        try:
+            await self._sandbox.filesystem.make_directory.aio(
+                str(PurePosixPath(target).parent)
+            )
+            await self._sandbox.filesystem.copy_from_local.aio(local, target)
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
 

@@ -11,7 +11,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -538,6 +538,51 @@ class DockerRuntime(Runtime):
             stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate(input=data)
+        if proc.returncode != 0:
+            raise SandboxError(
+                f"write {path!r}: {stderr.decode(errors='replace').strip()}"
+            )
+
+    async def read_to(self, path: str, local: Path) -> None:
+        # `cat` out of the container with stdout redirected straight to the host
+        # file: a large artifact streams through a pipe, never into host memory.
+        with await asyncio.to_thread(open, local, "wb") as f:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                "--workdir",
+                self.config.workdir,
+                self._container,
+                "cat",
+                path,
+                stdout=f,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise SandboxError(
+                f"read {path!r}: {stderr.decode(errors='replace').strip()}"
+            )
+
+    async def write_from(self, path: str, local: Path) -> None:
+        # Mirror of `read_to`: the host file rides in on stdin.
+        parent = shlex.quote(str(PurePosixPath(path).parent))
+        with await asyncio.to_thread(open, local, "rb") as f:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                "-i",
+                "--workdir",
+                self.config.workdir,
+                self._container,
+                "sh",
+                "-c",
+                f"mkdir -p {parent} && cat > {shlex.quote(path)}",
+                stdin=f,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise SandboxError(
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"

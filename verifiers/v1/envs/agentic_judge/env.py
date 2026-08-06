@@ -125,7 +125,7 @@ class JudgeTask(vf.Task):
         self,
         data: vf.TaskData,
         files: dict[str, bytes],
-        artifacts: dict[str, bytes | None],
+        artifacts: dict[str, Path | None],
     ) -> None:
         super().__init__(data)
         self.files = files
@@ -346,3 +346,4 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
         await agents.judge.run(
             JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
         )
+        vf.discard(solution.state.artifacts)  # judged; nothing can grade them again

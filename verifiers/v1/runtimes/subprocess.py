@@ -162,6 +162,14 @@ class SubprocessRuntime(Runtime):
     async def _read(self, path: str) -> bytes:
         return await asyncio.to_thread((self.workdir / path).read_bytes)
 
+    async def read_to(self, path: str, local: Path) -> None:
+        await asyncio.to_thread(shutil.copyfile, self.workdir / path, local)
+
+    async def write_from(self, path: str, local: Path) -> None:
+        target = self.workdir / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(shutil.copyfile, local, target)
+
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path
         target.parent.mkdir(parents=True, exist_ok=True)

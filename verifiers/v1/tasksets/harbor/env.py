@@ -22,7 +22,7 @@ from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
     verifier_box_data,
 )
-from verifiers.v1.utils.artifacts import restore
+from verifiers.v1.utils.artifacts import discard, restore
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.retries import backoff
 
@@ -83,6 +83,7 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
             return
         grader = HarborTask(verifier_box_data(task.data))
         scores = await self._grade(self._verifier_config(task), grader, solution)
+        discard(solution.state.artifacts)  # scored; nothing can grade them again
         items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
         for name, value in items:
             solution.record_reward(name, value)

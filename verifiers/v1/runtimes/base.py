@@ -12,7 +12,7 @@ import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import ClassVar, Self
 
 from pydantic import Field, model_validator
@@ -363,6 +363,19 @@ class Runtime(ABC):
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
         pass
+
+    async def read_to(self, path: str, local: Path) -> None:
+        """Download `path` into the host file `local`. The default buffers the whole
+        file through `_read`; backends with file transport override it to stream, so
+        a large artifact never has to fit in host memory."""
+        data = await self._read(path)
+        await asyncio.to_thread(local.write_bytes, data)
+
+    async def write_from(self, path: str, local: Path) -> None:
+        """Upload the host file `local` to `path`. Default and overrides mirror
+        `read_to`."""
+        data = await asyncio.to_thread(local.read_bytes)
+        await self.write(path, data)
 
     def host_url(self, url: str) -> str:
         """The URL a program inside this runtime uses to reach a host-bound `url`."""

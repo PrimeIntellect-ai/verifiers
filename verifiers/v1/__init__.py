@@ -115,6 +115,7 @@ from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
     Artifact,
     collect,
+    discard,
     restore,
 )
 from verifiers.v1.utils.decorators import metric, reward, stop, tool
@@ -308,6 +309,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ARTIFACTS_DIR",
     "Artifact",
     "collect",
+    "discard",
     "restore",
     # scoring
     "compare_stdout_results",

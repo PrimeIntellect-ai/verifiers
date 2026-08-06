@@ -319,21 +319,43 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
 
+    def _abs(self, path: str) -> str:
+        # The gateway's file endpoints do not run in the workdir; resolve a relative
+        # path against it.
+        if path.startswith("/"):
+            return path
+        return f"{self.config.workdir.rstrip('/')}/{path}"
+
     async def _read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
+                await self.read_to(path, download)
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
+
+    async def read_to(self, path: str, local: Path) -> None:
+        # The SDK downloads file-to-file, so a large artifact streams to host disk
+        # without ever being held in host memory.
+        target = self._abs(path)
+        try:
+            await self._client.download_file(self.info.id, target, str(local))
+        except Exception as e:
+            raise SandboxError(f"read {path!r}: {e}") from e
+
+    async def write_from(self, path: str, local: Path) -> None:
+        target = self._abs(path)
+        try:
+            await self._client.execute_command(
+                self.info.id,
+                f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
+            )
+            await self._client.upload_file(self.info.id, target, str(local))
+        except Exception as e:
+            raise SandboxError(f"write {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
         # Upload via the gateway (multipart) — never inline the bytes on the command line
@@ -341,11 +363,7 @@ class PrimeRuntime(Runtime):
         # fails with ENAMETOOLONG). The upload does NOT run in the workdir, so resolve a
         # relative path against it (and mkdir its parent) — otherwise the sidecar writes
         # it somewhere unwritable ("Operation not permitted").
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
+        target = self._abs(path)
         try:
             await self._client.execute_command(
                 self.info.id,
