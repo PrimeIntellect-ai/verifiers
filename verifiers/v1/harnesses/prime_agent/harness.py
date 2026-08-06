@@ -1,0 +1,361 @@
+"""Run Prime Agent against interception through its native ACP mode."""
+
+import hashlib
+import json
+import logging
+import shlex
+from pathlib import Path
+
+from pydantic import Field, field_validator, model_validator
+
+from verifiers.v1.acp import ACP
+from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.task import TaskData
+from verifiers.v1.trace import Trace
+
+logger = logging.getLogger(__name__)
+
+INSTALL_SOURCE = (Path(__file__).resolve().parent / "install.sh").read_text()
+
+PRIME_AGENT_ACP = ACP()
+PROVIDER = "intercept"
+# models.json stores this variable NAME, never the secret: Prime Agent resolves
+# `process.env[apiKey] || apiKey`, so the token reaches the agent only through
+# the process environment.
+KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
+# Prime Agent reads its agent directory from its packaged config name.
+ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
+
+DEFAULT_VERSION = "0.7.0"
+DEFAULT_TARBALL_SHA256 = (
+    "88b6578518c72cd51a825bc80f28e0fef9a64c67de4a7d6fd7afd7ca1b34da0b"
+)
+RELEASE_BASE_URL = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
+NODE_VERSION = "22.19.0"
+
+INSTALL_ROOT = "/var/tmp/vf-prime-agent"
+STATE_ROOT = "/tmp/vf-prime-agent-state"
+
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+# Prime Agent's model-facing tool surface is IPython; there is no per-tool
+# disable flag, only the allowlist forms (--tools/--no-tools/--no-builtin-tools).
+KNOWN_TOOLS = ("ipython",)
+
+
+class PrimeAgentHarnessConfig(HarnessConfig):
+    version: str = Field(default=DEFAULT_VERSION)
+    """Prime Agent release to install, pinned for reproducibility."""
+
+    tarball_url: str | None = None
+    """Override the release tarball URL. Requires `tarball_sha256`."""
+
+    tarball_sha256: str | None = None
+    """SHA-256 digest for a non-default release or a custom tarball."""
+
+    thinking: str | None = None
+    """Reasoning level passed as `--thinking`; Prime Agent has no `--effort`."""
+
+    autonomous: bool = False
+    """Run with `--autonomous` so the agent continues until its limits or gates stop it."""
+
+    gates: list[str] = Field(default_factory=list)
+    """Autonomous quality-gate commands. Requires `autonomous`."""
+
+    @field_validator("version")
+    @classmethod
+    def _semver(cls, value: str) -> str:
+        parts = value.split(".")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            raise ValueError("version must be a semantic version, e.g. 0.7.0")
+        return value
+
+    @field_validator("tarball_sha256")
+    @classmethod
+    def _digest(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        digest = value.strip().lower()
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("tarball_sha256 must be a 64-character hexadecimal digest")
+        return digest
+
+    @field_validator("thinking")
+    @classmethod
+    def _thinking(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in THINKING_LEVELS:
+            raise ValueError(f"thinking must be one of {', '.join(THINKING_LEVELS)}")
+        return value
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "PrimeAgentHarnessConfig":
+        # An unpinned artifact must never be installed unverified.
+        if self.tarball_url and not self.tarball_sha256:
+            raise ValueError("tarball_url requires tarball_sha256")
+        if self.version != DEFAULT_VERSION and not self.tarball_sha256:
+            raise ValueError("a non-default version requires tarball_sha256")
+        if self.gates and not self.autonomous:
+            raise ValueError("prime-agent gates require autonomous=true")
+        unknown = set(self.disabled_tools or []) - set(KNOWN_TOOLS)
+        if unknown:
+            raise ValueError(
+                "prime-agent has no per-tool disable flag; unknown tools: "
+                + ", ".join(sorted(unknown))
+            )
+        return self
+
+
+class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
+    APPENDS_SYSTEM_PROMPT = True
+    # Prime Agent's ACP mode ignores `session/new` mcpServers on the pinned
+    # release, so claiming support would let a tool-bearing taskset run with its
+    # tools silently absent. Once a release advertises
+    # `agentCapabilities.mcpCapabilities.http`, sniff it rather than hardcoding.
+    SUPPORTS_MCP = False
+    SUPPORTS_RESUME = True
+    SUPPORTS_SKILLS = True
+
+    def tarball_url(self) -> str:
+        if self.config.tarball_url:
+            return self.config.tarball_url
+        version = self.config.version
+        return f"{RELEASE_BASE_URL}/releases/v{version}/prime-agent-{version}.tgz"
+
+    def tarball_sha256(self) -> str:
+        return self.config.tarball_sha256 or DEFAULT_TARBALL_SHA256
+
+    def install_dir(self) -> str:
+        # Key the shared install on version+digest so a changed pin cannot reuse
+        # whatever an earlier rollout left behind.
+        return f"{INSTALL_ROOT}/{self.config.version}-{self.tarball_sha256()[:16]}"
+
+    def node_root(self) -> str:
+        return f"{INSTALL_ROOT}/node-{NODE_VERSION}"
+
+    def prime_agent_bin(self) -> str:
+        return f"{self.install_dir()}/node_modules/.bin/prime-agent"
+
+    def trace_root(self, trace: Trace) -> str:
+        # Hash the trace id: it is untrusted input for a filesystem path, and a
+        # short digest also keeps unix socket paths under sun_path.
+        key = hashlib.sha256(trace.id.encode()).hexdigest()[:32]
+        return f"{STATE_ROOT}/{key}"
+
+    async def setup(self, runtime: Runtime) -> None:
+        logger.info("prime-agent: ensuring %s is installed", self.config.version)
+        lock = f"{INSTALL_ROOT}/install.lock"
+        # flock only; a mkdir-based fallback leaves a stale lock directory after
+        # SIGKILL that blocks every later install.
+        guarded = (
+            f"mkdir -p {shlex.quote(INSTALL_ROOT)} && "
+            f"flock -x 9 sh -c {shlex.quote(INSTALL_SOURCE)} 9>{shlex.quote(lock)}"
+        )
+        result = await runtime.run(
+            ["sh", "-c", guarded],
+            {
+                "VF_PA_INSTALL_DIR": self.install_dir(),
+                "VF_PA_TARBALL_URL": self.tarball_url(),
+                "VF_PA_TARBALL_SHA256": self.tarball_sha256(),
+                "VF_PA_NODE_ROOT": self.node_root(),
+                "VF_PA_NODE_VERSION": NODE_VERSION,
+            },
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"prime-agent install failed: {result.stderr.strip()[-500:]}"
+            )
+        await PRIME_AGENT_ACP.setup(self, runtime)
+
+    async def session(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> HarnessSession:
+        # One live ACP process per trace keeps a single Prime Agent session, and
+        # with it one IPython kernel, across turns. Prime Agent advertises
+        # `loadSession: false` and refuses a second `session/new`, so a relaunch
+        # per segment cannot preserve kernel state.
+        #
+        # This live path exists only because ACP sessions are currently
+        # client-owned: the worker stops when the client disconnects. When Prime
+        # Agent gains a resident ACP lifecycle, deleting this override restores
+        # the plain per-segment shape.
+        if not runtime.supports_live_processes:
+            return await super().session(
+                ctx, trace, runtime, endpoint, secret, mcp_urls, data
+            )
+        system_prompt, prompt = self.resolve_prompt(data)
+        command = await self._prepare(ctx, trace, runtime, endpoint, system_prompt)
+        return PRIME_AGENT_ACP.session(
+            self,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            data,
+            env=self._run_env(trace, secret),
+            command=command,
+            prompt=prompt,
+            allow_empty_tool_reply=True,
+        )
+
+    async def launch(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> ProgramResult:
+        system_prompt, prompt = self.resolve_prompt(data)
+        command = await self._prepare(ctx, trace, runtime, endpoint, system_prompt)
+        return await PRIME_AGENT_ACP.run(
+            runtime,
+            self._run_env(trace, secret),
+            command,
+            prompt,
+            allow_empty_tool_reply=True,
+        )
+
+    def _run_env(self, trace: Trace, secret: str) -> dict[str, str]:
+        root = self.trace_root(trace)
+        return {
+            **self.config.resolved_env,
+            KEY_VAR: secret,
+            ENV_AGENT_DIR: f"{root}/agent",
+            "HOME": f"{root}/agent",
+            "TMPDIR": f"{root}/tmp",
+            "PRIME_AGENT_DAEMON_SOCKET": f"{root}/daemon.sock",
+            "PRIME_AGENT_TELEMETRY": "0",
+        }
+
+    async def _prepare(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        system_prompt: str | None,
+    ) -> list[str]:
+        root = self.trace_root(trace)
+        agent_dir = f"{root}/agent"
+        created = await runtime.run(
+            ["mkdir", "-p", "-m", "700", root, agent_dir, f"{root}/tmp"], {}
+        )
+        if created.exit_code != 0:
+            raise RuntimeError(
+                f"prime-agent state directory failed: {created.stderr.strip()[-500:]}"
+            )
+
+        skills_dir = f"{agent_dir}/skills"
+        if self.config.skills:
+            await self.install_skills(runtime, skills_dir)
+
+        thinking = self.config.thinking
+        reasoning = thinking not in (None, "off") or ctx.model.rsplit("/", 1)[
+            -1
+        ].startswith(("gpt-5", "o1", "o3", "o4"))
+        models = {
+            "providers": {
+                PROVIDER: {
+                    "baseUrl": endpoint,
+                    "api": "openai-completions",
+                    # The variable name, not the secret. Never interpolate
+                    # untrusted text here: a leading "!" is executed as a command.
+                    "apiKey": KEY_VAR,
+                    "models": [
+                        {
+                            "id": ctx.model,
+                            "reasoning": reasoning,
+                            "input": ["text", "image"],
+                            **(
+                                {"maxTokens": ctx.sampling.max_tokens}
+                                if ctx.sampling.max_tokens is not None
+                                else {}
+                            ),
+                        }
+                    ],
+                }
+            }
+        }
+        models_path = f"{agent_dir}/models.json"
+        await runtime.write(models_path, json.dumps(models).encode())
+        for command in (
+            ["chmod", "700", root, agent_dir, f"{root}/tmp"],
+            ["chmod", "600", models_path],
+        ):
+            restricted = await runtime.run(command, {})
+            if restricted.exit_code != 0:
+                raise RuntimeError(
+                    f"prime-agent permissions failed: {restricted.stderr.strip()[-500:]}"
+                )
+
+        args = [
+            self.prime_agent_bin(),
+            "--mode",
+            "acp",
+            "--provider",
+            PROVIDER,
+            "--model",
+            ctx.model,
+            "--daemon-socket",
+            self.trace_root(trace) + "/daemon.sock",
+        ]
+        if self.config.disabled_tools:
+            args.append("--no-builtin-tools")
+        if thinking is not None:
+            args += ["--thinking", thinking]
+        for skill in self.config.skills:
+            args += ["--skill", f"{skills_dir}/{skill.resolve().name}"]
+        if self.config.autonomous:
+            args.append("--autonomous")
+            for gate in self.config.gates:
+                args += ["--autonomous-gate", gate]
+        if system_prompt:
+            # Sent once per launch as a flag. Folding it into the transcript
+            # would re-apply it on every resumed segment.
+            args += ["--append-system-prompt", system_prompt]
+
+        # The bundled Node is beside the install, not on the image PATH.
+        node_bin = f"{self.node_root()}/bin"
+        command = (
+            f'export PATH={shlex.quote(node_bin)}:"$PATH"\n'
+            f'exec {shlex.join(args)} "$@"\n'
+        )
+        wrapper = f"{root}/prime-agent"
+        await runtime.write(wrapper, f"#!/bin/sh\nset -eu\n{command}".encode())
+        await runtime.run(["chmod", "700", wrapper], {})
+        return self._run_env(trace, ""), ["sh", "-c", f"exec {shlex.quote(wrapper)}"]
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        root = self.trace_root(trace)
+        try:
+            # Stop this trace's daemon worker before removing its state; a live
+            # worker would otherwise keep writing into a deleted directory.
+            await runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        f"{shlex.quote(self.prime_agent_bin())} --daemon-socket "
+                        f"{shlex.quote(root + '/daemon.sock')} daemon stop || true"
+                    ),
+                ],
+                self._run_env(trace, ""),
+            )
+        finally:
+            # Remove only this trace's state, never the shared install.
+            await runtime.run(["rm", "-rf", root], {})
