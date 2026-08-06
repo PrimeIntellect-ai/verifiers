@@ -286,6 +286,10 @@ class ACPHarnessSession(HarnessSession):
         process, self._process = self._process, None
         reader, self._reader = self._reader, None
         stderr_task, self._stderr_task = self._stderr_task, None
+        # A replacement process starts a new native ACP session. Its first
+        # request needs the complete transcript, not the suffix used for a
+        # continuation on the old live process.
+        self._completed_turns = 0
         if process is None:
             return None
         failure: BaseException | None = None

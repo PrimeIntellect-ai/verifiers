@@ -24,6 +24,7 @@ from verifiers.v1.harnesses.prime_agent.harness import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import AssistantMessage, UserMessage
 
 
 def test_trace_root_encodes_untrusted_trace_id() -> None:
@@ -247,6 +248,82 @@ async def test_acp_reader_ignores_process_keepalives() -> None:
     result = await session._run(None)
 
     assert result.stdout == "finished"
+
+
+@pytest.mark.asyncio
+async def test_restarted_acp_process_receives_full_transcript() -> None:
+    async def stream(*chunks: bytes):
+        for chunk in chunks:
+            yield chunk
+
+    class Process:
+        def __init__(self, *replies: bytes, exit_code: int) -> None:
+            self.stdout = stream(*replies)
+            self.stderr = stream()
+            self.exit_code = exit_code
+            self.writes: list[bytes] = []
+
+        async def write(self, data: bytes) -> None:
+            self.writes.append(data)
+
+        async def wait(self) -> int:
+            return self.exit_code
+
+        async def terminate(self) -> None:
+            pass
+
+        async def kill(self) -> None:
+            pass
+
+    first = Process(_packet({"ok": True, "reply": "first"}), exit_code=1)
+    replacement = Process(_packet({"ok": True, "reply": "second"}), exit_code=0)
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.processes = [first, replacement]
+
+        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+            del source, env
+            return ["acp-runner"]
+
+        async def open_process(self, argv: list[str], env: dict[str, str]):
+            del argv, env
+            return self.processes.pop(0)
+
+    session = ACPHarnessSession(
+        SimpleNamespace(config=SimpleNamespace(id="prime-agent")),
+        SimpleNamespace(),
+        Trace.model_construct(id="trace"),
+        Runtime(),
+        "http://intercept",
+        "secret",
+        {},
+        TaskData(prompt="hello"),
+        env={},
+        command=["prime-agent", "--mode", "acp"],
+        prompt="hello",
+        system_prompt=None,
+    )
+    transcript = [
+        UserMessage(content="hello"),
+        AssistantMessage(content="first"),
+        UserMessage(content="continue"),
+    ]
+
+    assert (await session._run(None)).stdout == "first"
+    with pytest.raises(EOFError):
+        await session._run(transcript)
+    assert (await session._run(transcript)).stdout == "second"
+
+    packet = replacement.writes[0]
+    size = int.from_bytes(packet[:8], "big")
+    request = json.loads(packet[8 : 8 + size])
+    assert request["config"]["messages"] == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "first"},
+        {"role": "user", "content": "continue"},
+    ]
+    await session._stop(graceful=False)
 
 
 def _load_acp_runner(monkeypatch: pytest.MonkeyPatch) -> dict:
