@@ -121,7 +121,9 @@ class ACP:
             "allow_empty_tool_reply": allow_empty_tool_reply,
         }
         program = await runtime.prepare_uv_script(
-            ACP_SOURCE, {**env, "UV_FROZEN": "false"}
+            ACP_SOURCE,
+            {**env, "UV_FROZEN": "false"},
+            activate=False,
         )
         directory = f".vf-acp-{secrets.token_hex(8)}"
         created = await runtime.run(["mkdir", "-m", "700", directory], {})
@@ -198,7 +200,9 @@ class ACPHarnessSession(HarnessSession):
     async def _start(self) -> None:
         self._stderr_tail.clear()
         program = await self.runtime.prepare_uv_script(
-            ACP_SOURCE, {**self.env, "UV_FROZEN": "false"}
+            ACP_SOURCE,
+            {**self.env, "UV_FROZEN": "false"},
+            activate=False,
         )
         process = await self.runtime.open_process([*program, "stream"], self.env)
         self._process = process

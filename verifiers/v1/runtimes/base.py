@@ -267,7 +267,14 @@ class Runtime(ABC):
         self,
         script: str | bytes,
         env: dict[str, str] | None = None,
+        *,
+        activate: bool = True,
     ) -> list[str]:
+        """Prepare a PEP 723 script and return an argv that runs it.
+
+        ``activate=False`` invokes the resolved script interpreter directly, keeping
+        its environment variables out of child processes spawned by the script.
+        """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         path = f"/tmp/vf-scripts/{digest}.py"
@@ -292,6 +299,8 @@ class Runtime(ABC):
                         -1
                     ]
         interpreter = self._uv_interpreters[digest]
+        if not activate:
+            return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)
         command = (
             'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
