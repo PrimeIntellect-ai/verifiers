@@ -6,6 +6,7 @@ and responses (`parse_response`). Reasoning extraction mirrors the v0 chat clien
 read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning_details`).
 """
 
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from dataclasses import field as dataclass_field
 from typing import Any
 
 from openai.types.chat import ChatCompletion
+from openai.types.chat.chat_completion import Choice
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
@@ -32,17 +34,34 @@ from verifiers.v1.types import (
     content_to_parts,
 )
 
+logger = logging.getLogger(__name__)
+
+
+class ModdedChoice(Choice):
+    """The OpenAI SDK closes `finish_reason` to a fixed `Literal`, but providers emit finish
+    labels outside it (gateways report e.g. `error`), which makes `model_validate` reject an
+    otherwise valid completion. Widen the field to a plain string: downstream,
+    `response_from_wire` already coerces labels outside `FINISH_REASONS` to None, so parsing
+    stays lenient about the label instead of dropping the turn."""
+
+    finish_reason: str | None = None
+
 
 class ModdedChatCompletion(ChatCompletion):
     """The OpenAI SDK closes `service_tier` to a fixed `Literal`, but providers return tiers
     outside it (e.g. Prime's `provisioned`), which makes `model_validate` reject an otherwise
     valid completion. Widen the field to a plain string — we don't consume it — so parsing stays
-    lenient about the label instead of dropping it."""
+    lenient about the label instead of dropping it. Same for `choices[].finish_reason`."""
 
     service_tier: str | None = None
+    choices: list[ModdedChoice]
 
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
+# The SDK's closed enum beyond what vf records (`content_filter`, `function_call`): known
+# labels we don't report on, only coerced to None. Anything outside this set is provider
+# weirdness worth a warning.
+KNOWN_FINISH_REASONS = FINISH_REASONS | {"content_filter", "function_call"}
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
@@ -186,6 +205,14 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     finish: FinishReason = (
         choice.finish_reason if choice.finish_reason in FINISH_REASONS else None
     )
+    if (
+        choice.finish_reason is not None
+        and choice.finish_reason not in KNOWN_FINISH_REASONS
+    ):
+        logger.warning(
+            "provider returned out-of-enum finish_reason %r; recording it as none",
+            choice.finish_reason,
+        )
     usage = Usage.from_openai(completion.usage)
     return Response(
         id=completion.id,

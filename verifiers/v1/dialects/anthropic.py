@@ -7,6 +7,7 @@ trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded
 """
 
 import json
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
@@ -41,6 +42,17 @@ STOP_REASONS = {
     "stop_sequence": "stop",
 }
 THINKING = ("thinking", "redacted_thinking")
+# Known labels beyond what vf records: `pause_turn` and `refusal` are members of the
+# SDK's closed enum; `model_context_window_exceeded` is a real Anthropic-API label the
+# pinned SDK's enum predates, kept here so a legitimate server label doesn't warn.
+# Anything outside this set is provider weirdness worth a warning.
+KNOWN_STOP_REASONS = set(STOP_REASONS) | {
+    "pause_turn",
+    "refusal",
+    "model_context_window_exceeded",
+}
+
+logger = logging.getLogger(__name__)
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -142,7 +154,13 @@ def response_from_wire(message: AnthropicMessage) -> Response:
                     arguments=json.dumps(block.get("input") or {}),
                 )
             )
-    finish: FinishReason = STOP_REASONS.get(data.get("stop_reason") or "")
+    stop_reason = data.get("stop_reason")
+    finish: FinishReason = STOP_REASONS.get(stop_reason or "")
+    if stop_reason is not None and stop_reason not in KNOWN_STOP_REASONS:
+        logger.warning(
+            "provider returned out-of-enum stop_reason %r; recording it as none",
+            stop_reason,
+        )
     provider_usage = message.usage
     output_details = data.get("usage", {}).get("output_tokens_details")
     # Anthropic reports three disjoint input buckets. Cache writes are uncached work;
@@ -253,7 +271,13 @@ class ModdedUsage(AnthropicUsage):
 
 
 class ModdedAnthropicMessage(AnthropicMessage):
+    """Same leniency as `ModdedChatCompletion`: the SDK closes `stop_reason` to a fixed
+    `Literal`, but Anthropic-compatible gateways can emit their own labels, which would make
+    `model_validate` reject the whole turn. Widen to a plain string — downstream
+    `STOP_REASONS.get(...)` already maps unknown labels to None."""
+
     usage: ModdedUsage  # type: ignore[assignment]
+    stop_reason: str | None = None
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
