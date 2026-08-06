@@ -456,6 +456,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             env=env,
             command=command,
             prompt=prompt,
+            allow_empty_tool_reply=True,
         )
 
     async def launch(
@@ -472,7 +473,13 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         env, command = await self.prepare_run(
             ctx, trace, runtime, endpoint, secret, system_prompt
         )
-        return await PRIME_AGENT_ACP.run(runtime, env, command, prompt)
+        return await PRIME_AGENT_ACP.run(
+            runtime,
+            env,
+            command,
+            prompt,
+            allow_empty_tool_reply=True,
+        )
 
     async def prepare_run(
         self,

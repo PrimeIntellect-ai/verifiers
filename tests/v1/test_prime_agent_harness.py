@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import os
 import shlex
 import subprocess
@@ -186,10 +187,7 @@ async def test_acp_reader_ignores_process_keepalives() -> None:
     assert result.stdout == "finished"
 
 
-@pytest.mark.asyncio
-async def test_acp_runner_emits_keepalives_during_silent_turn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _load_acp_runner(monkeypatch: pytest.MonkeyPatch) -> dict:
     acp = ModuleType("acp")
     acp.PROTOCOL_VERSION = 1
     acp.Client = object
@@ -215,6 +213,14 @@ async def test_acp_runner_emits_keepalives_during_silent_turn(
     monkeypatch.setitem(sys.modules, "acp.schema", schema)
     namespace = {"__name__": "acp_runner_test"}
     exec(compile(ACP_SOURCE, "acp_runner.py", "exec"), namespace)  # noqa: S102
+    return namespace
+
+
+@pytest.mark.asyncio
+async def test_acp_runner_emits_keepalives_during_silent_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = _load_acp_runner(monkeypatch)
     with_keepalives = namespace["with_keepalives"]
 
     class Stream:
@@ -250,6 +256,115 @@ def test_acp_followup_sends_only_new_message_segment() -> None:
     ]
 
     assert _new_segment(messages) == [{"role": "user", "content": "follow-up"}]
+
+
+@pytest.mark.asyncio
+async def test_acp_session_forwards_empty_tool_reply_policy() -> None:
+    writes: list[bytes] = []
+
+    async def stream():
+        yield _packet({"ok": True, "reply": ""})
+
+    class Process:
+        stdout = stream()
+        stderr = stream()
+
+        async def write(self, data: bytes) -> None:
+            writes.append(data)
+
+    class Runtime:
+        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+            del source, env
+            return ["acp-runner"]
+
+        async def open_process(self, argv: list[str], env: dict[str, str]):
+            del argv, env
+            return Process()
+
+    session = ACPHarnessSession(
+        SimpleNamespace(config=SimpleNamespace(id="prime-agent")),
+        SimpleNamespace(),
+        Trace.model_construct(id="trace"),
+        Runtime(),
+        "http://intercept",
+        "secret",
+        {},
+        TaskData(prompt="hello"),
+        env={},
+        command=["prime-agent", "--mode", "acp"],
+        prompt="hello",
+        system_prompt=None,
+        allow_empty_tool_reply=True,
+    )
+
+    result = await session._run(None)
+
+    size = int.from_bytes(writes[0][:8], "big")
+    request = json.loads(writes[0][8 : 8 + size])
+    assert request["config"]["allow_empty_tool_reply"] is True
+    assert result.stdout == ""
+
+
+@pytest.mark.asyncio
+async def test_acp_runner_accepts_a_completed_tool_only_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.visible_reply = ""
+            self.tool_calls = {"call-1": "completed"}
+
+        def reset(self) -> None:
+            pass
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            assert kwargs["session_id"] == "session"
+            return SimpleNamespace(stop_reason="end_turn")
+
+    reply = await _load_acp_runner(monkeypatch)["prompt"](
+        Client(),
+        Connection(),
+        None,
+        "session",
+        {
+            "messages": [{"role": "user", "content": "finish the task"}],
+            "system_prompt": "",
+            "allow_empty_tool_reply": True,
+        },
+        is_new=True,
+    )
+
+    assert reply == ""
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_allows_completed_tool_only_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    async def prepare_run(*args, **kwargs):
+        del args, kwargs
+        return {}, ["prime-agent", "--mode", "acp"]
+
+    async def run(*args, **kwargs):
+        calls.update(kwargs)
+        return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig())
+    monkeypatch.setattr(harness, "prepare_run", prepare_run)
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.prime_agent.harness.PRIME_AGENT_ACP.run", run
+    )
+    ctx = SimpleNamespace()
+    trace = Trace.model_construct(id="trace")
+    runtime = SimpleNamespace()
+    data = TaskData(prompt="hello")
+
+    await harness.launch(ctx, trace, runtime, "http://intercept", "secret", {}, data)
+
+    assert calls["allow_empty_tool_reply"] is True
 
 
 def test_install_lock_uses_process_lifetime_lock(tmp_path) -> None:

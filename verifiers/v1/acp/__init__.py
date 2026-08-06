@@ -47,6 +47,7 @@ class ACP:
         command: list[str],
         prompt: str | Messages | None,
         system_prompt: str | None = None,
+        allow_empty_tool_reply: bool = False,
     ) -> "ACPHarnessSession":
         """Create a persistent ACP-backed handle owned by one rollout."""
         return ACPHarnessSession(
@@ -62,6 +63,7 @@ class ACP:
             command=command,
             prompt=prompt,
             system_prompt=system_prompt,
+            allow_empty_tool_reply=allow_empty_tool_reply,
         )
 
     async def run(
@@ -192,12 +194,14 @@ class ACPHarnessSession(HarnessSession):
         command: list[str],
         prompt: str | Messages | None,
         system_prompt: str | None,
+        allow_empty_tool_reply: bool = False,
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
         self.env = env
         self.command = command
         self.prompt = prompt
         self.system_prompt = system_prompt
+        self.allow_empty_tool_reply = allow_empty_tool_reply
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
         self._stderr_tail = bytearray()
@@ -243,6 +247,7 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "system_prompt": self.system_prompt or "",
             "session_path": None,
+            "allow_empty_tool_reply": self.allow_empty_tool_reply,
         }
         async with self._lock:
             if self._closed:
