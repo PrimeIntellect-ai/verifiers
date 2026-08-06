@@ -151,8 +151,10 @@ class Env(ABC, Generic[ConfigT]):
     async def run(self, task: Task, agents: Agents) -> None:
         """One episode: how the agents interact on `task`, returning nothing —
         every finished run joins the episode automatically, stamped with its seat's
-        standing. An agent-run failure is data on its trace (this hook decides what
-        it means); an exception raised here is the episode itself failing.
+        standing. An agent run that fails fails the episode: its error is recorded
+        and `finalize()` is skipped, so this hook can read a completed run's trace
+        without guarding it. Raising here fails the episode too, for what the
+        agents' own traces can't say.
         Independent agents are written as such (`asyncio.gather`); how many of them
         actually run at once is the run's bound, not this hook's
         (`--env.max-concurrent-agents`, one at a time by default)."""
@@ -274,6 +276,15 @@ class Env(ABC, Generic[ConfigT]):
                 )
             episode.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode; ok stays False.
+            return episode
+        # `Agent.run` records a failed run on the trace instead of raising, so the
+        # sequence checks here: `finalize()` judges what `run()` produced, and over
+        # a run that never finished it can only fail again, reporting that second
+        # failure instead of the cause.
+        if failed := [trace for trace in episode.traces if not trace.ok]:
+            episode.errors.extend(
+                error for trace in failed if (error := trace.error) is not None
+            )
             return episode
         try:
             async with asyncio.timeout(self.config.timeout.finalize):
