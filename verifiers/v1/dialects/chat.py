@@ -141,7 +141,11 @@ def _content_to_wire(content):
 
 def message_to_wire(message: Message) -> dict:
     if message.role == "assistant":
-        wire: dict = {"role": "assistant", "content": message.content}
+        # Strict providers reject `content: null` without tool calls.
+        content = message.content
+        if content is None and not message.tool_calls:
+            content = ""
+        wire: dict = {"role": "assistant", "content": content}
         if message.provider_state:
             wire["reasoning_details"] = message.provider_state
         elif message.reasoning_content is not None:

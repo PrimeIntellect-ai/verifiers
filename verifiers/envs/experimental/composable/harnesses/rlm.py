@@ -15,6 +15,7 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
     validate_git_checkout,
 )
 from verifiers.types import Messages, State, SystemMessage, TrajectoryStep
+from verifiers.utils.path_utils import CACHE_DIR
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 DEFAULT_RLM_REF = "main"
@@ -24,9 +25,7 @@ DEFAULT_RLM_MAX_DEPTH = 0
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_CHECKOUT_UPLOAD_NAME = "rlm_checkout"
-DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
-    Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
-)
+DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = CACHE_DIR / "rlm-checkouts"
 _REQUIRED_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
 
 COMPACTION_BOUNDARY_MARKER = "--- context compacted ---"

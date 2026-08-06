@@ -21,13 +21,14 @@ from pydantic import Field
 
 import verifiers.v1 as vf
 
-PERSONA = """You are role-playing a USER talking to an AI assistant. This is your situation and goal:
+PERSONA = """You are role-playing a USER talking to an AI assistant. This is your situation — what you want the ASSISTANT to do for you:
 
 {scenario}
 
 Rules:
 - Open the conversation with your request, in your own words.
 - Stay in character: short, natural user messages; never act as the assistant.
+- The assistant does the work, not you: never perform the task yourself — any tool call, answer, or output format it asks for must come from the assistant; ask for it instead.
 - Reveal details only when asked, as a real user would.
 - When the assistant has fully met your goal — or you are convinced it cannot — reply with exactly {done} and nothing else."""
 

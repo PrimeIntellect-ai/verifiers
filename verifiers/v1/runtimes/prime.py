@@ -66,7 +66,7 @@ class PrimeConfig(NetworkPolicyConfig):
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
-    """Pace sandbox creation to this many per minute, enforced host-wide across every
+    """Pace sandbox creation to this many per minute, enforced user-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     and globally — see interception.tunnel.prime.TUNNEL_LIMITER.)"""
 
@@ -308,14 +308,16 @@ class PrimeRuntime(Runtime):
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
-        # `&` backgrounds inside the sandbox; the job returns immediately, the process
-        # lives until the sandbox is deleted in stop().
-        inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
-        result = await self.run(["sh", "-c", inner], env)
-        if result.exit_code != 0:
-            raise SandboxError(
-                f"prime background launch failed: {result.stderr.strip()}"
+        command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
+        try:
+            await self._client.start_background_job(
+                self.info.id,
+                command,
+                working_dir=self.config.workdir,
+                env=env,
             )
+        except Exception as e:
+            raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def _read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.

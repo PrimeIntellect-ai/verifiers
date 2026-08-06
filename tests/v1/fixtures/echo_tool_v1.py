@@ -11,6 +11,7 @@ so it would also serve taskset-scoped (`Taskset.toolsets`).
 """
 
 import verifiers.v1 as vf
+from verifiers.v1.types import content_text
 
 PHRASE = "hello world"
 ECHO_TOKEN = "ok-7f3"  # the tool stamps this; only a real tool call can surface it
@@ -36,11 +37,9 @@ class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
 
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
-        # The stamped token surfaces in an ASSISTANT message only if the model called
-        # the MCP tool and relayed its result — wherever in the exchange that happened
-        # (in a conversation the last turn may be a closing pleasantry).
-        replies = ((m.content or "").lower() for m in trace.assistant_messages)
-        return float(any(PHRASE in r and ECHO_TOKEN in r for r in replies))
+        # A stamped TOOL result proves the tool really ran with the phrase.
+        results = (content_text(m.content).lower() for m in trace.tool_messages)
+        return float(any(PHRASE in r and ECHO_TOKEN in r for r in results))
 
 
 class EchoToolConfig(vf.TasksetConfig):
