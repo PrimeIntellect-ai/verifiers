@@ -8,7 +8,7 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
-from verifiers.v1.clients import ModelContext, resolve_client
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.errors import (
     HarnessError,
@@ -91,9 +91,8 @@ class Rollout:
         )
         if on_trace is not None:
             on_trace(self.trace)
-        self.client = resolve_client(ctx.client)
         self._session = RolloutSession(
-            ctx, self.client, self.trace, discover_decorated(task, "stop"), limits
+            ctx, self.trace, discover_decorated(task, "stop"), limits
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -318,8 +317,8 @@ class Rollout:
         return self.ok and trace.num_turns > turns_before
 
     async def abort(self) -> None:
-        """Free everything this run holds — the entered servers, its client, and an
-        owned runtime — without finalizing or scoring: the escape path when an exception
+        """Free everything this run holds — the entered servers and an owned
+        runtime — without finalizing or scoring: the escape path when an exception
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
@@ -328,8 +327,6 @@ class Rollout:
                 await self._harness_session.close()
         with contextlib.suppress(Exception):
             await self._stack.aclose()
-        with contextlib.suppress(Exception):
-            await self.client.close()
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
@@ -424,12 +421,6 @@ class Rollout:
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
-            try:
-                await self.client.close()
-            except Exception:
-                logger.warning(
-                    "client teardown failed (rollout %s)", trace.id, exc_info=True
-                )
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

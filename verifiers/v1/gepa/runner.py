@@ -73,7 +73,7 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
             await append_episode(run_dir, episode, write_lock)
 
     try:
-        # The endpoint stays config: each rollout builds and closes its own client.
+        # The endpoint stays config: the interception server builds the live client.
         ctx = ModelContext(
             client=config.client, model=config.model, sampling=config.sampling
         )

@@ -9,7 +9,9 @@ SSE requests are supported.
 One server multiplexes many rollouts: each rollout registers separate model and state
 capabilities, and the server routes each to the right session. So N rollouts need one
 server (and, behind a remote runtime, one tunnel) per pool member rather than one each —
-see `interception.pool`.
+see `interception.pool`. The server also owns the model clients (one per distinct endpoint
+config, assigned to each session at register and closed with the server), so its rollouts
+share one bounded keepalive connection pool upstream instead of churning per-rollout TCP.
 
 The server is a pure model boundary: one request, one turn — refusal checks (limits,
 `@stop`s), the model call, the graph commit, retry atomicity. A run's user exchange
@@ -34,6 +36,8 @@ from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
+from verifiers.v1.clients import Client, resolve_client
+from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1.errors import (
@@ -130,6 +134,7 @@ class InterceptionServer(Interception):
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
+        self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
         self.state_routes: dict[str, RolloutSession] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
@@ -147,8 +152,22 @@ class InterceptionServer(Interception):
         """Rollouts currently registered — what the pools balance on."""
         return len(self.sessions)
 
+    def _client(self, config: BaseClientConfig) -> Client:
+        """The server-owned client for `config` — one per distinct endpoint config, shared
+        by every session registered under it, so the rollouts this server multiplexes reuse
+        one bounded keepalive pool instead of each opening (and tearing down) their own
+        connections. Closed with the server."""
+        key = config.model_dump_json()
+        client = self.clients.get(key)
+        if client is None:
+            client = self.clients[key] = resolve_client(config)
+            self.stack.push_async_callback(client.close)
+        return client
+
     def register(self, session: RolloutSession) -> tuple[str, str]:
-        """Register separate capabilities for model inference and private task state."""
+        """Register separate capabilities for model inference and private task state, and
+        assign the session its server-owned model client."""
+        session.client = self._client(session.ctx.client)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
