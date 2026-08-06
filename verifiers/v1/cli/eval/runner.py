@@ -10,6 +10,7 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.output import (
     append_episode,
+    append_trace,
     output_path,
     save_config,
 )
@@ -76,7 +77,8 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     write_lock = asyncio.Lock()
 
     async def on_complete(episode: Episode) -> None:
-        episode.record_run(EvalRunInfo(id=config.uuid))
+        for trace in episode.traces:
+            trace.record_run(EvalRunInfo(id=config.uuid))
         await append_episode(out, episode, write_lock)
 
     # Serving resources (shared tool servers, interception) come up once for the
@@ -256,10 +258,9 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                 )
             records = []
             for trace in traces:
-                record = Episode.of(trace, env=config.env_id)
-                record.record_run(EvalRunInfo(id=config.uuid))
-                await append_episode(out, record, write_lock)
-                records.append(record)
+                trace.record_run(EvalRunInfo(id=config.uuid))
+                await append_trace(out, trace, write_lock, env=config.env_id)
+                records.append(Episode.of(trace))
             return records
 
         async def run_unit(payload: dict) -> list[Episode]:
@@ -270,7 +271,8 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     sampling=config.sampling,
                     **payload,
                 )
-            episode.record_run(EvalRunInfo(id=config.uuid))
+            for trace in episode.traces:
+                trace.record_run(EvalRunInfo(id=config.uuid))
             await append_episode(out, episode, write_lock)
             return [episode]
 
