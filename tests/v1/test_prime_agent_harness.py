@@ -208,6 +208,61 @@ async def test_acp_eof_reports_process_exit_and_stderr() -> None:
 
 
 @pytest.mark.asyncio
+async def test_acp_stop_releases_the_process_when_its_exit_never_arrives() -> None:
+    # A seat whose command-session stream dies keeps failing wait/terminate/
+    # kill. Teardown must still close the process handle, or its remote stream
+    # pins a gateway HTTP/2 stream slot until the sandbox is deleted.
+    async def stream():
+        return
+        yield b""
+
+    class Process:
+        stdout = stream()
+        stderr = stream()
+
+        def __init__(self) -> None:
+            self.aclosed = False
+
+        async def write(self, data: bytes) -> None:
+            del data
+
+        async def wait(self) -> int:
+            raise RuntimeError("process stream RPC failed (deadline_exceeded)")
+
+        async def terminate(self) -> None:
+            raise RuntimeError("process signal RPC failed (deadline_exceeded)")
+
+        async def kill(self) -> None:
+            raise RuntimeError("process signal RPC failed (deadline_exceeded)")
+
+        async def aclose(self) -> None:
+            self.aclosed = True
+
+    session = ACPHarnessSession(
+        SimpleNamespace(config=SimpleNamespace(id="prime-agent")),
+        SimpleNamespace(),
+        Trace.model_construct(id="trace"),
+        SimpleNamespace(),
+        "http://intercept",
+        "secret",
+        {},
+        TaskData(prompt="hello"),
+        env={},
+        command=["prime-agent", "--mode", "acp"],
+        prompt="hello",
+        system_prompt=None,
+    )
+    process = Process()
+    session._process = process
+
+    exit_code = await session._stop(graceful=False)
+
+    assert exit_code is None
+    assert process.aclosed
+    assert session._process is None
+
+
+@pytest.mark.asyncio
 async def test_acp_reader_ignores_process_keepalives() -> None:
     async def stream():
         yield _packet({"type": "keepalive"}) + _packet(
