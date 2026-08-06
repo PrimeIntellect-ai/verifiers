@@ -314,7 +314,7 @@ class InterceptionServer(Interception):
         request._read_bytes = None
         del raw
         try:
-            body = await session.ctx.client.prepare_request_body(dialect, body)
+            body = await session.client.prepare_request_body(dialect, body)
         except RolloutError as e:
             return self._fail(session, dialect, e)
         except Exception as e:  # noqa: BLE001 - ingress boundary surfaces every prep failure

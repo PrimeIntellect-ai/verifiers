@@ -41,6 +41,12 @@ def content_to_parts(content) -> MessageContent:
         elif p.get("type") == "image_url":
             url = (p.get("image_url") or {}).get("url", "")
             parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
+        elif p.get("type") == "image":
+            # HF-style shape: the URL string rides directly under ``image``.
+            # Normalize here so downstream (renderers, offload) sees one shape.
+            url = p.get("image")
+            if isinstance(url, str):
+                parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
     return parts
 
 
