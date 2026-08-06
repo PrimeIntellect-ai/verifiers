@@ -12,6 +12,7 @@ from typing import Any, ClassVar, TypeVar
 from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
+from renderers.base import ToolCallParseStatus
 
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
@@ -115,6 +116,8 @@ def response_from_generate(
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
         if getattr(tc, "name", None)
+        # TODO: we need a better way for renderers to expose this
+        and getattr(tc, "status", None) != ToolCallParseStatus.UNKNOWN_TOOL
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
