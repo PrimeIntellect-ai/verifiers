@@ -244,6 +244,90 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
+async def test_prime_agent_persists_ipython_kernel(run_v1, tmp_path):
+    """Prime Agent retains its native ACP session and live IPython kernel."""
+    (trace,) = await run_v1(
+        "prime-agent-persistence-v1",
+        harness="prime-agent",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=8,
+        max_tokens=8192,
+        rollout_timeout=600,
+    )
+    assert trace.ok, trace.errors
+    assert trace.stop_condition == "user_closed"
+    assert trace.rewards["persisted"].score == 1.0
+    assert trace.info["prime_agent_state_cleaned"] is True
+
+
+@pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
+async def test_prime_agent_ipython_cell_acp_shape(run_v1, tmp_path):
+    """IPython calls expose the ACP title and `{code}` raw input contract."""
+    from prime_agent_ipython_cell_v1 import (
+        CELL,
+        has_ipython_cell_acp_shape,
+        has_ipython_cell_call,
+    )
+
+    (trace,) = await run_v1(
+        "prime-agent-ipython-cell-v1",
+        harness="prime-agent",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=6,
+        max_tokens=8192,
+        rollout_timeout=600,
+    )
+    assert trace.ok, trace.errors
+    assert trace.stop_condition == "user_closed"
+    assert trace.rewards["ipython_cell"].score == 1.0
+    assert has_ipython_cell_call(trace)
+    # `acp-events.ts:144-155` maps the native event without Prime-only `_meta`:
+    # its title is `IPython cell`, and rawInput holds the literal submitted code.
+    assert has_ipython_cell_acp_shape(trace)
+    assert any(
+        call["title"] == "IPython cell" and call["rawInput"] == {"code": CELL}
+        for call in trace.info["prime_agent_tool_calls"]
+    )
+
+
+@pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
+async def test_prime_agent_failed_turn_raises(run_v1, tmp_path):
+    """A rejected provider request is a rollout error, never an ACP clean stop."""
+    from prime_agent_failed_turn_v1 import has_raised_provider_failure
+
+    (trace,) = await run_v1(
+        "prime-agent-failed-turn-v1",
+        harness="prime-agent",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=2,
+        rollout_timeout=600,
+        # The host-side interception client reaches this intentionally unavailable
+        # endpoint, so Prime Agent's request fails before any model can answer.
+        env={
+            "agent": {
+                "client": {
+                    "type": "eval",
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "api_key_var": "VF_MISSING_PRIME_AGENT_KEY",
+                }
+            }
+        },
+    )
+    assert has_raised_provider_failure(trace), trace.errors
+    assert trace.stop_condition is None
+    assert trace.rewards == {}
+
+
+@pytest.mark.e2e
 @pytest.mark.parametrize("harness_runtime,tool_runtime", TOOL_PLACEMENTS, indirect=True)
 async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     """A `vf.Toolset` (an echo tool) across its placement (`tool_runtime`: colocated in
