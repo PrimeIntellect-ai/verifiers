@@ -8,7 +8,6 @@ import shlex
 import subprocess
 import sys
 import tempfile
-import threading
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -40,7 +39,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SDIST_BUILD_TIMEOUT_SECONDS = 300
-_SDIST_BUILD_LOCK = threading.Lock()
+
+
+@dataclass
+class _SdistBuildState:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
+# Coordination and caching are process-local. Spawned env-server workers each
+# build once; within an event loop, concurrent rollouts share the completed artifact.
+_SDIST_BUILD_STATES: dict[tuple[Path, asyncio.AbstractEventLoop], _SdistBuildState] = {}
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
@@ -81,11 +90,15 @@ def _build_sdist(src: Path) -> tuple[str, bytes]:
             "never",
             "--out-dir",
             str(out),
-            str(src),
+            ".",
         ]
         try:
+            # Run from the source root so uv discovers this project's workspace,
+            # uv.toml, indexes, constraints, and Python configuration rather than
+            # inheriting configuration from the launcher's working directory.
             result = subprocess.run(
                 command,
+                cwd=src,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -117,9 +130,32 @@ def _build_sdist(src: Path) -> tuple[str, bytes]:
         return artifact.name, artifact.read_bytes()
 
 
-def _locked_sdist(src: Path) -> tuple[str, bytes]:
-    with _SDIST_BUILD_LOCK:
-        return _build_sdist(src)
+async def _cached_sdist(src: Path) -> tuple[str, bytes]:
+    """Build once per source without parking waiters in the thread pool."""
+    src = src.resolve()
+    key = (src, asyncio.get_running_loop())
+    state = _SDIST_BUILD_STATES.get(key)
+    if state is None:
+        state = _SdistBuildState()
+        _SDIST_BUILD_STATES[key] = state
+    state.users += 1
+    try:
+        async with state.lock:
+            # Coordinate before entering the default executor so concurrent
+            # same-source waiters do not occupy executor threads.
+            build = asyncio.create_task(asyncio.to_thread(_build_sdist, src))
+            try:
+                return await asyncio.shield(build)
+            except asyncio.CancelledError:
+                # Cancelling to_thread does not stop its worker. Keep the lock until
+                # that worker exits so a replacement caller cannot overlap the build.
+                with contextlib.suppress(Exception):
+                    await build
+                raise
+    finally:
+        state.users -= 1
+        if state.users == 0 and _SDIST_BUILD_STATES.get(key) is state:
+            del _SDIST_BUILD_STATES[key]
 
 
 def _verifiers_root() -> Path:
@@ -150,11 +186,11 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
     vf, env = _verifiers_root(), Path(source_dir)
-    vf_name, vf_data = await asyncio.to_thread(_locked_sdist, vf)
+    vf_name, vf_data = await _cached_sdist(vf)
     if env == vf:
         env_name, env_data = vf_name, vf_data
     else:
-        env_name, env_data = await asyncio.to_thread(_locked_sdist, env)
+        env_name, env_data = await _cached_sdist(env)
     vf_remote = f"{root}/{vf_name}"
     env_remote = f"{root}/{env_name}"
     await runtime.write(vf_remote, vf_data)
