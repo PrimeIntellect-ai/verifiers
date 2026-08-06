@@ -298,10 +298,7 @@ async def test_anthropic_tool_call_round_trips_thinking_blocks():
     ]
 
 
-def test_prepare_images_inplace_offloads_every_image_part_shape(tmp_path):
-    """Ingress offload must cover the full renderer part treaty: nested
-    ``image_url`` dicts, direct-string ``image_url``, direct ``image``
-    strings, and typed pydantic parts — and reject non-file leftovers."""
+def test_prepare_images_inplace_canonicalizes_and_offloads(tmp_path):
     import base64
 
     pytest.importorskip(
@@ -317,32 +314,21 @@ def test_prepare_images_inplace_offloads_every_image_part_shape(tmp_path):
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": data_url}},
-                    {"type": "image_url", "image_url": data_url},
                     {"type": "image", "image": data_url},
                 ],
             }
         ]
     }
-    typed = UserMessage(
-        content=[ImageUrlContentPart(image_url=ImageUrlSource(url=data_url))]
-    )
 
     prepare_images_inplace(wire, image_dir=tmp_path)
-    prepare_images_inplace(typed, image_dir=tmp_path)
 
-    parts = wire["messages"][0]["content"]
-    offloaded = [
-        parts[0]["image_url"]["url"],
-        parts[1]["image_url"],
-        parts[2]["image"],
-        typed.content[0].image_url.url,
-    ]
-    assert len(set(offloaded)) == 1  # content-addressed: same bytes, same file
-    assert offloaded[0].startswith("file://")
+    nested, normalized = wire["messages"][0]["content"]
+    assert normalized == {"type": "image_url", "image_url": nested["image_url"]}
+    assert nested["image_url"]["url"].startswith("file://")
     written = list(tmp_path.iterdir())
     assert len(written) == 1 and written[0].read_bytes() == raw
 
-    with pytest.raises(RuntimeError, match="file://"):
+    with pytest.raises(RuntimeError, match="'https:"):
         prepare_images_inplace(
             {"type": "image", "image": "https://example.com/x.png"},
             image_dir=tmp_path,

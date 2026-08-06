@@ -59,7 +59,6 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
-from verifiers.utils.multimodal import prepare_images_inplace
 
 # Module-level bridge counters. Incremented by every RendererClient instance
 # that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
@@ -476,7 +475,6 @@ class RendererClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[list[RendererMessage], dict]:
-        await asyncio.to_thread(prepare_images_inplace, messages)
         return (
             _attach_tool_call_names([_to_renderer_message(m) for m in messages]),
             {},

@@ -1,4 +1,6 @@
-"""Multimodal ingress helpers for renderer-backed training."""
+"""Multimodal ingress: canonicalize image parts to
+``{"type": "image_url", "image_url": {"url": ...}}`` with the URL offloaded
+to a ``file://`` run image asset."""
 
 from __future__ import annotations
 
@@ -7,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-def _offload_image_url(url: object, image_dir: Path | None) -> str | None:
+def _offload_image_url(url: str, image_dir: Path | None) -> str | None:
     try:
         offload_image_to_run_assets = import_module(
             "renderers.mm_store"
@@ -23,81 +25,42 @@ def _offload_image_url(url: object, image_dir: Path | None) -> str | None:
     return offload_image_to_run_assets(url, image_dir=image_dir)
 
 
-def _part_image_field(part_type: object) -> str | None:
-    """The field carrying a content part's image source, keyed by ``type``.
-
-    Mirrors the renderer-side part treaty (``renderers.qwen3_vl._image_source``):
-    ``image_url`` parts nest the URL under ``image_url`` (``{"url": ...}`` or a
-    direct string), ``image`` parts carry the URL string directly.
-    """
-    if part_type in ("image_url", "image"):
-        return str(part_type)
-    return None
-
-
-def _get_field(container: Any, name: str) -> object:
-    if isinstance(container, dict):
-        return container.get(name)
-    return getattr(container, name, None)
-
-
-def _set_field(container: Any, name: str, value: str) -> None:
-    if isinstance(container, dict):
-        container[name] = value
-    else:
-        setattr(container, name, value)
-
-
-def _prepare_image_part(part: Any, field: str, *, image_dir: Path | None) -> None:
-    """Offload one image part's source to run assets and require ``file://``."""
-    source = _get_field(part, field)
-    if source is None:
+def _prepare_image_part(part: dict[str, Any], *, image_dir: Path | None) -> None:
+    """Rewrite one image part to the canonical shape with an offloaded URL."""
+    if part.get("type") == "image":  # HF-style: URL directly under ``image``
+        part["type"] = "image_url"
+        part["image_url"] = {"url": part.pop("image", None)}
+    image_url = part.get("image_url")
+    if not isinstance(image_url, dict):
+        raise TypeError(
+            "v1 multimodal training requires the OpenAI image part shape "
+            f"{{'image_url': {{'url': ...}}}}; got image_url of type {type(image_url).__name__}"
+        )
+    url = image_url.get("url")
+    if not isinstance(url, str):
+        raise TypeError(
+            f"v1 multimodal training requires string image URLs; got {url!r}"
+        )
+    if url.startswith("file://"):
         return
-    if isinstance(source, str):
-        container, key = part, field
-    elif field == "image_url":
-        container, key = source, "url"
-    else:
-        raise RuntimeError(
-            f"multimodal training requires string image sources; got {type(source).__name__} under {field!r}"
-        )
-
-    url = _get_field(container, key)
     offloaded = _offload_image_url(url, image_dir)
-    if offloaded is not None:
-        _set_field(container, key, offloaded)
-        url = offloaded
-    if not isinstance(url, str) or not url.startswith("file://"):
+    if offloaded is None:
         raise RuntimeError(
-            "multimodal training requires image sources offloaded to file:// "
-            f"run image assets; got {url!r} under {field!r}"
+            "v1 multimodal training accepts data:image/...;base64 or file:// "
+            f"image sources; got {url.split(',', 1)[0]!r}"
         )
+    image_url["url"] = offloaded
 
 
 def prepare_images_inplace(value: Any, *, image_dir: Path | None = None) -> None:
-    """Offload image URLs reachable from ``value`` to run image assets.
-
-    Handles OpenAI wire dicts/lists and the pydantic v0/v1 message/content-part
-    models used by trajectories and traces.
-    """
+    """Rewrite every image part reachable from a request body to the
+    canonical shape with a ``file://`` URL; reject unsupported sources."""
     if isinstance(value, dict):
-        field = _part_image_field(value.get("type"))
-        if field is not None:
-            _prepare_image_part(value, field, image_dir=image_dir)
+        if value.get("type") in ("image", "image_url"):
+            _prepare_image_part(value, image_dir=image_dir)
+            return
         for child in value.values():
             prepare_images_inplace(child, image_dir=image_dir)
-        return
-
-    if isinstance(value, (list, tuple)):
+    elif isinstance(value, (list, tuple)):
         for child in value:
             prepare_images_inplace(child, image_dir=image_dir)
-        return
-
-    field = _part_image_field(getattr(value, "type", None))
-    if field is not None:
-        _prepare_image_part(value, field, image_dir=image_dir)
-        return
-
-    content = getattr(value, "content", None)
-    if isinstance(content, (list, tuple)):
-        prepare_images_inplace(content, image_dir=image_dir)
