@@ -103,8 +103,9 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
 
 
 class PrimeProcess(RuntimeProcess):
-    def __init__(self, process) -> None:
+    def __init__(self, process, transport=None) -> None:
         self._process = process
+        self._transport = transport
         self.stdout: AsyncIterator[bytes] = process.stdout
         self.stderr: AsyncIterator[bytes] = process.stderr
 
@@ -119,6 +120,18 @@ class PrimeProcess(RuntimeProcess):
 
     async def kill(self) -> None:
         await self._process.kill()
+
+    async def aclose(self) -> None:
+        # The SDK handle owns the command-session stream and its pump task; the
+        # transport owns this process's dedicated connection. Both must go even
+        # when the remote exit event never arrived — an abandoned stream pins a
+        # gateway HTTP/2 stream slot until the sandbox is deleted.
+        try:
+            await self._process.aclose()
+        finally:
+            if self._transport is not None:
+                with contextlib.suppress(Exception):
+                    await self._transport.aclose()
 
 
 class PrimeRuntime(Runtime):
@@ -278,15 +291,122 @@ class PrimeRuntime(Runtime):
                 "set runtime.prime.vm=true"
             )
         try:
-            process = await self._client.open_process(
-                self.info.id,
-                shlex.join(argv),
-                working_dir=self.config.workdir,
-                env=env,
+            process, transport = await self._open_process_on_own_transport(
+                shlex.join(argv), env
             )
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
-        return PrimeProcess(process)
+        return PrimeProcess(process, transport)
+
+    async def _open_process_on_own_transport(self, command: str, env: dict[str, str]):
+        """Start a live process whose RPCs ride one dedicated HTTP connection.
+
+        The SDK routes every command-session RPC over pyqwest's shared default
+        transport, and the gateway caps one HTTP/2 connection at 100 concurrent
+        streams. Each live process pins one stream for its whole life, so
+        accumulated sessions starve stdin/signal RPCs into their 30s deadline
+        ("deadline_exceeded") and queue new process streams for minutes under
+        the 24h stream timeout. One transport per process keeps a process
+        competing only with itself. Rebuilds the SDK's open_process wiring from
+        prime-sandboxes internals (pinned >=0.2.35); drop this once the SDK
+        isolates its own command-session transports."""
+        from connectrpc.client import ConnectClient
+        from connectrpc.code import Code
+        from connectrpc.errors import ConnectError
+        from prime_sandboxes.core import APIError
+        from prime_sandboxes.process import AsyncSandboxProcess
+        from prime_sandboxes.rpc_command_session import (
+            COMMAND_SESSION_SEND_INPUT_RPC_METHOD,
+            COMMAND_SESSION_SEND_SIGNAL_RPC_METHOD,
+            COMMAND_SESSION_START_RPC_METHOD,
+            build_command_session_send_input_request,
+            build_command_session_send_signal_request,
+            build_command_session_start_request,
+        )
+        from prime_sandboxes.sandbox import (
+            _LIVE_PROCESS_TIMEOUT_MS,
+            _PROCESS_INPUT_TIMEOUT_MS,
+            _PROCESS_SIGNAL_TIMEOUT_MS,
+        )
+        from pyqwest import Client as HTTPClient
+        from pyqwest import HTTPTransport
+
+        client = self._client
+        sandbox_id = self.info.id
+        transport = HTTPTransport()
+        http_client = HTTPClient(transport=transport)
+
+        async def authed_target() -> tuple[str, dict[str, str]]:
+            auth = await client._auth_cache.get_or_refresh(sandbox_id)
+            gateway_url = auth["gateway_url"].rstrip("/")
+            return (
+                f"{gateway_url}/{auth['user_ns']}/{auth['job_id']}",
+                {"Authorization": f"Bearer {auth['token']}"},
+            )
+
+        async def control_rpc(request, method, timeout_ms: int, operation: str) -> None:
+            # Mirrors AsyncSandboxClient._execute_process_control_rpc, including
+            # its error strings, but sends over this process's own transport.
+            reauthed = False
+            while True:
+                base_url, headers = await authed_target()
+                rpc_client = ConnectClient(base_url, http_client=http_client)
+                try:
+                    await rpc_client.execute_unary(
+                        request=request,
+                        method=method,
+                        headers=headers,
+                        timeout_ms=timeout_ms,
+                    )
+                    return
+                except ConnectError as error:
+                    if (
+                        error.code == Code.UNAUTHENTICATED
+                        and await client._should_retry_401(sandbox_id, reauthed)
+                    ):
+                        reauthed = True
+                        continue
+                    raise APIError(
+                        f"process {operation} RPC failed ({error.code.value}): {error.message}"
+                    ) from error
+                finally:
+                    await rpc_client.close()
+
+        async def write_stdin(pid: int, data: bytes) -> None:
+            await control_rpc(
+                build_command_session_send_input_request(pid, data),
+                COMMAND_SESSION_SEND_INPUT_RPC_METHOD,
+                _PROCESS_INPUT_TIMEOUT_MS,
+                "stdin",
+            )
+
+        async def send_signal(pid: int, signal: Literal["terminate", "kill"]) -> None:
+            await control_rpc(
+                build_command_session_send_signal_request(pid, signal),
+                COMMAND_SESSION_SEND_SIGNAL_RPC_METHOD,
+                _PROCESS_SIGNAL_TIMEOUT_MS,
+                "signal",
+            )
+
+        try:
+            base_url, headers = await authed_target()
+            stream_client = ConnectClient(base_url, http_client=http_client)
+            stream = stream_client.execute_server_stream(
+                request=build_command_session_start_request(
+                    command, self.config.workdir, env, stdin=True
+                ),
+                method=COMMAND_SESSION_START_RPC_METHOD,
+                headers=headers,
+                timeout_ms=_LIVE_PROCESS_TIMEOUT_MS,
+            )
+            process = await AsyncSandboxProcess._create(
+                stream_client, stream, write_stdin, send_signal
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await transport.aclose()
+            raise
+        return process, transport
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public

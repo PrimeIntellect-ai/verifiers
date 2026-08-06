@@ -77,6 +77,13 @@ class RuntimeProcess(ABC):
     async def kill(self) -> None:
         pass
 
+    async def aclose(self) -> None:
+        """Release transport resources pinned by this process handle.
+
+        Runtimes whose processes hold remote streams or dedicated connections
+        override this. Local processes have nothing to release."""
+        return
+
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
     """A Modal-style GPU spec -> (type, count) for providers that want them split:
