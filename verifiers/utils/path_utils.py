@@ -9,7 +9,7 @@ from verifiers.types import EvalConfig
 logger = logging.getLogger(__name__)
 
 
-def _home_dir() -> Path:
+def home_dir() -> Path:
     """Best-effort home directory; fall back to the temp dir so import never fails."""
     try:
         return Path.home()
@@ -17,7 +17,7 @@ def _home_dir() -> Path:
         return Path(tempfile.gettempdir())
 
 
-CACHE_DIR = _home_dir() / ".cache" / "verifiers"
+CACHE_DIR = home_dir() / ".cache" / "verifiers"
 """User-local cache root for verifiers-managed state."""
 
 
