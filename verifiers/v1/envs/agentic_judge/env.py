@@ -268,6 +268,20 @@ class AgenticJudgeEnvConfig(vf.EnvConfig):
     score: ScoreConfig = ScoreConfig()
 
 
+def _require_verdict(verdict: vf.Trace) -> None:
+    """A grading env can't grade without its judge, so a failed judge run is the
+    episode failing — raise it here, where the judge's own error is still the
+    thing being reported. Left to `finalize()`, the missing verdict surfaces as a
+    schema error against `None` and buries the cause."""
+    if verdict.ok:
+        return
+    error = verdict.error
+    raise ValueError(
+        "the judge's rollout failed"
+        + (f" — {error.type}: {error.message}" if error else "")
+    )
+
+
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
     """Common agentic-judge protocol; subclasses choose the runtime boundary."""
 
@@ -333,7 +347,8 @@ class SharedAgenticJudgeEnv(AgenticJudgeEnv):
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
             judge_task = JudgeTask.from_trace(solution, self.config.task)
-            await agents.judge.run(judge_task, runtime=box)
+            verdict = await agents.judge.run(judge_task, runtime=box)
+            _require_verdict(verdict)
 
 
 class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
@@ -343,6 +358,7 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
         solution = await agents.solver.run(task)
         if not solution.ok:
             return
-        await agents.judge.run(
+        verdict = await agents.judge.run(
             JudgeTask.from_trace(solution, self.config.task, share_runtime=False)
         )
+        _require_verdict(verdict)
