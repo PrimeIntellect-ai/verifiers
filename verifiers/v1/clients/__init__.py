@@ -1,13 +1,12 @@
-from verifiers.v1.clients.client import Client, ModelContext
-from verifiers.v1.clients.config import (
+from verifiers.v1.clients.client import Client, ModelContext, resolve_client
+from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.clients.train import TrainClient
+from verifiers.v1.configs.client import (
     BaseClientConfig,
     ClientConfig,
     EvalClientConfig,
     TrainClientConfig,
-    resolve_client,
 )
-from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.clients.train import TrainClient
 
 __all__ = [
     "BaseClientConfig",

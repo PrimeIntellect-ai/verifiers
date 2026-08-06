@@ -8,7 +8,7 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
-from verifiers.v1.clients import ModelContext
+from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.errors import (
     HarnessError,
@@ -17,7 +17,7 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
-from verifiers.v1.harness import Harness
+from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
@@ -91,8 +91,9 @@ class Rollout:
         )
         if on_trace is not None:
             on_trace(self.trace)
+        self.client = resolve_client(ctx.client)
         self._session = RolloutSession(
-            ctx, self.trace, discover_decorated(task, "stop"), limits
+            ctx, self.client, self.trace, discover_decorated(task, "stop"), limits
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -101,6 +102,7 @@ class Rollout:
         self._closed = False
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
+        self._harness_session: HarnessSession | None = None
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
@@ -231,6 +233,16 @@ class Rollout:
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
+            async with boundary(HarnessError, "opening harness session"):
+                self._harness_session = await self.harness.session(
+                    self.ctx,
+                    self.trace,
+                    runtime,
+                    self._endpoint,
+                    self._secret,
+                    self._urls,
+                    self.trace.task.data,
+                )
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
@@ -267,16 +279,8 @@ class Rollout:
         # Prefer an intercepted model/tool error to the harness exit it caused.
         try:
             async with asyncio.timeout_at(self.deadline_at):
-                await self.harness.run(
-                    self.ctx,
-                    trace,
-                    self.runtime,
-                    self._endpoint,
-                    self._secret,
-                    self._urls,
-                    trace.task.data,
-                    messages,
-                )
+                assert self._harness_session is not None
+                await self._harness_session.turn(messages)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget —
             # an agent failure, never a clean stop. A TimeoutError from the
@@ -314,13 +318,18 @@ class Rollout:
         return self.ok and trace.num_turns > turns_before
 
     async def abort(self) -> None:
-        """Free everything this run holds — the entered servers and an owned
-        runtime — without finalizing or scoring: the escape path when an exception
+        """Free everything this run holds — the entered servers, its client, and an
+        owned runtime — without finalizing or scoring: the escape path when an exception
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        if self._harness_session is not None:
+            with contextlib.suppress(Exception):
+                await self._harness_session.close()
         with contextlib.suppress(Exception):
             await self._stack.aclose()
+        with contextlib.suppress(Exception):
+            await self.client.close()
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.harness.cleanup(self.trace, self.runtime)
@@ -339,6 +348,17 @@ class Rollout:
         trace = self.trace
         runtime = self.runtime
         try:
+            if self._harness_session is not None:
+                try:
+                    await self._harness_session.close()
+                except Exception:
+                    # Generation already completed. A transport teardown failure
+                    # must not discard its otherwise scoreable trajectory.
+                    logger.warning(
+                        "harness session close failed (rollout %s)",
+                        trace.id,
+                        exc_info=True,
+                    )
             try:
                 await self._stack.aclose()
             finally:
@@ -369,6 +389,11 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
+            if self._harness_session is not None:
+                with contextlib.suppress(Exception):
+                    await self._harness_session.close()
+            with contextlib.suppress(Exception):
+                await self._stack.aclose()
             trace.is_completed = True
             trace.ok = not self._failed
             now = time.time()
@@ -399,6 +424,12 @@ class Rollout:
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
+            try:
+                await self.client.close()
+            except Exception:
+                logger.warning(
+                    "client teardown failed (rollout %s)", trace.id, exc_info=True
+                )
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

@@ -77,6 +77,18 @@ disabled_tools = ["shell_tool"]
 
 The names of these tools are set by the respective harness. Research the relevant first party documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
 
+## Config discovery
+
+The CLI help is generated from the current config classes. Include the taskset and env ids you plan to use before `--help` so their concrete config fields are loaded:
+
+```bash
+uv run eval my-task-v1 \
+  --env.id best-of-n \
+  --help
+```
+
+For implementation details and defaults, start at `verifiers/v1/configs/cli/eval.py` and follow its fields into `verifiers/v1/configs/`. Client configs live in `verifiers/v1/configs/client.py`, sampling in `verifiers/v1/types.py`, and runtime- and harness-specific configs next to their implementations in `verifiers/v1/runtimes/` and `verifiers/v1/harnesses/`. Custom taskset and env config fields live next to those implementations.
+
 ## Typed taskset overrides
 
 Taskset settings:
@@ -109,7 +121,7 @@ Always research the correct sampling parameters first. This is one of the most i
 
 Your parameter selection or settings should leave room for full runs, and you should not restrict things like tokens or number of turns unless specified by the user.
 
-For all parameters, look up the [reference](references/REFERENCE.md). Leaving things out when the user does not want them is a sane default. However, you should always ask for the harness to use, the runtime to use, as well as the sampling parameters.
+Leave optional settings unset unless the user asks for them. Always confirm the harness, runtime, and sampling parameters before running an evaluation.
 
 ## Reproducible TOML
 
@@ -135,8 +147,6 @@ temperature = 0.7
 ```bash
 prime eval run @ configs/my-eval.toml
 ```
-
-For all parameters, look up the [reference](references/REFERENCE.md). Leaving things out when the user does not want them is a sane default. However, you should always ask for the harness to use, the runtime to use, as well as the sampling parameters.
 
 ## Retries
 

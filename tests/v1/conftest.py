@@ -44,6 +44,8 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.loaders import load_environment
 
+CI_MODEL = "openai/gpt-5.6-luna"
+
 # Fixture tasksets/envs (echo-v1, echo-agentic-v1, echo-v0, echo-multi-v0) live in
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
@@ -129,13 +131,12 @@ def _eval_config(
     runtime: dict | None = None,
     env: dict | None = None,
     pool: dict | None = None,
-    model: str | None = None,
     reasoning_effort: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` merges onto the
     `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
-    harness one); `model` overrides the default text model (e.g. a VLM for an image task).
+    harness one).
 
     `harness=None` leaves every seat on its own story — the multi-agent case: there
     is no run-level harness, so a single-agent test's `harness` lands on the `agent`
@@ -178,7 +179,7 @@ def _eval_config(
         rich=False,
         output_dir=output_dir,
         **({"serve": {"pool": pool}} if pool else {}),
-        **({"model": model} if model else {}),
+        model=CI_MODEL,
     )
 
 
@@ -216,20 +217,17 @@ def run_v1_server():
 
 @pytest.fixture
 async def live_ctx():
-    """A live `ModelContext` (the e2e default model + endpoint, provider-default
-    sampling) for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
-    from verifiers.v1.clients import EvalClientConfig, ModelContext, resolve_client
+    """The e2e `ModelContext` (default model + endpoint config, provider-default sampling)
+    for driving `Agent` directly — the agent-surface counterpart of `run_v1`."""
+    from verifiers.v1.clients import EvalClientConfig, ModelContext
     from verifiers.v1.types import SamplingConfig
 
-    client = resolve_client(EvalClientConfig())
-    try:
-        yield ModelContext(
-            model="deepseek/deepseek-v4-flash",
-            client=client,
-            sampling=SamplingConfig(max_tokens=2048),
-        )
-    finally:
-        await client.close()
+    # Endpoint config only — each rollout builds and closes its own client.
+    yield ModelContext(
+        model=CI_MODEL,
+        client=EvalClientConfig(),
+        sampling=SamplingConfig(max_tokens=2048),
+    )
 
 
 @pytest.fixture
@@ -247,6 +245,7 @@ def run_v0():
     ) -> list[Trace]:
         config = EvalConfig(
             legacy={"id": env_id, "args": args or {}},
+            model=CI_MODEL,
             num_tasks=1,
             num_rollouts=n,
             sampling={"max_tokens": max_tokens},
