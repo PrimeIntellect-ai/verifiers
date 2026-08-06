@@ -14,6 +14,6 @@ class Env(ABC):
 
 verifiers comes with different pre-built `Env`s to use:
 
-- The `AgenticJudgeEnv` defines the sequential interaction between a solver and judge agent
-- The `ProposerSolverEnv` the proposer receives a seed topic and constructs a new task, which is then solved by a group of solvers.
+- The `AgenticJudgeEnv` defines the sequential interaction between a solver and judge agent. The judge can re-use the same runtime after the solver (`SharedAgenticJudgeEnv`) or use its own, new runtime `IsolatedAgenticJudgeEnv`.
 - The `UserSimEnv` models users as agents, and the episode is a turn-by-turn conversation between the user and assistant agents.
+- The `BestOfNEnv` runs n independent attempts at the same task, then marks which attempt achieved the highest reward (best) and whether any attempt crossed a success threshold (pass_at_n), which is useful for rejection sampling and pass@k evaluation.
