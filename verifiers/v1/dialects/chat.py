@@ -13,6 +13,7 @@ from dataclasses import field as dataclass_field
 from typing import Any
 
 from openai.types.chat import ChatCompletion
+from openai.types.chat.chat_completion import Choice
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
@@ -33,6 +34,15 @@ from verifiers.v1.types import (
 )
 
 
+class ModdedChoice(Choice):
+    """Providers also emit `finish_reason` values outside the SDK's `Literal` (e.g. `error`
+    when an upstream turn dies mid-stream), which makes `model_validate` reject the whole
+    completion. Widen it to a plain string; `response_from_wire` maps out-of-enum values
+    to `None`."""
+
+    finish_reason: str | None = None  # type: ignore[assignment]
+
+
 class ModdedChatCompletion(ChatCompletion):
     """The OpenAI SDK closes `service_tier` to a fixed `Literal`, but providers return tiers
     outside it (e.g. Prime's `provisioned`), which makes `model_validate` reject an otherwise
@@ -40,6 +50,7 @@ class ModdedChatCompletion(ChatCompletion):
     lenient about the label instead of dropping it."""
 
     service_tier: str | None = None
+    choices: list[ModdedChoice]  # type: ignore[assignment]
 
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
