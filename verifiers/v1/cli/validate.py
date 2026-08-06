@@ -7,7 +7,7 @@ import logging
 import sys
 import time
 import tomllib
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -18,7 +18,7 @@ from pydantic_core import from_json
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
-from verifiers.v1.cli.eval.resume import task_key
+from verifiers.v1.cli.eval.resume import distribute, task_key
 from verifiers.v1.cli.output import CONFIG_FILE, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
@@ -47,7 +47,6 @@ FINAL_REASONS = frozenset({"valid", "invalid"})
 REASONS = ("valid", "invalid", "error", "timeout")
 
 ResultRow = dict[str, Any]
-TaskIdentity = tuple[int, str]
 
 USAGE = (
     "usage: uv run validate [<taskset-id>] [--only-setup | --only-gold] "
@@ -78,10 +77,6 @@ def output_path(config: ValidateConfig) -> Path:
     return Path("outputs") / f"{config.name}--validate" / config.uuid
 
 
-def identity(position: int, data: Mapping) -> TaskIdentity:
-    return position, task_key(data)
-
-
 def _write_rows(path: Path, rows: Sequence[ResultRow]) -> None:
     tmp = path.with_suffix(f"{path.suffix}.tmp")
     with tmp.open("w", encoding="utf-8") as f:
@@ -96,14 +91,12 @@ def append_result(results_dir: Path, row: ResultRow) -> None:
         f.write(data + b"\n")
 
 
-def _is_final(row: object, target: dict[int, str], mode: str) -> bool:
+def _is_final(row: object, key: str, mode: str) -> bool:
     if not isinstance(row, dict):
         return False
-    position = row.get("task_position")
     reason = row.get("reason")
     return (
-        isinstance(position, int)
-        and target.get(position) == row.get("task_key")
+        row.get("task_key") == key
         and row.get("mode") == mode
         and reason in FINAL_REASONS
         and row.get("valid") is (reason == "valid")
@@ -111,12 +104,12 @@ def _is_final(row: object, target: dict[int, str], mode: str) -> bool:
 
 
 def load_results(
-    results_dir: Path, selected: Sequence[TaskIdentity], mode: str
-) -> tuple[list[ResultRow], list[int]]:
-    """Keep one final valid/invalid row per selected task; return owed positions."""
+    results_dir: Path, selected_keys: list[str], mode: str
+) -> tuple[list[ResultRow], dict[str, int]]:
+    """Keep final rows by eval task-content key; return counts owed per key."""
     path = results_dir / RESULTS_FILE
-    target = dict(selected)
-    kept: dict[int, ResultRow] = {}
+    targets = Counter(selected_keys)
+    good: dict[str, list[ResultRow]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as f:
             for line in f:
@@ -129,13 +122,35 @@ def load_results(
                         row = json.loads(line)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         continue
-                if _is_final(row, target, mode):
-                    position = row["task_position"]
-                    if position not in kept:
-                        kept[position] = row
-    rows = [kept[position] for position, _ in selected if position in kept]
+                if not isinstance(row, dict):
+                    continue
+                key = row.get("task_key")
+                if (
+                    isinstance(key, str)
+                    and key in targets
+                    and len(good[key]) < targets[key]
+                    and _is_final(row, key, mode)
+                ):
+                    good[key].append(row)
+
+    owed = {
+        key: target - len(good.get(key, []))
+        for key, target in targets.items()
+        if len(good.get(key, [])) < target
+    }
+    # Eval spreads debt over content-identical selected tasks in order. Assign the
+    # interchangeable kept rows to the remaining positions so reporting positions
+    # stay unique even when duplicate task content exists.
+    counts = distribute(selected_keys, owed, 1)
+    rows = []
+    used = Counter()
+    for position, (key, count) in enumerate(zip(selected_keys, counts)):
+        if count:
+            continue
+        row = good[key][used[key]]
+        used[key] += 1
+        rows.append({**row, "task_position": position})
     _write_rows(path, rows)
-    owed = [position for position, _ in selected if position not in kept]
     return rows, owed
 
 
@@ -378,25 +393,21 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     mode = validation_mode(config)
     checks = "gold+setup" if mode == "all" else mode
     out = output_path(config)
-    selected_identities = [
-        identity(
-            position,
-            task.data.model_dump(mode="json", exclude_none=True),
-        )
-        for position, task in enumerate(tasks)
+    selected_keys = [
+        task_key(task.data.model_dump(mode="json", exclude_none=True)) for task in tasks
     ]
     if config.resume is None:
         save_run(config, out, len(tasks))
         rows: list[ResultRow] = []
-        owed = list(range(len(tasks)))
+        counts = [1] * len(tasks)
     else:
-        rows, owed = load_results(out, selected_identities, mode)
+        rows, owed = load_results(out, selected_keys, mode)
+        counts = distribute(selected_keys, owed, 1)
         write_summary(out, summarize(rows, len(tasks), mode))
-    owed_set = set(owed)
     plan = [
         (position, task, key)
-        for (position, task), (_, key) in zip(enumerate(tasks), selected_identities)
-        if position in owed_set
+        for position, (task, key, count) in enumerate(zip(tasks, selected_keys, counts))
+        if count
     ]
     logger.info(
         "%s %d/%d task(s) from %s on the %s runtime (%s)",
