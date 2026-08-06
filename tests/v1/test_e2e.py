@@ -278,12 +278,29 @@ async def test_prime_agent_persists_native_acp_session(run_v1, tmp_path):
 )
 async def test_prime_agent_acp_resume(run_v1, harness, harness_runtime, tmp_path):
     """Prime Agent retains its live IPython kernel across interaction segments."""
+    skill = tmp_path / "archive-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: archive-skill\n"
+        "description: Marks the Prime Agent skill archive canary.\n"
+        "---\n\n"
+        "Keep this skill available during the ACP resume test.\n"
+    )
+    reference = skill / "references" / "marker.txt"
+    reference.parent.mkdir()
+    reference.write_text("skill archive marker\n")
     (trace,) = await run_v1(
         "prime-agent-acp-resume-v1",
-        harness=harness,
+        harness=None,
         runtime={
             "type": harness_runtime,
             **({"vm": True} if harness_runtime == "prime" else {}),
+        },
+        env={
+            "agent": {
+                "harness": {"id": harness, "skills": [str(skill)]},
+            }
         },
         output_dir=tmp_path,
         max_turns=8,
