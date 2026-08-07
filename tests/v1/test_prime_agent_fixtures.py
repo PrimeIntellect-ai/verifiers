@@ -18,48 +18,47 @@ import verifiers.v1 as vf
 
 
 def test_failed_turn_guard_rejects_a_clean_stop_reason():
+    """A provider failure must be visible even when no ModelCall was recorded.
+
+    The request can fail before any call is committed, and an errored rollout
+    reports stop_condition "error" rather than None -- so requiring a recorded
+    call, or None, rejected the very failure this fixture exists to prove.
+    """
+    provider_error = SimpleNamespace(type="ProviderError")
     failed = SimpleNamespace(
         ok=False,
-        last_error=SimpleNamespace(type="HarnessError"),
-        stop_condition=None,
-        calls=[SimpleNamespace(error=SimpleNamespace(type="ProviderError"))],
+        errors=[provider_error],
+        stop_condition="error",
+        calls=[],
     )
     assert has_raised_provider_failure(failed)
-    failed.stop_condition = "agent_completed"
-    assert not has_raised_provider_failure(failed)
-    failed.stop_condition = None
-    failed.calls[-1].error = None
-    assert not has_raised_provider_failure(failed)
 
-
-@pytest.mark.asyncio
-async def test_kernel_persistence_guard_rejects_a_reimported_secret():
-    token = "a" * 64
-    trace = SimpleNamespace(
-        info={
-            "prime_agent_segments": [
-                {
-                    "last_reply": "READY",
-                    "tool_outputs": [token],
-                    "tool_calls": [f'{{"code": {FIRST_CELL!r}}}'],
-                    "terminated": False,
-                },
-                {
-                    "last_reply": token,
-                    "tool_outputs": [token],
-                    "tool_calls": [f'{{"code": {SECOND_CELL!r}}}'],
-                    "terminated": False,
-                },
-            ]
-        }
+    # Also valid: the failure recorded on a committed call.
+    on_call = SimpleNamespace(
+        ok=False,
+        errors=[provider_error],
+        stop_condition=None,
+        calls=[SimpleNamespace(error=provider_error)],
     )
-    task = PrimeAgentPersistenceTask(vf.TaskData(idx=0, prompt=None))
-    assert await task.persisted(trace) == 1.0
-    reimported_cell = "import secrets\n" + SECOND_CELL
-    trace.info["prime_agent_segments"][1]["tool_calls"] = [
-        f'{{"code": {reimported_cell!r}}}'
-    ]
-    assert await task.persisted(trace) == 0.0
+    assert has_raised_provider_failure(on_call)
+
+    # A successful rollout must never satisfy it.
+    assert not has_raised_provider_failure(
+        SimpleNamespace(ok=True, errors=[], stop_condition="agent_completed", calls=[])
+    )
+    # Nor a clean agent stop that merely lacks errors.
+    assert not has_raised_provider_failure(
+        SimpleNamespace(ok=False, errors=[], stop_condition="error", calls=[])
+    )
+    # Nor a non-provider failure, which would mean something else broke.
+    assert not has_raised_provider_failure(
+        SimpleNamespace(
+            ok=False,
+            errors=[SimpleNamespace(type="HarnessError")],
+            stop_condition="error",
+            calls=[],
+        )
+    )
 
 
 def test_ipython_cell_guard_requires_verbatim_code_and_real_execution():

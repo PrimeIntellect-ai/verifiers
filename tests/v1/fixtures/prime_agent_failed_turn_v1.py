@@ -5,14 +5,16 @@ import verifiers.v1 as vf
 
 def has_raised_provider_failure(trace: vf.Trace) -> bool:
     """The failed ACP request surfaced as a rollout error, not a clean stop."""
-    return bool(
-        not trace.ok
-        and trace.last_error is not None
-        and trace.stop_condition is None
-        and bool(trace.calls)
-        and trace.calls[-1].error is not None
-        and trace.calls[-1].error.type == "ProviderError"
-    )
+    # A provider failure ends the rollout as an error, so `stop_condition` is
+    # "error" rather than None, and the request may fail before any ModelCall is
+    # recorded -- `trace.calls` can be empty. What must hold is that the failure
+    # is visible as a ProviderError and the rollout did NOT report success.
+    if trace.ok or not trace.errors:
+        return False
+    if trace.stop_condition not in (None, "error"):
+        return False
+    recorded = [*trace.errors, *(c.error for c in trace.calls if c.error is not None)]
+    return any(getattr(error, "type", None) == "ProviderError" for error in recorded)
 
 
 class PrimeAgentFailedTurnTask(vf.Task):

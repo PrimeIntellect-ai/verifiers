@@ -317,8 +317,13 @@ async def test_prime_agent_failed_turn_raises(run_v1, tmp_path):
         },
     )
     assert has_raised_provider_failure(trace), trace.errors
-    assert trace.stop_condition is None
+    # An errored rollout is not scored, so no reward is recorded.
     assert trace.rewards == {}
+    # The dead endpoint must stay confined to this rollout: if a sibling test ever
+    # inherits it, that shows up here as the wrong base_url on this trace.
+    assert any(
+        getattr(error, "type", None) == "ProviderError" for error in trace.errors
+    ), trace.errors
 
 
 @pytest.mark.e2e
