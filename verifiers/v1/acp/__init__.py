@@ -99,6 +99,7 @@ class ACP:
             session_path=session_path,
             session_meta=session_meta,
             allow_empty_tool_reply=allow_empty_tool_reply,
+            trace=trace,
         )
 
     async def _run(

@@ -63,3 +63,23 @@ def test_acp_meta_without_events_is_additive() -> None:
     _record_acp_meta(trace, {})
 
     assert trace.info == {"existing": "value"}
+
+
+def test_acp_run_forwards_trace_to_the_recording_path() -> None:
+    """`ACP.run` must hand `trace` to `_run`, or every caller's opt-in is a no-op.
+
+    This was a silent hole: `run()` accepted `trace` and dropped it, so the
+    one-shot path recorded nothing while appearing wired up. A signature-level
+    check is enough and stays honest without a live runtime.
+    """
+    import inspect
+
+    from verifiers.v1.acp import ACP
+
+    assert "trace" in inspect.signature(ACP.run).parameters
+    assert "trace" in inspect.signature(ACP._run).parameters
+    source = inspect.getsource(ACP.run)
+    # The forwarding argument itself, not merely the parameter.
+    assert "trace=trace" in source, (
+        "ACP.run accepts trace but never forwards it to _run"
+    )
