@@ -154,6 +154,22 @@ def load_results(
     return rows, owed
 
 
+def gold_implemented(task: Task) -> bool:
+    """Whether the taskset actually wrote a gold check.
+
+    `Task.validate` returns `True` unconditionally, so a task that does not override it
+    passes the gold check for every item without anything having been checked."""
+    return type(task).validate is not Task.validate
+
+
+def _gold_row(row: ResultRow) -> ResultRow | None:
+    """The gold row inside a result row, whichever mode produced it."""
+    if row.get("mode") == "gold":
+        return row
+    gold = row.get("gold")
+    return gold if isinstance(gold, dict) else None
+
+
 def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any]:
     counts = Counter(row.get("reason") for row in rows)
     missing = max(0, total - len(rows))
@@ -169,6 +185,12 @@ def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any
         "outcomes": outcomes,
         "valid_rate": round(outcomes["valid"] / total, 6) if total else None,
     }
+    if mode in ("gold", "all"):
+        golds = [gold for gold in map(_gold_row, rows) if gold is not None]
+        # Gold rows that were reported valid without a gold check to be valid against.
+        summary["gold_unchecked"] = sum(
+            1 for gold in golds if gold.get("checked") is False
+        )
     if mode == "all":
         checks: dict[str, dict[str, int]] = {}
         for check in ("gold", "setup"):
@@ -271,7 +293,9 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
             logger.warning(
                 "runtime teardown failed (task %s)", task.data.idx, exc_info=True
             )
-    return _row(task, "gold", valid, exc, start)
+    # A task that never overrode `validate` is valid against nothing; say so on the row
+    # rather than letting the base class's unconditional `True` read as a passing check.
+    return {**_row(task, "gold", valid, exc, start), "checked": gold_implemented(task)}
 
 
 async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
@@ -406,6 +430,15 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         checks,
     )
     logger.info("results: %s", out)
+    if mode in ("gold", "all"):
+        unchecked = sorted({type(t).__name__ for t in tasks if not gold_implemented(t)})
+        if unchecked:
+            logger.warning(
+                "no gold check: %s does not override Task.validate, which returns True "
+                "unconditionally - the gold check will pass every task without checking "
+                "anything (see gold_unchecked in the summary)",
+                ", ".join(unchecked),
+            )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     states = [TaskProgress(idx=t.data.idx, name=t.data.name) for t in tasks]
