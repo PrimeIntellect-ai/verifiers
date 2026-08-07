@@ -286,7 +286,10 @@ async def test_prime_agent_ipython_cell_acp_shape(run_v1, tmp_path):
         output_dir=tmp_path,
         max_turns=6,
         max_tokens=8192,
-        rollout_timeout=600,
+        # First-run setup in a cold container installs Node, uv, and the kernel
+        # before the agent gets a turn, so this shares the 900s budget its
+        # sibling kernel tests use rather than racing the default.
+        rollout_timeout=900,
     )
     assert trace.ok, trace.errors
     assert trace.stop_condition == "user_closed"
