@@ -241,12 +241,7 @@ class Branch(BaseModel):
 
     @property
     def multi_modal_data(self) -> MultiModalData | None:
-        """The branch's multimodal sidecar — every node's images concatenated in path order.
-
-        None when the branch has no images. The raw-image path carries lightweight descriptors
-        plus placeholder ranges, so downstream vLLM/training multimodal payloads can align hashes,
-        placeholders, and item refs without reprocessing images in the env worker.
-        """
+        """Node image data concatenated in token order for training; never persisted."""
         merged = MultiModalData()
         found = False
         for node in self.nodes:
