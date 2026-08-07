@@ -171,11 +171,12 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
 
 
-def _new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
-    """Per-call newly fed-in tokens: each call's prompt beyond the previous call's
-    final sequence, clamped at zero. Exact while the history is append-only; tokens
-    the engine drops between calls (stripped reasoning, truncated history) register
-    as an undercount of that call's new input rather than going negative."""
+def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
+    """Per-call lower bound on newly fed-in tokens: each call's prompt beyond the
+    previous call's final sequence, clamped at zero. Exact while the history is
+    append-only; tokens the engine drops between calls (stripped reasoning, truncated
+    history) register as an undercount of that call's new input rather than going
+    negative."""
     prev_total = 0
     for call in calls:
         if call.usage is None:
@@ -326,7 +327,7 @@ class Branch(BaseModel):
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once; a lower bound whenever
         the engine drops tokens between calls."""
-        return sum(increment for _, increment in _new_input_tokens(self.calls))
+        return sum(increment for _, increment in min_new_input_tokens(self.calls))
 
 
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
@@ -394,7 +395,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         for branch in self.branches:
             # A call's predecessors are fixed by the graph, so its increment is the
             # same in every branch containing it; keep the first occurrence.
-            for call, increment in _new_input_tokens(branch.calls):
+            for call, increment in min_new_input_tokens(branch.calls):
                 if id(call) not in seen:
                     seen.add(id(call))
                     total += increment
