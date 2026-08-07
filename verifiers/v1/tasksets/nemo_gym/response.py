@@ -89,6 +89,8 @@ def trace_to_nemo_response(
         name = item.get("name")
         if item.get("type") != "function_call" or not isinstance(name, str):
             continue
+        if name in tool_names:
+            continue
         if name.startswith("mcp__"):
             for tool_name in known_names:
                 if name.endswith(f"__{tool_name}"):
