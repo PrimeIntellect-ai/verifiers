@@ -44,6 +44,7 @@ _SDIST_BUILD_TIMEOUT_SECONDS = 300
 @dataclass
 class _SdistBuildState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    build: asyncio.Task[tuple[str, bytes]] | None = None
     users: int = 0
 
 
@@ -143,7 +144,9 @@ async def _cached_sdist(src: Path) -> tuple[str, bytes]:
         async with state.lock:
             # Coordinate before entering the default executor so concurrent
             # same-source waiters do not occupy executor threads.
-            build = asyncio.create_task(asyncio.to_thread(_build_sdist, src))
+            if state.build is None:
+                state.build = asyncio.create_task(asyncio.to_thread(_build_sdist, src))
+            build = state.build
             try:
                 return await asyncio.shield(build)
             except asyncio.CancelledError:
