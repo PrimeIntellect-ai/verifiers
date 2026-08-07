@@ -22,10 +22,11 @@ ARTIFACTS_DIR = "/logs/artifacts"
 """Implicit artifact directory; tasks that write here need no declaration."""
 
 MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
-"""Ceiling per collection. Archives spool to host disk and stream both ways, so the
-cap guards transfer time and spool space, not host memory. Still sized for a delta,
-not a tree: the grading box boots from the agent's image, so the repo is already
-there and only its output has to travel."""
+"""Ceiling per collection. The cap applies to the completed tar archives, so it
+includes their metadata and padding. Archives spool to host disk and stream or
+chunk both ways, so this guards transfer time and spool space, not host memory. It
+is sized for a delta, not a tree: the grading box boots from the agent's image, so
+the repo is already there and only its output has to travel."""
 
 _spool_root: Path | None = None
 

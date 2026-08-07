@@ -11,7 +11,9 @@ import contextlib
 import logging
 import math
 import shlex
+import shutil
 import tempfile
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
@@ -36,6 +38,26 @@ logger = logging.getLogger(__name__)
 
 MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
+
+_FILE_TRANSFER_CHUNK_BYTES = 128 * 1024 * 1024
+"""Stay below the gateway's per-request file limit while moving larger files."""
+
+
+def _copy_slice(source: Path, target: Path, offset: int, size: int) -> None:
+    with source.open("rb") as src, target.open("wb") as dst:
+        src.seek(offset)
+        remaining = size
+        while remaining:
+            chunk = src.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise EOFError(f"{source} ended before {offset + size} bytes")
+            dst.write(chunk)
+            remaining -= len(chunk)
+
+
+def _append_file(source: Path, target: Path) -> None:
+    with source.open("rb") as src, target.open("ab") as dst:
+        shutil.copyfileobj(src, dst, length=1024 * 1024)
 
 
 class PrimeConfig(NetworkPolicyConfig):
@@ -334,28 +356,132 @@ class PrimeRuntime(Runtime):
             await self.read_to(path, download)
             return await asyncio.to_thread(download.read_bytes)
 
+    async def _remote_file_size(self, path: str) -> int:
+        result = await self.run(
+            ["sh", "-c", f"wc -c < {shlex.quote(path)}"],
+            {},
+        )
+        raw = result.stdout.strip()
+        if result.exit_code or not raw.isdigit():
+            detail = (result.stderr or result.stdout).strip()[-500:]
+            raise SandboxError(f"size {path!r}: {detail}")
+        return int(raw)
+
+    async def _file_command(self, command: str, action: str) -> None:
+        result = await self.run(["sh", "-c", command], {})
+        if result.exit_code:
+            detail = (result.stderr or result.stdout).strip()[-500:]
+            raise SandboxError(f"{action}: {detail}")
+
     async def read_to(self, path: str, local: Path) -> None:
-        # File-to-file via the SDK. NOTE: prime-sandboxes buffers the whole transfer
-        # in memory in transit (no streaming API yet), so this bounds memory to one
-        # transfer at a time rather than eliminating it; the bytes are freed as soon
-        # as the file lands instead of living on the trace.
+        # prime-sandboxes buffers each gateway request in memory and the gateway caps
+        # one file request. Slice large remote files so neither constraint becomes the
+        # artifact limit; each temporary slice is removed before creating the next.
         target = self._abs(path)
+        remote_chunk: str | None = None
         try:
-            await self._client.download_file(self.info.id, target, str(local))
+            size = await self._remote_file_size(target)
+            await asyncio.to_thread(local.parent.mkdir, parents=True, exist_ok=True)
+            if size <= _FILE_TRANSFER_CHUNK_BYTES:
+                await self._client.download_file(self.info.id, target, str(local))
+                return
+
+            remote_chunk = f"/tmp/vf-download-{uuid.uuid4().hex}"
+            await asyncio.to_thread(local.write_bytes, b"")
+            with tempfile.TemporaryDirectory() as directory:
+                chunk = Path(directory) / "chunk"
+                for offset in range(0, size, _FILE_TRANSFER_CHUNK_BYTES):
+                    expected = min(_FILE_TRANSFER_CHUNK_BYTES, size - offset)
+                    block = 1024 * 1024
+                    await self._file_command(
+                        f"dd if={shlex.quote(target)} of={shlex.quote(remote_chunk)} "
+                        f"bs={block} skip={offset // block} "
+                        f"count={math.ceil(expected / block)}",
+                        f"slice {path!r}",
+                    )
+                    await self._client.download_file(
+                        self.info.id, remote_chunk, str(chunk)
+                    )
+                    actual = await asyncio.to_thread(chunk.stat)
+                    if actual.st_size != expected:
+                        raise SandboxError(
+                            f"read {path!r}: chunk at {offset} has {actual.st_size} "
+                            f"bytes, expected {expected}"
+                        )
+                    await asyncio.to_thread(_append_file, chunk, local)
+            actual = await asyncio.to_thread(local.stat)
+            if actual.st_size != size:
+                raise SandboxError(
+                    f"read {path!r}: downloaded {actual.st_size} bytes, expected {size}"
+                )
         except Exception as e:
+            await asyncio.to_thread(local.unlink, missing_ok=True)
+            if isinstance(e, SandboxError):
+                raise
             raise SandboxError(f"read {path!r}: {e}") from e
+        finally:
+            if remote_chunk is not None:
+                with contextlib.suppress(Exception):
+                    await self._client.execute_command(
+                        self.info.id, f"rm -f -- {shlex.quote(remote_chunk)}"
+                    )
 
     async def write_from(self, path: str, local: Path) -> None:
-        # Same in-transit buffering caveat as `read_to`.
         target = self._abs(path)
+        remote_chunk: str | None = None
         try:
             await self._client.execute_command(
                 self.info.id,
                 f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}",
             )
-            await self._client.upload_file(self.info.id, target, str(local))
+            size = await asyncio.to_thread(lambda: local.stat().st_size)
+            if size <= _FILE_TRANSFER_CHUNK_BYTES:
+                await self._client.upload_file(self.info.id, target, str(local))
+                return
+
+            remote_chunk = f"/tmp/vf-upload-{uuid.uuid4().hex}"
+            await self._file_command(
+                f": > {shlex.quote(target)}",
+                f"initialize upload {path!r}",
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                chunk = Path(directory) / "chunk"
+                for offset in range(0, size, _FILE_TRANSFER_CHUNK_BYTES):
+                    expected = min(_FILE_TRANSFER_CHUNK_BYTES, size - offset)
+                    await asyncio.to_thread(
+                        _copy_slice,
+                        local,
+                        chunk,
+                        offset,
+                        expected,
+                    )
+                    await self._client.upload_file(
+                        self.info.id, remote_chunk, str(chunk)
+                    )
+                    await self._file_command(
+                        f"cat {shlex.quote(remote_chunk)} >> {shlex.quote(target)} "
+                        f"&& rm -f -- {shlex.quote(remote_chunk)}",
+                        f"append upload chunk to {path!r}",
+                    )
+            actual = await self._remote_file_size(target)
+            if actual != size:
+                raise SandboxError(
+                    f"write {path!r}: uploaded {actual} bytes, expected {size}"
+                )
         except Exception as e:
+            with contextlib.suppress(Exception):
+                await self._client.execute_command(
+                    self.info.id, f"rm -f -- {shlex.quote(target)}"
+                )
+            if isinstance(e, SandboxError):
+                raise
             raise SandboxError(f"write {path!r}: {e}") from e
+        finally:
+            if remote_chunk is not None:
+                with contextlib.suppress(Exception):
+                    await self._client.execute_command(
+                        self.info.id, f"rm -f -- {shlex.quote(remote_chunk)}"
+                    )
 
     async def write(self, path: str, data: bytes) -> None:
         # Upload via the gateway (multipart) — never inline the bytes on the command line
