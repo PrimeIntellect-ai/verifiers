@@ -214,4 +214,5 @@ class PiHarness(Harness[PiHarnessConfig]):
             session_path=f"{agent_dir}/acp-session",
             # Pi can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
+            trace=trace,
         )
