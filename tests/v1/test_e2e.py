@@ -259,7 +259,12 @@ async def test_prime_agent_persists_ipython_kernel(run_v1, tmp_path):
     )
     assert trace.ok, trace.errors
     assert trace.stop_condition == "user_closed"
-    assert trace.rewards["persisted"].score == 1.0
+    # Surface what the fixture actually captured: a 0.0 here means the agent ran
+    # but the segment view lacked the tool evidence, which is a different bug from
+    # the agent failing, and the log otherwise shows neither.
+    assert trace.rewards["persisted"].score == 1.0, trace.info.get(
+        "prime_agent_segments"
+    )
     assert trace.info["prime_agent_state_cleaned"] is True
 
 
@@ -287,7 +292,7 @@ async def test_prime_agent_ipython_cell_acp_shape(run_v1, tmp_path):
     # Asserting the ACP-native title/rawInput shape (acp-events.ts:144-155) needs
     # inbound `_meta` preservation, which lands separately; until then this fixture
     # proves the cell was submitted verbatim AND executed by a real kernel.
-    assert has_ipython_cell_call(trace)
+    assert has_ipython_cell_call(trace), trace.info.get("prime_agent_segments")
 
 
 @pytest.mark.e2e
