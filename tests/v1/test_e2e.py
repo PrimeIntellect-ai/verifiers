@@ -327,6 +327,9 @@ async def test_prime_agent_solves_gsm8k(run_v1, tmp_path):
     assert trace.reward == 1.0, trace.rewards
 
 
+@pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
 async def test_prime_agent_subagent_lifecycle_and_accounting(run_v1, tmp_path):
     """A child runs to a terminal state, reports usage, and is idle before scoring.
 
