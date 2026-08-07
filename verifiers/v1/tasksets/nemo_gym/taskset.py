@@ -60,6 +60,7 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         state.direct_tools = {
             tool["name"]: tool for tool in tools if tool.get("type") == "function"
         }
+        state.tool_names = list(state.direct_tools)
 
         response = await state.post("seed_session", self.data.row)
         response.raise_for_status()
@@ -74,7 +75,8 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         params = self.data.row["responses_create_params"]
         response = await state.post(
             "verify",
-            self.data.row | {"response": trace_to_nemo_response(trace, params)},
+            self.data.row
+            | {"response": trace_to_nemo_response(trace, params, state.tool_names)},
         )
         response.raise_for_status()
         result = response.json()
