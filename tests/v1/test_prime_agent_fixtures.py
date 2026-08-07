@@ -103,7 +103,8 @@ class _PersistenceRuntime:
 
     async def run(self, command: list[str], environment: dict):
         self.calls.append((command, environment))
-        return SimpleNamespace(exit_code=int(command[-1] in self.existing_paths))
+        # `test -e PATH` exits 0 when the path EXISTS.
+        return SimpleNamespace(exit_code=0 if command[-1] in self.existing_paths else 1)
 
 
 class _PersistenceAgent:
@@ -139,7 +140,7 @@ def _prime_agent_trace_root(trace_id: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_persistence_fixture_checks_the_harness_trace_root_after_cleanup():
+async def test_persistence_fixture_records_live_state_at_the_harness_trace_root():
     from prime_agent_persistence_v1 import PrimeAgentPersistenceEnv
 
     trace = SimpleNamespace(id="trace/with untrusted input", info={})
@@ -151,14 +152,14 @@ async def test_persistence_fixture_checks_the_harness_trace_root_after_cleanup()
         object.__new__(PrimeAgentPersistenceEnv), None, agents
     )
 
-    assert runtime.calls == [
-        (["test", "!", "-e", _prime_agent_trace_root(trace.id)], {})
-    ]
-    assert trace.info["prime_agent_state_cleaned"] is True
+    # The state must be observed at the harness's real hashed root while the
+    # session is live; cleanup runs later, during rollout close.
+    assert runtime.calls == [(["test", "-e", _prime_agent_trace_root(trace.id)], {})]
+    assert trace.info["prime_agent_state_present_during_run"] is False
 
 
 @pytest.mark.asyncio
-async def test_persistence_fixture_rejects_an_uncleaned_harness_trace_root():
+async def test_persistence_fixture_sees_state_present_while_the_session_runs():
     from prime_agent_persistence_v1 import PrimeAgentPersistenceEnv
 
     trace = SimpleNamespace(id="trace-that-remains", info={})
@@ -171,8 +172,8 @@ async def test_persistence_fixture_rejects_an_uncleaned_harness_trace_root():
         object.__new__(PrimeAgentPersistenceEnv), None, agents
     )
 
-    assert runtime.calls == [(["test", "!", "-e", root], {})]
-    assert trace.info["prime_agent_state_cleaned"] is False
+    assert runtime.calls == [(["test", "-e", root], {})]
+    assert trace.info["prime_agent_state_present_during_run"] is True
 
 
 class _GuardRuntime:
