@@ -125,12 +125,6 @@ def _tool_calls(raw: Any) -> list[ToolCall] | None:
     return calls or None
 
 
-_LEGACY_MM_UNSUPPORTED = (
-    "The v1 legacy (v0) bridge does not support multimodal rollouts; "
-    "use a native v1 TrainClient environment instead."
-)
-
-
 def _content_has_image(content: Any) -> bool:
     if not isinstance(content, list):
         return False
@@ -148,7 +142,10 @@ def _to_v1_messages(msgs: Any) -> list:
         if not isinstance(m, dict):
             continue
         if _content_has_image(m.get("content")):
-            raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
+            raise RuntimeError(
+                "The v1 legacy (v0) bridge does not support multimodal rollouts; "
+                "use a native v1 TrainClient environment instead."
+            )
         role = m.get("role")
         if role == "system":
             out.append(SystemMessage(content=content_to_parts(m.get("content"))))
@@ -209,7 +206,10 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
     if not isinstance(raw, dict):
         return None
     if raw.get("multi_modal_data") is not None:
-        raise RuntimeError(_LEGACY_MM_UNSUPPORTED)
+        raise RuntimeError(
+            "The v1 legacy (v0) bridge does not support multimodal rollouts; "
+            "use a native v1 TrainClient environment instead."
+        )
     if not raw.get("completion_ids") and not raw.get("prompt_ids"):
         return None
     return TurnTokens(
