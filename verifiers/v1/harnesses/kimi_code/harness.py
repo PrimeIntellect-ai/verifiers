@@ -43,7 +43,7 @@ KIMI_ACP = ACP()
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: str = "0.29.0"
+    version: str = "0.34.0"
     """Kimi Code release to install, pinned for reproducibility."""
 
 

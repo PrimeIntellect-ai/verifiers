@@ -23,8 +23,8 @@ KEY_VAR = "CODEX_INTERCEPT_KEY"
 
 CODEX_DIR = "/var/tmp/vf-codex"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-CODEX_VERSION = "0.145.0"
-ACP_VERSION = "1.1.7"
+CODEX_VERSION = "0.146.1"
+ACP_VERSION = "1.1.10"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 SKILLS_DIR = ".agents/skills"
