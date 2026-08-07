@@ -76,14 +76,15 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
         trace. Infrastructure failures retry per `verifier_retries`; the last one
         fails the episode — a grading box that can't be reached must never read
         as reward 0."""
-        if not isinstance(task, HarborTask) or task.data.verifier is None:
+        if not isinstance(task, HarborTask):
             return
         solution = episode.traces[0]
-        # Grading is this collection's only consumer, so it ends here either way:
-        # scored, failed solve, or out of retries. (The `finally` sits outside
-        # `_grade`'s retry loop, whose attempts re-restore the same archives.)
+        # Separate-verifier grading is this collection's only consumer, so it ends
+        # here either way: scored, shared-mode (graded in-box, no host consumer),
+        # failed solve, or out of retries. (The `finally` sits outside `_grade`'s
+        # retry loop, whose attempts re-restore the same archives.)
         try:
-            if not solution.ok:
+            if task.data.verifier is None or not solution.ok:
                 return
             grader = HarborTask(verifier_box_data(task.data))
             scores = await self._grade(self._verifier_config(task), grader, solution)

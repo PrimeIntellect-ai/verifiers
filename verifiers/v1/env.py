@@ -32,6 +32,7 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
+from verifiers.v1.utils.artifacts import discard as discard_artifacts
 from verifiers.v1.utils.generic import concrete_type, deep_merge
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
@@ -317,7 +318,8 @@ class Env(ABC, Generic[ConfigT]):
             live = slot.traces
 
             def discard(trace: Trace) -> None:
-                # A retried agent attempt abandons its trace; drop it from the view.
+                # A retried agent attempt abandons its trace: free its spools and view.
+                discard_artifacts(trace.state.artifacts)
                 with contextlib.suppress(ValueError):
                     live.remove(trace)
 

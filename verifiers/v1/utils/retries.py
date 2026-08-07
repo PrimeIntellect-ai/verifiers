@@ -28,6 +28,7 @@ from tenacity import (
 )
 
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.utils.artifacts import discard
 
 if TYPE_CHECKING:
     from verifiers.v1.episode import Episode
@@ -123,6 +124,8 @@ async def run_episode_with_retry(
         history.extend(final.errors)
         for trace in final.traces:
             history.extend(trace.errors)
+            # A whole-episode retry abandons every trace and its artifact spools.
+            discard(trace.state.artifacts)
         delay = backoff(attempt)
         logger.warning(
             "retrying episode %s (retry %d/%d) in %.1fs after error: %s",
