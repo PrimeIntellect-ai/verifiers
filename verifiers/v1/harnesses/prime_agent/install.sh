@@ -94,6 +94,33 @@ verify_uv() {
     printf '%s\n' "$actual_uv" | grep -F "uv $uv_version" >/dev/null 2>&1 || { echo "prime-agent: uv version mismatch; expected uv $uv_version, got $actual_uv" >&2; exit 1; }
 }
 
+install_uv() {
+    if [ -x "$uv_bin" ] && "$uv_bin" --version 2>/dev/null | grep -F "uv $uv_version" >/dev/null 2>&1; then
+        return 0
+    fi
+    tmp="${uv_root}.staging.$$"
+    rm -rf "$tmp"
+    mkdir -p "$tmp/bin"
+    # The official installer honors UV_VERSION and UV_INSTALL_DIR. Download it
+    # while setup still has network, then publish the verified executable atomically.
+    if ! curl -fsSL https://astral.sh/uv/install.sh | UV_VERSION="$uv_version" UV_INSTALL_DIR="$tmp/bin" sh; then
+        echo "prime-agent: official uv installer failed for uv $uv_version" >&2
+        exit 1
+    fi
+    if [ ! -x "$tmp/bin/uv" ]; then
+        echo "prime-agent: official uv installer did not provide $tmp/bin/uv" >&2
+        exit 1
+    fi
+    rm -rf "$uv_root"
+    mv "$tmp" "$uv_root"
+}
+
+verify_uv() {
+    [ -x "$uv_bin" ] || { echo "prime-agent: uv missing at $uv_bin" >&2; exit 1; }
+    actual_uv="$($uv_bin --version 2>&1)" || { echo "prime-agent: uv --version failed after installation: $actual_uv" >&2; exit 1; }
+    printf '%s\n' "$actual_uv" | grep -F "uv $uv_version" >/dev/null 2>&1 || { echo "prime-agent: uv version mismatch; expected uv $uv_version, got $actual_uv" >&2; exit 1; }
+}
+
 if ! node_ok; then
     case "$(uname -s)" in
         Linux) node_os=linux ;;
@@ -161,3 +188,4 @@ if ! mv "$staging" "$root"; then
     exit 1
 fi
 rm -rf "${root}.prev"
+
