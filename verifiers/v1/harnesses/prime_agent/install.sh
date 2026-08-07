@@ -47,6 +47,20 @@ bundled_node_ok() {
 
 ensure_base_tools
 
+# The Node.js release archives are glibc-linked and cannot execute on Alpine/musl.
+# Prefer the image's distro Node rather than downloading an unusable archive.
+if [ "$(uname -s)" = Linux ] && ldd --version 2>&1 | grep -qi musl; then
+    if ! node_ok; then
+        if command -v apk >/dev/null 2>&1; then
+            apk add --no-cache nodejs-current npm
+        fi
+    fi
+    node_ok || {
+        echo "prime-agent: Alpine/musl requires nodejs-current and npm; install them in the image" >&2
+        exit 1
+    }
+fi
+
 install_uv() {
     if [ -x "$uv_bin" ] && "$uv_bin" --version 2>/dev/null | grep -F "uv $uv_version" >/dev/null 2>&1; then
         return 0
