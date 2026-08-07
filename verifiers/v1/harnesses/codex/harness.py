@@ -143,6 +143,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             prompt,
             system_prompt=system_prompt,
             session_path=f"{self.trace_home(trace)}/acp-session",
+            trace=trace,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

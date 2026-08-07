@@ -102,4 +102,5 @@ class PoolHarness(Harness[PoolHarnessConfig]):
             mcp_urls=mcp_urls,
             system_prompt=system_prompt,
             session_path=f"{pool_home}/acp-session",
+            trace=trace,
         )

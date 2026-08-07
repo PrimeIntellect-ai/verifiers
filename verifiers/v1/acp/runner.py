@@ -30,6 +30,7 @@ from acp.schema import (
     HttpMcpServer,
     PermissionOption,
     RequestPermissionResponse,
+    SessionInfoUpdate,
     TextContentBlock,
     ToolCall,
     ToolCallUpdate,
@@ -44,12 +45,15 @@ class VerifiersACPClient(Client):
         self.visible_reply = ""
         self.message_id: str | None = None
         self.tool_calls: dict[str, str] = {}
+        self.acp_meta: dict[str, list[Any]] = {}
+        self.turn_acp_meta: dict[str, list[Any]] = {}
         self.output_changed = asyncio.Condition()
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
         self.tool_calls = {}
+        self.turn_acp_meta = {}
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         async with self.output_changed:
@@ -58,6 +62,10 @@ class VerifiersACPClient(Client):
             elif isinstance(update, ToolCallUpdate):
                 if update.status:
                     self.tool_calls[update.tool_call_id] = update.status
+            elif isinstance(update, SessionInfoUpdate):
+                for namespace, event in (update.field_meta or {}).items():
+                    self.acp_meta.setdefault(namespace, []).append(event)
+                    self.turn_acp_meta.setdefault(namespace, []).append(event)
             elif isinstance(update, AgentMessageChunk) and isinstance(
                 update.content, TextContentBlock
             ):
@@ -153,6 +161,11 @@ def segment_messages(config: dict, is_new: bool) -> list[dict]:
             *messages,
         ]
     return messages
+
+
+def write_meta(path: str | None, client: VerifiersACPClient) -> None:
+    if path is not None:
+        Path(path).write_text(json.dumps(client.acp_meta, ensure_ascii=False))
 
 
 async def prompt(
@@ -254,14 +267,17 @@ async def run_once(config: dict) -> str:
             else:
                 raise RuntimeError("ACP agent does not support resuming sessions")
 
-        reply = await prompt(
-            client,
-            connection,
-            capabilities,
-            session_id,
-            config,
-            is_new=is_new,
-        )
+        try:
+            reply = await prompt(
+                client,
+                connection,
+                capabilities,
+                session_id,
+                config,
+                is_new=is_new,
+            )
+        finally:
+            write_meta(config.get("meta_path"), client)
         if session_path and is_new:
             session_path.parent.mkdir(parents=True, exist_ok=True)
             session_path.write_text(session_id)
@@ -400,6 +416,8 @@ async def serve_stream() -> None:
                         "ok": True,
                         "reply": await session.run(request["config"]),
                     }
+                    if session.client.turn_acp_meta:
+                        response["meta"] = session.client.turn_acp_meta
                 elif operation == "shutdown":
                     await session.close()
                     closed = True
@@ -413,6 +431,8 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
+                if session.client.turn_acp_meta:
+                    response["meta"] = session.client.turn_acp_meta
             write_packet(sys.stdout.buffer, response)
             if stop:
                 break
