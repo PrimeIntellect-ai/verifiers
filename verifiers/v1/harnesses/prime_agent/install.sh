@@ -6,10 +6,38 @@ stamp="$root/.installed"
 node_root="$VF_PA_NODE_ROOT"
 export PATH="$node_root/bin:$PATH"
 
+ensure_curl() {
+    if command -v curl >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y --no-install-recommends curl
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache curl
+    else
+        echo "prime-agent install requires curl; neither apt-get nor apk is available" >&2
+        exit 1
+    fi
+    command -v curl >/dev/null 2>&1 || {
+        echo "prime-agent install requires curl, but installation did not provide it" >&2
+        exit 1
+    }
+}
+
 node_ok() {
     command -v node >/dev/null 2>&1 || return 1
+    command -v npm >/dev/null 2>&1 || return 1
     node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=8)?0:1)'
 }
+
+bundled_node_ok() {
+    [ -x "$node_root/bin/node" ] || return 1
+    [ -x "$node_root/bin/npm" ] || return 1
+    [ "$("$node_root/bin/node" --version 2>/dev/null)" = "v$VF_PA_NODE_VERSION" ] || return 1
+    "$node_root/bin/npm" --version >/dev/null 2>&1
+}
+
+ensure_curl
 
 if ! node_ok; then
     case "$(uname -s)" in
@@ -24,13 +52,13 @@ if ! node_ok; then
         x86_64|amd64) node_arch=x64 ;;
         *) echo "prime-agent: unsupported architecture $(uname -m)" >&2; exit 1 ;;
     esac
-    if [ ! -x "$node_root/bin/node" ]; then
+    if ! bundled_node_ok; then
         rm -rf "$node_root"
         mkdir -p "$node_root"
         curl -fsSL "https://nodejs.org/dist/v$VF_PA_NODE_VERSION/node-v$VF_PA_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
             | tar -xz -C "$node_root" --strip-components=1
     fi
-    node_ok || { echo "prime-agent requires Node.js 22.8 or newer" >&2; exit 1; }
+    node_ok || { echo "prime-agent requires Node.js 22.8 or newer with npm" >&2; exit 1; }
 fi
 
 # The install is shared, so key the stamp on the verified digest: a changed

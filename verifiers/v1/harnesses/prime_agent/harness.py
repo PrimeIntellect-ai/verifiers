@@ -189,6 +189,9 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         # `loadSession: false` and refuses a second `session/new`, so a relaunch
         # per segment cannot preserve kernel state.
         #
+        # ACP.session has no allow_empty_tool_reply option (unlike ACP.run).
+        # The live handle owns turn requests directly, so do not invent or pass
+        # that one-shot runner kwarg here.
         # This live path exists only because ACP sessions are currently
         # client-owned: the worker stops when the client disconnects. When Prime
         # Agent gains a resident ACP lifecycle, deleting this override restores
@@ -354,22 +357,28 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 [
                     "sh",
                     "-c",
+                    # Prepend the bundled Node inside the shell rather than passing
+                    # PATH in env: `docker exec --env PATH=...` REPLACES the image
+                    # PATH, and resolved_env usually has no PATH to fall back on.
                     (
-                        f"{shlex.quote(self.prime_agent_bin())} stop "
+                        f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
+                        f"exec {shlex.quote(self.prime_agent_bin())} stop "
                         f"--daemon-socket {shlex.quote(socket)}"
                     ),
                 ],
                 self._run_env(trace, ""),
             )
             if stopped.exit_code != 0:
-                # Surface it instead of swallowing: a worker that outlives its
-                # state directory corrupts later rollouts, and a silent failure
-                # here is exactly how that goes unnoticed.
-                logger.warning(
-                    "prime-agent: stopping the trace daemon failed (exit %s): %s",
-                    stopped.exit_code,
-                    stopped.stderr.strip()[-300:],
+                # Keep the state directory: a failed stop may leave a live
+                # worker writing to it. Do not turn that failure into silent
+                # data loss by deleting the directory.
+                raise RuntimeError(
+                    "prime-agent: stopping the trace daemon failed "
+                    f"(exit {stopped.exit_code}): {stopped.stderr.strip()[-300:]}"
                 )
-        finally:
+        except Exception:
+            logger.exception("prime-agent: daemon cleanup failed; retaining %s", root)
+            raise
+        else:
             # Remove only this trace's state, never the shared install.
             await runtime.run(["rm", "-rf", root], {})
