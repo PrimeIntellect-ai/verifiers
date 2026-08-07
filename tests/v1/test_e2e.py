@@ -265,7 +265,9 @@ async def test_prime_agent_persists_ipython_kernel(run_v1, tmp_path):
     assert trace.rewards["persisted"].score == 1.0, trace.info.get(
         "prime_agent_segments"
     )
-    assert trace.info["prime_agent_state_cleaned"] is True
+    # State lives while the session runs; removal happens in harness.cleanup()
+    # during rollout close, after this env body has already returned.
+    assert trace.info["prime_agent_state_present_during_run"] is True
 
 
 @pytest.mark.e2e

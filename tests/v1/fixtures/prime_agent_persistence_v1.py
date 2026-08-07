@@ -72,12 +72,16 @@ class PrimeAgentPersistenceEnv(vf.SingleAgentEnv):
                 trace.info["prime_agent_segments"] = [
                     _segment_info(segment) for segment in segments
                 ]
+            # Record that the per-trace state EXISTS while the session is live.
+            # Cleanup runs during rollout close (rollout.py calls
+            # harness.cleanup after this body returns), so asserting removal here
+            # would demand the harness delete the session it is still running.
             state = (
                 "/tmp/vf-prime-agent-state/"
                 f"{hashlib.sha256(trace.id.encode()).hexdigest()[:32]}"
             )
-            cleaned = await runtime.run(["test", "!", "-e", state], {})
-            trace.info["prime_agent_state_cleaned"] = cleaned.exit_code == 0
+            present = await runtime.run(["test", "-e", state], {})
+            trace.info["prime_agent_state_present_during_run"] = present.exit_code == 0
 
 
 class PrimeAgentPersistenceTaskset(
