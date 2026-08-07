@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
-from verifiers.v1.trace import AgentConfigT, Error, Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, Trace
 from verifiers.v1.types import Usage
 
 
@@ -158,6 +158,14 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if run is not None:
             self.run = run
         self.info.update(info)
+
+    def to_record(self) -> dict[str, Any]:
+        """JSON record without raw trace tensors, which remain on the msgpack wire."""
+        return self.model_dump(
+            mode="json",
+            exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+            exclude_none=True,
+        )
 
     @classmethod
     def of(cls, trace: Trace, env: str = "") -> "Episode":
