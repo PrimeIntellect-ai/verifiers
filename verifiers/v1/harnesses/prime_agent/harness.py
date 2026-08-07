@@ -273,6 +273,9 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 command,
                 prompt,
                 allow_empty_tool_reply=True,
+                # Without this the non-live fallback records no ACP metadata at all,
+                # so any _meta-dependent reward would score a working agent as failed.
+                trace=trace,
             )
         except Exception as error:
             # ACP reports a daemon that never answers as an opaque 30s "create"
