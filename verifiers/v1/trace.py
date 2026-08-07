@@ -311,7 +311,8 @@ class Branch(BaseModel):
 
     @property
     def num_input_tokens(self) -> int:
-        return self.num_total_tokens - self.num_output_tokens
+        last = self.last_usage
+        return last.input_tokens if last is not None else 0
 
 
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
