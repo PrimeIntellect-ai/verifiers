@@ -4,7 +4,11 @@ root="$VF_PA_INSTALL_DIR"
 digest="$VF_PA_TARBALL_SHA256"
 stamp="$root/.installed"
 node_root="$VF_PA_NODE_ROOT"
-export PATH="$node_root/bin:$PATH"
+uv_root="${root}.uv"
+uv_bin="$uv_root/bin/uv"
+# Pin the installer input so all rollouts resolve the same uv artifact.
+uv_version="${VF_PA_UV_VERSION:-0.8.17}"
+export PATH="$uv_root/bin:$node_root/bin:$PATH"
 
 ensure_curl() {
     if command -v curl >/dev/null 2>&1; then
@@ -39,6 +43,33 @@ bundled_node_ok() {
 
 ensure_curl
 
+install_uv() {
+    if [ -x "$uv_bin" ] && "$uv_bin" --version 2>/dev/null | grep -F "uv $uv_version" >/dev/null 2>&1; then
+        return 0
+    fi
+    tmp="${uv_root}.staging.$$"
+    rm -rf "$tmp"
+    mkdir -p "$tmp/bin"
+    # The official installer honors UV_VERSION and UV_INSTALL_DIR. Download it
+    # while setup still has network, then publish the verified executable atomically.
+    if ! curl -fsSL https://astral.sh/uv/install.sh | UV_VERSION="$uv_version" UV_INSTALL_DIR="$tmp/bin" sh; then
+        echo "prime-agent: official uv installer failed for uv $uv_version" >&2
+        exit 1
+    fi
+    if [ ! -x "$tmp/bin/uv" ]; then
+        echo "prime-agent: official uv installer did not provide $tmp/bin/uv" >&2
+        exit 1
+    fi
+    rm -rf "$uv_root"
+    mv "$tmp" "$uv_root"
+}
+
+verify_uv() {
+    [ -x "$uv_bin" ] || { echo "prime-agent: uv missing at $uv_bin" >&2; exit 1; }
+    actual_uv="$($uv_bin --version 2>&1)" || { echo "prime-agent: uv --version failed after installation: $actual_uv" >&2; exit 1; }
+    printf '%s\n' "$actual_uv" | grep -F "uv $uv_version" >/dev/null 2>&1 || { echo "prime-agent: uv version mismatch; expected uv $uv_version, got $actual_uv" >&2; exit 1; }
+}
+
 if ! node_ok; then
     case "$(uname -s)" in
         Linux) node_os=linux ;;
@@ -61,9 +92,15 @@ if ! node_ok; then
     node_ok || { echo "prime-agent requires Node.js 22.8 or newer with npm" >&2; exit 1; }
 fi
 
+install_uv
+verify_uv
+
 # The install is shared, so key the stamp on the verified digest: a changed
 # version or tarball must reinstall rather than reuse another rollout's tree.
-if [ -x "$root/node_modules/.bin/prime-agent" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$digest" ]; then
+if [ -x "$root/node_modules/.bin/prime-agent" ] \
+    && [ "$(cat "$stamp" 2>/dev/null)" = "$digest" ] \
+    && [ -x "$uv_bin" ] \
+    && "$uv_bin" --version 2>/dev/null | grep -F "uv $uv_version" >/dev/null 2>&1; then
     exit 0
 fi
 
@@ -100,3 +137,4 @@ if ! mv "$staging" "$root"; then
     exit 1
 fi
 rm -rf "${root}.prev"
+

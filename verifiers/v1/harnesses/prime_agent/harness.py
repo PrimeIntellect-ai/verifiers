@@ -183,6 +183,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 "VF_PA_TARBALL_SHA256": self.tarball_sha256(),
                 "VF_PA_NODE_ROOT": self.node_root(),
                 "VF_PA_NODE_VERSION": NODE_VERSION,
+                "VF_PA_UV_VERSION": "0.8.17",
             },
         )
         if result.exit_code != 0:
@@ -282,6 +283,12 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             # (defaultDaemonSocketDir joins tmpdir with prime-agent-<uid>), so a
             # per-trace TMPDIR already isolates the socket without naming a path.
             "TMPDIR": self.tmp_dir(trace),
+            # The ACP launch wrapper must resolve uv for daemon workers too;
+            # setup()'s subprocess PATH cannot modify this later environment.
+            "PATH": f"{self.install_dir()}.uv/bin:{self.node_root()}/bin:"
+            + self.config.resolved_env.get(
+                "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ),
             "PRIME_AGENT_TELEMETRY": "0",
         }
 
