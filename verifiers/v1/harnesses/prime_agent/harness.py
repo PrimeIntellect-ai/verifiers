@@ -243,8 +243,10 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             KEY_VAR: secret,
             ENV_AGENT_DIR: f"{root}/agent",
             "HOME": f"{root}/agent",
+            # The daemon derives its socket from TMPDIR
+            # (defaultDaemonSocketDir joins tmpdir with prime-agent-<uid>), so a
+            # per-trace TMPDIR already isolates the socket without naming a path.
             "TMPDIR": f"{root}/tmp",
-            "PRIME_AGENT_DAEMON_SOCKET": f"{root}/daemon.sock",
             "PRIME_AGENT_TELEMETRY": "0",
         }
 
