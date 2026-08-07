@@ -333,12 +333,11 @@ async def test_prime_agent_subagent_lifecycle_and_accounting(run_v1, tmp_path):
     Interception alone cannot show this: `ModelCall` has no parent field, so child
     calls are indistinguishable from the parent's. Only preserved `_meta` can.
     """
-    from prime_agent_subagents_v1 import PrimeAgentSubagentEnv  # noqa: F401
-
-    trace = await run_v1(
-        env="prime_agent_subagents_v1",
+    (trace,) = await run_v1(
+        "prime-agent-subagents-v1",
         harness="prime-agent",
-        path=tmp_path,
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
         max_turns=8,
         max_tokens=16384,
         rollout_timeout=900,
@@ -352,11 +351,11 @@ async def test_prime_agent_subagent_lifecycle_and_accounting(run_v1, tmp_path):
 @pytest.mark.prime_agent
 async def test_prime_agent_autonomous_gate_engages(run_v1, tmp_path):
     """Autonomous mode continued and a gate actually ran, rather than being inert."""
-    trace = await run_v1(
-        env="prime_agent_autonomous_gate_v1",
+    (trace,) = await run_v1(
+        "prime-agent-autonomous-gate-v1",
         harness="prime-agent",
-        harness_config={"autonomous": True, "gates": ["test -f gate.txt"]},
-        path=tmp_path,
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
         max_turns=8,
         max_tokens=16384,
         rollout_timeout=900,
@@ -370,10 +369,11 @@ async def test_prime_agent_autonomous_gate_engages(run_v1, tmp_path):
 @pytest.mark.prime_agent
 async def test_prime_agent_harness_state_is_observable(run_v1, tmp_path):
     """Continual-harness or goal state change is visible across the rollout."""
-    trace = await run_v1(
-        env="prime_agent_harness_state_v1",
+    (trace,) = await run_v1(
+        "prime-agent-harness-state-v1",
         harness="prime-agent",
-        path=tmp_path,
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
         max_turns=8,
         max_tokens=16384,
         rollout_timeout=900,
@@ -387,10 +387,11 @@ async def test_prime_agent_harness_state_is_observable(run_v1, tmp_path):
 @pytest.mark.prime_agent
 async def test_prime_agent_killed_child_fails_loudly(run_v1, tmp_path):
     """A deleted child reports a terminal error instead of vanishing silently."""
-    trace = await run_v1(
-        env="prime_agent_negatives_v1",
+    (trace,) = await run_v1(
+        "prime-agent-negatives-v1",
         harness="prime-agent",
-        path=tmp_path,
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
         max_turns=8,
         max_tokens=16384,
         rollout_timeout=900,
