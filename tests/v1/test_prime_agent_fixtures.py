@@ -290,3 +290,44 @@ async def test_prime_agent_setup_forwards_resolved_environment(monkeypatch):
 def test_prime_agent_cleanup_removes_state_and_tmpdir_together():
     source = Path("verifiers/v1/harnesses/prime_agent/harness.py").read_text()
     assert 'runtime.run(["rm", "-rf", root, self.tmp_dir(trace)]' in source
+
+
+def test_version_validator_rejects_malformed_semver():
+    """A bad version becomes a 404 on the release URL instead of a clear error.
+
+    The permissive suffix pattern accepted empty dot-separated identifiers, so
+    values like "1.2.3-." validated and then failed as a download error far from
+    the actual mistake.
+    """
+    from pydantic import ValidationError
+
+    from verifiers.v1.utils.loaders import harness_config_type
+
+    config = harness_config_type("prime-agent")
+    digest = "a" * 64
+    for good in ("0.7.0", "1.2.3-rc.1", "1.2.3+build.5"):
+        config(id="x", version=good, tarball_sha256=digest)
+    for bad in ("1.2.3-.", "1.2.3-foo..bar", "1.2.3+.", "01.2.3", "1.2"):
+        with pytest.raises(ValidationError):
+            config(id="x", version=bad, tarball_sha256=digest)
+
+
+@pytest.mark.asyncio
+async def test_daemon_log_tail_never_masks_the_original_failure():
+    """Diagnostics run on the failure path, so they must not raise themselves.
+
+    A sandbox that is already gone would otherwise replace the real error with a
+    SandboxError from the log read, losing the attribution entirely.
+    """
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    class _DeadRuntime:
+        async def run(self, command, environment):
+            raise RuntimeError("sandbox is gone")
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    trace = SimpleNamespace(id="trace-for-log-tail")
+    assert await harness.daemon_log_tail(_DeadRuntime(), trace) == ""
