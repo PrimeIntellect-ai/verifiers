@@ -1,5 +1,6 @@
 """ACP metadata accumulation preserves ordered, namespaced extension events."""
 
+import asyncio
 import importlib.util
 import sys
 import types
@@ -127,23 +128,66 @@ def load_runner_without_acp_dependency(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
-def test_wait_for_late_metadata_waits_for_quiet_not_first_event():
-    """Stopping at the FIRST metadata event drops the trailing terminal update.
+class _MetaClient:
+    def __init__(self, initial=None):
+        self.turn_acp_meta = dict(initial or {})
+        self.output_changed = asyncio.Condition()
 
-    ACP can dispatch several SessionInfoUpdates around the response, and the
-    bucket is cleared once the response is built, so an event arriving after the
-    first is lost or attributed to the next turn. runner.py executes under its own
-    standalone ACP dependencies and cannot be imported here, so this asserts the
-    settle contract at the source level.
+    async def emit(self, event):
+        async with self.output_changed:
+            self.turn_acp_meta.setdefault("ns", []).append(event)
+            self.output_changed.notify_all()
+
+
+@pytest.mark.asyncio
+async def test_late_metadata_keeps_full_grace_before_the_first_event(monkeypatch):
+    """A first event arriving after the settle interval must not be dropped.
+
+    Waiting only for the stream to go quiet collapses the grace window down to
+    the settle interval while nothing has arrived yet.
     """
-    source = Path("verifiers/v1/acp/runner.py").read_text()
-    helper = source[source.index("async def wait_for_late_metadata") :]
-    helper = helper[: helper.index("\ndef ")]
-    # Loops until the event COUNT stops changing, rather than returning on the
-    # first truthy bucket.
-    assert "_meta_event_count(client) != seen" in helper
-    assert "LATE_METADATA_SETTLE_SECONDS" in helper
-    # Still bounded by the overall grace period.
-    assert "LATE_UPDATE_GRACE_SECONDS" in helper
-    # The old early-return on any existing metadata must be gone.
-    assert "if client.turn_acp_meta:\n        return" not in helper
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = _MetaClient()
+
+    async def emit_late():
+        await asyncio.sleep(0.3)  # after settle, well inside the grace window
+        await client.emit({"late": True})
+
+    task = asyncio.create_task(emit_late())
+    await runner.wait_for_late_metadata(client)
+    # Snapshot at RETURN time: awaiting the producer first would let a dropped
+    # event land afterwards and make the assertion vacuous.
+    collected = len(client.turn_acp_meta.get("ns", []))
+    await task
+    assert collected == 1
+
+
+@pytest.mark.asyncio
+async def test_late_metadata_collects_a_trailing_update(monkeypatch):
+    """The bucket is cleared once the response is built, so stragglers are lost."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = _MetaClient()
+
+    async def emit_two():
+        await asyncio.sleep(0.01)
+        await client.emit({"first": True})
+        await asyncio.sleep(0.01)
+        await client.emit({"trailing": True})
+
+    task = asyncio.create_task(emit_two())
+    await runner.wait_for_late_metadata(client)
+    collected = len(client.turn_acp_meta.get("ns", []))
+    await task
+    assert collected == 2
+
+
+@pytest.mark.asyncio
+async def test_late_metadata_does_not_delay_a_turn_that_already_has_metadata(
+    monkeypatch,
+):
+    """Otherwise every prompt pays a fixed delay it does not need."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    started = asyncio.get_event_loop().time()
+    await runner.wait_for_late_metadata(_MetaClient({"ns": [{"done": True}]}))
+    elapsed = asyncio.get_event_loop().time() - started
+    assert elapsed < runner.LATE_UPDATE_GRACE_SECONDS / 2, elapsed
