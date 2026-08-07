@@ -53,7 +53,6 @@ class VerifiersACPClient(Client):
         self.visible_reply = ""
         self.message_id = None
         self.tool_calls = {}
-        self.turn_acp_meta = {}
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         async with self.output_changed:
@@ -202,6 +201,19 @@ async def prompt(
             try:
                 await asyncio.wait_for(
                     client.output_changed.wait_for(has_visible_reply),
+                    timeout=LATE_UPDATE_GRACE_SECONDS,
+                )
+            except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+                pass
+
+    # ACP may resolve the response before dispatching a final SessionInfoUpdate.
+    # Mirror the visible-reply grace period so one-shot persistence and live
+    # serialization include metadata queued immediately before the response.
+    if not client.turn_acp_meta:
+        async with client.output_changed:
+            try:
+                await asyncio.wait_for(
+                    client.output_changed.wait_for(lambda: bool(client.turn_acp_meta)),
                     timeout=LATE_UPDATE_GRACE_SECONDS,
                 )
             except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
@@ -418,6 +430,7 @@ async def serve_stream() -> None:
                     }
                     if session.client.turn_acp_meta:
                         response["meta"] = session.client.turn_acp_meta
+                    session.client.turn_acp_meta = {}
                 elif operation == "shutdown":
                     await session.close()
                     closed = True
@@ -431,8 +444,10 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
-                if session.client.turn_acp_meta:
-                    response["meta"] = session.client.turn_acp_meta
+                # Metadata is associated with successful prompt turns only. An
+                # exception can be raised after a later turn's notification was
+                # queued, so attaching it here risks attributing it incorrectly.
+                session.client.turn_acp_meta = {}
             write_packet(sys.stdout.buffer, response)
             if stop:
                 break
