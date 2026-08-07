@@ -2,6 +2,8 @@
 
 import shlex
 
+from pydantic import Field
+
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -11,31 +13,30 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp"
+CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
-ACP_VERSION = "0.63.0"
+ACP_VERSION = "0.65.0"
+CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
-ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 CLAUDE_CONFIG_ROOT = ".vf-claude"
 SKILLS_DIR = ".claude/skills"
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
-if [ "$(cat /var/tmp/vf-claude-agent-acp/.version 2>/dev/null)" = "$VF_CLAUDE_ACP_VERSION" ] \
-    && [ -x /var/tmp/vf-claude-agent-acp/packages/node_modules/.bin/claude-agent-acp ]; then
-    exit 0
-fi
-npm install --prefix /var/tmp/vf-claude-agent-acp/packages --ignore-scripts --no-audit --no-fund \
+rm -f {ready}
+npm install --prefix {packages} --no-audit --no-fund \
     --omit=dev \
+    "@anthropic-ai/claude-code@$VF_CLAUDE_CODE_VERSION" \
     "@agentclientprotocol/claude-agent-acp@$VF_CLAUDE_ACP_VERSION" >/dev/null
-printf %s "$VF_CLAUDE_ACP_VERSION" > /var/tmp/vf-claude-agent-acp/.version
+touch {ready}
 """
 
 CLAUDE_ACP = ACP()
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
-    pass
+    version: str = Field(default="2.1.223", pattern=r"^[A-Za-z0-9._+-]+$")
+    """Claude Code release to install, pinned for reproducibility."""
 
 
 class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
@@ -47,15 +48,26 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
         await ensure_node(runtime)
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
+        directory = CLAUDE_ACP_DIR.format(**versions)
+        packages = PACKAGES_DIR.format(**versions)
+        claude_bin = CLAUDE_BIN.format(**versions)
+        acp_bin = ACP_BIN.format(**versions)
+        ready = f"{directory}/.ready"
+        script = ACP_INSTALL.replace("{packages}", packages).replace("{ready}", ready)
+        ensure = shlex.quote(
+            f"[ -f {ready} ] && [ -x {claude_bin} ] && [ -x {acp_bin} ] || ({script})"
+        )
         acp_guarded = (
-            f"mkdir -p {CLAUDE_ACP_DIR} && "
-            f'"$(command -v flock || command -v lockf)" {CLAUDE_ACP_DIR}/install.lock '
-            f"sh -c {shlex.quote(ACP_INSTALL)}"
+            f"mkdir -p {directory} && "
+            f'"$(command -v flock || command -v lockf)" {directory}/install.lock '
+            f"sh -c {ensure}"
         )
         acp_result = await runtime.run(
             ["sh", "-c", acp_guarded],
             {
                 **self.config.resolved_env,
+                "VF_CLAUDE_CODE_VERSION": self.config.version,
                 "VF_CLAUDE_ACP_VERSION": ACP_VERSION,
             },
         )
@@ -80,6 +92,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             )
         system_prompt, prompt = self.resolve_prompt(data)
         config_dir = self.config_dir(trace)
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         options: dict[str, object] = {
             "strictMcpConfig": True,
             "disallowedTools": self.config.disabled_tools or [],
@@ -92,6 +105,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "ANTHROPIC_MODEL": ctx.model,
+            "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
             "CLAUDE_CONFIG_DIR": config_dir,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_AUTOUPDATER": "1",
@@ -107,7 +121,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             mcp_urls,
             data,
             env=env,
-            command=ACP_COMMAND,
+            command=[f"{NODE_BIN_DIR}/node", ACP_BIN.format(**versions)],
             prompt=prompt or "",
             session_meta=session_meta,
         )
@@ -124,6 +138,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         config_dir = self.config_dir(trace)
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
 
         options: dict[str, object] = {
             "strictMcpConfig": True,
@@ -138,6 +153,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "ANTHROPIC_MODEL": ctx.model,
+            "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
             "CLAUDE_CONFIG_DIR": config_dir,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_AUTOUPDATER": "1",
@@ -146,7 +162,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         return await CLAUDE_ACP.run(
             runtime,
             env,
-            ACP_COMMAND,
+            [f"{NODE_BIN_DIR}/node", ACP_BIN.format(**versions)],
             prompt or "",
             mcp_urls=mcp_urls,
             session_path=f"{config_dir}/acp-session",

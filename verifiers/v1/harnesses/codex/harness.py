@@ -7,6 +7,8 @@ import re
 import shlex
 from collections import Counter
 
+from pydantic import Field
+
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -21,33 +23,29 @@ logger = logging.getLogger(__name__)
 PROVIDER = "intercept"
 KEY_VAR = "CODEX_INTERCEPT_KEY"
 
-CODEX_DIR = "/var/tmp/vf-codex"
+CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-CODEX_VERSION = "0.145.0"
-ACP_VERSION = "1.1.7"
+ACP_VERSION = "1.1.10"
+CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
-ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 SKILLS_DIR = ".agents/skills"
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
-versions="$VF_CODEX_VERSION:$VF_CODEX_ACP_VERSION"
-if [ "$(cat /var/tmp/vf-codex/.versions 2>/dev/null)" = "$versions" ] \
-    && [ -x /var/tmp/vf-codex/acp/node_modules/.bin/codex ] \
-    && [ -x /var/tmp/vf-codex/acp/node_modules/.bin/codex-acp ]; then
-    exit 0
-fi
-npm install --prefix /var/tmp/vf-codex/acp --ignore-scripts --no-audit --no-fund \
+rm -f {ready}
+npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
     "@openai/codex@$VF_CODEX_VERSION" >/dev/null
-printf %s "$versions" > /var/tmp/vf-codex/.versions
+touch {ready}
 """
 
 CODEX_ACP = ACP()
 
 
 class CodexHarnessConfig(HarnessConfig):
+    version: str = Field(default="0.146.1", pattern=r"^[A-Za-z0-9._+-]+$")
+    """Codex release to install, pinned for reproducibility."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
 
@@ -63,19 +61,29 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         await ensure_node(runtime)
         logger.info(
             "codex: ensuring Codex %s and codex-acp %s are installed",
-            CODEX_VERSION,
+            self.config.version,
             ACP_VERSION,
         )
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
+        directory = CODEX_DIR.format(**versions)
+        packages = PACKAGES_DIR.format(**versions)
+        codex_bin = CODEX_BIN.format(**versions)
+        acp_bin = ACP_BIN.format(**versions)
+        ready = f"{directory}/.ready"
+        script = INSTALL.replace("{packages}", packages).replace("{ready}", ready)
+        ensure = shlex.quote(
+            f"[ -f {ready} ] && [ -x {codex_bin} ] && [ -x {acp_bin} ] || ({script})"
+        )
         guarded = (
-            f"mkdir -p {CODEX_DIR} && "
-            f'"$(command -v flock || command -v lockf)" {CODEX_DIR}/install.lock '
-            f"sh -c {shlex.quote(INSTALL)}"
+            f"mkdir -p {directory} && "
+            f'"$(command -v flock || command -v lockf)" {directory}/install.lock '
+            f"sh -c {ensure}"
         )
         install = await runtime.run(
             ["sh", "-c", guarded],
             {
                 **self.config.resolved_env,
-                "VF_CODEX_VERSION": CODEX_VERSION,
+                "VF_CODEX_VERSION": self.config.version,
                 "VF_CODEX_ACP_VERSION": ACP_VERSION,
             },
         )
@@ -112,7 +120,10 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             {},
             data,
             env=env,
-            command=ACP_COMMAND,
+            command=[
+                f"{NODE_BIN_DIR}/node",
+                ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
+            ],
             prompt=prompt,
             system_prompt=system_prompt,
         )
@@ -139,7 +150,10 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         return await CODEX_ACP.run(
             runtime,
             env,
-            ACP_COMMAND,
+            [
+                f"{NODE_BIN_DIR}/node",
+                ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
+            ],
             prompt,
             system_prompt=system_prompt,
             session_path=f"{self.trace_home(trace)}/acp-session",

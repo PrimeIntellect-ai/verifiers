@@ -30,7 +30,7 @@ RLM_ACP = ACP()
 
 
 class RLMHarnessConfig(HarnessConfig):
-    version: str = "main"
+    version: str = Field(default="main", min_length=1)
     """Git ref (branch, tag, or commit) of rlm-harness to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""

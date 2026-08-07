@@ -31,7 +31,7 @@ POOL_ACP = ACP()
 
 
 class PoolHarnessConfig(HarnessConfig):
-    version: str = Field(default="1.0.11", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default="1.0.15", pattern=r"^[A-Za-z0-9._+-]+$")
     """Pool release to install, pinned for reproducibility."""
 
 
