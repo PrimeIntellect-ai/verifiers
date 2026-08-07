@@ -77,8 +77,13 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     @classmethod
     def _semver(cls, value: str) -> str:
         if not re.fullmatch(
+            # Follow semver strictly: dot-separated identifiers may not be
+            # empty. A permissive suffix accepted values like "1.2.3-." that
+            # then produce a 404 on the release URL instead of a clear error.
             r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-            r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            r"(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+            r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?"
+            r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
             value,
         ):
             raise ValueError("version must be a semantic version, e.g. 0.7.0")
@@ -222,7 +227,17 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 "lose the persistent IPython kernel"
             )
         system_prompt, prompt = self.resolve_prompt(data)
-        command = await self._prepare(ctx, trace, runtime, endpoint, system_prompt)
+        try:
+            command = await self._prepare(ctx, trace, runtime, endpoint, system_prompt)
+        except Exception as error:
+            # Same diagnostic as launch(): a daemon that never answers surfaces
+            # as an opaque ACP timeout, and its log dies with the sandbox.
+            tail = await self.daemon_log_tail(runtime, trace)
+            if tail and not isinstance(error, RolloutError):
+                raise RuntimeError(
+                    f"{error}\n\nprime-agent daemon log:\n{tail}"
+                ) from error
+            raise
         return PRIME_AGENT_ACP.session(
             self,
             ctx,
@@ -405,7 +420,17 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         return ["sh", "-c", f"exec {shlex.quote(wrapper)}"]
 
     async def daemon_log_tail(self, runtime: Runtime, trace: Trace) -> str:
-        """Best-effort daemon log, for explaining an opaque ACP startup timeout."""
+        """Best-effort daemon log, for explaining an opaque ACP startup timeout.
+
+        Never raises: this runs on a failure path, and a sandbox that is already
+        gone would otherwise replace the original error with its own.
+        """
+        try:
+            return await self._daemon_log_tail(runtime, trace)
+        except Exception:  # noqa: BLE001 - diagnostics must not mask the failure
+            return ""
+
+    async def _daemon_log_tail(self, runtime: Runtime, trace: Trace) -> str:
         result = await runtime.run(
             [
                 "sh",
