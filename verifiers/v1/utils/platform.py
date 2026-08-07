@@ -17,7 +17,7 @@ import httpx
 from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 _MAX_SAMPLES_PAYLOAD_BYTES = 25 * 1024 * 1024
 
 
-def _json_bytes(value: Any) -> int:
+def json_bytes(value: Any) -> int:
     return len(
         json.dumps(
             value,
@@ -109,7 +109,7 @@ def trace_to_sample(
     return sample
 
 
-def _creds() -> tuple[str | None, str, str, str | None]:
+def credentials() -> tuple[str | None, str, str, str | None]:
     """(api_key, api_base, frontend_url, team_id) from env vars / `~/.prime/config.json`."""
     cfg = load_prime_config()
     api_key = os.getenv("PRIME_API_KEY") or cfg.get("api_key")
@@ -129,7 +129,7 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     return api_key, base, frontend, team_id
 
 
-def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
+def run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]:
     """Run-level aggregates as v0's `GenerateMetadata`. Rewards/metrics aggregate
     over the trainable traces only — fixed agents (a judge, a modeled user) often
     carry no rewards and would dilute every mean with structural zeros — falling
@@ -160,41 +160,37 @@ def _run_metrics(episodes: list[Episode], traces: list[Trace]) -> dict[str, Any]
     }
 
 
-def _build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
+def build_samples(episodes: list[Episode]) -> list[dict[str, Any]]:
     """One Platform sample per Episode, with a legacy-compatible trace summary.
 
-    The native Episode in `info.native_wrapper` is authoritative. The selected
-    trainable trace (or first trace) only supplies flat fields used by older list,
-    metric, and download consumers. `native_trace_index` tells the native viewer
-    which trace that summary represents.
+    The native Episode in `info.native_wrapper` is authoritative and contains every
+    trace. One trainable trace (or the first trace) supplies only the flat summary
+    used by older consumers. `native_trace_index` identifies that summary trace.
     """
     counts: dict[int, int] = {}
     samples = []
     for episode in episodes:
         if not episode.traces:
             continue
-        trace_index, trace = next(
+        summary_trace_index = next(
             (
-                (index, candidate)
+                index
                 for index, candidate in enumerate(episode.traces)
                 if candidate.agent.trainable
             ),
-            (0, episode.traces[0]),
+            0,
         )
-        idx = trace.task.data.idx
+        summary_trace = episode.traces[summary_trace_index]
+        idx = summary_trace.task.data.idx
         counts[idx] = number = counts.get(idx, 0) + 1
-        sample = trace_to_sample(trace, number, episode.id)
+        sample = trace_to_sample(summary_trace, number, episode.id)
         sample["sample_id"] = episode.id
         sample["info"] = {
             **(sample["info"] or {}),
-            "native_wrapper": episode.model_dump(
-                mode="json",
-                exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
-                exclude_none=True,
-            ),
-            "native_trace_index": trace_index,
+            "native_wrapper": episode.to_record(),
+            "native_trace_index": summary_trace_index,
         }
-        if len(b'{"samples":[]}') + _json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
+        if len(b'{"samples":[]}') + json_bytes(sample) <= _MAX_SAMPLES_PAYLOAD_BYTES:
             samples.append(sample)
             continue
         logger.warning(
@@ -225,7 +221,7 @@ def push_traces(
             state.done = True
         return url
 
-    api_key, base, frontend, team_id = _creds()
+    api_key, base, frontend, team_id = credentials()
     if not api_key:
         logger.warning(
             "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
@@ -234,7 +230,7 @@ def push_traces(
 
     traces = [trace for episode in episodes for trace in episode.traces]
     env_name = (config.env.taskset.id) or config.legacy.id
-    metrics = _run_metrics(episodes, traces)
+    metrics = run_metrics(episodes, traces)
     num_examples = len({t.task.data.idx for t in traces})
     metadata = {
         "framework": "verifiers",
@@ -251,12 +247,12 @@ def push_traces(
     # The run is done and its results saved; a network blip here must not crash it
     # — log and skip the upload instead.
     try:
-        samples = _build_samples(episodes)
+        samples = build_samples(episodes)
         batches: list[list[dict[str, Any]]] = []
         batch: list[dict[str, Any]] = []
         payload_bytes = len(b'{"samples":[]}')
         for i, sample in enumerate(samples):
-            sample_bytes = _json_bytes(sample)
+            sample_bytes = json_bytes(sample)
             sample_payload_bytes = len(b'{"samples":[]}') + sample_bytes
             if sample_payload_bytes > _MAX_SAMPLES_PAYLOAD_BYTES:
                 raise ValueError(
