@@ -254,9 +254,18 @@ async def test_prime_agent_launch_preserves_typed_rollout_error(monkeypatch):
     assert raised.value is error
 
 
-def test_prime_agent_installer_bootstraps_https_certificates_with_curl():
+def test_prime_agent_installer_bootstraps_https_certificates_and_tools():
+    """CA roots must accompany the tools, or every HTTPS download fails."""
     installer = Path("verifiers/v1/harnesses/prime_agent/install.sh").read_text()
+    # Both package managers install CA roots alongside whatever is missing.
     assert (
-        "apt-get install -y --no-install-recommends ca-certificates curl" in installer
+        "apt-get install -y --no-install-recommends ca-certificates $missing"
+        in installer
     )
-    assert "apk add --no-cache ca-certificates curl" in installer
+    assert "apk add --no-cache ca-certificates $missing" in installer
+    # git is provisioned too: a coding taskset that clones fails deep inside a
+    # rollout without it, which reads as a bad score rather than a setup gap.
+    assert 'command -v git >/dev/null 2>&1 || missing="$missing git"' in installer
+    # uv must be pinned through the versioned installer URL; the generic
+    # installer ignores UV_VERSION and would silently install a different build.
+    assert "https://astral.sh/uv/${uv_version}/install.sh" in installer

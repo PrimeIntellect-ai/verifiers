@@ -10,16 +10,20 @@ uv_bin="$uv_root/bin/uv"
 uv_version="${VF_PA_UV_VERSION:-0.8.17}"
 export PATH="$uv_root/bin:$node_root/bin:$PATH"
 
-ensure_curl() {
-    if command -v curl >/dev/null 2>&1; then
-        return 0
-    fi
+ensure_base_tools() {
+    # curl fetches Node/uv/the tarball. git is not needed by prime-agent itself,
+    # but a coding taskset that clones or diffs fails deep inside a rollout
+    # without it, which reads as a bad score rather than a missing dependency.
+    missing=""
+    command -v curl >/dev/null 2>&1 || missing="$missing curl"
+    command -v git >/dev/null 2>&1 || missing="$missing git"
+    [ -z "$missing" ] && return 0
     if command -v apt-get >/dev/null 2>&1; then
-        apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates curl
+        apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates $missing
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache ca-certificates curl
+        apk add --no-cache ca-certificates $missing
     else
-        echo "prime-agent install requires curl; neither apt-get nor apk is available" >&2
+        echo "prime-agent install needs$missing; neither apt-get nor apk is available" >&2
         exit 1
     fi
     command -v curl >/dev/null 2>&1 || {
@@ -41,7 +45,7 @@ bundled_node_ok() {
     "$node_root/bin/npm" --version >/dev/null 2>&1
 }
 
-ensure_curl
+ensure_base_tools
 
 install_uv() {
     if [ -x "$uv_bin" ] && "$uv_bin" --version 2>/dev/null | grep -F "uv $uv_version" >/dev/null 2>&1; then
@@ -52,7 +56,13 @@ install_uv() {
     mkdir -p "$tmp/bin"
     # The official installer honors UV_VERSION and UV_INSTALL_DIR. Download it
     # while setup still has network, then publish the verified executable atomically.
-    if ! curl -fsSL https://astral.sh/uv/install.sh | UV_VERSION="$uv_version" UV_INSTALL_DIR="$tmp/bin" sh; then
+    # Pin through the versioned installer URL: the generic installer ignores
+    # UV_VERSION (verified -- it installed 0.12.2 when asked for 0.8.17), which
+    # both defeats the pin and makes the cache check below never match, so every
+    # setup re-downloads uv. UV_NO_MODIFY_PATH keeps it from writing shell rc
+    # files into the per-trace HOME.
+    if ! curl -fsSL "https://astral.sh/uv/${uv_version}/install.sh" \
+        | UV_INSTALL_DIR="$tmp/bin" UV_NO_MODIFY_PATH=1 sh; then
         echo "prime-agent: official uv installer failed for uv $uv_version" >&2
         exit 1
     fi
