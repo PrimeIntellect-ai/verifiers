@@ -8,13 +8,6 @@ from types import SimpleNamespace
 import pytest
 from prime_agent_failed_turn_v1 import has_raised_provider_failure
 from prime_agent_ipython_cell_v1 import CELL, SENTINEL, has_ipython_cell_call
-from prime_agent_persistence_v1 import (
-    FIRST_CELL,
-    SECOND_CELL,
-    PrimeAgentPersistenceTask,
-)
-
-import verifiers.v1 as vf
 
 
 def test_failed_turn_guard_rejects_a_clean_stop_reason():
