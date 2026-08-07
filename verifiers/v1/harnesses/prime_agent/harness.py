@@ -12,6 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import RolloutError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -213,8 +214,10 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         # Agent gains a resident ACP lifecycle, deleting this override restores
         # the plain per-segment shape.
         if not runtime.supports_live_processes:
-            return await super().session(
-                ctx, trace, runtime, endpoint, secret, mcp_urls, data
+            raise RuntimeError(
+                "prime-agent harness requires runtime live-process support: "
+                "without it, each segment would launch a fresh ACP process and "
+                "lose the persistent IPython kernel"
             )
         system_prompt, prompt = self.resolve_prompt(data)
         command = await self._prepare(ctx, trace, runtime, endpoint, system_prompt)
@@ -258,6 +261,11 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             # failure is diagnosable from CI output alone.
             tail = await self.daemon_log_tail(runtime, trace)
             if tail:
+                # A typed rollout error already carries the authoritative
+                # attribution (for example SandboxError). Do not replace it
+                # with a generic RuntimeError merely to attach diagnostics.
+                if isinstance(error, RolloutError):
+                    raise
                 raise RuntimeError(
                     f"{error}\n\nprime-agent daemon log:\n{tail}"
                 ) from error
@@ -372,7 +380,12 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         )
         wrapper = f"{root}/prime-agent"
         await runtime.write(wrapper, f"#!/bin/sh\nset -eu\n{command}".encode())
-        await runtime.run(["chmod", "700", wrapper], {})
+        wrapper_mode = await runtime.run(["chmod", "700", wrapper], {})
+        if wrapper_mode.exit_code != 0:
+            raise RuntimeError(
+                "prime-agent wrapper permissions failed: "
+                f"{wrapper_mode.stderr.strip()[-500:]}"
+            )
 
         return ["sh", "-c", f"exec {shlex.quote(wrapper)}"]
 
