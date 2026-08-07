@@ -223,4 +223,5 @@ class PiHarness(Harness[PiHarnessConfig]):
             ACP_COMMAND,
             prompt,
             session_path=f"{agent_dir}/acp-session",
+            trace=trace,
         )

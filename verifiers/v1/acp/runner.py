@@ -30,12 +30,14 @@ from acp.schema import (
     HttpMcpServer,
     PermissionOption,
     RequestPermissionResponse,
+    SessionInfoUpdate,
     TextContentBlock,
     ToolCall,
     ToolCallUpdate,
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+LATE_METADATA_SETTLE_SECONDS = 0.05
 LATE_UPDATE_GRACE_SECONDS = 1.0
 
 
@@ -44,6 +46,8 @@ class VerifiersACPClient(Client):
         self.visible_reply = ""
         self.message_id: str | None = None
         self.tool_calls: dict[str, str] = {}
+        self.acp_meta: dict[str, list[Any]] = {}
+        self.turn_acp_meta: dict[str, list[Any]] = {}
         self.output_changed = asyncio.Condition()
 
     def reset(self) -> None:
@@ -58,6 +62,10 @@ class VerifiersACPClient(Client):
             elif isinstance(update, ToolCallUpdate):
                 if update.status:
                     self.tool_calls[update.tool_call_id] = update.status
+            elif isinstance(update, SessionInfoUpdate):
+                for namespace, event in (update.field_meta or {}).items():
+                    self.acp_meta.setdefault(namespace, []).append(event)
+                    self.turn_acp_meta.setdefault(namespace, []).append(event)
             elif isinstance(update, AgentMessageChunk) and isinstance(
                 update.content, TextContentBlock
             ):
@@ -87,6 +95,47 @@ class VerifiersACPClient(Client):
             else DeniedOutcome(outcome="cancelled")
         )
         return RequestPermissionResponse(outcome=outcome)
+
+
+def _meta_event_count(client: VerifiersACPClient) -> int:
+    return sum(len(events) for events in client.turn_acp_meta.values())
+
+
+async def wait_for_late_metadata(client: VerifiersACPClient) -> None:
+    """Wait for ACP metadata to arrive and then settle, bounded by the grace period.
+
+    ACP may resolve the response before dispatching a final SessionInfoUpdate, and
+    may dispatch several around one response. Returning at the first event drops
+    the trailing terminal update, or attributes it to the next turn once the bucket
+    is cleared. Returning after a short quiet period while nothing has arrived yet
+    would collapse the grace window that protects the response/update race.
+    """
+
+    async def settle() -> None:
+        while True:
+            before = _meta_event_count(client)
+            # Nothing has arrived yet: hold the full grace window for the first
+            # event. Once metadata exists, only wait the short settle interval for
+            # a straggler, so a metadata-bearing turn pays no fixed delay.
+            timeout = (
+                LATE_METADATA_SETTLE_SECONDS if before else LATE_UPDATE_GRACE_SECONDS
+            )
+            async with client.output_changed:
+                try:
+                    await asyncio.wait_for(
+                        client.output_changed.wait_for(
+                            lambda seen=before: _meta_event_count(client) != seen
+                        ),
+                        timeout=timeout,
+                    )
+                except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+                    return
+
+    # Overall ceiling, so a chatty stream cannot extend the turn indefinitely.
+    try:
+        await asyncio.wait_for(settle(), timeout=LATE_UPDATE_GRACE_SECONDS)
+    except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+        pass
 
 
 def content_blocks(messages: list[dict], supports_images: bool) -> list:
@@ -155,6 +204,11 @@ def segment_messages(config: dict, is_new: bool) -> list[dict]:
     return messages
 
 
+def write_meta(path: str | None, client: VerifiersACPClient) -> None:
+    if path is not None:
+        Path(path).write_text(json.dumps(client.acp_meta, ensure_ascii=False))
+
+
 async def prompt(
     client: VerifiersACPClient,
     connection: Any,
@@ -193,6 +247,8 @@ async def prompt(
                 )
             except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
                 pass
+
+    await wait_for_late_metadata(client)
 
     tool_statuses = list(client.tool_calls.values())
     completed_tool_turn = (
@@ -254,14 +310,17 @@ async def run_once(config: dict) -> str:
             else:
                 raise RuntimeError("ACP agent does not support resuming sessions")
 
-        reply = await prompt(
-            client,
-            connection,
-            capabilities,
-            session_id,
-            config,
-            is_new=is_new,
-        )
+        try:
+            reply = await prompt(
+                client,
+                connection,
+                capabilities,
+                session_id,
+                config,
+                is_new=is_new,
+            )
+        finally:
+            write_meta(config.get("meta_path"), client)
         if session_path and is_new:
             session_path.parent.mkdir(parents=True, exist_ok=True)
             session_path.write_text(session_id)
@@ -400,6 +459,9 @@ async def serve_stream() -> None:
                         "ok": True,
                         "reply": await session.run(request["config"]),
                     }
+                    if session.client.turn_acp_meta:
+                        response["meta"] = session.client.turn_acp_meta
+                    session.client.turn_acp_meta = {}
                 elif operation == "shutdown":
                     await session.close()
                     closed = True
@@ -413,6 +475,10 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
+                # Metadata is associated with successful prompt turns only. An
+                # exception can be raised after a later turn's notification was
+                # queued, so attaching it here risks attributing it incorrectly.
+                session.client.turn_acp_meta = {}
             write_packet(sys.stdout.buffer, response)
             if stop:
                 break
