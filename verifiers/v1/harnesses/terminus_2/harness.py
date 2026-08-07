@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from pydantic import Field
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
@@ -13,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
-    version: str = "0.20.0"
+    version: str = Field(default="0.20.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Harbor release to install, pinned for reproducibility."""
 
 

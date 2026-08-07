@@ -4,6 +4,8 @@ import json
 import logging
 import shlex
 
+from pydantic import Field
+
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -43,7 +45,7 @@ KIMI_ACP = ACP()
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: str = "0.34.0"
+    version: str = Field(default="0.34.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Kimi Code release to install, pinned for reproducibility."""
 
 

@@ -4,6 +4,8 @@ import json
 import logging
 import shlex
 
+from pydantic import Field
+
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -86,7 +88,7 @@ PI_ACP = ACP()
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: str = "0.84.0"
+    version: str = Field(default="0.84.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Pi release to install, pinned for reproducibility."""
 
 
