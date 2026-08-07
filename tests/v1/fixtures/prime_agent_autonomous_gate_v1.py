@@ -19,3 +19,21 @@ class PrimeAgentAutonomousGateEnv(vf.SingleAgentEnv):
     async def run(self, task, agents):
         async with agents.agent.interaction(task) as interaction:
             await interaction.turn(TASK)
+
+
+class PrimeAgentAutonomousGateTaskset(
+    vf.Taskset[PrimeAgentAutonomousGateTask, vf.TasksetConfig]
+):
+    def load(self) -> list[PrimeAgentAutonomousGateTask]:
+        return [
+            PrimeAgentAutonomousGateTask(
+                vf.TaskData(
+                    idx=0,
+                    prompt=None,
+                    system_prompt="Follow instructions exactly; create files when asked.",
+                )
+            )
+        ]
+
+
+__all__ = ["PrimeAgentAutonomousGateEnv", "PrimeAgentAutonomousGateTaskset"]

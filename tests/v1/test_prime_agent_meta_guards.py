@@ -119,3 +119,37 @@ def test_refinement_requires_enumerated_changes():
     assert not refinement_applied(
         trace_with({"refinement": {"status": "complete", "changes": []}})
     )
+
+
+def test_harness_state_reward_falls_through_to_goal():
+    """A missing `refinement` envelope must not hide a present `goal`.
+
+    The guards raise on absent metadata, so a naive `refinement or goal` never
+    evaluated the second surface. Only a completely empty envelope is unscoreable.
+    """
+    import asyncio
+
+    from prime_agent_harness_state_v1 import PrimeAgentHarnessStateTask
+
+    task = PrimeAgentHarnessStateTask.__new__(PrimeAgentHarnessStateTask)
+    goal_only = trace_with({"goal": {"status": "active", "objective": "x"}})
+    assert asyncio.run(PrimeAgentHarnessStateTask.harness_state(task, goal_only)) == 1.0
+
+    refine_only = trace_with(
+        {"refinement": {"status": "complete", "changes": ["create memory:x"]}}
+    )
+    assert (
+        asyncio.run(PrimeAgentHarnessStateTask.harness_state(task, refine_only)) == 1.0
+    )
+
+    # Envelope present but neither surface: a real zero, not missing evidence.
+    other = trace_with({"autonomous": {"enabled": True}})
+    assert asyncio.run(PrimeAgentHarnessStateTask.harness_state(task, other)) == 0.0
+
+    # Nothing preserved at all: unscoreable, so raise rather than score zero.
+    empty = SimpleNamespace(info={})
+    try:
+        asyncio.run(PrimeAgentHarnessStateTask.harness_state(task, empty))
+        raise AssertionError("expected MissingAcpMeta for an empty envelope")
+    except MissingAcpMeta:
+        pass

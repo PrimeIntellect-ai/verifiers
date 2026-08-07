@@ -73,12 +73,28 @@ class PrimeAgentFailingGateEnv(vf.SingleAgentEnv):
             )
 
 
+class PrimeAgentKilledChildTaskset(
+    vf.Taskset[PrimeAgentKilledChildTask, vf.TasksetConfig]
+):
+    def load(self) -> list[PrimeAgentKilledChildTask]:
+        return [
+            PrimeAgentKilledChildTask(
+                vf.TaskData(
+                    idx=0,
+                    prompt=None,
+                    system_prompt="Follow instructions exactly when managing subagents.",
+                )
+            )
+        ]
+
+
 __all__ = [
     "MissingAcpMeta",
     "PrimeAgentFailingGateEnv",
     "PrimeAgentFailingGateTask",
     "PrimeAgentKilledChildEnv",
     "PrimeAgentKilledChildTask",
+    "PrimeAgentKilledChildTaskset",
     "child_error_reported",
     "quiescence_blocked_scoring",
 ]

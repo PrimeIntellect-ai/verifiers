@@ -31,3 +31,19 @@ class PrimeAgentSubagentEnv(vf.SingleAgentEnv):
     async def run(self, task, agents):
         async with agents.agent.interaction(task) as interaction:
             await interaction.turn(TASK)
+
+
+class PrimeAgentSubagentTaskset(vf.Taskset[PrimeAgentSubagentTask, vf.TasksetConfig]):
+    def load(self) -> list[PrimeAgentSubagentTask]:
+        return [
+            PrimeAgentSubagentTask(
+                vf.TaskData(
+                    idx=0,
+                    prompt=None,
+                    system_prompt="Spawn exactly one subagent when asked and wait for its reply before answering.",
+                )
+            )
+        ]
+
+
+__all__ = ["PrimeAgentSubagentEnv", "PrimeAgentSubagentTaskset"]
