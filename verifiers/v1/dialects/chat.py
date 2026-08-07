@@ -354,4 +354,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set (later keys win, so the eval's override the program's).
-        return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
+        # Some OpenAI-compatible providers reject an explicit JSON null for `tools`; omitting it
+        # has the same no-tools meaning and keeps tool-less harness turns portable.
+        steered = {k: v for k, v in body.items() if k != "tools" or v is not None}
+        return {**steered, "model": model, **sampling.model_dump(exclude_none=True)}

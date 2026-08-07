@@ -261,6 +261,7 @@ markers = [
     "docker: v1 e2e cases touching the docker runtime",
     "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
+    "e2b: v1 e2e cases touching the e2b runtime (real sandbox; local-only, excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
     "null: v1 e2e cases on the null harness",
     "bash: v1 e2e cases on the bash harness",
