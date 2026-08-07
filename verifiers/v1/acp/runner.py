@@ -37,6 +37,7 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+LATE_METADATA_SETTLE_SECONDS = 0.05
 LATE_UPDATE_GRACE_SECONDS = 1.0
 
 
@@ -96,21 +97,41 @@ class VerifiersACPClient(Client):
         return RequestPermissionResponse(outcome=outcome)
 
 
+def _meta_event_count(client: VerifiersACPClient) -> int:
+    return sum(len(events) for events in client.turn_acp_meta.values())
+
+
 async def wait_for_late_metadata(client: VerifiersACPClient) -> None:
     """Give an immediately queued metadata update one grace period, if needed."""
+
     # ACP may resolve the response before dispatching a final SessionInfoUpdate.
     # A metadata-bearing turn has already arrived, so waiting would impose a fixed
     # delay on every prompt rather than protecting the response/update race.
-    if client.turn_acp_meta:
-        return
-    async with client.output_changed:
-        try:
-            await asyncio.wait_for(
-                client.output_changed.wait_for(lambda: bool(client.turn_acp_meta)),
-                timeout=LATE_UPDATE_GRACE_SECONDS,
-            )
-        except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
-            pass
+    # Wait for the stream to go QUIET rather than for the first event: ACP can
+    # dispatch several SessionInfoUpdates around the response, and stopping at the
+    # first one drops the trailing terminal update -- or attributes it to the next
+    # turn, since the bucket is cleared once the response is built.
+    async def settle() -> None:
+        while True:
+            before = _meta_event_count(client)
+            async with client.output_changed:
+                try:
+                    await asyncio.wait_for(
+                        client.output_changed.wait_for(
+                            lambda seen=before: _meta_event_count(client) != seen
+                        ),
+                        timeout=LATE_METADATA_SETTLE_SECONDS,
+                    )
+                except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+                    return
+
+    try:
+        # A turn with no metadata at all still gets the full grace period, which is
+        # the response/update race this protects; a metadata-bearing turn only pays
+        # the short settle interval after its last event.
+        await asyncio.wait_for(settle(), timeout=LATE_UPDATE_GRACE_SECONDS)
+    except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+        pass
 
 
 def content_blocks(messages: list[dict], supports_images: bool) -> list:
