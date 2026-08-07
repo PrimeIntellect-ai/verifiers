@@ -345,20 +345,31 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self.trace_root(trace)
+        socket = f"{root}/daemon.sock"
         try:
-            # Stop this trace's daemon worker before removing its state; a live
-            # worker would otherwise keep writing into a deleted directory.
-            await runtime.run(
+            # Stop this trace's daemon before deleting its state: a live worker
+            # would keep writing into a removed directory. `daemon` is in the
+            # CLI's REMOVED_COMMAND_NAMES, so the subcommand is plain `stop`.
+            stopped = await runtime.run(
                 [
                     "sh",
                     "-c",
                     (
-                        f"{shlex.quote(self.prime_agent_bin())} --daemon-socket "
-                        f"{shlex.quote(root + '/daemon.sock')} daemon stop || true"
+                        f"{shlex.quote(self.prime_agent_bin())} stop "
+                        f"--daemon-socket {shlex.quote(socket)}"
                     ),
                 ],
                 self._run_env(trace, ""),
             )
+            if stopped.exit_code != 0:
+                # Surface it instead of swallowing: a worker that outlives its
+                # state directory corrupts later rollouts, and a silent failure
+                # here is exactly how that goes unnoticed.
+                logger.warning(
+                    "prime-agent: stopping the trace daemon failed (exit %s): %s",
+                    stopped.exit_code,
+                    stopped.stderr.strip()[-300:],
+                )
         finally:
             # Remove only this trace's state, never the shared install.
             await runtime.run(["rm", "-rf", root], {})
