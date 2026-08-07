@@ -1,5 +1,6 @@
 """Two-segment Prime Agent interaction that requires one live IPython kernel."""
 
+import hashlib
 import re
 
 import verifiers.v1 as vf
@@ -71,7 +72,10 @@ class PrimeAgentPersistenceEnv(vf.SingleAgentEnv):
                 trace.info["prime_agent_segments"] = [
                     _segment_info(segment) for segment in segments
                 ]
-            state = f".vf-prime-agent-{trace.id}"
+            state = (
+                "/tmp/vf-prime-agent-state/"
+                f"{hashlib.sha256(trace.id.encode()).hexdigest()[:32]}"
+            )
             cleaned = await runtime.run(["test", "!", "-e", state], {})
             trace.info["prime_agent_state_cleaned"] = cleaned.exit_code == 0
 
