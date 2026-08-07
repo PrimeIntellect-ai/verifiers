@@ -336,6 +336,13 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         }
         models_path = f"{agent_dir}/models.json"
         await runtime.write(models_path, json.dumps(models).encode())
+        # The endpoint the agent must reach is rewritten by the runtime
+        # (127.0.0.1 becomes a proxy-only alias under egress restriction), and a
+        # rollout that cannot reach it fails as an opaque provider error. Log it
+        # so a failure names the address that was actually configured.
+        logger.info(
+            "prime-agent: model endpoint for trace %s is %s", trace.id, endpoint
+        )
         for command in (
             ["chmod", "700", root, agent_dir, self.tmp_dir(trace)],
             ["chmod", "600", models_path],
