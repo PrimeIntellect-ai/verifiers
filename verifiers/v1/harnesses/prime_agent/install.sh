@@ -11,9 +11,9 @@ ensure_curl() {
         return 0
     fi
     if command -v apt-get >/dev/null 2>&1; then
-        apt-get update -qq && apt-get install -y --no-install-recommends curl
+        apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates curl
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache curl
+        apk add --no-cache ca-certificates curl
     else
         echo "prime-agent install requires curl; neither apt-get nor apk is available" >&2
         exit 1

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -180,3 +181,90 @@ async def test_persistence_fixture_rejects_an_uncleaned_harness_trace_root():
 
     assert runtime.calls == [(["test", "!", "-e", root], {})]
     assert trace.info["prime_agent_state_cleaned"] is False
+
+
+class _GuardRuntime:
+    supports_live_processes = False
+
+    def __init__(self, wrapper: str | None = None):
+        self.wrapper = wrapper
+        self.calls: list[list[str]] = []
+
+    async def run(self, command, environment):
+        self.calls.append(command)
+        failed = self.wrapper is not None and command == ["chmod", "700", self.wrapper]
+        return SimpleNamespace(
+            exit_code=1 if failed else 0, stderr="chmod denied", stdout=""
+        )
+
+    async def write(self, path, content):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_refuses_non_live_runtime_before_fresh_relaunch():
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    with pytest.raises(RuntimeError, match="requires runtime live-process support"):
+        await harness.session(
+            None, None, _GuardRuntime(), "endpoint", "secret", {}, None
+        )
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_wrapper_chmod_failure_is_reported():
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    trace = SimpleNamespace(id="chmod-guard")
+    runtime = _GuardRuntime(f"{harness.trace_root(trace)}/prime-agent")
+    ctx = SimpleNamespace(model="model", sampling=SimpleNamespace(max_tokens=None))
+    with pytest.raises(RuntimeError, match="wrapper permissions failed"):
+        await harness._prepare(ctx, trace, runtime, "endpoint", None)
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_launch_preserves_typed_rollout_error(monkeypatch):
+    from verifiers.v1.errors import SandboxError
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    error = SandboxError("sandbox unavailable")
+
+    async def prepare(*args, **kwargs):
+        return ["prime-agent"]
+
+    async def run(*args, **kwargs):
+        raise error
+
+    async def tail(*args, **kwargs):
+        return "daemon tail"
+
+    monkeypatch.setattr(harness, "_prepare", prepare)
+    monkeypatch.setattr(harness, "daemon_log_tail", tail)
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.prime_agent.harness.PRIME_AGENT_ACP.run", run
+    )
+    data = SimpleNamespace(prompt="hello", system_prompt=None)
+    trace = SimpleNamespace(id="typed-error")
+    with pytest.raises(SandboxError) as raised:
+        await harness.launch(None, trace, object(), "endpoint", "secret", {}, data)
+    assert raised.value is error
+
+
+def test_prime_agent_installer_bootstraps_https_certificates_with_curl():
+    installer = Path("verifiers/v1/harnesses/prime_agent/install.sh").read_text()
+    assert (
+        "apt-get install -y --no-install-recommends ca-certificates curl" in installer
+    )
+    assert "apk add --no-cache ca-certificates curl" in installer
