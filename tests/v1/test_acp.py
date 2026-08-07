@@ -1,6 +1,12 @@
 """ACP metadata accumulation preserves ordered, namespaced extension events."""
 
+import asyncio
+import importlib.util
+import sys
+import types
 from pathlib import Path
+
+import pytest
 
 from verifiers.v1.acp import _record_acp_meta
 
@@ -101,12 +107,103 @@ def test_acp_runner_preserves_late_turn_metadata_and_drops_failed_turn_metadata(
     prompt_source = runner[runner.index("async def prompt(") : prompt_end]
     assert "LATE_UPDATE_GRACE_SECONDS" in prompt_source
     assert "wait_for" in prompt_source
-    assert (
-        "client.output_changed.wait_for(lambda: bool(client.turn_acp_meta))"
-        in prompt_source
-    )
+    assert "await wait_for_late_metadata(client)" in prompt_source
+    helper_start = runner.index("async def wait_for_late_metadata")
+    helper_end = runner.index("\n\ndef content_blocks", helper_start)
+    helper_source = runner[helper_start:helper_end]
+    metadata_wait = "client.output_changed.wait_for(lambda: bool(client.turn_acp_meta))"
+    assert metadata_wait in helper_source
+    # A turn which already has its SessionInfoUpdate must return immediately,
+    # rather than waiting out the late-update grace period on every prompt.
+    assert "if client.turn_acp_meta:" in helper_source
+    assert "return" in helper_source
     error_start = runner.index("            except Exception as error:")
     error_end = runner.index("            write_packet", error_start)
     error_source = runner[error_start:error_end]
     assert 'response["meta"]' not in error_source
     assert "session.client.turn_acp_meta = {}" in error_source
+
+
+def load_runner_without_acp_dependency(monkeypatch: pytest.MonkeyPatch):
+    """Load the standalone script with only the ACP names this unit path needs."""
+    acp = types.ModuleType("acp")
+    acp.PROTOCOL_VERSION = "0.11"
+    acp.Client = object
+    acp.RequestError = RuntimeError
+    acp.image_block = lambda data, media_type: (data, media_type)
+    acp.spawn_agent_process = None
+    acp.text_block = lambda text: text
+    schema = types.ModuleType("acp.schema")
+    for name in (
+        "AgentMessageChunk",
+        "AllowedOutcome",
+        "ClientCapabilities",
+        "DeniedOutcome",
+        "HttpMcpServer",
+        "PermissionOption",
+        "RequestPermissionResponse",
+        "SessionInfoUpdate",
+        "TextContentBlock",
+        "ToolCall",
+        "ToolCallUpdate",
+    ):
+        setattr(schema, name, type(name, (), {}))
+    monkeypatch.setitem(sys.modules, "acp", acp)
+    monkeypatch.setitem(sys.modules, "acp.schema", schema)
+    spec = importlib.util.spec_from_file_location(
+        "test_acp_runner", Path(__file__).parents[2] / "verifiers/v1/acp/runner.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.asyncio
+async def test_acp_runner_skips_metadata_grace_when_turn_already_has_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Metadata received before prompt completion must not add a fixed delay."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+
+    class NoWaitCondition:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def wait_for(self, predicate):
+            raise AssertionError("a metadata-bearing turn must not wait")
+
+    class Client:
+        def __init__(self) -> None:
+            self.visible_reply = "DONE"
+            self.tool_calls = {}
+            self.turn_acp_meta = {"ai.primeintellect.prime-agent": [{"goal": {}}]}
+            self.output_changed = NoWaitCondition()
+
+        def reset(self) -> None:
+            # Production reset clears reply/tool state but intentionally preserves
+            # metadata until the stream response serializes this turn.
+            pass
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            return types.SimpleNamespace(stop_reason="end_turn")
+
+    reply = await asyncio.wait_for(
+        runner.prompt(
+            Client(),
+            Connection(),
+            types.SimpleNamespace(
+                prompt_capabilities=types.SimpleNamespace(image=False)
+            ),
+            "session",
+            {"messages": [{"role": "user", "content": "hi"}], "system_prompt": ""},
+            is_new=True,
+        ),
+        timeout=0.1,
+    )
+
+    assert reply == "DONE"

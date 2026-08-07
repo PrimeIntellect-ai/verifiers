@@ -13,7 +13,6 @@ fixture whose agent genuinely failed, and that ambiguity is what hides bugs.
 from prime_agent_meta_guards import (
     MissingAcpMeta,
     field_history,
-    gate_failure_reported,
     observed_child_statuses,
 )
 
@@ -59,20 +58,6 @@ class PrimeAgentKilledChildEnv(vf.SingleAgentEnv):
             )
 
 
-class PrimeAgentFailingGateTask(vf.Task):
-    @vf.reward(weight=1.0)
-    async def failing_gate_is_loud(self, trace: vf.Trace) -> float:
-        return float(gate_failure_reported(trace))
-
-
-class PrimeAgentFailingGateEnv(vf.SingleAgentEnv):
-    async def run(self, task, agents):
-        async with agents.agent.interaction(task) as interaction:
-            await interaction.turn(
-                "Create a file named gate.txt containing ok, then reply with exactly DONE."
-            )
-
-
 class PrimeAgentKilledChildTaskset(
     vf.Taskset[PrimeAgentKilledChildTask, vf.TasksetConfig]
 ):
@@ -90,8 +75,6 @@ class PrimeAgentKilledChildTaskset(
 
 __all__ = [
     "MissingAcpMeta",
-    "PrimeAgentFailingGateEnv",
-    "PrimeAgentFailingGateTask",
     "PrimeAgentKilledChildEnv",
     "PrimeAgentKilledChildTask",
     "PrimeAgentKilledChildTaskset",
