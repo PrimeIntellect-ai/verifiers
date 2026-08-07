@@ -120,6 +120,7 @@ class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
             mcp_urls=mcp_urls,
             system_prompt=system_prompt,
             session_path=f"{home}/acp-session",
+            trace=trace,
         )
         if not any(call.node is not None for call in trace.calls[calls_before:]):
             detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"

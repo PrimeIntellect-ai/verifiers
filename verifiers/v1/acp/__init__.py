@@ -6,6 +6,7 @@ import json
 import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
@@ -21,6 +22,14 @@ ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 __all__ = ["ACP"]
+
+
+def _record_acp_meta(trace: Trace, meta: dict[str, list[Any]]) -> None:
+    if not meta:
+        return
+    recorded = trace.info.setdefault("acp_meta", {})
+    for namespace, events in meta.items():
+        recorded.setdefault(namespace, []).extend(events)
 
 
 class ACP:
@@ -77,6 +86,7 @@ class ACP:
         session_path: str | None = None,
         session_meta: dict | None = None,
         allow_empty_tool_reply: bool = False,
+        trace: Trace | None = None,
     ) -> ProgramResult:
         """Run one ACP segment without retaining its process."""
         return await self._run(
@@ -103,6 +113,7 @@ class ACP:
         session_path: str | None = None,
         session_meta: dict | None = None,
         allow_empty_tool_reply: bool = False,
+        trace: Trace | None = None,
     ) -> ProgramResult:
         if prompt is None:
             raise ValueError("ACP requires a prompt")
@@ -130,9 +141,16 @@ class ACP:
         if created.exit_code != 0:
             raise RuntimeError(f"ACP config directory failed: {created.stderr.strip()}")
         path = f"{directory}/config.json"
+        meta_path = f"{directory}/meta.json"
+        config["meta_path"] = meta_path
         try:
             await runtime.write(path, json.dumps(config).encode())
-            return await runtime.run_program([*program, "once", path], env)
+            result = await runtime.run_program([*program, "once", path], env)
+            if trace is not None:
+                with contextlib.suppress(Exception):
+                    meta = json.loads((await runtime.read(meta_path)).decode())
+                    _record_acp_meta(trace, meta)
+            return result
         finally:
             await run_shielded(runtime.run(["rm", "-rf", directory], {}))
 
@@ -252,6 +270,8 @@ class ACPHarnessSession(HarnessSession):
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
+        if meta := response.get("meta"):
+            _record_acp_meta(self.trace, meta)
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
