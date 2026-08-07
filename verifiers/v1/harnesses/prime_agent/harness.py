@@ -228,13 +228,24 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         command = await self._prepare(ctx, trace, runtime, endpoint, system_prompt)
-        return await PRIME_AGENT_ACP.run(
-            runtime,
-            self._run_env(trace, secret),
-            command,
-            prompt,
-            allow_empty_tool_reply=True,
-        )
+        try:
+            return await PRIME_AGENT_ACP.run(
+                runtime,
+                self._run_env(trace, secret),
+                command,
+                prompt,
+                allow_empty_tool_reply=True,
+            )
+        except Exception as error:
+            # ACP reports a daemon that never answers as an opaque 30s "create"
+            # timeout, and the daemon log dies with the sandbox. Attach it so the
+            # failure is diagnosable from CI output alone.
+            tail = await self.daemon_log_tail(runtime, trace)
+            if tail:
+                raise RuntimeError(
+                    f"{error}\n\nprime-agent daemon log:\n{tail}"
+                ) from error
+            raise
 
     def _run_env(self, trace: Trace, secret: str) -> dict[str, str]:
         root = self.trace_root(trace)
@@ -346,7 +357,20 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         wrapper = f"{root}/prime-agent"
         await runtime.write(wrapper, f"#!/bin/sh\nset -eu\n{command}".encode())
         await runtime.run(["chmod", "700", wrapper], {})
+
         return ["sh", "-c", f"exec {shlex.quote(wrapper)}"]
+
+    async def daemon_log_tail(self, runtime: Runtime, trace: Trace) -> str:
+        """Best-effort daemon log, for explaining an opaque ACP startup timeout."""
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                f"tail -n 40 {shlex.quote(self.trace_root(trace))}/agent/logs/*.log 2>/dev/null || true",
+            ],
+            {},
+        )
+        return result.stdout.strip()[-1500:]
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self.trace_root(trace)
