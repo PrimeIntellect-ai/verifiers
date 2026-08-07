@@ -20,7 +20,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, Trace
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.install import env_name
 
@@ -74,9 +74,12 @@ def save_config(config: BaseModel, results_dir: Path) -> None:
 
 
 def write_episode(results_dir: Path, episode: Episode) -> None:
-    """Serialize and append one rollout episode in the worker thread."""
+    """Serialize and append one rollout episode in the worker thread. Raw per-node tensors stay
+    out of the record — they are the trainer's, and numpy bytes do not round-trip json."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
-    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
+    data = type_adapter(type(episode)).dump_json(
+        episode, exclude_none=True, exclude={"traces": {"__all__": EXCLUDE_FIELDS}}
+    )
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
 
