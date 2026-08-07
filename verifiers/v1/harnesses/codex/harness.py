@@ -32,10 +32,12 @@ SKILLS_DIR = ".agents/skills"
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
+rm -f {ready}
 npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
     "@openai/codex@$VF_CODEX_VERSION" >/dev/null
+touch {ready}
 """
 
 CODEX_ACP = ACP()
@@ -67,8 +69,11 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         packages = PACKAGES_DIR.format(**versions)
         codex_bin = CODEX_BIN.format(**versions)
         acp_bin = ACP_BIN.format(**versions)
-        script = INSTALL.replace("{packages}", packages)
-        ensure = shlex.quote(f"[ -x {codex_bin} ] && [ -x {acp_bin} ] || ({script})")
+        ready = f"{directory}/.ready"
+        script = INSTALL.replace("{packages}", packages).replace("{ready}", ready)
+        ensure = shlex.quote(
+            f"[ -f {ready} ] && [ -x {codex_bin} ] && [ -x {acp_bin} ] || ({script})"
+        )
         guarded = (
             f"mkdir -p {directory} && "
             f'"$(command -v flock || command -v lockf)" {directory}/install.lock '

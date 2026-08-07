@@ -23,10 +23,12 @@ SKILLS_DIR = ".claude/skills"
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
+rm -f {ready}
 npm install --prefix {packages} --no-audit --no-fund \
     --omit=dev \
     "@anthropic-ai/claude-code@$VF_CLAUDE_CODE_VERSION" \
     "@agentclientprotocol/claude-agent-acp@$VF_CLAUDE_ACP_VERSION" >/dev/null
+touch {ready}
 """
 
 CLAUDE_ACP = ACP()
@@ -51,8 +53,11 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         packages = PACKAGES_DIR.format(**versions)
         claude_bin = CLAUDE_BIN.format(**versions)
         acp_bin = ACP_BIN.format(**versions)
-        script = ACP_INSTALL.replace("{packages}", packages)
-        ensure = shlex.quote(f"[ -x {claude_bin} ] && [ -x {acp_bin} ] || ({script})")
+        ready = f"{directory}/.ready"
+        script = ACP_INSTALL.replace("{packages}", packages).replace("{ready}", ready)
+        ensure = shlex.quote(
+            f"[ -f {ready} ] && [ -x {claude_bin} ] && [ -x {acp_bin} ] || ({script})"
+        )
         acp_guarded = (
             f"mkdir -p {directory} && "
             f'"$(command -v flock || command -v lockf)" {directory}/install.lock '
