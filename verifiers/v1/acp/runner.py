@@ -96,6 +96,23 @@ class VerifiersACPClient(Client):
         return RequestPermissionResponse(outcome=outcome)
 
 
+async def wait_for_late_metadata(client: VerifiersACPClient) -> None:
+    """Give an immediately queued metadata update one grace period, if needed."""
+    # ACP may resolve the response before dispatching a final SessionInfoUpdate.
+    # A metadata-bearing turn has already arrived, so waiting would impose a fixed
+    # delay on every prompt rather than protecting the response/update race.
+    if client.turn_acp_meta:
+        return
+    async with client.output_changed:
+        try:
+            await asyncio.wait_for(
+                client.output_changed.wait_for(lambda: bool(client.turn_acp_meta)),
+                timeout=LATE_UPDATE_GRACE_SECONDS,
+            )
+        except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+            pass
+
+
 def content_blocks(messages: list[dict], supports_images: bool) -> list:
     blocks = []
     transcript = len(messages) != 1 or messages[0].get("role") != "user"
@@ -206,18 +223,7 @@ async def prompt(
             except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
                 pass
 
-    # ACP may resolve the response before dispatching a final SessionInfoUpdate.
-    # Mirror the visible-reply grace period so one-shot persistence and live
-    # serialization include metadata queued immediately before the response.
-    if not client.turn_acp_meta:
-        async with client.output_changed:
-            try:
-                await asyncio.wait_for(
-                    client.output_changed.wait_for(lambda: bool(client.turn_acp_meta)),
-                    timeout=LATE_UPDATE_GRACE_SECONDS,
-                )
-            except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
-                pass
+    await wait_for_late_metadata(client)
 
     tool_statuses = list(client.tool_calls.values())
     completed_tool_turn = (
