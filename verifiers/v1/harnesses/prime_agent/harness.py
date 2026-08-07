@@ -39,6 +39,13 @@ NODE_VERSION = "22.19.0"
 
 INSTALL_ROOT = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-state"
+# The daemon builds worker sockets as
+# $TMPDIR/prime-agent-<uid>/worker-<12>-<12>.sock, which adds 54 characters. A
+# per-trace TMPDIR under STATE_ROOT pushed that past the 108-byte sun_path limit,
+# so listen() returned EINVAL and the supervisor blocked for its full 30s worker
+# timeout -- surfacing only as an opaque ACP "create" timeout. Keep the socket
+# root short and separate from the (longer) state root.
+TMP_ROOT = "/tmp/vfpa"
 
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 # Prime Agent's model-facing tool surface is IPython; there is no per-tool
@@ -143,11 +150,20 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
     def prime_agent_bin(self) -> str:
         return f"{self.install_dir()}/node_modules/.bin/prime-agent"
 
+    def trace_key(self, trace: Trace) -> str:
+        # Hash the trace id: it is untrusted input for a filesystem path.
+        return hashlib.sha256(trace.id.encode()).hexdigest()[:32]
+
+    def tmp_dir(self, trace: Trace) -> str:
+        """Short per-trace TMPDIR, sized for the daemon's worker socket paths.
+
+        16 hex characters keep the longest derived socket well inside sun_path
+        while still being collision-free in practice for concurrent rollouts.
+        """
+        return f"{TMP_ROOT}/{self.trace_key(trace)[:16]}"
+
     def trace_root(self, trace: Trace) -> str:
-        # Hash the trace id: it is untrusted input for a filesystem path, and a
-        # short digest also keeps unix socket paths under sun_path.
-        key = hashlib.sha256(trace.id.encode()).hexdigest()[:32]
-        return f"{STATE_ROOT}/{key}"
+        return f"{STATE_ROOT}/{self.trace_key(trace)}"
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("prime-agent: ensuring %s is installed", self.config.version)
@@ -257,7 +273,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             # The daemon derives its socket from TMPDIR
             # (defaultDaemonSocketDir joins tmpdir with prime-agent-<uid>), so a
             # per-trace TMPDIR already isolates the socket without naming a path.
-            "TMPDIR": f"{root}/tmp",
+            "TMPDIR": self.tmp_dir(trace),
             "PRIME_AGENT_TELEMETRY": "0",
         }
 
@@ -272,7 +288,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         root = self.trace_root(trace)
         agent_dir = f"{root}/agent"
         created = await runtime.run(
-            ["mkdir", "-p", "-m", "700", root, agent_dir, f"{root}/tmp"], {}
+            ["mkdir", "-p", "-m", "700", root, agent_dir, self.tmp_dir(trace)], {}
         )
         if created.exit_code != 0:
             raise RuntimeError(
@@ -313,7 +329,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         models_path = f"{agent_dir}/models.json"
         await runtime.write(models_path, json.dumps(models).encode())
         for command in (
-            ["chmod", "700", root, agent_dir, f"{root}/tmp"],
+            ["chmod", "700", root, agent_dir, self.tmp_dir(trace)],
             ["chmod", "600", models_path],
         ):
             restricted = await runtime.run(command, {})
