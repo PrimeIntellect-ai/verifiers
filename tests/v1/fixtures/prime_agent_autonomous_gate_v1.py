@@ -4,7 +4,11 @@ from prime_agent_meta_guards import autonomous_continued, gate_attempted
 
 import verifiers.v1 as vf
 
-TASK = "Create a file named gate.txt containing ok, then reply with exactly DONE."
+# The gate must FAIL at least once, or autonomous never continues: a gate that
+# passes immediately emits continuationsUsed 0 and no gateAttempt at all
+# (verified against real gpt-5.6-luna), so this fixture would score 0 forever.
+# The agent creates the file the gate demands only on a later pass.
+TASK = "Reply with exactly DONE. Do not create any files unless a gate tells you to."
 
 
 class PrimeAgentAutonomousGateTask(vf.Task):

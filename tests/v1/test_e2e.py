@@ -359,6 +359,18 @@ async def test_prime_agent_autonomous_gate_engages(run_v1, tmp_path):
         max_turns=8,
         max_tokens=16384,
         rollout_timeout=900,
+        # A gate that fails forces the continuation this fixture measures. Against
+        # real gpt-5.6-luna a passing gate yields continuationsUsed 0 and omits
+        # gateAttempt entirely, so only a failing gate exercises the feature.
+        env={
+            "agent": {
+                "harness": {
+                    "id": "prime-agent",
+                    "autonomous": True,
+                    "gates": ["sh -c 'exit 1'"],
+                }
+            }
+        },
     )
     assert trace.ok, trace.errors
     assert trace.rewards["autonomous_gate"].score == 1.0
