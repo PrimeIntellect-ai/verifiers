@@ -1,5 +1,6 @@
 """Deterministic guard tests for the Prime Agent live capability fixtures."""
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -89,3 +90,93 @@ def test_ipython_cell_guard_requires_verbatim_code_and_real_execution():
     assert not has_ipython_cell_call(trace_with(CELL, ["something else"]))
     # Executed something else, even if it printed the sentinel itself.
     assert not has_ipython_cell_call(trace_with(f"{CELL}\nprint('extra')", [SENTINEL]))
+
+
+class _AsyncContext:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class _PersistenceRuntime:
+    def __init__(self, existing_paths: set[str]):
+        self.existing_paths = existing_paths
+        self.calls: list[tuple[list[str], dict]] = []
+
+    async def run(self, command: list[str], environment: dict):
+        self.calls.append((command, environment))
+        return SimpleNamespace(exit_code=int(command[-1] in self.existing_paths))
+
+
+class _PersistenceAgent:
+    def __init__(self, runtime, interaction):
+        self.runtime = runtime
+        self._interaction = interaction
+
+    def provision(self, task):
+        return _AsyncContext(self.runtime)
+
+    def interaction(self, task, *, runtime):
+        assert runtime is self.runtime
+        return _AsyncContext(self._interaction)
+
+
+class _PersistenceInteraction:
+    def __init__(self, trace):
+        self.trace = trace
+        self._segments = [
+            SimpleNamespace(last_reply="READY", messages=[], terminated=False),
+            SimpleNamespace(last_reply="marker", messages=[], terminated=False),
+        ]
+
+    async def turn(self, prompt):
+        return self._segments.pop(0)
+
+
+def _prime_agent_trace_root(trace_id: str) -> str:
+    return (
+        "/tmp/vf-prime-agent-state/"
+        f"{hashlib.sha256(trace_id.encode()).hexdigest()[:32]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_persistence_fixture_checks_the_harness_trace_root_after_cleanup():
+    from prime_agent_persistence_v1 import PrimeAgentPersistenceEnv
+
+    trace = SimpleNamespace(id="trace/with untrusted input", info={})
+    runtime = _PersistenceRuntime(existing_paths=set())
+    interaction = _PersistenceInteraction(trace)
+    agents = SimpleNamespace(agent=_PersistenceAgent(runtime, interaction))
+
+    await PrimeAgentPersistenceEnv.run(
+        object.__new__(PrimeAgentPersistenceEnv), None, agents
+    )
+
+    assert runtime.calls == [
+        (["test", "!", "-e", _prime_agent_trace_root(trace.id)], {})
+    ]
+    assert trace.info["prime_agent_state_cleaned"] is True
+
+
+@pytest.mark.asyncio
+async def test_persistence_fixture_rejects_an_uncleaned_harness_trace_root():
+    from prime_agent_persistence_v1 import PrimeAgentPersistenceEnv
+
+    trace = SimpleNamespace(id="trace-that-remains", info={})
+    root = _prime_agent_trace_root(trace.id)
+    runtime = _PersistenceRuntime(existing_paths={root})
+    interaction = _PersistenceInteraction(trace)
+    agents = SimpleNamespace(agent=_PersistenceAgent(runtime, interaction))
+
+    await PrimeAgentPersistenceEnv.run(
+        object.__new__(PrimeAgentPersistenceEnv), None, agents
+    )
+
+    assert runtime.calls == [(["test", "!", "-e", root], {})]
+    assert trace.info["prime_agent_state_cleaned"] is False
