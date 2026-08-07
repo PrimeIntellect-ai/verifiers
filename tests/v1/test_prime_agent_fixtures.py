@@ -140,25 +140,6 @@ def _prime_agent_trace_root(trace_id: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_persistence_fixture_records_live_state_at_the_harness_trace_root():
-    from prime_agent_persistence_v1 import PrimeAgentPersistenceEnv
-
-    trace = SimpleNamespace(id="trace/with untrusted input", info={})
-    runtime = _PersistenceRuntime(existing_paths=set())
-    interaction = _PersistenceInteraction(trace)
-    agents = SimpleNamespace(agent=_PersistenceAgent(runtime, interaction))
-
-    await PrimeAgentPersistenceEnv.run(
-        object.__new__(PrimeAgentPersistenceEnv), None, agents
-    )
-
-    # The state must be observed at the harness's real hashed root while the
-    # session is live; cleanup runs later, during rollout close.
-    assert runtime.calls == [(["test", "-e", _prime_agent_trace_root(trace.id)], {})]
-    assert trace.info["prime_agent_state_present_during_run"] is False
-
-
-@pytest.mark.asyncio
 async def test_persistence_fixture_sees_state_present_while_the_session_runs():
     from prime_agent_persistence_v1 import PrimeAgentPersistenceEnv
 
@@ -270,3 +251,42 @@ def test_prime_agent_installer_bootstraps_https_certificates_and_tools():
     # uv must be pinned through the versioned installer URL; the generic
     # installer ignores UV_VERSION and would silently install a different build.
     assert "https://astral.sh/uv/${uv_version}/install.sh" in installer
+
+
+def test_prime_agent_installer_handles_musl_without_glibc_download():
+    installer = Path("verifiers/v1/harnesses/prime_agent/install.sh").read_text()
+    assert "ldd --version 2>&1 | grep -qi musl" in installer
+    assert "apk add --no-cache nodejs-current npm" in installer
+    assert "Alpine/musl requires nodejs-current and npm" in installer
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_setup_forwards_resolved_environment(monkeypatch):
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(
+        PrimeAgentHarnessConfig(id="prime-agent", env={"HTTPS_PROXY": "http://proxy"})
+    )
+    calls = []
+
+    async def run(command, environment):
+        calls.append((command, environment))
+        return SimpleNamespace(exit_code=0, stderr="", stdout="")
+
+    async def setup(*args):
+        return None
+
+    runtime = SimpleNamespace(run=run)
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.prime_agent.harness.PRIME_AGENT_ACP.setup", setup
+    )
+    await harness.setup(runtime)
+    assert calls[0][1]["HTTPS_PROXY"] == "http://proxy"
+
+
+def test_prime_agent_cleanup_removes_state_and_tmpdir_together():
+    source = Path("verifiers/v1/harnesses/prime_agent/harness.py").read_text()
+    assert 'runtime.run(["rm", "-rf", root, self.tmp_dir(trace)]' in source

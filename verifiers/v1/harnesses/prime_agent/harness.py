@@ -178,6 +178,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         result = await runtime.run(
             ["sh", "-c", guarded],
             {
+                **self.config.resolved_env,
                 "VF_PA_INSTALL_DIR": self.install_dir(),
                 "VF_PA_TARBALL_URL": self.tarball_url(),
                 "VF_PA_TARBALL_SHA256": self.tarball_sha256(),
@@ -449,5 +450,6 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             logger.exception("prime-agent: daemon cleanup failed; retaining %s", root)
             raise
         else:
-            # Remove only this trace's state, never the shared install.
-            await runtime.run(["rm", "-rf", root], {})
+            # Remove only this trace's state and its per-trace socket directory;
+            # never remove the shared install. TMPDIR is created only in _prepare.
+            await runtime.run(["rm", "-rf", root, self.tmp_dir(trace)], {})
