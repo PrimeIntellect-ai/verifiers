@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
@@ -171,20 +171,6 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
 
 
-def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
-    """Per-call lower bound on newly fed-in tokens: each call's prompt beyond the
-    previous call's final sequence, clamped at zero. Exact while the history is
-    append-only; tokens the engine drops between calls (stripped reasoning, truncated
-    history) register as an undercount of that call's new input rather than going
-    negative."""
-    prev_total = 0
-    for call in calls:
-        if call.usage is None:
-            continue
-        yield call, max(0, call.usage.input_tokens - prev_total)
-        prev_total = call.usage.total_tokens
-
-
 class Branch(BaseModel):
     """A root-to-leaf graph path; each branch becomes one training sample."""
 
@@ -313,6 +299,31 @@ class Branch(BaseModel):
             (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
 
+    def input_token_increments(self) -> Iterator[tuple[ModelCall, int]]:
+        """New input beyond the prior response state represented in the next request.
+
+        Textual reasoning may be omitted by the next request's chat template. Only
+        provider state explicitly designed for reasoning replay is therefore retained;
+        otherwise reported reasoning is excluded from the previous sequence before
+        taking the clamped prompt delta.
+        """
+        prev_retained_tokens = 0
+        sampled_nodes = (node for node in self.nodes if node.sampled)
+        for call, node in zip(self.calls, sampled_nodes, strict=True):
+            if call.usage is None:
+                continue
+            yield call, max(0, call.usage.input_tokens - prev_retained_tokens)
+            message = node.message
+            reasoning_retained = isinstance(message, AssistantMessage) and any(
+                str(state.get("type", "")).startswith("reasoning")
+                or state.get("type") in ("thinking", "redacted_thinking")
+                for state in message.provider_state or []
+            )
+            dropped_reasoning = (
+                0 if reasoning_retained else call.usage.reasoning_tokens or 0
+            )
+            prev_retained_tokens = call.usage.total_tokens - dropped_reasoning
+
     @property
     def num_total_tokens(self) -> int:
         last = self.last_usage
@@ -327,7 +338,7 @@ class Branch(BaseModel):
     def num_input_tokens(self) -> int:
         """Fed-in tokens (system + user + tool), counted once; a lower bound whenever
         the engine drops tokens between calls."""
-        return sum(increment for _, increment in min_new_input_tokens(self.calls))
+        return sum(increment for _, increment in self.input_token_increments())
 
 
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
@@ -395,7 +406,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         for branch in self.branches:
             # A call's predecessors are fixed by the graph, so its increment is the
             # same in every branch containing it; keep the first occurrence.
-            for call, increment in min_new_input_tokens(branch.calls):
+            for call, increment in branch.input_token_increments():
                 if id(call) not in seen:
                     seen.add(id(call))
                     total += increment
