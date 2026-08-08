@@ -21,6 +21,8 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
+    ModalConfig,
+    NetworkPolicyConfig,
     Runtime,
     RuntimeConfig,
     make_runtime,
@@ -91,7 +93,20 @@ class Rollout:
         )
         if on_trace is not None:
             on_trace(self.trace)
-        self._session = RolloutSession(ctx, self.trace, task.hooks("stop"), limits)
+        self._session = RolloutSession(
+            ctx=ctx,
+            trace=self.trace,
+            network_restricted=(
+                isinstance(runtime_config, NetworkPolicyConfig)
+                and runtime_config.network_restricted
+            )
+            or (
+                isinstance(runtime_config, ModalConfig)
+                and not runtime_config.network_access
+            ),
+            stops=task.hooks("stop"),
+            limits=limits,
+        )
         self._stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None

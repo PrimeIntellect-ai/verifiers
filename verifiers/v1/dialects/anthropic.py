@@ -13,7 +13,12 @@ from dataclasses import dataclass, field
 from anthropic.types import Message as AnthropicMessage
 from anthropic.types import Usage as AnthropicUsage
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    is_remote_url,
+    parse_sse_event,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -41,6 +46,66 @@ STOP_REASONS = {
     "stop_sequence": "stop",
 }
 THINKING = ("thinking", "redacted_thinking")
+_CLIENT_TOOL_TYPES = frozenset(
+    {
+        "bash_20241022",
+        "bash_20250124",
+        "text_editor_20241022",
+        "text_editor_20250124",
+        "text_editor_20250429",
+        "text_editor_20250728",
+        "computer_20241022",
+        "computer_20250124",
+        "computer_20251124",
+        "memory_20250818",
+    }
+)
+_CONTENT_WRAPPERS = frozenset(
+    {
+        "code_execution_tool_result",
+        "bash_code_execution_tool_result",
+        "text_editor_code_execution_tool_result",
+        "web_search_tool_result",
+        "web_fetch_tool_result",
+        "tool_search_tool_result",
+        "mcp_tool_result",
+        "advisor_tool_result",
+        "code_execution_result",
+        "bash_code_execution_result",
+        "encrypted_code_execution_result",
+        "web_fetch_result",
+    }
+)
+_SAFE_CONTENT_TYPES = frozenset(
+    {
+        "text",
+        "image",
+        "document",
+        "thinking",
+        "redacted_thinking",
+        "tool_use",
+        "search_result",
+        "server_tool_use",
+        "mid_conv_system",
+        "compaction",
+        "fallback",
+        "mcp_tool_use",
+        "web_search_result",
+        "web_search_tool_result_error",
+        "web_fetch_tool_result_error",
+        "tool_search_tool_search_result",
+        "tool_search_tool_result_error",
+        "code_execution_tool_result_error",
+        "bash_code_execution_tool_result_error",
+        "text_editor_code_execution_tool_result_error",
+        "text_editor_code_execution_create_result",
+        "text_editor_code_execution_str_replace_result",
+        "text_editor_code_execution_view_result",
+        "advisor_result",
+        "advisor_redacted_result",
+        "advisor_tool_result_error",
+    }
+)
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -59,6 +124,59 @@ def parse_content(content) -> str | list[ContentPart]:
                 url = f"data:{source.get('media_type', '')};base64,{source.get('data', '')}"
             parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
     return parts
+
+
+def _tool_capability(tools, path: str) -> str | None:
+    for index, tool in enumerate(tools or []):
+        item_path = f"{path}[{index}]"
+        if not isinstance(tool, dict):
+            return item_path
+        kind = tool.get("type")
+        if kind in (None, "custom") and "input_schema" in tool:
+            continue
+        if kind in _CLIENT_TOOL_TYPES:
+            continue
+        return f"{item_path}.type"
+    return None
+
+
+def _content_capability(value, path: str) -> str | None:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if capability := _content_capability(item, f"{path}[{index}]"):
+                return capability
+        return None
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("type")
+    if kind in ("image", "document"):
+        source = value.get("source") or {}
+        if not isinstance(source, dict):
+            return f"{path}.source"
+        source_kind = source.get("type")
+        if source_kind == "url" and is_remote_url(source.get("url")):
+            return f"{path}.source.url"
+        if source_kind == "file":
+            return (
+                f"{path}.source.file_id"
+                if source.get("file_id")
+                else f"{path}.source.type"
+            )
+        if source_kind == "content":
+            return _content_capability(source.get("content"), f"{path}.source.content")
+        if source_kind not in ("base64", "text", "url"):
+            return f"{path}.source.type"
+    if kind in (
+        "container_upload",
+        "code_execution_output",
+        "bash_code_execution_output",
+    ) and value.get("file_id"):
+        return f"{path}.file_id"
+    if kind == "tool_result" or kind in _CONTENT_WRAPPERS:
+        return _content_capability(value.get("content"), f"{path}.content")
+    if kind in _SAFE_CONTENT_TYPES:
+        return None
+    return f"{path}.type"
 
 
 def parse_messages(body: dict) -> Messages:
@@ -273,6 +391,22 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
     response_type = ModdedAnthropicMessage
+
+    def external_capability(self, body: dict) -> str | None:
+        if body.get("container") is not None:
+            return "container"
+        if body.get("mcp_servers"):
+            return "mcp_servers"
+        if capability := _content_capability(body.get("system"), "system"):
+            return capability
+        for index, message in enumerate(body.get("messages") or []):
+            if not isinstance(message, dict):
+                continue
+            if capability := _content_capability(
+                message.get("content"), f"messages[{index}].content"
+            ):
+                return capability
+        return _tool_capability(body.get("tools"), "tools")
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
         return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
