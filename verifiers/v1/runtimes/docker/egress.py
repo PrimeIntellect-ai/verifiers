@@ -59,11 +59,7 @@ class NetworkPolicy:
             connect
             and port != 443
             and not any(
-                rule == "*"
-                or (
-                    urlsplit(rule.lower()).scheme == "https"
-                    and _rule_matches(rule, scheme, host, port)
-                )
+                rule == "*" or _rule_matches(rule, scheme, host, port)
                 for rule in [*self.routes, *self.allow]
             )
         ):
@@ -186,8 +182,19 @@ class EgressProxy:
             connect = method == "CONNECT"
             if connect:
                 parsed = urlsplit(f"//{target}")
-                scheme = "https"
                 host, port = parsed.hostname or "", parsed.port or 443
+                # Some HTTP clients tunnel plain HTTP through CONNECT. Only an
+                # explicit framework route can identify that otherwise-ambiguous
+                # tunnel without broadening user-configured egress.
+                scheme = (
+                    "http"
+                    if any(
+                        urlsplit(route.lower()).scheme == "http"
+                        and _rule_matches(route, "http", host, port)
+                        for route in self.policy.routes
+                    )
+                    else "https"
+                )
             else:
                 parsed = urlsplit(target)
                 scheme = parsed.scheme.lower()
@@ -241,17 +248,18 @@ class EgressProxy:
                 response_started = True
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await _drain(writer)
-                client_hello, server_name = await _read_client_hello(reader)
-                if server_name is None:
-                    with contextlib.suppress(ValueError):
-                        ip_address(host)
-                        server_name = host
-                if server_name is None or not self.policy.permits(
-                    "https", server_name, port, connect=True
-                ):
-                    return
-                upstream_writer.write(client_hello)
-                await _drain(upstream_writer)
+                if scheme == "https":
+                    client_hello, server_name = await _read_client_hello(reader)
+                    if server_name is None:
+                        with contextlib.suppress(ValueError):
+                            ip_address(host)
+                            server_name = host
+                    if server_name is None or not self.policy.permits(
+                        "https", server_name, port, connect=True
+                    ):
+                        return
+                    upstream_writer.write(client_hello)
+                    await _drain(upstream_writer)
                 await _relay(reader, writer, upstream_reader, upstream_writer)
             else:
                 path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
