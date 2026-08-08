@@ -267,6 +267,8 @@ class Branch(BaseModel):
                 merged.mm_items.setdefault(modality, []).extend(items)
             for modality, hashes in mmd.mm_hashes.items():
                 merged.mm_hashes.setdefault(modality, []).extend(hashes)
+            for modality, placeholders in mmd.mm_placeholders.items():
+                merged.mm_placeholders.setdefault(modality, []).extend(placeholders)
         return merged if found else None
 
     @property

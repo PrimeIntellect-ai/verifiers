@@ -12,8 +12,9 @@ from typing import Any, ClassVar, TypeVar
 from openai import OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
-from renderers.base import ToolCallParseStatus
+from renderers.base import ToolCallParseStatus, is_multimodal
 
+from verifiers.utils.multimodal import prepare_images_inplace
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
@@ -175,16 +176,6 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-def _has_multimodal_content(messages) -> bool:
-    for message in messages:
-        content = getattr(message, "content", None)
-        if not isinstance(content, list):
-            continue
-        if any(getattr(part, "type", None) == "image_url" for part in content):
-            return True
-    return False
-
-
 @dataclass
 class RendererSlot:
     """One renderer and the rollouts currently holding it. Encoding mutates a fast
@@ -315,6 +306,11 @@ class TrainClient(Client):
                 multiplex=config.multiplex,
             ).warm()
 
+    async def prepare_request_body(self, dialect: Dialect, body: dict) -> dict:
+        if isinstance(dialect, ChatDialect):
+            await asyncio.to_thread(prepare_images_inplace, body)
+        return body
+
     async def get_response(
         self,
         dialect: Dialect,
@@ -370,22 +366,23 @@ class TrainClient(Client):
         async with pool.acquire() as slot:
             renderer = slot.renderer
             # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
-            # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
-            can_bridge = (
-                turn is not None
-                and not _has_multimodal_content(prompt)
-                and _is_valid_incremental_tail(wire_messages)
-            )
+            # tail that isn't a clean `[tool*, user?]` extension can't bridge.
+            can_bridge = turn is not None and _is_valid_incremental_tail(wire_messages)
             previous_ids = turn.previous_token_ids() if can_bridge else None
             if previous_ids is not None:
                 previous_prompt_ids, previous_completion_ids = previous_ids
 
                 def bridge():
+                    kwargs: dict[str, Any] = {"tools": wire_tools}
+                    if is_multimodal(renderer):
+                        kwargs["previous_multi_modal_data"] = (
+                            turn.previous_multi_modal_data()
+                        )
                     return renderer.bridge_to_next_turn(
                         previous_prompt_ids,
                         previous_completion_ids,
                         wire_messages,
-                        tools=wire_tools,
+                        **kwargs,
                     )
 
                 bridged = await slot.run(bridge)
