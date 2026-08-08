@@ -59,7 +59,11 @@ class NetworkPolicy:
             connect
             and port != 443
             and not any(
-                rule == "*" or _rule_matches(rule, scheme, host, port)
+                rule == "*"
+                or (
+                    urlsplit(rule.lower()).scheme == scheme
+                    and _rule_matches(rule, scheme, host, port)
+                )
                 for rule in [*self.routes, *self.allow]
             )
         ):
