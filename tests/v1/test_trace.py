@@ -98,3 +98,46 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
+
+
+def test_input_tokens_only_exclude_reasoning_missing_from_next_prompt():
+    calls = [
+        vf.ModelCall(
+            usage=vf.Usage(
+                prompt_tokens=909,
+                completion_tokens=67,
+                cached_input_tokens=0,
+                reasoning_tokens=11,
+            )
+        ),
+        vf.ModelCall(
+            usage=vf.Usage(
+                prompt_tokens=995,
+                completion_tokens=11,
+                cached_input_tokens=0,
+                reasoning_tokens=0,
+            )
+        ),
+    ]
+    discarded = vf.Branch(
+        index=0,
+        nodes=[
+            MessageNode(
+                message=AssistantMessage(content=None),
+                sampled=True,
+            ),
+            MessageNode(
+                parent=0,
+                message=AssistantMessage(content="done"),
+                sampled=True,
+            ),
+        ],
+        calls=calls,
+    )
+    carried = discarded.model_copy(deep=True)
+    message = carried.nodes[0].message
+    assert isinstance(message, AssistantMessage)
+    message.provider_state = [{"type": "reasoning.encrypted", "data": "state"}]
+
+    assert discarded.num_input_tokens == 909 + 30
+    assert carried.num_input_tokens == 909 + 19
