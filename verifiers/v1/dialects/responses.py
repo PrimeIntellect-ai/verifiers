@@ -15,7 +15,12 @@ from openai.types.responses import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    is_remote_url,
+    iter_sse_reverse,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -45,6 +50,59 @@ _TERMINAL_MARKERS = tuple(
 )
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
+_CLIENT_TOOL_TYPES = frozenset(
+    {
+        "function",
+        "custom",
+        "local_shell",
+        "apply_patch",
+        "computer",
+        "computer_use_preview",
+    }
+)
+_CLIENT_TOOL_CHOICES = _CLIENT_TOOL_TYPES | {
+    "namespace",
+    "tool_search",
+    "shell",
+}
+_PROVIDER_INPUT_TYPES = frozenset(
+    {
+        "file_search_call",
+        "web_search_call",
+        "code_interpreter_call",
+        "image_generation_call",
+        "mcp_list_tools",
+        "mcp_approval_request",
+        "mcp_approval_response",
+        "mcp_call",
+        "item_reference",
+        "program",
+        "program_output",
+    }
+)
+_SAFE_INPUT_TYPES = frozenset(
+    {
+        "input_text",
+        "input_file",
+        "input_image",
+        "computer_screenshot",
+        "output_text",
+        "refusal",
+        "computer_call",
+        "function_call",
+        "custom_tool_call",
+        "reasoning",
+        "compaction",
+        "tool_search_call",
+        "local_shell_call",
+        "local_shell_call_output",
+        "shell_call",
+        "shell_call_output",
+        "apply_patch_call",
+        "apply_patch_call_output",
+        "compaction_trigger",
+    }
+)
 
 
 class ProviderUsageInputTokensDetails(BaseModel):
@@ -94,6 +152,91 @@ def parse_content(content) -> str | list[ContentPart]:
                 )
             )
     return parts
+
+
+def _tool_capability(tools, path: str) -> str | None:
+    for index, tool in enumerate(tools or []):
+        item_path = f"{path}[{index}]"
+        if not isinstance(tool, dict):
+            return item_path
+        kind = tool.get("type")
+        if kind in _CLIENT_TOOL_TYPES:
+            continue
+        if kind == "namespace":
+            if capability := _tool_capability(tool.get("tools"), f"{item_path}.tools"):
+                return capability
+            continue
+        if kind == "tool_search" and tool.get("execution") == "client":
+            continue
+        environment = tool.get("environment")
+        if (
+            kind == "shell"
+            and isinstance(environment, dict)
+            and environment.get("type") == "local"
+        ):
+            continue
+        return f"{item_path}.type"
+    return None
+
+
+def _content_capability(value, path: str) -> str | None:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if capability := _content_capability(item, f"{path}[{index}]"):
+                return capability
+        return None
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("type")
+    caller = value.get("caller")
+    if isinstance(caller, dict) and caller.get("type") == "program":
+        return f"{path}.caller.type"
+    if kind == "input_file":
+        if value.get("file_id"):
+            return f"{path}.file_id"
+        if is_remote_url(value.get("file_url")):
+            return f"{path}.file_url"
+    if kind in ("input_image", "computer_screenshot"):
+        if value.get("file_id"):
+            return f"{path}.file_id"
+        if is_remote_url(value.get("image_url")):
+            return f"{path}.image_url"
+    if kind in _PROVIDER_INPUT_TYPES:
+        return f"{path}.type"
+    if kind == "reasoning" and value.get("id") and not value.get("encrypted_content"):
+        return f"{path}.id"
+    if kind == "tool_search_call" and value.get("execution") != "client":
+        return f"{path}.execution"
+    if kind == "shell_call":
+        environment = value.get("environment")
+        if not (isinstance(environment, dict) and environment.get("type") == "local"):
+            return f"{path}.environment"
+    if kind == "additional_tools":
+        return _tool_capability(value.get("tools"), f"{path}.tools")
+    if kind == "tool_search_output":
+        if value.get("execution") != "client":
+            return f"{path}.execution"
+        return _tool_capability(value.get("tools"), f"{path}.tools")
+    if kind == "computer_call_output":
+        return _content_capability(value.get("output"), f"{path}.output")
+    if kind in ("function_call_output", "custom_tool_call_output"):
+        return _content_capability(value.get("output"), f"{path}.output")
+    if "role" in value and "content" in value:
+        return _content_capability(value.get("content"), f"{path}.content")
+    if kind in _SAFE_INPUT_TYPES:
+        return None
+    return f"{path}.type"
+
+
+def _tool_choice_capability(choice) -> str | None:
+    if not isinstance(choice, dict):
+        return None
+    kind = choice.get("type")
+    if kind in _CLIENT_TOOL_CHOICES:
+        return None
+    if kind == "allowed_tools":
+        return _tool_capability(choice.get("tools"), "tool_choice.tools")
+    return "tool_choice.type"
 
 
 def fold_assistant(items: list[dict]) -> AssistantMessage:
@@ -235,6 +378,30 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse
+
+    def external_capability(self, body: dict) -> str | None:
+        if body.get("previous_response_id") is not None:
+            return "previous_response_id"
+        if body.get("conversation") is not None:
+            return "conversation"
+        prompt = body.get("prompt")
+        if isinstance(prompt, dict):
+            variables = prompt.get("variables")
+            if isinstance(variables, dict):
+                for index, value in enumerate(variables.values()):
+                    if capability := _content_capability(
+                        value, f"prompt.variables[{index}]"
+                    ):
+                        return capability
+            if prompt.get("id"):
+                return "prompt.id"
+        elif prompt is not None:
+            return "prompt"
+        if capability := _content_capability(body.get("input"), "input"):
+            return capability
+        if capability := _tool_choice_capability(body.get("tool_choice")):
+            return capability
+        return _tool_capability(body.get("tools"), "tools")
 
     def is_terminal_event(self, chunk: bytes) -> bool:
         # A Responses client (e.g. codex) ends its turn on `response.completed`, before the

@@ -28,6 +28,13 @@ RespT = TypeVar("RespT", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
+def is_remote_url(value: object) -> bool:
+    """Whether a native URL field makes the provider resolve data outside the request."""
+    return (
+        isinstance(value, str) and bool(value) and not value.lower().startswith("data:")
+    )
+
+
 def is_sse_done_event(raw: bytes) -> bool:
     """Whether one complete SSE event carries the DONE sentinel."""
     # Ordinary OpenAI events carry JSON objects; reject their hot path before splitting lines.
@@ -146,6 +153,12 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def error_body(self, message: str) -> dict:
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
+
+    @abstractmethod
+    def external_capability(self, body: ReqT) -> str | None:
+        """The first native request path that asks the provider to resolve an outside
+        resource or execute a hosted tool. Paths, never values, make rejection diagnostics
+        useful without echoing URLs, credentials, or other request content."""
 
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:

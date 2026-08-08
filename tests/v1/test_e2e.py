@@ -5,7 +5,22 @@ combinations a test runs — every axis value at least once plus the cross-bound
 with distinct networking — instead of fanning the full cross product. prime/modal rows
 are local-only (their marks are excluded in CI)."""
 
+import json
+
+import aiohttp
 import pytest
+
+import verifiers.v1 as vf
+from verifiers.v1.clients.client import RelayReply
+from verifiers.v1.dialects import AnthropicDialect, ChatDialect, ResponsesDialect
+from verifiers.v1.interception import InterceptionServer
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    ModalConfig,
+    PrimeConfig,
+    SubprocessConfig,
+)
+from verifiers.v1.session import RolloutLimits, RolloutSession
 
 mark = pytest.mark
 
@@ -98,6 +113,858 @@ SHARED_TOOL_PLACEMENTS = [
     pair("subprocess", "docker", "harness-in-subprocess-with-tool-in-docker"),
     pair("modal", "modal", "harness-in-modal-with-tool-in-modal"),
 ]
+
+
+def _responses_content(part):
+    return {"input": [{"role": "user", "content": [part]}]}
+
+
+def _anthropic_content(block):
+    return {"messages": [{"role": "user", "content": [block]}]}
+
+
+@pytest.mark.parametrize(
+    "dialect,body,path",
+    [
+        (
+            ResponsesDialect(),
+            _responses_content(
+                {"type": "input_file", "file_url": "https://example.com/a"}
+            ),
+            "input[0].content[0].file_url",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "input": [
+                    {
+                        "type": "custom_tool_call_output",
+                        "output": [{"type": "input_file", "file_id": "file-1"}],
+                    }
+                ]
+            },
+            "input[0].output[0].file_id",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "prompt": {
+                    "variables": {
+                        "image": {
+                            "type": "input_image",
+                            "image_url": "https://example.com/a.png",
+                        }
+                    }
+                }
+            },
+            "prompt.variables[0].image_url",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "input": [
+                    {
+                        "type": "computer_call_output",
+                        "output": {
+                            "type": "computer_screenshot",
+                            "file_id": "file-1",
+                        },
+                    }
+                ]
+            },
+            "input[0].output.file_id",
+        ),
+        (
+            ResponsesDialect(),
+            {"previous_response_id": "response-1"},
+            "previous_response_id",
+        ),
+        (ResponsesDialect(), {"conversation": "conversation-1"}, "conversation"),
+        (ResponsesDialect(), {"prompt": {"id": "prompt-1"}}, "prompt.id"),
+        (
+            ResponsesDialect(),
+            {"input": [{"type": "item_reference", "id": "item-1"}]},
+            "input[0].type",
+        ),
+        (
+            ResponsesDialect(),
+            {"input": [{"type": "reasoning", "id": "reasoning-1", "summary": []}]},
+            "input[0].id",
+        ),
+        (
+            ResponsesDialect(),
+            {"input": [{"type": "program_output", "call_id": "program-1"}]},
+            "input[0].type",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": "done",
+                        "caller": {"type": "program", "caller_id": "program-1"},
+                    }
+                ]
+            },
+            "input[0].caller.type",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "input": [
+                    {
+                        "type": "input_video",
+                        "video_url": "https://example.com/a.mp4",
+                    }
+                ]
+            },
+            "input[0].type",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "input": [
+                    {
+                        "type": "mcp_approval_response",
+                        "approval_request_id": "approval-1",
+                        "approve": True,
+                    }
+                ]
+            },
+            "input[0].type",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "input": [
+                    {
+                        "type": "additional_tools",
+                        "tools": [{"type": "mcp", "authorization": "do-not-echo"}],
+                    }
+                ]
+            },
+            "input[0].tools[0].type",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "input": [
+                    {
+                        "type": "tool_search_output",
+                        "execution": "client",
+                        "tools": [{"type": "mcp", "authorization": "do-not-echo"}],
+                    }
+                ]
+            },
+            "input[0].tools[0].type",
+        ),
+        (
+            ResponsesDialect(),
+            {"tool_choice": {"type": "mcp", "server_label": "remote"}},
+            "tool_choice.type",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "tool_choice": {
+                    "type": "allowed_tools",
+                    "mode": "auto",
+                    "tools": [
+                        {
+                            "type": "namespace",
+                            "name": "nested",
+                            "tools": [{"type": "mcp"}],
+                        }
+                    ],
+                }
+            },
+            "tool_choice.tools[0].tools[0].type",
+        ),
+        (ChatDialect(), {"web_search_options": {}}, "web_search_options"),
+        (ChatDialect(), {"model": "openai/gpt-5-search-api"}, "model"),
+        (
+            ChatDialect(),
+            {"model": "gpt-4o-search-preview-2025-03-11"},
+            "model",
+        ),
+        (
+            ChatDialect(),
+            {"model": "gpt-4o-mini-search-preview-2025-03-11"},
+            "model",
+        ),
+        (
+            ChatDialect(),
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.com/a.png"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "messages[0].content[0].image_url.url",
+        ),
+        (
+            ChatDialect(),
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "file", "file": {"file_id": "file-1"}}],
+                    }
+                ]
+            },
+            "messages[0].content[0].file.file_id",
+        ),
+        (
+            ChatDialect(),
+            {"messages": [{"role": "assistant", "audio": {"id": "audio-1"}}]},
+            "messages[0].audio.id",
+        ),
+        (ChatDialect(), {"audio": {"voice": {"id": "voice-1"}}}, "audio.voice.id"),
+        (
+            ChatDialect(),
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_video",
+                                "video_url": "https://example.com/a.mp4",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "messages[0].content[0].type",
+        ),
+        (
+            AnthropicDialect(),
+            _anthropic_content(
+                {
+                    "type": "image",
+                    "source": {"type": "url", "url": "https://example.com/a.png"},
+                }
+            ),
+            "messages[0].content[0].source.url",
+        ),
+        (
+            AnthropicDialect(),
+            _anthropic_content(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "url",
+                                "url": "https://example.com/a.pdf",
+                            },
+                        }
+                    ],
+                }
+            ),
+            "messages[0].content[0].content[0].source.url",
+        ),
+        (
+            AnthropicDialect(),
+            _anthropic_content(
+                {
+                    "type": "document",
+                    "source": {"type": "file", "file_id": "file-1"},
+                }
+            ),
+            "messages[0].content[0].source.file_id",
+        ),
+        (
+            AnthropicDialect(),
+            _anthropic_content(
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "content",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "url",
+                                    "url": "https://example.com/a.png",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ),
+            "messages[0].content[0].source.content[0].source.url",
+        ),
+        (
+            AnthropicDialect(),
+            _anthropic_content(
+                {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": {
+                        "type": "web_fetch_result",
+                        "url": "https://example.com/a.pdf",
+                        "content": {
+                            "type": "document",
+                            "source": {
+                                "type": "url",
+                                "url": "https://example.com/a.pdf",
+                            },
+                        },
+                    },
+                }
+            ),
+            "messages[0].content[0].content.content.source.url",
+        ),
+        (
+            AnthropicDialect(),
+            _anthropic_content(
+                {
+                    "type": "code_execution_tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": {
+                        "type": "encrypted_code_execution_result",
+                        "encrypted_stdout": "opaque",
+                        "return_code": 0,
+                        "stderr": "",
+                        "content": [
+                            {"type": "code_execution_output", "file_id": "file-1"}
+                        ],
+                    },
+                }
+            ),
+            "messages[0].content[0].content.content[0].file_id",
+        ),
+        (
+            AnthropicDialect(),
+            _anthropic_content({"type": "container_upload", "file_id": "file-1"}),
+            "messages[0].content[0].file_id",
+        ),
+        (AnthropicDialect(), {"container": "container-1"}, "container"),
+        (
+            AnthropicDialect(),
+            _anthropic_content(
+                {
+                    "type": "video",
+                    "source": {"type": "url", "url": "https://example.com/a.mp4"},
+                }
+            ),
+            "messages[0].content[0].type",
+        ),
+        (
+            AnthropicDialect(),
+            {
+                "mcp_servers": [
+                    {
+                        "url": "https://example.com/mcp",
+                        "authorization_token": "do-not-echo",
+                    }
+                ]
+            },
+            "mcp_servers",
+        ),
+    ],
+)
+def test_dialect_external_capability(dialect, body, path):
+    assert dialect.external_capability(body) == path
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        {"type": kind}
+        for kind in (
+            "web_search",
+            "web_search_2025_08_26",
+            "web_search_preview",
+            "web_search_preview_2025_03_11",
+            "file_search",
+            "mcp",
+            "code_interpreter",
+            "programmatic_tool_calling",
+            "image_generation",
+            "future_provider_tool",
+        )
+    ]
+    + [
+        {"type": "tool_search", "execution": "server"},
+        {"type": "shell", "environment": {"type": "container_auto"}},
+    ],
+)
+def test_responses_provider_tools_are_capabilities(tool):
+    assert ResponsesDialect().external_capability({"tools": [tool]}) == "tools[0].type"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        *(f"web_search_{version}" for version in ("20250305", "20260209", "20260318")),
+        *(
+            f"web_fetch_{version}"
+            for version in ("20250910", "20260209", "20260309", "20260318")
+        ),
+        *(
+            f"code_execution_{version}"
+            for version in ("20250522", "20250825", "20260120", "20260521")
+        ),
+        "advisor_20260301",
+        "tool_search_tool_bm25",
+        "tool_search_tool_regex",
+        "tool_search_tool_bm25_20251119",
+        "tool_search_tool_regex_20251119",
+        "mcp_toolset",
+        "bash_99999999",
+        "future_provider_tool",
+    ],
+)
+def test_anthropic_provider_tools_are_capabilities(kind):
+    assert (
+        AnthropicDialect().external_capability(
+            {"tools": [{"type": kind, "input_schema": {"type": "object"}}]}
+        )
+        == "tools[0].type"
+    )
+
+
+def test_inline_data_and_client_tools_are_not_external_capabilities():
+    responses = {
+        **_responses_content(
+            {"type": "input_image", "image_url": "data:image/png;base64,eA=="}
+        ),
+        "tools": [
+            {"type": "function", "name": "function"},
+            {"type": "custom", "name": "custom"},
+            {"type": "local_shell"},
+            {"type": "apply_patch"},
+            {"type": "computer"},
+            {"type": "computer_use_preview"},
+            {
+                "type": "namespace",
+                "name": "safe",
+                "tools": [{"type": "custom", "name": "nested"}],
+            },
+            {"type": "tool_search", "execution": "client"},
+            {"type": "shell", "environment": {"type": "local"}},
+        ],
+    }
+    responses["input"] += [
+        {
+            "type": "custom_tool_call_output",
+            "output": '{"file_id":"local","url":"https://example.com"}',
+        },
+        {
+            "type": "reasoning",
+            "id": "reasoning-1",
+            "encrypted_content": "opaque",
+        },
+        {"type": "compaction", "encrypted_content": "opaque"},
+    ]
+    responses["tool_choice"] = {
+        "type": "allowed_tools",
+        "mode": "auto",
+        "tools": [
+            {"type": "shell", "environment": {"type": "local"}},
+            {"type": "tool_search", "execution": "client"},
+        ],
+    }
+    chat = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,eA=="},
+                    },
+                    {"type": "file", "file": {"file_data": "ZmlsZQ=="}},
+                    {"type": "input_audio", "input_audio": {"data": "YXVkaW8="}},
+                    {"type": "text", "text": "https://example.com file_id"},
+                ],
+            }
+        ],
+        "tools": [{"type": "function"}, {"type": "custom"}],
+        "tool_choice": {
+            "type": "allowed_tools",
+            "allowed_tools": {
+                "mode": "auto",
+                "tools": [{"type": "function", "function": {"name": "local"}}],
+            },
+        },
+    }
+    anthropic = {
+        **_anthropic_content(
+            {
+                "type": "tool_result",
+                "tool_use_id": "tool-1",
+                "content": '{"file_id":"local","url":"https://example.com"}',
+            }
+        ),
+        "tools": [
+            {"name": "custom", "input_schema": {"properties": {"url": {}}}},
+            {"type": "bash_20241022"},
+            {"type": "bash_20250124"},
+            {"type": "text_editor_20241022"},
+            {"type": "text_editor_20250124"},
+            {"type": "text_editor_20250429"},
+            {"type": "text_editor_20250728"},
+            {"type": "computer_20241022"},
+            {"type": "computer_20250124"},
+            {"type": "computer_20251124"},
+            {"type": "memory_20250818"},
+        ],
+    }
+    assert ResponsesDialect().external_capability(responses) is None
+    assert ChatDialect().external_capability(chat) is None
+    assert AnthropicDialect().external_capability(anthropic) is None
+
+
+class _RecordingClient(vf.Client):
+    def __init__(self):
+        self.calls: list[str] = []
+        self.response = vf.Response(
+            id="response-1",
+            created=0,
+            model="test-model",
+            message=vf.AssistantMessage(content="ok"),
+            finish_reason="stop",
+            raw={},
+        )
+
+    async def get_response(self, *args, **kwargs):
+        self.calls.append("get_response")
+        return self.response.model_copy(deep=True)
+
+    async def relay(self, dialect, *args, **kwargs):
+        self.calls.append("relay")
+
+        async def chunks():
+            event = {
+                "type": "response.completed",
+                "response": {
+                    "id": "response-1",
+                    "created_at": 0,
+                    "model": "test-model",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "ok",
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+            yield f"data: {json.dumps(event)}\n\n".encode()
+            yield b"data: [DONE]\n\n"
+
+        async def close():
+            pass
+
+        return RelayReply("text/event-stream", chunks(), close)
+
+    async def relay_aux(self, *args, **kwargs):
+        self.calls.append("relay_aux")
+        return {"input_tokens": 1}
+
+
+def _session(
+    client: vf.Client,
+    *,
+    restricted: bool = True,
+    sampling: vf.Sampling | None = None,
+    model: str = "test-model",
+) -> RolloutSession:
+    return RolloutSession(
+        ctx=vf.ModelContext(
+            model=model,
+            client=vf.EvalClientConfig(),
+            sampling=sampling or vf.Sampling(),
+        ),
+        client=client,
+        trace=vf.Trace(
+            task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hello")),
+            agent=vf.AgentInfo(config=vf.AgentConfig()),
+        ),
+        network_restricted=restricted,
+    )
+
+
+async def _post(session, dialect, body, route=None):
+    server = InterceptionServer()
+    assert session.client is not None
+    server.clients[session.ctx.client.model_dump_json()] = session.client
+    async with (
+        server,
+        server.acquire(session) as (base_url, secret, _),
+        aiohttp.ClientSession() as http,
+        http.post(
+            f"{base_url}{route or dialect.routes[0]}",
+            headers=dialect.auth_headers(secret),
+            json=body,
+        ) as response,
+    ):
+        return response.status, await response.text()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "dialect,body,path",
+    [
+        (
+            ResponsesDialect(),
+            {
+                "model": "ignored",
+                **_responses_content(
+                    {
+                        "type": "input_file",
+                        "file_url": "https://api.github.com/repos/example/repo",
+                    }
+                ),
+            },
+            "input[0].content[0].file_url",
+        ),
+        (
+            ResponsesDialect(),
+            {
+                "model": "ignored",
+                "input": "hello",
+                "tools": [{"type": "mcp", "authorization": "do-not-echo"}],
+            },
+            "tools[0].type",
+        ),
+        (
+            ChatDialect(),
+            {
+                "model": "ignored",
+                "messages": [{"role": "user", "content": "hello"}],
+                "web_search_options": {},
+            },
+            "web_search_options",
+        ),
+        (
+            AnthropicDialect(),
+            {
+                "model": "ignored",
+                "max_tokens": 10,
+                **_anthropic_content(
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "url",
+                            "url": "https://example.com/a.pdf",
+                        },
+                    }
+                ),
+            },
+            "messages[0].content[0].source.url",
+        ),
+    ],
+)
+async def test_restricted_interception_blocks_before_upstream(
+    stream, dialect, body, path
+):
+    client = _RecordingClient()
+    session = _session(client)
+    status, response = await _post(session, dialect, {**body, "stream": stream})
+
+    assert status == 400
+    assert path in response
+    assert "do-not-echo" not in response
+    assert client.calls == []
+    assert session.trace.calls == []
+    assert session.trace.nodes == []
+    assert session.inflight == {}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "model,sampling,path",
+    [
+        (
+            "test-model",
+            vf.Sampling.model_validate({"web_search_options": {}}),
+            "web_search_options",
+        ),
+        ("gpt-5-search-api", vf.Sampling(), "model"),
+    ],
+)
+async def test_restricted_interception_scans_effective_overrides(
+    stream, model, sampling, path
+):
+    dialect = ChatDialect()
+    client = _RecordingClient()
+    session = _session(
+        client,
+        model=model,
+        sampling=sampling,
+    )
+    status, response = await _post(
+        session,
+        dialect,
+        {
+            "model": "ignored",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": stream,
+        },
+    )
+
+    assert status == 400
+    assert path in response
+    assert client.calls == []
+    assert session.trace.calls == []
+    assert session.trace.nodes == []
+
+
+async def test_restricted_anthropic_count_tokens_blocks_before_upstream():
+    dialect = AnthropicDialect()
+    client = _RecordingClient()
+    status, response = await _post(
+        _session(client),
+        dialect,
+        {
+            "model": "ignored",
+            **_anthropic_content(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": "https://example.com/a.png",
+                    },
+                }
+            ),
+        },
+        dialect.aux_routes[0],
+    )
+    assert status == 400
+    assert "messages[0].content[0].source.url" in response
+    assert client.calls == []
+
+    allowed_client = _RecordingClient()
+    status, _ = await _post(
+        _session(allowed_client),
+        dialect,
+        {
+            "model": "ignored",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"name": "local", "input_schema": {"type": "object"}}],
+        },
+        dialect.aux_routes[0],
+    )
+    assert status == 200
+    assert allowed_client.calls == ["relay_aux"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_restricted_interception_allows_inline_responses_traffic(stream):
+    dialect = ResponsesDialect()
+    client = _RecordingClient()
+    session = _session(client)
+    status, _ = await _post(
+        session,
+        dialect,
+        {
+            "model": "ignored",
+            **_responses_content(
+                {"type": "input_image", "image_url": "data:image/png;base64,eA=="}
+            ),
+            "tools": [{"type": "custom", "name": "local"}],
+            "stream": stream,
+        },
+    )
+    assert status == 200
+    assert client.calls == ["relay" if stream else "get_response"]
+    assert len(session.trace.calls) == 1
+    assert len(session.trace.nodes) == 2
+
+
+async def test_unrestricted_interception_preserves_provider_capabilities():
+    client = _RecordingClient()
+    status, _ = await _post(
+        _session(client, restricted=False),
+        ResponsesDialect(),
+        {
+            "model": "ignored",
+            **_responses_content(
+                {
+                    "type": "input_file",
+                    "file_url": "https://example.com/file.txt",
+                }
+            ),
+        },
+    )
+    assert status == 200
+    assert client.calls == ["get_response"]
+
+
+@pytest.mark.parametrize(
+    "runtime_config,restricted",
+    [
+        (DockerConfig(), False),
+        (DockerConfig(allow=["example.com"]), True),
+        (PrimeConfig(vm=True, allow=[]), True),
+        (ModalConfig(network_access=False), True),
+        (ModalConfig(network_access=True), False),
+        (SubprocessConfig(), False),
+    ],
+)
+def test_rollout_session_uses_effective_runtime_network_policy(
+    runtime_config, restricted
+):
+    from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
+    from verifiers.v1.rollout import Rollout, RolloutTimeouts
+
+    rollout = Rollout(
+        task=vf.Task(vf.TaskData(idx=0, prompt="hello")),
+        agent_config=vf.AgentConfig(runtime=runtime_config),
+        harness=NullHarness(NullHarnessConfig(id="null")),
+        ctx=vf.ModelContext(
+            model="test-model",
+            client=vf.EvalClientConfig(base_url="http://127.0.0.1:1"),
+        ),
+        runtime_config=runtime_config,
+        timeouts=RolloutTimeouts(),
+        limits=RolloutLimits(),
+    )
+    assert rollout._session.network_restricted is restricted
+
+
+def test_agent_resolves_owned_and_borrowed_runtime_network_policy():
+    from verifiers.v1.harnesses.null import NullHarnessConfig
+    from verifiers.v1.runtimes import make_runtime
+
+    agent = vf.Agent(
+        vf.AgentConfig(
+            model="test-model",
+            harness=NullHarnessConfig(id="null"),
+            runtime=DockerConfig(),
+        )
+    )
+    restricted_task = vf.Task(vf.TaskData(idx=0, prompt="hello", network_allow=[]))
+    owned = agent._rollout_params(restricted_task, None, {})["runtime_config"]
+    assert owned.network_restricted
+
+    borrowed_runtime = make_runtime(DockerConfig(allow=[]))
+    open_task = vf.Task(vf.TaskData(idx=1, prompt="hello"))
+    borrowed = agent._rollout_params(open_task, borrowed_runtime, {})["runtime_config"]
+    assert borrowed is borrowed_runtime.config
+    assert borrowed.network_restricted
 
 
 @pytest.mark.e2e
