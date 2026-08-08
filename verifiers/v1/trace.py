@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
@@ -171,6 +171,20 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
 
 
+def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
+    """Per-call lower bound on newly fed-in tokens: each call's prompt beyond the
+    previous call's final sequence, clamped at zero. Exact while the history is
+    append-only; tokens the engine drops between calls (stripped reasoning, truncated
+    history) register as an undercount of that call's new input rather than going
+    negative."""
+    prev_total = 0
+    for call in calls:
+        if call.usage is None:
+            continue
+        yield call, max(0, call.usage.input_tokens - prev_total)
+        prev_total = call.usage.total_tokens
+
+
 class Branch(BaseModel):
     """A root-to-leaf graph path; each branch becomes one training sample."""
 
@@ -311,7 +325,9 @@ class Branch(BaseModel):
 
     @property
     def num_input_tokens(self) -> int:
-        return self.num_total_tokens - self.num_output_tokens
+        """Fed-in tokens (system + user + tool), counted once; a lower bound whenever
+        the engine drops tokens between calls."""
+        return sum(increment for _, increment in min_new_input_tokens(self.calls))
 
 
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
@@ -372,8 +388,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def num_input_tokens(self) -> int:
-        """Fed-in tokens (system + user + tool), counted once, summed across branches."""
-        return sum(branch.num_input_tokens for branch in self.branches)
+        """Fed-in tokens (system + user + tool), counted once across all branches —
+        calls on shared branch prefixes contribute once, not once per branch."""
+        seen: set[int] = set()
+        total = 0
+        for branch in self.branches:
+            # A call's predecessors are fixed by the graph, so its increment is the
+            # same in every branch containing it; keep the first occurrence.
+            for call, increment in min_new_input_tokens(branch.calls):
+                if id(call) not in seen:
+                    seen.add(id(call))
+                    total += increment
+        return total
 
     @property
     def num_output_tokens(self) -> int:
