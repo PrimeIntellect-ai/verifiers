@@ -272,7 +272,7 @@ def serve_env(
     *,
     max_workers: int | None,
     legacy: bool = False,
-    address: str = "tcp://127.0.0.1:5000",
+    address: str | None = None,
     address_queue=None,
     death_pipe=None,
     log_setup: Callable[[], None] | None = None,
@@ -284,7 +284,7 @@ def serve_env(
     else an `EnvServerPool` broker over up to `max_workers` worker processes (`None` =
     unbounded). The frontend speaks the same protocol either way, so the client is
     identical. Reports the bound address on `address_queue` (for a spawner that passed an
-    OS-assigned `:0`).
+    OS-assigned `:0`). `address` None binds the default loopback `tcp://127.0.0.1:5000`.
 
     `elastic` (default True) starts the pool at one worker and scales up to `max_workers`
     as load grows; `multiplex` is the per-worker capacity for the scale-up trigger (spawn
@@ -307,6 +307,7 @@ def serve_env(
     _arm_teardown(death_pipe)
     if log_setup is not None:
         log_setup()
+    address = address or "tcp://127.0.0.1:5000"
     try:
         if max_workers is None or max_workers > 1:
             if (

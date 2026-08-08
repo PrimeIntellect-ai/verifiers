@@ -43,8 +43,10 @@ class ServeConfig(BaseConfig):
     pool: PoolConfig = Field(default_factory=ElasticPoolConfig)
     """Worker-pool sizing. `elastic` (default) starts at one worker and scales up on
     demand; `static` pre-spawns a fixed `num_workers`."""
-    address: str = "tcp://127.0.0.1:5000"
-    """ZMQ address the ROUTER binds (and clients connect to)."""
+    address: str | None = None
+    """ZMQ address the ROUTER binds (and clients connect to). None leaves the choice
+    to whoever hosts the env — `serve_env` falls back to its default loopback bind, a
+    launcher may derive one per server."""
     max_concurrent: int | None = Field(None, ge=1)
     """Episodes in flight per worker (None = take the run's own bound, e.g. an eval's
     `--max-concurrent`). Pin it to hold a worker below what the run asks for; how many
