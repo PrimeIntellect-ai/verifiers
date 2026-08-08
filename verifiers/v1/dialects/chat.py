@@ -14,7 +14,12 @@ from typing import Any
 
 from openai.types.chat import ChatCompletion
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    is_remote_url,
+    parse_sse_event,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -43,6 +48,15 @@ class ModdedChatCompletion(ChatCompletion):
 
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
+_SEARCH_MODELS = frozenset(
+    {
+        "gpt-5-search-api",
+        "gpt-4o-search-preview",
+        "gpt-4o-search-preview-2025-03-11",
+        "gpt-4o-mini-search-preview",
+        "gpt-4o-mini-search-preview-2025-03-11",
+    }
+)
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
@@ -321,6 +335,66 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
+
+    def external_capability(self, body: dict) -> str | None:
+        model = body.get("model")
+        if isinstance(model, str) and model.rsplit("/", 1)[-1] in _SEARCH_MODELS:
+            return "model"
+        if body.get("web_search_options") is not None:
+            return "web_search_options"
+        audio = body.get("audio")
+        voice = audio.get("voice") if isinstance(audio, dict) else None
+        if isinstance(voice, dict) and voice.get("id"):
+            return "audio.voice.id"
+        choice = body.get("tool_choice")
+        if isinstance(choice, dict):
+            kind = choice.get("type", "function")
+            if kind == "allowed_tools":
+                allowed = choice.get("allowed_tools")
+                if not isinstance(allowed, dict):
+                    return "tool_choice.allowed_tools"
+                for index, tool in enumerate(allowed.get("tools") or []):
+                    if not isinstance(tool, dict) or tool.get(
+                        "type", "function"
+                    ) not in ("function", "custom"):
+                        return f"tool_choice.allowed_tools.tools[{index}].type"
+            elif kind not in ("function", "custom"):
+                return "tool_choice.type"
+        for tool_index, tool in enumerate(body.get("tools") or []):
+            if not isinstance(tool, dict):
+                return f"tools[{tool_index}]"
+            if tool.get("type", "function") not in ("function", "custom"):
+                return f"tools[{tool_index}].type"
+        for message_index, message in enumerate(body.get("messages") or []):
+            if not isinstance(message, dict):
+                continue
+            if isinstance(message.get("audio"), dict) and message["audio"].get("id"):
+                return f"messages[{message_index}].audio.id"
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part_index, part in enumerate(content):
+                if not isinstance(part, dict):
+                    continue
+                path = f"messages[{message_index}].content[{part_index}]"
+                if part.get("type") == "image_url":
+                    image = part.get("image_url") or {}
+                    url = image.get("url") if isinstance(image, dict) else image
+                    if is_remote_url(url):
+                        return f"{path}.image_url.url"
+                if part.get("type") == "file":
+                    file = part.get("file")
+                    if isinstance(file, dict) and file.get("file_id"):
+                        return f"{path}.file.file_id"
+                if part.get("type") not in (
+                    "text",
+                    "refusal",
+                    "input_audio",
+                    "image_url",
+                    "file",
+                ):
+                    return f"{path}.type"
+        return None
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         messages: Messages = []

@@ -258,6 +258,26 @@ class InterceptionServer(Interception):
             status=getattr(error, "status_code", 502),
         )
 
+    def _capability_rejection(
+        self, session: RolloutSession, dialect: Dialect, body: dict
+    ) -> web.Response | None:
+        if not session.network_restricted:
+            return None
+        capability = dialect.external_capability(body)
+        if capability is None:
+            return None
+        logger.warning(
+            "interception blocked provider capability: id=%s path=%s",
+            session.trace.id,
+            capability,
+        )
+        return web.json_response(
+            dialect.error_body(
+                f"provider-side capability {capability!r} is disabled by the runtime network policy"
+            ),
+            status=400,
+        )
+
     def record_call(
         self,
         session: RolloutSession,
@@ -331,6 +351,12 @@ class InterceptionServer(Interception):
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
+        effective_body = dialect.apply_overrides(
+            body, session.ctx.model, session.ctx.sampling
+        )
+        rejection = self._capability_rejection(session, dialect, effective_body)
+        if rejection is not None:
+            return rejection
         streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
@@ -711,8 +737,12 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
+            body = await request.json()
+            rejection = self._capability_rejection(session, dialect, body)
+            if rejection is not None:
+                return rejection
             result = await session.client.relay_aux(
-                dialect, route, await request.json(), headers=request.headers
+                dialect, route, body, headers=request.headers
             )
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.
