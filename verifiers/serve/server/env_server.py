@@ -15,6 +15,7 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.serve.server.env_router import EnvRouter
+from verifiers.serve.server.metrics import MetricsServer
 from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 
 
@@ -39,10 +40,14 @@ class EnvServer(ABC):
         num_workers: int = 1,
         worker_heartbeat_timeout: float = 30.0,
         stats_log_interval: float = 10.0,
+        metrics_port: int | None = None,
         death_pipe: Connection | None = None,
     ):
         set_proc_title("EnvServer")
+        self.env_id = env_id
         self.death_pipe = death_pipe
+        self.metrics_port = metrics_port
+        self.metrics_server: MetricsServer | None = None
 
         logger_kwargs: dict[str, Any] = {
             "console_logging": console_logging,
@@ -103,11 +108,21 @@ class EnvServer(ABC):
         signal.signal(signal.SIGINT, signal_handler)
 
         try:
+            if self.metrics_port is not None:
+                self.metrics_server = MetricsServer(
+                    self.router,
+                    env_id=self.env_id,
+                    version=vf.__version__,
+                    port=self.metrics_port,
+                )
+                await self.metrics_server.start()
             await self.serve(stop_event=stop_event)
         finally:
             # Ignore signals during cleanup to avoid interrupting teardown.
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+            if self.metrics_server is not None:
+                await self.metrics_server.close()
             await self.router.close()
             await self.close()
 
