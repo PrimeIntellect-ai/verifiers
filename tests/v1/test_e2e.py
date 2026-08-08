@@ -244,6 +244,126 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
+async def test_prime_agent_persists_ipython_kernel(run_v1, tmp_path):
+    """Prime Agent retains its native ACP session and live IPython kernel."""
+    (trace,) = await run_v1(
+        "prime-agent-persistence-v1",
+        harness="prime-agent",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=8,
+        max_tokens=8192,
+        rollout_timeout=600,
+    )
+    assert trace.ok, trace.errors
+    assert trace.stop_condition == "user_closed"
+    # Surface what the fixture actually captured: a 0.0 here means the agent ran
+    # but the segment view lacked the tool evidence, which is a different bug from
+    # the agent failing, and the log otherwise shows neither.
+    assert trace.rewards["persisted"].score == 1.0, trace.info.get(
+        "prime_agent_segments"
+    )
+    # State lives while the session runs; removal happens in harness.cleanup()
+    # during rollout close, after this env body has already returned.
+    assert trace.info["prime_agent_state_present_during_run"] is True
+
+
+@pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
+async def test_prime_agent_ipython_cell_acp_shape(run_v1, tmp_path):
+    """IPython calls expose the ACP title and `{code}` raw input contract."""
+    from prime_agent_ipython_cell_v1 import (
+        has_ipython_cell_call,
+    )
+
+    (trace,) = await run_v1(
+        "prime-agent-ipython-cell-v1",
+        harness="prime-agent",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=6,
+        max_tokens=8192,
+        # First-run setup in a cold container installs Node, uv, and the kernel
+        # before the agent gets a turn, so this shares the 900s budget its
+        # sibling kernel tests use rather than racing the default.
+        rollout_timeout=900,
+    )
+    assert trace.ok, trace.errors
+    assert trace.stop_condition == "user_closed"
+    assert trace.rewards["ipython_cell"].score == 1.0
+    # Asserting the ACP-native title/rawInput shape (acp-events.ts:144-155) needs
+    # inbound `_meta` preservation, which lands separately; until then this fixture
+    # proves the cell was submitted verbatim AND executed by a real kernel.
+    assert has_ipython_cell_call(trace), trace.info.get("prime_agent_segments")
+
+
+@pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
+async def test_prime_agent_solves_gsm8k(run_v1, tmp_path):
+    """Prime Agent scores on a real benchmark, not a synthetic capability probe.
+
+    The other Prime Agent tests prove the transport carries IPython, kernel state,
+    and failures. None of them shows the agent doing useful work: they assert on
+    plumbing the harness itself produces. GSM8K grades an actual answer against
+    ground truth in the runtime, so a passing score here means the whole path --
+    ACP transport, live kernel, interception, scoring -- carried a real task.
+    """
+    (trace,) = await run_v1(
+        "gsm8k-v1",
+        harness="prime-agent",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=6,
+        max_tokens=8192,
+        rollout_timeout=900,
+    )
+    assert trace.ok, trace.errors
+    # Exact-match grading, so this is the agent's answer being right -- not the
+    # harness reporting that it ran.
+    assert trace.reward == 1.0, trace.rewards
+
+
+@pytest.mark.e2e
+@pytest.mark.docker
+@pytest.mark.prime_agent
+async def test_prime_agent_failed_turn_raises(run_v1, tmp_path):
+    """A rejected provider request is a rollout error, never an ACP clean stop."""
+    from prime_agent_failed_turn_v1 import has_raised_provider_failure
+
+    (trace,) = await run_v1(
+        "prime-agent-failed-turn-v1",
+        harness="prime-agent",
+        runtime={"type": "docker"},
+        output_dir=tmp_path,
+        max_turns=2,
+        rollout_timeout=600,
+        # The host-side interception client reaches this intentionally unavailable
+        # endpoint, so Prime Agent's request fails before any model can answer.
+        env={
+            "agent": {
+                "client": {
+                    "type": "eval",
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "api_key_var": "VF_MISSING_PRIME_AGENT_KEY",
+                }
+            }
+        },
+    )
+    assert has_raised_provider_failure(trace), trace.errors
+    # An errored rollout is not scored, so no reward is recorded.
+    assert trace.rewards == {}
+    # The dead endpoint must stay confined to this rollout: if a sibling test ever
+    # inherits it, that shows up here as the wrong base_url on this trace.
+    assert any(
+        getattr(error, "type", None) == "ProviderError" for error in trace.errors
+    ), trace.errors
+
+
+@pytest.mark.e2e
 @pytest.mark.parametrize("harness_runtime,tool_runtime", TOOL_PLACEMENTS, indirect=True)
 async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     """A `vf.Toolset` (an echo tool) across its placement (`tool_runtime`: colocated in
