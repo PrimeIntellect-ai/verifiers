@@ -133,6 +133,6 @@ async def append_trace(
     results_dir: Path, trace: Trace, lock: asyncio.Lock, env: str = ""
 ) -> None:
     """Append one finished trace as a single-agent rollout episode — the writers that
-    complete trace-at-a-time (eval runners, gepa, replay, the legacy bridge) all go
+    complete trace-at-a-time (eval runners, gepa, replay) all go
     through here."""
     await append_episode(results_dir, Episode.of(trace, env=env), lock)

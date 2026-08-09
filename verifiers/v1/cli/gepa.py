@@ -5,8 +5,7 @@ GEPA (Genetic-Pareto): alternating rollouts with a teacher LM reflecting on resu
 `verifiers.v1.gepa`. CLI resolution mirrors `eval`/`serve` (`verifiers.v1.cli.resolve`): a
 leading bare token is the taskset id, the `env` subconfig is narrowed from the ids so
 `--env.taskset.*` / `--env.<role>.*` stay typed and `-h` renders them, `@ file.toml` loads,
-and the actual parse is `pydantic_config.cli`. v1-native tasksets only — a legacy (v0) env is
-rejected; run those through the existing `vf-gepa` command instead.
+and the actual parse is `pydantic_config.cli`.
 """
 
 import logging
@@ -43,11 +42,6 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(GEPAConfig, argv)
             )  # full option help, narrowed to the given ids
         return
-    if any(a == "--id" or a.startswith("--id=") for a in argv):  # v0 env id
-        raise SystemExit(
-            "gepa optimizes native v1 tasksets; run a legacy (v0) environment through "
-            "`vf-gepa` instead of `gepa`."
-        )
     typed_axis = any(a.startswith(("--env.", "--taskset.", "--harness.")) for a in argv)
     if (
         not extract_id(argv, "env.taskset")

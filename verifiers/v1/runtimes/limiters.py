@@ -14,7 +14,7 @@ import os
 import time
 from typing import Self
 
-from verifiers.utils.path_utils import CACHE_DIR
+from verifiers.v1.utils.paths import CACHE_DIR
 
 LIMITER_DIR = CACHE_DIR / "limiter"
 

@@ -9,8 +9,8 @@ from verifiers.v1.configs.cli.init import InitConfig
 
 USAGE = (
     "usage: uv run init <name> [--path ./environments] [-T/--add-tool] "
-    "[-H/--add-harness] [--v0]\n"
-    "       scaffold a new v1 environment package (use --v0 for a legacy v0 environment)"
+    "[-H/--add-harness]\n"
+    "       scaffold a new environment package"
 )
 
 
@@ -262,16 +262,6 @@ def main(argv: list[str] | None = None) -> None:
     config = cli(InitConfig)
     if not config.name:
         raise SystemExit(USAGE)
-    if config.v0:
-        if config.add_tool or config.add_harness:
-            raise SystemExit(
-                "--add-* flags are v1-only and can't be combined with --v0"
-            )
-        from verifiers.scripts.init import init_environment
-
-        env_dir = init_environment(config.name, config.path, multi_file=True)
-        print(f"scaffolded v0 environment in {env_dir}")
-        return
     scaffold(config)
 
 

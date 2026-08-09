@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from verifiers.utils.install_utils import (
+from verifiers.v1.utils.install_utils import (
     check_hub_env_installed,
     is_hub_env,
     is_installed,
@@ -80,55 +80,55 @@ class TestIsHubEnv:
 
 
 class TestIsInstalled:
-    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    @patch("verifiers.v1.utils.install_utils.package_version", return_value="1.0.0")
     def test_installed_no_version_check(self, mock_version):
         assert is_installed("gsm8k") is True
         mock_version.assert_called_once_with("gsm8k")
 
-    @patch("verifiers.utils.install_utils.package_version")
+    @patch("verifiers.v1.utils.install_utils.package_version")
     def test_not_installed(self, mock_version):
         mock_version.side_effect = PackageNotFoundError("gsm8k")
         assert is_installed("gsm8k") is False
 
-    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    @patch("verifiers.v1.utils.install_utils.package_version", return_value="1.0.0")
     def test_installed_version_matches(self, mock_version):
         assert is_installed("gsm8k", version="1.0.0") is True
 
-    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    @patch("verifiers.v1.utils.install_utils.package_version", return_value="1.0.0")
     def test_installed_version_mismatch(self, mock_version):
         assert is_installed("gsm8k", version="2.0.0") is False
 
-    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    @patch("verifiers.v1.utils.install_utils.package_version", return_value="1.0.0")
     def test_latest_version_skips_check(self, mock_version):
         assert is_installed("gsm8k", version="latest") is True
 
-    @patch("verifiers.utils.install_utils.package_version", return_value="1.0.0")
+    @patch("verifiers.v1.utils.install_utils.package_version", return_value="1.0.0")
     def test_normalizes_package_name(self, mock_version):
         is_installed("my-package")
         mock_version.assert_called_once_with("my_package")
 
 
 class TestCheckHubEnvInstalled:
-    @patch("verifiers.utils.install_utils.is_installed")
+    @patch("verifiers.v1.utils.install_utils.is_installed")
     def test_local_env_returns_true(self, mock_is_installed):
         result = check_hub_env_installed("gsm8k")
         assert result is True
         mock_is_installed.assert_not_called()
 
-    @patch("verifiers.utils.install_utils.is_installed")
+    @patch("verifiers.v1.utils.install_utils.is_installed")
     def test_hub_env_installed(self, mock_is_installed):
         mock_is_installed.return_value = True
         result = check_hub_env_installed("primeintellect/gsm8k")
         assert result is True
         mock_is_installed.assert_called_once_with("gsm8k", None)
 
-    @patch("verifiers.utils.install_utils.is_installed")
+    @patch("verifiers.v1.utils.install_utils.is_installed")
     def test_hub_env_not_installed(self, mock_is_installed):
         mock_is_installed.return_value = False
         result = check_hub_env_installed("primeintellect/gsm8k")
         assert result is False
 
-    @patch("verifiers.utils.install_utils.is_installed")
+    @patch("verifiers.v1.utils.install_utils.is_installed")
     def test_hub_env_with_version(self, mock_is_installed):
         mock_is_installed.return_value = True
         result = check_hub_env_installed("primeintellect/gsm8k@1.0.0")

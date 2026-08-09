@@ -4,10 +4,6 @@ from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
     HealthRequest,
     HealthResponse,
-    InfoRequest,
-    InfoResponse,
-    RunGroupRequest,
-    RunGroupResponse,
     RunRequest,
     RunResponse,
 )
@@ -18,10 +14,6 @@ __all__ = [
     "EnvServerPool",
     "HealthRequest",
     "HealthResponse",
-    "InfoRequest",
-    "InfoResponse",
-    "RunGroupRequest",
-    "RunGroupResponse",
     "RunRequest",
     "RunResponse",
     "env_config_data",

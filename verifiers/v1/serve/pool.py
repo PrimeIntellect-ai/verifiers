@@ -1,17 +1,16 @@
 """Env-server worker pool: a ROUTER broker over N worker processes.
 
 A lone `EnvServer` runs every rollout as an `asyncio.Task` on one event loop, so
-CPU-bound work (renderer tokenization, scoring) competes for that loop. v0 relieved
-this with a router + worker pool; this reinstates it for v1.
+CPU-bound work (renderer tokenization, scoring) competes for that loop; the pool
+spreads that work across processes.
 
 A broker binds the client-facing ROUTER (the *same* wire protocol as a lone
 `EnvServer`, so `EnvClient` is unchanged), starts one worker process and scales up to
-`max_workers` on demand — each an ordinary `EnvServer` / `LegacyEnvServer` bound to its
-own ipc address — load-balancing requests to the least-busy worker over a `DEALER` per
-worker. The worker's `client_id` (its reply identity) is the broker's DEALER identity;
-the broker holds the real client identity in `pending` and routes the reply back by
-`request_id`. `health` is answered inline (no worker needed); everything else goes to a
-worker.
+`max_workers` on demand — each an ordinary `EnvServer` bound to its own ipc address —
+load-balancing requests to the least-busy worker over a `DEALER` per worker. The
+worker's `client_id` (its reply identity) is the broker's DEALER identity; the broker
+holds the real client identity in `pending` and routes the reply back by `request_id`.
+`health` is answered inline (no worker needed); everything else goes to a worker.
 
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
@@ -37,7 +36,7 @@ import zmq.asyncio
 
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
+from verifiers.v1.serve.types import HealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -75,16 +74,13 @@ class EnvServerPool:
     With `elastic=True` (default) it starts with a single worker and spawns another
     whenever in-flight requests reach 90% of current capacity (`workers * multiplex`), up
     to `max_workers`. Upscale-only for now — workers are never reclaimed. `elastic=False`
-    pre-spawns all `max_workers` upfront (the old fixed-pool behavior). The broker forwards
-    opaque request frames, so workers can be `EnvServer` (v1) or `LegacyEnvServer` (v0)
-    without the broker caring."""
+    pre-spawns all `max_workers` upfront (fixed-pool behavior)."""
 
     def __init__(
         self,
         server_kwargs: dict,
         max_workers: int | None,
         address: str,
-        legacy: bool,
         log_setup: Callable[[], None] | None = None,
         multiplex: int = 128,
         elastic: bool = True,
@@ -93,7 +89,6 @@ class EnvServerPool:
         self.max_workers = max_workers
         self.multiplex = multiplex
         self.elastic = elastic
-        self.legacy = legacy
         self.log_setup = log_setup
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
@@ -122,7 +117,6 @@ class EnvServerPool:
                 max_workers=1,
                 address=address,
                 death_pipe=child_conn,
-                legacy=self.legacy,
                 log_setup=self.log_setup,
                 **self.server_kwargs,
             ),
@@ -173,7 +167,7 @@ class EnvServerPool:
         # (`max_workers` is a concrete count when elastic is off).
         for _ in range(1 if self.elastic else (self.max_workers or 1)):
             self._spawn_worker()
-        # request_id -> {client_id, worker, rollout_slots}
+        # request_id -> {client_id, worker}
         pending: dict[bytes, dict] = {}
         logger.info(
             "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
@@ -199,22 +193,13 @@ class EnvServerPool:
                             [client_id, request_id, _HEALTH]
                         )
                     else:
-                        # Pool capacity is measured in rollouts; one group request carries n.
-                        rollout_slots = 1
-                        if method == b"run_group":
-                            with contextlib.suppress(Exception):
-                                request = RunGroupRequest.model_validate(
-                                    msgpack.unpackb(payload, raw=False)
-                                )
-                                rollout_slots = max(1, request.n)
                         worker = min(self.workers, key=lambda w: w["active"])
-                        worker["active"] += rollout_slots
+                        worker["active"] += 1
                         pending[request_id] = {
                             "client_id": client_id,
                             "worker": worker,
-                            "rollout_slots": rollout_slots,
                         }
-                        in_flight += rollout_slots
+                        in_flight += 1
                         # forward without client_id — the DEALER identity is the worker's
                         # `client_id`; we hold the real one in `pending`.
                         await worker["dealer"].send_multipart(
@@ -229,8 +214,8 @@ class EnvServerPool:
                         entry = pending.pop(request_id.bytes, None)
                         if entry is None:
                             continue
-                        entry["worker"]["active"] -= entry["rollout_slots"]
-                        in_flight -= entry["rollout_slots"]
+                        entry["worker"]["active"] -= 1
+                        in_flight -= 1
                         with contextlib.suppress(zmq.ZMQError):
                             await self.frontend.send_multipart(
                                 [entry["client_id"], request_id, data], copy=False
@@ -271,7 +256,6 @@ def env_config_data(env: EnvConfig) -> dict:
 def serve_env(
     *,
     max_workers: int | None,
-    legacy: bool = False,
     address: str | None = None,
     address_queue=None,
     death_pipe=None,
@@ -291,10 +275,9 @@ def serve_env(
     the next worker at 90% of `workers * multiplex` in-flight). `elastic=False` pre-spawns
     all `max_workers`.
 
-    A native env config may be passed as `config` (an object) or `config_data` (the
+    The env config may be passed as `config` (an object) or `config_data` (the
     picklable dict from `env_config_data`, for callers that spawn this function and so
-    can't pickle a dynamically-narrowed config type); legacy passes `env_id`/`env_args`/
-    `extra_env_kwargs`.
+    can't pickle a dynamically-narrowed config type).
 
     `log_setup` (a picklable callable) configures logging for this process and every
     spawned worker — without it a spawned server inherits no handlers and its INFO logs
@@ -321,7 +304,6 @@ def serve_env(
                 server_kwargs,
                 max_workers,
                 address,
-                legacy,
                 log_setup,
                 multiplex,
                 elastic,
@@ -330,8 +312,6 @@ def serve_env(
                 address_queue.put(pool.address)
             asyncio.run(pool.run())
         else:
-            from verifiers.v1.legacy import LegacyEnvServer
-
             if (
                 "config_data" in server_kwargs
             ):  # rebuild the env config for an in-process server
@@ -341,8 +321,7 @@ def serve_env(
                 server_kwargs["config"] = resolve_env_config(
                     server_kwargs.pop("config_data")
                 )
-            cls = LegacyEnvServer if legacy else EnvServer
-            cls.run_server(
+            EnvServer.run_server(
                 address=address, address_queue=address_queue, **server_kwargs
             )
     except KeyboardInterrupt:

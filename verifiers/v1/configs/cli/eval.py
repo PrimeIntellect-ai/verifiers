@@ -9,7 +9,6 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.configs.legacy import LegacyEnvConfig
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
@@ -22,8 +21,6 @@ class EvalConfig(BaseConfig):
     serve: ServeConfig = ServeConfig()
     """How the env is hosted under `--server`: the worker pool, each worker's episode
     bound. Ignored by an in-process run."""
-    legacy: LegacyEnvConfig = LegacyEnvConfig()
-    """A classic (v0) environment to evaluate through the bridge instead of `[env]`."""
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
     Excluded from the saved config so re-running `@ config.toml` lands in a fresh dir."""
@@ -77,10 +74,9 @@ class EvalConfig(BaseConfig):
     """Where to write the run (config.toml + traces.jsonl). None = a fresh per-run dir
     under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
     resume: Path | None = Field(None, exclude=True)
-    """Set by `--resume <dir>`: re-run missing or errored rollouts, or an incomplete
-    group-scored task as a whole group, appending to that run's own results. The run's saved
-    config is loaded verbatim, so `--resume` takes no other arguments. Excluded from the
-    saved config."""
+    """Set by `--resume <dir>`: re-run missing or errored rollouts, appending to that
+    run's own results. The run's saved config is loaded verbatim, so `--resume` takes
+    no other arguments. Excluded from the saved config."""
 
     @model_validator(mode="after")
     def reject_rich_with_server(self):
@@ -98,14 +94,8 @@ class EvalConfig(BaseConfig):
         return self
 
     @property
-    def is_legacy(self) -> bool:
-        """Whether this run goes through the v0 bridge: a legacy id and no v1 taskset."""
-        return self.legacy.id is not None and not self.env.taskset.id
-
-    @property
     def env_id(self) -> str:
-        """The run's identifier: the v1 env's, else the v0 env id."""
-        return self.env.env_id or self.legacy.id or ""
+        return self.env.env_id or ""
 
     @property
     def worker_max_concurrent(self) -> int | None:
@@ -114,26 +104,6 @@ class EvalConfig(BaseConfig):
             self.serve.max_concurrent
             if self.serve.max_concurrent is not None
             else self.max_concurrent
-        )
-
-    @model_validator(mode="after")
-    def _refuse_mixed_run(self):
-        # A v0 id next to any v1 env identity leaves one of the two going nowhere, and
-        # which one depends on `is_legacy`: a taskset makes it False, so the v0 env never
-        # loads; a bare `--env.id` leaves it True, so the v0 env runs under the v1 name.
-        if self.legacy.id is None or not self.env.env_id:
-            return self
-        if self.env.taskset.id:
-            raise ValueError(
-                f"--legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine "
-                f"with the v1 taskset {self.env.taskset.id!r}. Pairing a reusable env with "
-                f"a taskset is --env.id {self.legacy.id!r} (TOML: id under [env]); to run "
-                "the v0 env instead, drop the taskset."
-            )
-        raise ValueError(
-            f"--legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with "
-            f"the v1 env --env.id {self.env.id!r}: the v0 env is what would run, stamped "
-            "with the v1 env's name. Keep whichever one you meant to run."
         )
 
     @model_validator(mode="before")

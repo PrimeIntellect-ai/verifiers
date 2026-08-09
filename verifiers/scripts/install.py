@@ -2,7 +2,7 @@
 
 import argparse
 
-from verifiers.utils.install_utils import (
+from verifiers.v1.utils.install_utils import (
     install_from_hub,
     install_from_local,
     install_from_repo,

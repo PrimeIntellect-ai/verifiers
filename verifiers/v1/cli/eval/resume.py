@@ -7,14 +7,13 @@ redone).
 
 A saved rollout is matched to a selected task by content: `task_key` hashes the
 task's wire data. Tasks with identical data are interchangeable, a task whose data
-changed since the interrupted run re-runs, and nothing depends on `data.idx`. The
-legacy (v0) bridge still matches by row index (`key_of`).
+changed since the interrupted run re-runs, and nothing depends on `data.idx`.
 """
 
 import json
 import tomllib
 from collections import Counter, defaultdict
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable
 from pathlib import Path
 from typing import TypeVar
 
@@ -48,24 +47,18 @@ def load(
     selected_keys: list[K],
     num_rollouts: int,
     complete: Callable[[Episode], bool] | None = None,
-    *,
-    whole_task: bool = False,
-    key_of: Callable[[Mapping], K] | None = None,
 ) -> tuple[list[Episode], dict[K, int]]:
     """Load the good saved rollouts and diff them against the run's target: returns
     (kept episodes, rollouts owed per task key). `selected_keys` is one key per
     selected task (duplicates allowed — a key selected k times is owed up to
-    `k * num_rollouts`; spread back over the tasks with `distribute`). `key_of` maps
-    a saved row's task data to its key (default `task_key`; the legacy bridge uses
-    row indices). `complete` is the keep-verdict (default `episode.ok`); `whole_task`
-    redoes a partially-kept task whole (legacy group scoring). Rewrites
-    `traces.jsonl` to the kept rows via a temp file + atomic rename; a torn or
-    malformed row is owed again, never a crash."""
+    `k * num_rollouts`; spread back over the tasks with `distribute`). `complete`
+    is the keep-verdict (default `episode.ok`). Rewrites `traces.jsonl` to the
+    kept rows via a temp file + atomic rename; a torn or malformed row is owed
+    again, never a crash."""
     path = resume_dir / TRACES_FILE
     targets = {
         key: count * num_rollouts for key, count in Counter(selected_keys).items()
     }
-    keyed = key_of if key_of is not None else task_key
 
     def parse(row: dict) -> Episode:
         if sniff_episode(row):
@@ -87,9 +80,9 @@ def load(
                     # The task rides each trace; a traceless record (a failure
                     # before any trace minted) has no task and is owed again.
                     if sniff_episode(row):
-                        key = keyed(row["traces"][0]["task"]["data"])
+                        key = task_key(row["traces"][0]["task"]["data"])
                     else:
-                        key = keyed(row["task"]["data"])
+                        key = task_key(row["task"]["data"])
                 except (ValueError, KeyError, IndexError, TypeError):
                     # A torn final line (the run died mid-write) or a foreign shape
                     # is not a keepable rollout — it's owed again, never a crash.
@@ -111,8 +104,6 @@ def load(
     owed: dict[K, int] = {}
     for key, target in targets.items():
         rows = good.get(key, [])
-        if whole_task and len(rows) < target:
-            rows = []  # a partial unit redoes whole — its kept rows are dropped
         keep.extend(line for line, _ in rows)
         episodes.extend(episode for _, episode in rows)
         if missing := target - len(rows):

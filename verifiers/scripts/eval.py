@@ -38,7 +38,7 @@ from verifiers.utils.eval_utils import (
     run_evaluations_tui,
 )
 from verifiers.utils.import_utils import load_toml
-from verifiers.utils.install_utils import check_hub_env_installed
+from verifiers.v1.utils.install_utils import check_hub_env_installed
 
 logger = logging.getLogger(__name__)
 
