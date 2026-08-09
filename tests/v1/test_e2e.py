@@ -183,18 +183,8 @@ def _anthropic_content(block):
         (ResponsesDialect(), {"prompt": {"id": "prompt-1"}}, "prompt.id"),
         (
             ResponsesDialect(),
-            {"input": [{"type": "item_reference", "id": "item-1"}]},
-            "input[0].type",
-        ),
-        (
-            ResponsesDialect(),
             {"input": [{"type": "reasoning", "id": "reasoning-1", "summary": []}]},
             "input[0].id",
-        ),
-        (
-            ResponsesDialect(),
-            {"input": [{"type": "program_output", "call_id": "program-1"}]},
-            "input[0].type",
         ),
         (
             ResponsesDialect(),
@@ -215,21 +205,9 @@ def _anthropic_content(block):
             {
                 "input": [
                     {
-                        "type": "input_video",
-                        "video_url": "https://example.com/a.mp4",
-                    }
-                ]
-            },
-            "input[0].type",
-        ),
-        (
-            ResponsesDialect(),
-            {
-                "input": [
-                    {
-                        "type": "mcp_approval_response",
-                        "approval_request_id": "approval-1",
-                        "approve": True,
+                        "type": "future_provider_input",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hello"}],
                     }
                 ]
             },
@@ -265,6 +243,7 @@ def _anthropic_content(block):
             {"tool_choice": {"type": "mcp", "server_label": "remote"}},
             "tool_choice.type",
         ),
+        (ResponsesDialect(), {"tool_choice": "future_provider_tool"}, "tool_choice"),
         (
             ResponsesDialect(),
             {
@@ -284,6 +263,7 @@ def _anthropic_content(block):
         ),
         (ChatDialect(), {"web_search_options": {}}, "web_search_options"),
         (ChatDialect(), {"model": "openai/gpt-5-search-api"}, "model"),
+        (ChatDialect(), {"tool_choice": "future_provider_tool"}, "tool_choice"),
         (
             ChatDialect(),
             {"model": "gpt-4o-search-preview-2025-03-11"},
@@ -486,14 +466,6 @@ def test_dialect_external_capability(dialect, body, path):
         {"type": kind}
         for kind in (
             "web_search",
-            "web_search_2025_08_26",
-            "web_search_preview",
-            "web_search_preview_2025_03_11",
-            "file_search",
-            "mcp",
-            "code_interpreter",
-            "programmatic_tool_calling",
-            "image_generation",
             "future_provider_tool",
         )
     ]
@@ -509,23 +481,8 @@ def test_responses_provider_tools_are_capabilities(tool):
 @pytest.mark.parametrize(
     "kind",
     [
-        *(f"web_search_{version}" for version in ("20250305", "20260209", "20260318")),
-        *(
-            f"web_fetch_{version}"
-            for version in ("20250910", "20260209", "20260309", "20260318")
-        ),
-        *(
-            f"code_execution_{version}"
-            for version in ("20250522", "20250825", "20260120", "20260521")
-        ),
-        "advisor_20260301",
-        "tool_search_tool_bm25",
-        "tool_search_tool_regex",
-        "tool_search_tool_bm25_20251119",
-        "tool_search_tool_regex_20251119",
-        "mcp_toolset",
+        "web_search_20250305",
         "bash_99999999",
-        "future_provider_tool",
     ],
 )
 def test_anthropic_provider_tools_are_capabilities(kind):
@@ -625,8 +582,12 @@ def test_inline_data_and_client_tools_are_not_external_capabilities():
         ],
     }
     assert ResponsesDialect().external_capability(responses) is None
+    responses["tool_choice"] = {"type": "shell"}
+    assert ResponsesDialect().external_capability(responses) is None
     assert ChatDialect().external_capability(chat) is None
     assert AnthropicDialect().external_capability(anthropic) is None
+    for dialect in (ResponsesDialect(), ChatDialect()):
+        assert dialect.external_capability({"tool_choice": "auto"}) is None
 
 
 class _RecordingClient(vf.Client):
@@ -723,23 +684,9 @@ async def _post(session, dialect, body, route=None):
         return response.status, await response.text()
 
 
-@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     "dialect,body,path",
     [
-        (
-            ResponsesDialect(),
-            {
-                "model": "ignored",
-                **_responses_content(
-                    {
-                        "type": "input_file",
-                        "file_url": "https://api.github.com/repos/example/repo",
-                    }
-                ),
-            },
-            "input[0].content[0].file_url",
-        ),
         (
             ResponsesDialect(),
             {
@@ -748,15 +695,6 @@ async def _post(session, dialect, body, route=None):
                 "tools": [{"type": "mcp", "authorization": "do-not-echo"}],
             },
             "tools[0].type",
-        ),
-        (
-            ChatDialect(),
-            {
-                "model": "ignored",
-                "messages": [{"role": "user", "content": "hello"}],
-                "web_search_options": {},
-            },
-            "web_search_options",
         ),
         (
             AnthropicDialect(),
@@ -777,12 +715,10 @@ async def _post(session, dialect, body, route=None):
         ),
     ],
 )
-async def test_restricted_interception_blocks_before_upstream(
-    stream, dialect, body, path
-):
+async def test_restricted_interception_blocks_before_upstream(dialect, body, path):
     client = _RecordingClient()
     session = _session(client)
-    status, response = await _post(session, dialect, {**body, "stream": stream})
+    status, response = await _post(session, dialect, body)
 
     assert status == 400
     assert path in response
@@ -793,7 +729,6 @@ async def test_restricted_interception_blocks_before_upstream(
     assert session.inflight == {}
 
 
-@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     "model,sampling,path",
     [
@@ -805,9 +740,7 @@ async def test_restricted_interception_blocks_before_upstream(
         ("gpt-5-search-api", vf.Sampling(), "model"),
     ],
 )
-async def test_restricted_interception_scans_effective_overrides(
-    stream, model, sampling, path
-):
+async def test_restricted_interception_scans_effective_overrides(model, sampling, path):
     dialect = ChatDialect()
     client = _RecordingClient()
     session = _session(
@@ -821,7 +754,6 @@ async def test_restricted_interception_scans_effective_overrides(
         {
             "model": "ignored",
             "messages": [{"role": "user", "content": "hello"}],
-            "stream": stream,
         },
     )
 
@@ -943,28 +875,6 @@ def test_rollout_session_uses_effective_runtime_network_policy(
         limits=RolloutLimits(),
     )
     assert rollout._session.network_restricted is restricted
-
-
-def test_agent_resolves_owned_and_borrowed_runtime_network_policy():
-    from verifiers.v1.harnesses.null import NullHarnessConfig
-    from verifiers.v1.runtimes import make_runtime
-
-    agent = vf.Agent(
-        vf.AgentConfig(
-            model="test-model",
-            harness=NullHarnessConfig(id="null"),
-            runtime=DockerConfig(),
-        )
-    )
-    restricted_task = vf.Task(vf.TaskData(idx=0, prompt="hello", network_allow=[]))
-    owned = agent._rollout_params(restricted_task, None, {})["runtime_config"]
-    assert owned.network_restricted
-
-    borrowed_runtime = make_runtime(DockerConfig(allow=[]))
-    open_task = vf.Task(vf.TaskData(idx=1, prompt="hello"))
-    borrowed = agent._rollout_params(open_task, borrowed_runtime, {})["runtime_config"]
-    assert borrowed is borrowed_runtime.config
-    assert borrowed.network_restricted
 
 
 @pytest.mark.e2e

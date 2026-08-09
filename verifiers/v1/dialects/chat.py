@@ -48,15 +48,10 @@ class ModdedChatCompletion(ChatCompletion):
 
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
-_SEARCH_MODELS = frozenset(
-    {
-        "gpt-5-search-api",
-        "gpt-4o-search-preview",
-        "gpt-4o-search-preview-2025-03-11",
-        "gpt-4o-mini-search-preview",
-        "gpt-4o-mini-search-preview-2025-03-11",
-    }
-)
+# Provider-native tools execute outside the rollout's network policy, so unknown tool
+# types fail closed and only client-executed types are allowlisted here.
+_CLIENT_TOOL_TYPES = frozenset({"function", "custom"})
+
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
@@ -338,8 +333,16 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
 
     def external_capability(self, body: dict) -> str | None:
         model = body.get("model")
-        if isinstance(model, str) and model.rsplit("/", 1)[-1] in _SEARCH_MODELS:
-            return "model"
+        if isinstance(model, str):
+            name = model.rsplit("/", 1)[-1]
+            if name.startswith(
+                (
+                    "gpt-5-search-api",
+                    "gpt-4o-search-preview",
+                    "gpt-4o-mini-search-preview",
+                )
+            ):
+                return "model"
         if body.get("web_search_options") is not None:
             return "web_search_options"
         audio = body.get("audio")
@@ -347,24 +350,30 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         if isinstance(voice, dict) and voice.get("id"):
             return "audio.voice.id"
         choice = body.get("tool_choice")
-        if isinstance(choice, dict):
+        if isinstance(choice, str):
+            if choice not in ("none", "auto", "required"):
+                return "tool_choice"
+        elif choice is not None:
+            if not isinstance(choice, dict):
+                return "tool_choice"
             kind = choice.get("type", "function")
             if kind == "allowed_tools":
                 allowed = choice.get("allowed_tools")
                 if not isinstance(allowed, dict):
                     return "tool_choice.allowed_tools"
                 for index, tool in enumerate(allowed.get("tools") or []):
-                    if not isinstance(tool, dict) or tool.get(
-                        "type", "function"
-                    ) not in ("function", "custom"):
+                    if (
+                        not isinstance(tool, dict)
+                        or tool.get("type", "function") not in _CLIENT_TOOL_TYPES
+                    ):
                         return f"tool_choice.allowed_tools.tools[{index}].type"
-            elif kind not in ("function", "custom"):
+            elif kind not in _CLIENT_TOOL_TYPES:
                 return "tool_choice.type"
-        for tool_index, tool in enumerate(body.get("tools") or []):
+        for index, tool in enumerate(body.get("tools") or []):
             if not isinstance(tool, dict):
-                return f"tools[{tool_index}]"
-            if tool.get("type", "function") not in ("function", "custom"):
-                return f"tools[{tool_index}].type"
+                return f"tools[{index}]"
+            if tool.get("type", "function") not in _CLIENT_TOOL_TYPES:
+                return f"tools[{index}].type"
         for message_index, message in enumerate(body.get("messages") or []):
             if not isinstance(message, dict):
                 continue
@@ -377,16 +386,17 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                 if not isinstance(part, dict):
                     continue
                 path = f"messages[{message_index}].content[{part_index}]"
-                if part.get("type") == "image_url":
+                kind = part.get("type")
+                if kind == "image_url":
                     image = part.get("image_url") or {}
                     url = image.get("url") if isinstance(image, dict) else image
                     if is_remote_url(url):
                         return f"{path}.image_url.url"
-                if part.get("type") == "file":
+                elif kind == "file":
                     file = part.get("file")
                     if isinstance(file, dict) and file.get("file_id"):
                         return f"{path}.file.file_id"
-                if part.get("type") not in (
+                if kind not in (
                     "text",
                     "refusal",
                     "input_audio",

@@ -351,10 +351,10 @@ class InterceptionServer(Interception):
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
-        effective_body = dialect.apply_overrides(
+        upstream_request = dialect.apply_overrides(
             body, session.ctx.model, session.ctx.sampling
         )
-        rejection = self._capability_rejection(session, dialect, effective_body)
+        rejection = self._capability_rejection(session, dialect, upstream_request)
         if rejection is not None:
             return rejection
         streaming = dialect.streaming(body)
@@ -381,7 +381,15 @@ class InterceptionServer(Interception):
         # coalescing cache, as it was before in-flight retries were introduced.
         if streaming:
             prompt, tools = dialect.parse_request(body)
-            return await self._stream(request, session, dialect, body, prompt, tools)
+            return await self._stream(
+                request,
+                session,
+                dialect,
+                body,
+                upstream_request,
+                prompt,
+                tools,
+            )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
@@ -449,7 +457,6 @@ class InterceptionServer(Interception):
                 )
             turn = graph.prepare_turn(session.trace, prompt)
             session.error = None
-            upstream_request: dict | None = None
             call_response: Response | None = None
             node: int | None = None
             error: Exception | None = None
@@ -458,9 +465,6 @@ class InterceptionServer(Interception):
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
-                    upstream_request = dialect.apply_overrides(
-                        body, session.ctx.model, session.ctx.sampling
-                    )
                     call_response = await session.client.get_response(
                         dialect,
                         body,
@@ -553,6 +557,7 @@ class InterceptionServer(Interception):
         session: RolloutSession,
         dialect: Dialect,
         body: dict,
+        upstream_request: dict,
         prompt: Messages,
         tools: list[Tool] | None = None,
     ) -> web.StreamResponse:
@@ -576,7 +581,6 @@ class InterceptionServer(Interception):
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
         session.error = None
-        upstream_request: dict | None = None
         reply = None
         response: Response | None = None
         node: int | None = None
@@ -585,9 +589,6 @@ class InterceptionServer(Interception):
         started = time.time()
         try:
             try:
-                upstream_request = dialect.apply_overrides(
-                    body, session.ctx.model, session.ctx.sampling
-                )
                 reply = await session.client.relay(
                     dialect,
                     body,

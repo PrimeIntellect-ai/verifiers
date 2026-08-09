@@ -50,6 +50,8 @@ _TERMINAL_MARKERS = tuple(
 )
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
+# Provider-native tools execute outside the rollout's network policy, so unknown tool
+# types fail closed and only client-executed types are allowlisted here.
 _CLIENT_TOOL_TYPES = frozenset(
     {
         "function",
@@ -65,21 +67,6 @@ _CLIENT_TOOL_CHOICES = _CLIENT_TOOL_TYPES | {
     "tool_search",
     "shell",
 }
-_PROVIDER_INPUT_TYPES = frozenset(
-    {
-        "file_search_call",
-        "web_search_call",
-        "code_interpreter_call",
-        "image_generation_call",
-        "mcp_list_tools",
-        "mcp_approval_request",
-        "mcp_approval_response",
-        "mcp_call",
-        "item_reference",
-        "program",
-        "program_output",
-    }
-)
 _SAFE_INPUT_TYPES = frozenset(
     {
         "input_text",
@@ -154,7 +141,7 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def _tool_capability(tools, path: str) -> str | None:
+def _tools_capability(tools, path: str) -> str | None:
     for index, tool in enumerate(tools or []):
         item_path = f"{path}[{index}]"
         if not isinstance(tool, dict):
@@ -163,7 +150,7 @@ def _tool_capability(tools, path: str) -> str | None:
         if kind in _CLIENT_TOOL_TYPES:
             continue
         if kind == "namespace":
-            if capability := _tool_capability(tool.get("tools"), f"{item_path}.tools"):
+            if capability := _tools_capability(tool.get("tools"), f"{item_path}.tools"):
                 return capability
             continue
         if kind == "tool_search" and tool.get("execution") == "client":
@@ -201,8 +188,6 @@ def _content_capability(value, path: str) -> str | None:
             return f"{path}.file_id"
         if is_remote_url(value.get("image_url")):
             return f"{path}.image_url"
-    if kind in _PROVIDER_INPUT_TYPES:
-        return f"{path}.type"
     if kind == "reasoning" and value.get("id") and not value.get("encrypted_content"):
         return f"{path}.id"
     if kind == "tool_search_call" and value.get("execution") != "client":
@@ -212,31 +197,22 @@ def _content_capability(value, path: str) -> str | None:
         if not (isinstance(environment, dict) and environment.get("type") == "local"):
             return f"{path}.environment"
     if kind == "additional_tools":
-        return _tool_capability(value.get("tools"), f"{path}.tools")
+        return _tools_capability(value.get("tools"), f"{path}.tools")
     if kind == "tool_search_output":
         if value.get("execution") != "client":
             return f"{path}.execution"
-        return _tool_capability(value.get("tools"), f"{path}.tools")
-    if kind == "computer_call_output":
+        return _tools_capability(value.get("tools"), f"{path}.tools")
+    if kind in (
+        "computer_call_output",
+        "function_call_output",
+        "custom_tool_call_output",
+    ):
         return _content_capability(value.get("output"), f"{path}.output")
-    if kind in ("function_call_output", "custom_tool_call_output"):
-        return _content_capability(value.get("output"), f"{path}.output")
-    if "role" in value and "content" in value:
+    if kind in (None, "message") and "role" in value and "content" in value:
         return _content_capability(value.get("content"), f"{path}.content")
     if kind in _SAFE_INPUT_TYPES:
         return None
     return f"{path}.type"
-
-
-def _tool_choice_capability(choice) -> str | None:
-    if not isinstance(choice, dict):
-        return None
-    kind = choice.get("type")
-    if kind in _CLIENT_TOOL_CHOICES:
-        return None
-    if kind == "allowed_tools":
-        return _tool_capability(choice.get("tools"), "tool_choice.tools")
-    return "tool_choice.type"
 
 
 def fold_assistant(items: list[dict]) -> AssistantMessage:
@@ -399,9 +375,22 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             return "prompt"
         if capability := _content_capability(body.get("input"), "input"):
             return capability
-        if capability := _tool_choice_capability(body.get("tool_choice")):
-            return capability
-        return _tool_capability(body.get("tools"), "tools")
+        choice = body.get("tool_choice")
+        if isinstance(choice, str):
+            if choice not in ("none", "auto", "required"):
+                return "tool_choice"
+        elif choice is not None:
+            if not isinstance(choice, dict):
+                return "tool_choice"
+            kind = choice.get("type")
+            if kind == "allowed_tools":
+                if capability := _tools_capability(
+                    choice.get("tools"), "tool_choice.tools"
+                ):
+                    return capability
+            elif kind not in _CLIENT_TOOL_CHOICES:
+                return "tool_choice.type"
+        return _tools_capability(body.get("tools"), "tools")
 
     def is_terminal_event(self, chunk: bytes) -> bool:
         # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
