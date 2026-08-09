@@ -65,7 +65,7 @@ class RolloutLimits:
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
-    network_restricted: bool = False
+    network_restricted: bool
     """Whether execution has any network restriction. Provider-side fetches cannot inherit
     the sandbox's allowlist or redirect checks, so every restricted policy disables them."""
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
