@@ -1,4 +1,4 @@
-from color_codeword_v1 import taskset
+from color_codeword import taskset
 
 
 def test_color_images_are_rendered_once(monkeypatch) -> None:

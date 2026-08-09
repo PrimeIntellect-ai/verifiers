@@ -4,7 +4,7 @@ num_tasks = 2
 id = "agentic-judge"
 
 [env.taskset]
-id = "gsm8k-v1"
+id = "gsm8k"
 
 [env.solver.harness]
 id = "bash"

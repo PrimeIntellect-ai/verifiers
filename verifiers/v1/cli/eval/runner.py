@@ -129,7 +129,9 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
     # workers) never load data, they rebuild each dispatched task from its request.
     taskset = load_taskset(config.env.taskset)
     if config.num_tasks is None and taskset.INFINITE:
-        raise ValueError(f"{type(taskset).__name__} is infinite - bound the run with -n")
+        raise ValueError(
+            f"{type(taskset).__name__} is infinite - bound the run with -n"
+        )
     selected = taskset.shuffle() if config.shuffle else taskset
     if config.num_tasks is not None:
         selected = selected.head(config.num_tasks)

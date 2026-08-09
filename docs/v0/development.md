@@ -116,7 +116,7 @@ uv run pytest tests/v1/test_envs.py -vv
 uv run pytest -n auto tests/v1/test_envs.py -vv
 
 # Run specific environment tests
-uv run pytest tests/v1/test_envs.py -k gsm8k_v1
+uv run pytest tests/v1/test_envs.py -k gsm8k
 ```
 
 The test suite includes 380+ tests covering parsers, rubrics, environments, and utilities.
@@ -296,7 +296,7 @@ uv run pytest tests/ --cov=verifiers  # With coverage
 
 # Run environment tests
 uv run pytest tests/v1/test_envs.py -vv             # All environments
-uv run pytest tests/v1/test_envs.py -k gsm8k_v1     # Specific environment
+uv run pytest tests/v1/test_envs.py -k gsm8k     # Specific environment
 
 # Linting
 uv run ruff check --fix .             # Fix lint errors

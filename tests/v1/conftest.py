@@ -82,7 +82,7 @@ def pytest_configure(config) -> None:
     """Self-launching tool servers run `python -m <module>` in a fresh subprocess, which
     inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
     `PYTHONPATH` so a fixture server module (e.g. `tool_response_image_v1`)
-    resolves there too — an installed example package (e.g. `glossary_v1`) already would."""
+    resolves there too — an installed example package (e.g. `glossary`) already would."""
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")
     if fixtures not in existing.split(os.pathsep):

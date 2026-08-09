@@ -3,7 +3,7 @@
 verifiers offers built in support for [GEPA](https://github.com/gepa-ai/gepa), an algorithm that optimizes a system prompt to maximize the downstream reward for a given taskset:
 
 ```bash
-uv run gepa reverse-text-v1
+uv run gepa reverse-text
 ```
 
 `gepa` runs GEPA where a number of rollouts are done before a teacher LLM reflects on the results to propose a better `Task.system_prompt` without any gradient based training. It runs against native v1 tasksets.
@@ -14,7 +14,7 @@ GEPA reuses the same `env` (taskset + agent) / `client` / `sampling` config as e
 model = "deepseek/deepseek-v4-flash"
 
 [env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [env.agent.harness]
 id = "bash"
@@ -41,12 +41,12 @@ The best system prompt is printed when the run finishes and written to `best_sys
 Hand it back to eval or training via the config-layer taskset system prompt:
 
 ```bash
-uv run eval reverse-text-v1 \
+uv run eval reverse-text \
   --env.taskset.system-prompt outputs/<run>/best_system_prompt.txt
 ```
 
 ## Limitations
 
-**Tasksets** — GEPA optimizes `Task.system_prompt`, so the taskset must provide one. Tasksets that bake instructions into the user `prompt` instead (e.g. `gsm8k-v1`) are not supported out of the box.
+**Tasksets** — GEPA optimizes `Task.system_prompt`, so the taskset must provide one. Tasksets that bake instructions into the user `prompt` instead (e.g. `gsm8k`) are not supported out of the box.
 
 **Harnesses** — any eval harness works. With `APPENDS_SYSTEM_PROMPT`, the optimized prompt is used as a system message but otherwise is folded into the user prompt.

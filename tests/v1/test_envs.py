@@ -1,6 +1,6 @@
-"""Smoke-eval every V1 example taskset in `environments/` through the `eval` CLI.
+"""Smoke-eval every example taskset in `environments/` through the `eval` CLI.
 
-Each `_v1` taskset runs with its required harness for one short, capped rollout, so a broken
+Each taskset runs with its required harness for one short, capped rollout, so a broken
 example taskset fails CI. `compact` is excluded (it's a harness, not a taskset);
 SWE/container tasksets need a docker/prime runtime and are covered by dedicated V1 e2e tests.
 """
@@ -18,15 +18,15 @@ EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # V1 tasksets that aren't part of the default CI install.
-SKIP_EVAL = {"nemo_gym_weather_v1"}
+SKIP_EVAL = {"nemo_gym_weather"}
 
 # Per-run caps are seat fields; recipe envs name their own seats.
 SEATS: dict[str, tuple[str, ...]] = {
-    "code_golf_v1": ("golfer",),
-    "kuhn_poker_v1": ("player0", "player1"),
-    "openenv_wordle_v1": ("player",),
-    "proposer_solver_v1": ("proposer", "solver"),
-    "wordle_v1": ("player",),
+    "code_golf": ("golfer",),
+    "kuhn_poker": ("player0", "player1"),
+    "openenv_wordle": ("player",),
+    "proposer_solver": ("proposer", "solver"),
+    "wordle": ("player",),
 }
 
 
@@ -34,7 +34,9 @@ def v1_tasksets() -> list[str]:
     if not ENVIRONMENTS.is_dir():
         return []
     return sorted(
-        d.name for d in ENVIRONMENTS.iterdir() if d.is_dir() and d.name.endswith("_v1")
+        d.name
+        for d in ENVIRONMENTS.iterdir()
+        if d.is_dir() and d.name != "compact" and (d / "pyproject.toml").exists()
     )
 
 

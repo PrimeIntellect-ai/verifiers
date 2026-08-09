@@ -38,7 +38,7 @@ The output from evaluations are written into `outputs/<env>--<model>--<harness>/
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
 - `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks; an
-  infinite taskset (a procedural generator, e.g. `wordle-v1`) requires it
+  infinite taskset (a procedural generator, e.g. `wordle`) requires it
 - `num_rollouts` — rollouts per task
 - `verbose` — log at debug instead of info
 - `shuffle` — samples the task order (fixed seed); an error on an infinite taskset
