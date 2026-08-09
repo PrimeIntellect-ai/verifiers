@@ -2,7 +2,7 @@
 
 """Environment build command module for external hosts."""
 
-from verifiers.scripts.build import main
+from verifiers.legacy.scripts.build import main
 
 
 if __name__ == "__main__":

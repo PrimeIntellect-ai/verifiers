@@ -8,9 +8,9 @@ from openai.types.chat.chat_completion_user_message_param import (
     ChatCompletionUserMessageParam,
 )
 
-import verifiers as vf
+import verifiers.legacy as vf
 from tests.conftest import faulty_tool, offset_tool, square_tool
-from verifiers.utils.tool_utils import is_valid_tool_content_parts
+from verifiers.legacy.utils.tool_utils import is_valid_tool_content_parts
 
 
 class TestIsValidToolContentParts:

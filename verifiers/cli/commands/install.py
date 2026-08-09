@@ -2,7 +2,7 @@
 
 """Environment install command module for external hosts."""
 
-from verifiers.scripts.install import main
+from verifiers.legacy.scripts.install import main
 
 
 if __name__ == "__main__":

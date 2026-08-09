@@ -14,8 +14,8 @@ from prime_sandboxes import (
     UploadTimeoutError,
 )
 
-import verifiers as vf
-from verifiers.envs.experimental.sandbox_mixin import (
+import verifiers.legacy as vf
+from verifiers.legacy.envs.experimental.sandbox_mixin import (
     SandboxCreationError,
     SandboxMixin,
     SandboxNotReadyError,
@@ -26,7 +26,7 @@ from verifiers.envs.experimental.sandbox_mixin import (
     is_retryable_sandbox_read_error,
 )
 
-MODULE = "verifiers.envs.experimental.sandbox_mixin"
+MODULE = "verifiers.legacy.envs.experimental.sandbox_mixin"
 
 
 class ConcreteMixin(SandboxMixin):
@@ -465,7 +465,7 @@ def test_upload_bundle_respects_custom_extract_timeout():
 
 
 def test_cli_agent_env_poll_uses_timeouts_poll():
-    from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
+    from verifiers.legacy.envs.experimental.cli_agent_env import CliAgentEnv
 
     # Bypass __init__ to avoid spinning up interception server / MultiTurnEnv
     # machinery; exercise only the timeouts plumbing.
@@ -482,7 +482,7 @@ def test_cli_agent_env_poll_uses_timeouts_poll():
 
 
 def test_cli_agent_env_defaults_match_hardcodes():
-    from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
+    from verifiers.legacy.envs.experimental.cli_agent_env import CliAgentEnv
 
     env = CliAgentEnv.__new__(CliAgentEnv)
     SandboxMixin.init_sandbox_client(env, max_retries=1, base_delay=0.01)

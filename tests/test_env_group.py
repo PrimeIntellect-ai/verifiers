@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 from datasets import Dataset
 
-from verifiers import EnvGroup, Rubric, SingleTurnEnv
-from verifiers.envs.env_group import EnvGroupRubric
-from verifiers.types import RolloutTiming, State
+from verifiers.legacy import EnvGroup, Rubric, SingleTurnEnv
+from verifiers.legacy.envs.env_group import EnvGroupRubric
+from verifiers.legacy.types import RolloutTiming, State
 
 
 class TestEnvGroupRubric:

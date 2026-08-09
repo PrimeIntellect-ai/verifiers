@@ -1,12 +1,12 @@
 # tests/test_message_utils_audio.py
-from verifiers.types import (
+from verifiers.legacy.types import (
     ImageUrlContentPart,
     ImageUrlSource,
     InputAudioContentPart,
     InputAudioSource,
     UserMessage,
 )
-from verifiers.utils.message_utils import (
+from verifiers.legacy.utils.message_utils import (
     message_to_printable,
     messages_to_printable,
     serialize_message_for_output,

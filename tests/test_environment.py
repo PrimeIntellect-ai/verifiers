@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers import Environment, Parser, Rubric, ThinkParser
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy import Environment, Parser, Rubric, ThinkParser
+from verifiers.legacy.types import (
     GenerateOutputs,
     Messages,
     Response,
@@ -19,7 +19,7 @@ from verifiers.types import (
     Tool,
     ToolCall,
 )
-from verifiers.utils.save_utils import make_dataset as build_dataset
+from verifiers.legacy.utils.save_utils import make_dataset as build_dataset
 
 
 # Create a concrete implementation for testing the abstract base class
@@ -44,11 +44,11 @@ class SimpleEnvironment(Environment):
             prompt_messages = state["prompt"]
             response = await self.get_model_response(state, prompt_messages)
 
-            from verifiers.utils.response_utils import parse_response_message
+            from verifiers.legacy.utils.response_utils import parse_response_message
 
             completion_messages = await parse_response_message(response)
-            from verifiers.types import TrajectoryStep
-            from verifiers.utils.response_utils import parse_response_tokens
+            from verifiers.legacy.types import TrajectoryStep
+            from verifiers.legacy.utils.response_utils import parse_response_tokens
 
             tokens = await parse_response_tokens(response)
             trajectory_step = TrajectoryStep(
@@ -65,7 +65,7 @@ class SimpleEnvironment(Environment):
             state["trajectory"].append(trajectory_step)
             state["is_completed"] = True
 
-            from verifiers.utils.message_utils import concat_messages
+            from verifiers.legacy.utils.message_utils import concat_messages
 
             last_prompt = state["trajectory"][-1]["prompt"]
             last_completion = state["trajectory"][-1]["completion"]
@@ -707,8 +707,8 @@ class TestMaybeRetry:
         isinstance) — base-name substring matching missed SandboxError, which is
         an InfraError and should be retried.
         """
-        from verifiers.utils.async_utils import maybe_retry
-        from verifiers.utils.error_utils import error_data
+        from verifiers.legacy.utils.async_utils import maybe_retry
+        from verifiers.legacy.utils.error_utils import error_data
 
         serialized = error_data(vf.SandboxError("Program file upload failed"))
         calls = {"n": 0}
@@ -893,7 +893,7 @@ class TestEmptyModelResponseErrors:
         )
 
         # Mock the client to return a Response with tool calls but no content
-        from verifiers.types import Response
+        from verifiers.legacy.types import Response
 
         mock_client.get_response = AsyncMock(
             return_value=Response(

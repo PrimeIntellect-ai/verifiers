@@ -1,16 +1,16 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from verifiers.errors import InfraError
-from verifiers.types import (
+from verifiers.legacy.errors import InfraError
+from verifiers.legacy.types import (
     Response,
     ResponseMessage,
     TextContentPart,
     ToolCall,
     Usage,
 )
-from verifiers.utils import interception_utils
-from verifiers.utils.interception_utils import (
+from verifiers.legacy.utils import interception_utils
+from verifiers.legacy.utils.interception_utils import (
     InterceptionError,
     InterceptionServer,
     StreamInterrupted,

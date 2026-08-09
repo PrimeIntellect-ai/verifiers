@@ -9,7 +9,7 @@ from typing import Any, Callable
 import pytest
 from datasets import Dataset
 
-from verifiers import (
+from verifiers.legacy import (
     MaybeThinkParser,
     Messages,
     MultiTurnEnv,
@@ -24,8 +24,8 @@ from verifiers import (
     XMLParser,
     stop,
 )
-from verifiers.clients.client import Client
-from verifiers.types import (
+from verifiers.legacy.clients.client import Client
+from verifiers.legacy.types import (
     GenerateMetadata,
     Info,
     Response,
@@ -38,7 +38,7 @@ from verifiers.types import (
     ToolCall,
     TrajectoryStep,
 )
-from verifiers.utils.save_utils import state_to_output
+from verifiers.legacy.utils.save_utils import state_to_output
 
 
 def pytest_configure(config) -> None:

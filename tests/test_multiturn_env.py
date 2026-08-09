@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from datasets import Dataset
 
-from verifiers import Messages, MultiTurnEnv, Parser, Rubric, State, stop
+from verifiers.legacy import Messages, MultiTurnEnv, Parser, Rubric, State, stop
 
 
 class TestMultiTurnEnv:

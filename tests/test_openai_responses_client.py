@@ -3,12 +3,12 @@ from typing import Any
 
 import pytest
 
-from verifiers.clients import resolve_client
-from verifiers.clients.openai_responses_client import (
+from verifiers.legacy.clients import resolve_client
+from verifiers.legacy.clients.openai_responses_client import (
     OPENAI_RESPONSES_OUTPUT_FIELD,
     OpenAIResponsesClient,
 )
-from verifiers.types import (
+from verifiers.legacy.types import (
     AssistantMessage,
     ClientConfig,
     Response,
@@ -20,7 +20,7 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
-from verifiers.utils.response_utils import parse_response_message
+from verifiers.legacy.utils.response_utils import parse_response_message
 
 
 class _RecordingResponses:

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from datasets import Dataset
 
-from verifiers.envs.sandbox_env import SandboxEnv
+from verifiers.legacy.envs.sandbox_env import SandboxEnv
 
 
 @pytest.fixture
@@ -12,7 +12,7 @@ def sandbox_env():
     """Fixture to create a SandboxEnv instance with mocked dataset."""
     mock_dataset = Dataset.from_dict({"question": ["mock question"], "info": [{}]})
 
-    mock_request_patcher = patch("verifiers.envs.sandbox_env.CreateSandboxRequest")
+    mock_request_patcher = patch("verifiers.legacy.envs.sandbox_env.CreateSandboxRequest")
 
     mock_request_patcher.start()
 

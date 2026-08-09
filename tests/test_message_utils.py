@@ -1,5 +1,5 @@
-from verifiers.types import AssistantMessage, UserMessage
-from verifiers.utils.message_utils import (
+from verifiers.legacy.types import AssistantMessage, UserMessage
+from verifiers.legacy.utils.message_utils import (
     from_raw_message,
     get_messages,
     normalize_messages,

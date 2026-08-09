@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from verifiers.types import ClientConfig, EndpointClientConfig
+from verifiers.legacy.types import ClientConfig, EndpointClientConfig
 
 
 def test_client_config_allows_leaf_endpoint_configs():

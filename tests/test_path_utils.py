@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from verifiers.utils.path_utils import (
+from verifiers.legacy.utils.path_utils import (
     find_latest_incomplete_eval_results_path,
     get_eval_runs_dir,
     is_valid_eval_results_path,

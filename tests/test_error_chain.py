@@ -1,7 +1,7 @@
-"""Tests for verifiers.utils.error_utils.ErrorChain."""
+"""Tests for verifiers.legacy.utils.error_utils.ErrorChain."""
 
-import verifiers as vf
-from verifiers.utils.error_utils import ErrorChain, get_vf_error_chain
+import verifiers.legacy as vf
+from verifiers.legacy.utils.error_utils import ErrorChain, get_vf_error_chain
 
 
 class TestErrorChain:

@@ -44,7 +44,7 @@ This guide walks through building environments in Verifiers, from simple single-
 The simplest single-turn environments need only a dataset of tasks and a reward function for scoring responses:
 
 ```python
-import verifiers as vf
+import verifiers.legacy as vf
 from datasets import Dataset
 
 
@@ -758,7 +758,7 @@ dependencies = [
 Environments that require external API keys (e.g., for judge models or external services) should validate them early in `load_environment()` using `vf.ensure_keys()`:
 
 ```python
-import verifiers as vf
+import verifiers.legacy as vf
 
 
 def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
@@ -844,7 +844,7 @@ await asyncio.to_thread(orjson.dumps, data)
 with open(file, "w") as f:
     f.write(data)
 # ✅ use the built-in helper
-from verifiers.utils.path_utils import write_temp_file
+from verifiers.legacy.utils.path_utils import write_temp_file
 
 tmp_path = await asyncio.to_thread(write_temp_file, data, ".txt")
 ```
@@ -874,7 +874,7 @@ This resizes both the default event-loop executor (used by `asyncio.to_thread()`
 
 ```python
 from concurrent.futures import ThreadPoolExecutor  # or ProcessPoolExecutor
-from verifiers.utils.thread_utils import register_executor, unregister_executor
+from verifiers.legacy.utils.thread_utils import register_executor, unregister_executor
 
 # register during init — if set_concurrency() was already called,
 # the executor is immediately resized to match
@@ -909,10 +909,10 @@ Newer and more experimental environment classes include:
 
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
 - **`CliAgentEnv`** — runs agent code inside remote sandboxes, intercepting API requests through the `MultiTurnEnv` rollout loop. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `gpu_type`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization. Also accepts retry tuning (like `max_retries`) and connection pooling (like `sandbox_client_max_workers`) parameters via `SandboxMixin`. Subclasses can override `get_sandbox_resources(state)` for per-instance resource allocation and `build_env_vars(state)` for custom environment variables (`PROTECTED_ENV_VARS` cannot be overridden). VMs are auto-enabled when `gpu_count > 0`
-  - **`SandboxTimeouts`** — frozen dataclass of per-operation HTTP timeouts (seconds) applied to sandbox client calls, exported from `verifiers.envs.experimental.sandbox_mixin`. Fields (with defaults that preserve prior behavior): `read_file=10.0`, `extract=60.0`, `poll=60.0`, `mkdir=10.0`. These are request-level (httpx) timeouts, distinct from `SandboxSpec.timeout_minutes` (container lifetime) and the per-rollout wall-clock cap configured via the `--timeout` CLI flag. Override via the `timeouts` kwarg on `CliAgentEnv.__init__` (which flows through `SandboxMixin.init_sandbox_client`) when the sandbox gateway is slow or geographically distant:
+  - **`SandboxTimeouts`** — frozen dataclass of per-operation HTTP timeouts (seconds) applied to sandbox client calls, exported from `verifiers.legacy.envs.experimental.sandbox_mixin`. Fields (with defaults that preserve prior behavior): `read_file=10.0`, `extract=60.0`, `poll=60.0`, `mkdir=10.0`. These are request-level (httpx) timeouts, distinct from `SandboxSpec.timeout_minutes` (container lifetime) and the per-rollout wall-clock cap configured via the `--timeout` CLI flag. Override via the `timeouts` kwarg on `CliAgentEnv.__init__` (which flows through `SandboxMixin.init_sandbox_client`) when the sandbox gateway is slow or geographically distant:
 
     ```python
-    from verifiers.envs.experimental.sandbox_mixin import SandboxTimeouts
+    from verifiers.legacy.envs.experimental.sandbox_mixin import SandboxTimeouts
 
     env = MyCliAgentEnv(
         dataset=dataset,

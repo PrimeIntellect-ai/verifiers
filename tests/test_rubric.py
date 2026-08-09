@@ -6,8 +6,8 @@ from typing import cast
 
 import pytest
 
-from verifiers import Parser, Rubric
-from verifiers.types import RewardFunc, RolloutInput, RolloutTiming, State
+from verifiers.legacy import Parser, Rubric
+from verifiers.legacy.types import RewardFunc, RolloutInput, RolloutTiming, State
 
 
 class TestRubric:

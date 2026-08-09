@@ -6,11 +6,11 @@ from unittest.mock import patch
 
 import pytest
 
-import verifiers as vf
+import verifiers.legacy as vf
 from renderers import RendererPool
 from renderers import config_from_name
 from renderers.base import ParsedResponse, RenderedTokens, create_renderer
-from verifiers.clients.renderer_client import (
+from verifiers.legacy.clients.renderer_client import (
     RendererClient,
     _attach_tool_call_names,
     _get_incremental_prompt_ids,
@@ -18,8 +18,8 @@ from verifiers.clients.renderer_client import (
     _step_token_ids,
     _to_renderer_message,
 )
-from verifiers.errors import EmptyModelResponseError
-from verifiers.types import (
+from verifiers.legacy.errors import EmptyModelResponseError
+from verifiers.legacy.types import (
     AssistantMessage,
     SystemMessage,
     ToolCall,
@@ -41,7 +41,7 @@ def test_renderer_client_honors_configured_renderer_config():
 
     sentinel_pool = RendererPool.__new__(RendererPool)
     with patch(
-        "verifiers.clients.renderer_client.create_renderer_pool",
+        "verifiers.legacy.clients.renderer_client.create_renderer_pool",
         return_value=sentinel_pool,
     ) as create_pool_mock:
         pool = client._get_renderer_or_pool("Qwen/Qwen3-VL-4B-Instruct")
@@ -71,7 +71,7 @@ def test_renderer_client_uses_renderer_model_name_override():
 
     sentinel_pool = RendererPool.__new__(RendererPool)
     with patch(
-        "verifiers.clients.renderer_client.create_renderer_pool",
+        "verifiers.legacy.clients.renderer_client.create_renderer_pool",
         return_value=sentinel_pool,
     ) as create_pool_mock:
         pool = client._get_renderer_or_pool("r8-smoke")
@@ -112,11 +112,11 @@ def test_renderer_client_threads_chat_template_kwargs_into_pool():
 
         with (
             patch(
-                "verifiers.clients.renderer_client.create_renderer_pool",
+                "verifiers.legacy.clients.renderer_client.create_renderer_pool",
                 return_value=sentinel_pool,
             ) as create_pool_mock,
             patch(
-                "verifiers.clients.renderer_client.generate",
+                "verifiers.legacy.clients.renderer_client.generate",
                 side_effect=_fake_generate,
             ),
         ):
@@ -162,10 +162,10 @@ def test_renderer_client_forwards_renderer_model_name_with_chat_template_kwargs(
 
     with (
         patch(
-            "verifiers.clients.renderer_client.create_renderer_pool",
+            "verifiers.legacy.clients.renderer_client.create_renderer_pool",
             return_value=sentinel_pool,
         ) as create_pool_mock,
-        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+        patch("verifiers.legacy.clients.renderer_client.generate", side_effect=_fake_generate),
     ):
         asyncio.run(
             client.get_native_response(
@@ -255,7 +255,7 @@ async def test_to_native_tool_returns_openai_envelope():
     tool envs produced uniformly zero rewards because the model never
     emitted ``<tool_call>`` blocks under an out-of-distribution prompt.
     """
-    from verifiers.types import Tool
+    from verifiers.legacy.types import Tool
 
     client = object.__new__(RendererClient)
     tool = Tool(
@@ -281,7 +281,7 @@ async def test_to_native_tool_propagates_strict_flag():
     """When ``Tool.strict`` is set the envelope must carry it through —
     OpenAI's strict-schema enforcement only kicks in on the inner function
     object, never the envelope itself."""
-    from verifiers.types import Tool
+    from verifiers.legacy.types import Tool
 
     client = object.__new__(RendererClient)
     tool = Tool(
@@ -352,7 +352,7 @@ async def test_get_native_response_forwards_extra_headers_to_generate():
 
     with (
         patch.object(RendererClient, "_get_renderer_or_pool", return_value=object()),
-        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+        patch("verifiers.legacy.clients.renderer_client.generate", side_effect=_fake_generate),
     ):
         response = await client.get_native_response(
             prompt=[{"role": "user", "content": "hi"}],
@@ -827,7 +827,7 @@ def test_step_token_ids_returns_none_when_truncated_and_no_response():
 def test_get_native_response_translates_renderer_overlong_to_vf_overlong():
     """A pre-flight overflow surfaced by ``renderers.client.generate`` as
     ``renderers.OverlongPromptError`` must be rebadged into
-    ``verifiers.errors.OverlongPromptError`` so the
+    ``verifiers.legacy.errors.OverlongPromptError`` so the
     ``MultiTurnEnv.prompt_too_long`` ``@vf.stop`` condition (which catches
     via ``vf.Error``) picks it up. The decorator-driven path
     (BadRequestError → OverlongPromptError) is exercised separately by the
@@ -836,8 +836,8 @@ def test_get_native_response_translates_renderer_overlong_to_vf_overlong():
 
     from renderers import OverlongPromptError as RendererOverlongPromptError
 
-    from verifiers.clients.renderer_client import RendererClient
-    from verifiers.errors import OverlongPromptError
+    from verifiers.legacy.clients.renderer_client import RendererClient
+    from verifiers.legacy.errors import OverlongPromptError
 
     client = object.__new__(RendererClient)
     client._renderer = object()
@@ -850,7 +850,7 @@ def test_get_native_response_translates_renderer_overlong_to_vf_overlong():
 
     with (
         patch.object(RendererClient, "_get_renderer_or_pool", return_value=object()),
-        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+        patch("verifiers.legacy.clients.renderer_client.generate", side_effect=_fake_generate),
     ):
         with pytest.raises(OverlongPromptError):
             asyncio.run(
@@ -910,10 +910,10 @@ async def test_get_native_response_threads_prompt_attribution_into_generate():
     with (
         patch.object(RendererClient, "_get_renderer_or_pool", return_value=object()),
         patch(
-            "verifiers.clients.renderer_client._get_incremental_prompt_ids",
+            "verifiers.legacy.clients.renderer_client._get_incremental_prompt_ids",
             side_effect=_fake_get_incremental,
         ),
-        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+        patch("verifiers.legacy.clients.renderer_client.generate", side_effect=_fake_generate),
     ):
         result = await client.get_native_response(
             prompt=[

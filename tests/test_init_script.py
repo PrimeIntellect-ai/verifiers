@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from verifiers.scripts.init import init_environment
+from verifiers.legacy.scripts.init import init_environment
 
 
 def read_env_file(root: Path, env_id: str) -> str:

@@ -4,8 +4,8 @@ from typing import Any
 import pytest
 
 from tests.conftest import MockClient
-from verifiers.envs.experimental.gym_env import EpisodicSumRubric, GymEnv
-from verifiers.types import Response, ResponseMessage
+from verifiers.legacy.envs.experimental.gym_env import EpisodicSumRubric, GymEnv
+from verifiers.legacy.types import Response, ResponseMessage
 
 
 # ----------------- Toy Environment -----------------

@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from verifiers.gepa.gepa_utils import save_gepa_results
+from verifiers.legacy.gepa.gepa_utils import save_gepa_results
 
 
 def _read_jsonl(path):
@@ -62,7 +62,7 @@ def test_save_gepa_results_writes_upload_schema_without_task_fields(tmp_path):
     )
 
     metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
-    assert metadata["schema_version"] == "verifiers.gepa.v1"
+    assert metadata["schema_version"] == "verifiers.legacy.gepa.v1"
     assert metadata["eval_kind"] == "gepa"
     assert metadata["optimization_target"] == "system_prompt"
     assert metadata["env_id"] == "wordle"
@@ -77,7 +77,7 @@ def test_save_gepa_results_writes_upload_schema_without_task_fields(tmp_path):
             "reward": 0.75,
             "score": 0.75,
             "info": {
-                "schema_version": "verifiers.gepa.v1",
+                "schema_version": "verifiers.legacy.gepa.v1",
                 "eval_kind": "gepa",
                 "sample_type": "gepa_candidate",
                 "optimization_target": "system_prompt",
@@ -126,7 +126,7 @@ def test_save_gepa_results_writes_candidate_diffs_and_frontier(tmp_path):
     frontier_rows = _read_jsonl(tmp_path / "pareto_frontier.jsonl")
     assert frontier_rows == [
         {
-            "schema_version": "verifiers.gepa.v1",
+            "schema_version": "verifiers.legacy.gepa.v1",
             "valset_row": 0,
             "best_score": 0.8,
             "num_best_candidates": 1,
@@ -139,7 +139,7 @@ def test_save_gepa_results_writes_candidate_diffs_and_frontier(tmp_path):
             ],
         },
         {
-            "schema_version": "verifiers.gepa.v1",
+            "schema_version": "verifiers.legacy.gepa.v1",
             "valset_row": 1,
             "best_score": 0.6,
             "num_best_candidates": 1,

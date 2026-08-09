@@ -6,14 +6,14 @@ from pathlib import Path
 from datasets import Dataset
 import pytest
 
-from verifiers import EnvGroup, Rubric, SingleTurnEnv
-from verifiers.scripts.gepa import (
+from verifiers.legacy import EnvGroup, Rubric, SingleTurnEnv
+from verifiers.legacy.scripts.gepa import (
     _load_gepa_dataset,
     _gepa_extra_headers_from_group,
     load_gepa_toml_config,
     resolve_gepa_config_args,
 )
-from verifiers.types import EndpointConfig
+from verifiers.legacy.types import EndpointConfig
 
 
 def test_gepa_extra_headers_from_group_requires_consistent_variants():

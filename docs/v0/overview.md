@@ -2,6 +2,8 @@
 
 <Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
 
+The v0 API lives under the `verifiers.legacy` package (`import verifiers.legacy as vf`).
+
 Verifiers is our library for creating environments to train and evaluate LLMs.
 
 Environments contain everything required to run and evaluate a model on a particular task:
@@ -82,7 +84,7 @@ Environment modules should expose a `load_environment` function which returns an
 
 ```python
 # my_env.py
-import verifiers as vf
+import verifiers.legacy as vf
 
 
 def load_environment(dataset_name: str = "gsm8k") -> vf.Environment:

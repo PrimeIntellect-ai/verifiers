@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-import verifiers as vf
-from verifiers.rubrics import math_rubric
-from verifiers.types import RolloutTiming
+import verifiers.legacy as vf
+from verifiers.legacy.rubrics import math_rubric
+from verifiers.legacy.types import RolloutTiming
 
 
 class TestMathRubric:

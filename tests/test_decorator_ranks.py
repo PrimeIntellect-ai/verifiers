@@ -5,8 +5,8 @@
 import pytest
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers.types import RolloutInput, State
+import verifiers.legacy as vf
+from verifiers.legacy.types import RolloutInput, State
 
 
 class RankedStopEnv(vf.MultiTurnEnv):

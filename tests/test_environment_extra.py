@@ -1,6 +1,6 @@
 # ruff: noqa
 
-"""Additional tests for verifiers.envs.environment.Environment.
+"""Additional tests for verifiers.legacy.envs.environment.Environment.
 
 Covers:
 - get_model_response chat tools vs. completion error
@@ -18,11 +18,11 @@ from unittest.mock import AsyncMock
 import pytest
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers.envs.environment import Environment
-from verifiers.parsers.parser import Parser
-from verifiers.rubrics.rubric import Rubric
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.envs.environment import Environment
+from verifiers.legacy.parsers.parser import Parser
+from verifiers.legacy.rubrics.rubric import Rubric
+from verifiers.legacy.types import (
     ClientConfig,
     GenerateOutputs,
     Response,
@@ -32,9 +32,9 @@ from verifiers.types import (
     Tool,
     Usage,
 )
-from verifiers.utils.message_utils import sanitize_tool_calls
-from verifiers.utils.save_utils import make_dataset as build_dataset
-from verifiers.utils.save_utils import state_to_output
+from verifiers.legacy.utils.message_utils import sanitize_tool_calls
+from verifiers.legacy.utils.save_utils import make_dataset as build_dataset
+from verifiers.legacy.utils.save_utils import state_to_output
 
 
 # Local simple concrete Environment for testing
@@ -58,8 +58,8 @@ class DummyEnvironment(Environment):
         response = await self.get_model_response(state=state, prompt=prompt_messages)
         assert response is not None
 
-        from verifiers.types import TrajectoryStep
-        from verifiers.utils.response_utils import (
+        from verifiers.legacy.types import TrajectoryStep
+        from verifiers.legacy.utils.response_utils import (
             parse_response_message,
             parse_response_tokens,
         )
@@ -80,7 +80,7 @@ class DummyEnvironment(Environment):
         state["trajectory"].append(trajectory_step)
         state["is_completed"] = True
 
-        from verifiers.utils.message_utils import concat_messages
+        from verifiers.legacy.utils.message_utils import concat_messages
 
         last_prompt = state["trajectory"][-1]["prompt"]
         last_completion = state["trajectory"][-1]["completion"]
@@ -552,7 +552,7 @@ async def test_generate_resume_closes_local_endpoint_clients(
         return wrapper
 
     monkeypatch.setattr(
-        "verifiers.envs.environment.resolve_client", fake_resolve_client
+        "verifiers.legacy.envs.environment.resolve_client", fake_resolve_client
     )
 
     env = make_dummy_env(mock_client)
@@ -623,7 +623,7 @@ async def test_generate_closes_partially_created_clients_on_setup_failure(
         return wrapper
 
     monkeypatch.setattr(
-        "verifiers.envs.environment.resolve_client", fake_resolve_client
+        "verifiers.legacy.envs.environment.resolve_client", fake_resolve_client
     )
 
     env = make_dummy_env(mock_client)

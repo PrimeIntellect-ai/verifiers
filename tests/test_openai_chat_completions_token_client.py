@@ -5,11 +5,11 @@ from typing import Any, cast
 import httpx
 import pytest
 
-from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
-from verifiers.clients.openai_chat_completions_token_client import (
+from verifiers.legacy.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
+from verifiers.legacy.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
 )
-from verifiers.types import State
+from verifiers.legacy.types import State
 
 
 class _NoopClient:

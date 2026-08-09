@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from verifiers.envs.experimental.harbor_env import (
+from verifiers.legacy.envs.experimental.harbor_env import (
     HarborMCPHealthcheck,
     HarborMCPMixin,
     HarborMCPServer,
@@ -413,7 +413,7 @@ class TestParallelStartup:
         rather than burn through their retry budget on a rollout that's
         already dead. The cleanup path (`stop_mcp_servers`) is responsible
         for SIGKILLing any daemons that did make it up."""
-        import verifiers as vf
+        import verifiers.legacy as vf
 
         env = _DummyEnv(mcp_launch_commands={"bad": "cmd", "slow": "cmd"})
         cancelled = {"count": 0}
@@ -464,7 +464,7 @@ class TestBackgroundJob:
     @pytest.mark.asyncio
     async def test_early_crash_bails_out_with_stderr(self):
         """If the daemon exits before the port opens, fail fast with its stderr."""
-        import verifiers as vf
+        import verifiers.legacy as vf
 
         env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
         env.sandbox_client.get_background_job = AsyncMock(
@@ -595,7 +595,7 @@ class TestHarborHealthcheckSemantics:
     @pytest.mark.asyncio
     async def test_retry_budget_enforced_after_start_period(self):
         """Consecutive failures after start period fail at `retries`."""
-        import verifiers as vf
+        import verifiers.legacy as vf
 
         env = _DummyEnv(mcp_launch_commands={"svc": "x"})
         env.mcp_healthcheck = HarborMCPHealthcheck(
@@ -795,7 +795,7 @@ class TestEtcHosts:
         """Non-root image / read-only /etc makes `echo >> /etc/hosts` fail.
         We must surface that immediately, not let the daemon "come up healthy"
         on 127.0.0.1 while the agent has no way to resolve the hostname."""
-        import verifiers as vf
+        import verifiers.legacy as vf
 
         env = _DummyEnv(mcp_launch_commands={"svc": "cmd"})
         # /etc/hosts write fails with a classic Permission denied.

@@ -25,11 +25,11 @@ from typing import Any
 
 import pytest
 
-import verifiers as vf
+import verifiers.legacy as vf
 from datasets import Dataset
 from renderers import config_from_name, create_renderer
-from verifiers.clients.renderer_client import RendererClient, _to_renderer_message
-from verifiers.types import Messages, State
+from verifiers.legacy.clients.renderer_client import RendererClient, _to_renderer_message
+from verifiers.legacy.types import Messages, State
 
 
 def _renderer_has_extension_property(renderer) -> bool:

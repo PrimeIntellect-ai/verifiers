@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from verifiers.scripts import build
+from verifiers.legacy.scripts import build
 
 
 def test_resolve_env_push_target_defaults_to_environments_dir(tmp_path: Path):

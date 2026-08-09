@@ -10,15 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers.utils.interception_utils import serialize_intercept_response
+import verifiers.legacy as vf
+from verifiers.legacy.utils.interception_utils import serialize_intercept_response
 
 
 @pytest.fixture
 def mock_sandbox_client():
     """Mock AsyncSandboxClient for testing."""
     with patch(
-        "verifiers.envs.experimental.cli_agent_env.AsyncSandboxClient"
+        "verifiers.legacy.envs.experimental.cli_agent_env.AsyncSandboxClient"
     ) as mock_client_cls:
         mock_client = MagicMock()
         mock_client.create = AsyncMock(return_value=MagicMock(id="test-sandbox-123"))
@@ -35,7 +35,7 @@ def mock_sandbox_client():
 def mock_sandbox_request():
     """Mock CreateSandboxRequest."""
     with patch(
-        "verifiers.envs.experimental.cli_agent_env.CreateSandboxRequest"
+        "verifiers.legacy.envs.experimental.cli_agent_env.CreateSandboxRequest"
     ) as mock_req:
         yield mock_req
 

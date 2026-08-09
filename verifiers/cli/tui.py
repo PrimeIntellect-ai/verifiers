@@ -1,6 +1,6 @@
 """TUI exports for host CLIs."""
 
-from verifiers.scripts.tui import main
+from verifiers.legacy.scripts.tui import main
 
 __all__ = ["main"]
 
