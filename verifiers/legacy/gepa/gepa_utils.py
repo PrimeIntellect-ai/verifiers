@@ -18,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-GEPA_SCHEMA_VERSION = "verifiers.legacy.gepa.v1"
+# Persisted artifact schema id — a format identifier, not a module path.
+GEPA_SCHEMA_VERSION = "verifiers.gepa.v1"
 GEPA_EVAL_KIND = "gepa"
 GEPA_OPTIMIZATION_TARGET = "system_prompt"
 
