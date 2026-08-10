@@ -43,13 +43,13 @@ class TaskConfig(BaseConfig):
     stops: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
     """Stop conditions `(trace) -> bool` plugged by name, merged with the task's
     `@vf.stop` methods (a plugged function replaces a decorated one with the same
-    name), set through `--env.taskset.task.stops`."""
+    name)."""
     metrics: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
     """Metrics `(task, trace, runtime) -> float` plugged by name, merged with the
-    task's `@vf.metric` methods, set through `--env.taskset.task.metrics`."""
+    task's `@vf.metric` methods."""
     rewards: dict[str, RewardFunctionConfig] = Field(default_factory=dict)
     """Weighted rewards `(task, trace, runtime) -> float` plugged by name, merged with
-    the task's `@vf.reward` methods, set through `--env.taskset.task.rewards`."""
+    the task's `@vf.reward` methods."""
 
     @model_validator(mode="before")
     @classmethod
