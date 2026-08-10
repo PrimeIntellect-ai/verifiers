@@ -387,7 +387,7 @@ async def prompt(
     client.begin_prompt_metadata(expected=metadata_expected)
     try:
         try:
-            await connection.prompt(session_id=session_id, prompt=blocks)
+            response = await connection.prompt(session_id=session_id, prompt=blocks)
         except RequestError as error:
             detail = error.data.get("details") if isinstance(error.data, dict) else None
             raise RuntimeError(detail or str(error)) from error
@@ -414,7 +414,19 @@ async def prompt(
         await wait_for_late_metadata(client, expected=metadata_expected)
         client.require_terminal_metadata(expected=metadata_expected)
 
-        if not has_visible_reply():
+        # `end_turn` is permitted only as a transport-level empty-tool reply
+        # acknowledgement. It does not establish metadata ownership, outcome,
+        # prompt correlation, or quiescence; those were validated above.
+        tool_only_reply = (
+            config.get("allow_empty_tool_reply", False)
+            and response.stop_reason == "end_turn"
+            and bool(client.tool_calls)
+            and all(
+                status in ("completed", "failed")
+                for status in client.tool_calls.values()
+            )
+        )
+        if not has_visible_reply() and not tool_only_reply:
             raise RuntimeError("ACP agent produced no visible reply")
         return client.visible_reply
     finally:

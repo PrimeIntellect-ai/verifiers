@@ -868,3 +868,91 @@ async def test_accepted_metadata_records_once_in_turn_and_connection_stores(
     await client.session_update("session", update)
     assert client.turn_acp_meta == {NAMESPACE: [event]}
     assert client.acp_meta == {NAMESPACE: [event]}
+
+
+@pytest.mark.asyncio
+async def test_tool_only_end_turn_is_output_validity_not_correlation(monkeypatch):
+    """The permitted empty tool reply still needs a complete producer envelope."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+
+    # Add the leading legal progress prior to boundary; it must be preserved but
+    # cannot be the source of the transport exemption.
+    config = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "system_prompt": "",
+        "metadata_expected": True,
+        "allow_empty_tool_reply": True,
+    }
+    # The session-global test fixture begins at event sequence 11.
+    client.begin_prompt_metadata(expected=True)
+    update = runner.SessionInfoUpdate()
+    update.field_meta = {NAMESPACE: success()[0]}
+    await client.session_update("session", update)
+    # prompt() opens a new lifecycle, so provide a self-contained next-turn pair.
+    client.close_prompt_metadata()
+
+    class CompleteConnection:
+        async def prompt(self, **kwargs):
+            for event in (
+                {
+                    "promptTurnId": 2,
+                    "eventSequence": 14,
+                    "phase": "responseBoundary",
+                    "outcome": "result",
+                },
+                {
+                    "promptTurnId": 2,
+                    "eventSequence": 15,
+                    "phase": "terminalQuiescence",
+                    "outcome": "result",
+                    "quiescence": {
+                        "outstandingSubagents": 0,
+                        "remainingAutonomousContinuations": 0,
+                    },
+                },
+            ):
+                update = runner.SessionInfoUpdate()
+                update.field_meta = {NAMESPACE: event}
+                await client.session_update("session", update)
+            client.tool_calls["tool"] = "completed"
+            return types.SimpleNamespace(stop_reason="end_turn")
+
+    assert (
+        await runner.prompt(
+            client, CompleteConnection(), None, "session", config, is_new=True
+        )
+        == ""
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_shot_error_terminal_meta_is_recorded_for_trace(monkeypatch):
+    """One-shot persistence retains a producer error pair for outer diagnostics."""
+
+    class Runtime:
+        async def prepare_uv_script(self, *args, **kwargs):
+            return ["runner"]
+
+        async def run(self, command, env):
+            return types.SimpleNamespace(exit_code=0, stderr="")
+
+        async def write(self, path, data):
+            pass
+
+        async def run_program(self, command, env):
+            return types.SimpleNamespace(
+                exit_code=1, stdout="", stderr="producer error"
+            )
+
+        async def read(self, path):
+            return json.dumps({NAMESPACE: error_terminal()}).encode()
+
+    import json
+
+    trace = types.SimpleNamespace(calls=[], stop_condition=None, info={})
+    result = await ACP(metadata_expected=True).run(
+        Runtime(), {}, ["agent"], "prompt", trace=trace
+    )
+    assert result.exit_code == 1
+    assert trace.info["acp_meta"][NAMESPACE] == error_terminal()
