@@ -9,8 +9,8 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
-import verifiers as vf
-from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+import verifiers.legacy as vf
+from verifiers.legacy.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 # swebench's __init__.py calls logging.basicConfig() at import time (via
 # build_dataset), which hijacks the root logger with an INFO-level

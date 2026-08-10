@@ -1,19 +1,19 @@
 # ruff: noqa
 
-from verifiers.envs.experimental.composable.task import (
+from verifiers.legacy.envs.experimental.composable.task import (
     SandboxSpec,
     Task,
     TaskSet,
     SandboxTaskSet,
     discover_sibling_dir,
 )
-from verifiers.envs.experimental.composable.harness import Harness
-from verifiers.envs.experimental.composable.composable_env import ComposableEnv
-from verifiers.envs.experimental.composable.sandbox_debug_env import (
+from verifiers.legacy.envs.experimental.composable.harness import Harness
+from verifiers.legacy.envs.experimental.composable.composable_env import ComposableEnv
+from verifiers.legacy.envs.experimental.composable.sandbox_debug_env import (
     SandboxDebugEnv,
     SandboxDebugRubric,
 )
-from verifiers.envs.experimental.composable.swe_debug_env import SWEDebugEnv
+from verifiers.legacy.envs.experimental.composable.swe_debug_env import SWEDebugEnv
 
 __all__ = [
     "SandboxSpec",

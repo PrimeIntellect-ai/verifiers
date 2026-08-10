@@ -3,12 +3,12 @@
 import asyncio
 
 from openai import AsyncOpenAI
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
-from verifiers.parsers.parser import Parser
-from verifiers.rubrics.math_rubric import MathRubric
-from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.legacy.envs.experimental.sandbox_mixin import SandboxMixin
+from verifiers.legacy.parsers.parser import Parser
+from verifiers.legacy.rubrics.math_rubric import MathRubric
+from verifiers.legacy.utils.data_utils import extract_boxed_answer
 
-import verifiers as vf
+import verifiers.legacy as vf
 
 # https://github.com/open-compass/CompassVerifier/blob/2d7cba6df0b21f9c6121786ac1e5770c68473598/src/prompts.py#L28
 DEFAULT_JUDGE_PROMPT = """\

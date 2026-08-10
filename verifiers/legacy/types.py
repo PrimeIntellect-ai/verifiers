@@ -31,14 +31,14 @@ from pydantic import (
 )
 from renderers import RendererConfig
 
-from verifiers.errors import Error
+from verifiers.legacy.errors import Error
 
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
     from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
     from datasets import Dataset
 
-    from verifiers.clients import Client
+    from verifiers.legacy.clients import Client
 else:
     RedactedThinkingBlock = Any
     AnthropicThinkingBlock = Any
@@ -641,7 +641,7 @@ class State(dict):
     def serialize_error(self) -> None:
         error = self.get("error")
         if isinstance(error, Error):
-            from verifiers.utils.error_utils import error_data
+            from verifiers.legacy.utils.error_utils import error_data
 
             self._set_internal("error", error_data(error))
 

@@ -13,10 +13,10 @@ import numpy as np
 import tenacity as tc
 from pydantic import BaseModel
 
-import verifiers as vf
-from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.error_utils import error_from_data, is_error_data
-from verifiers.utils.logging_utils import print_time
+import verifiers.legacy as vf
+from verifiers.legacy.utils.error_utils import ErrorChain
+from verifiers.legacy.utils.error_utils import error_from_data, is_error_data
+from verifiers.legacy.utils.logging_utils import print_time
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ class EventLoopLagStats(BaseModel):
     n: int = 0
 
     def __str__(self) -> str:
-        from verifiers.utils.logging_utils import print_time
+        from verifiers.legacy.utils.logging_utils import print_time
 
         if self.n == 0:
             return "no samples"

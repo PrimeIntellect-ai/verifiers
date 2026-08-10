@@ -9,12 +9,12 @@ from concurrent.futures import ProcessPoolExecutor
 from math_verify import parse, verify
 from math_verify.errors import TimeoutException as MathVerifyTimeout
 
-from verifiers.parsers.maybe_think_parser import MaybeThinkParser
-from verifiers.parsers.parser import Parser
-from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, RewardFunc
-from verifiers.utils.data_utils import extract_boxed_answer
-from verifiers.utils.thread_utils import register_executor, unregister_executor
+from verifiers.legacy.parsers.maybe_think_parser import MaybeThinkParser
+from verifiers.legacy.parsers.parser import Parser
+from verifiers.legacy.rubrics.rubric import Rubric
+from verifiers.legacy.types import Messages, RewardFunc
+from verifiers.legacy.utils.data_utils import extract_boxed_answer
+from verifiers.legacy.utils.thread_utils import register_executor, unregister_executor
 
 
 def verify_response(

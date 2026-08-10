@@ -18,8 +18,8 @@ import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
 from datasets.utils import logging as ds_logging
 
-import verifiers as vf
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.types import (
     ClientType,
     EndpointConfig,
     Endpoints,
@@ -37,22 +37,25 @@ from verifiers.types import (
     TokenUsage,
     _validate_extra_headers_value,
 )
-from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.env_config_utils import config_table, normalize_env_config_sections
-from verifiers.utils.import_utils import load_toml
-from verifiers.utils.logging_utils import (
+from verifiers.legacy.utils.async_utils import EventLoopLagMonitor
+from verifiers.legacy.utils.env_config_utils import (
+    config_table,
+    normalize_env_config_sections,
+)
+from verifiers.legacy.utils.import_utils import load_toml
+from verifiers.legacy.utils.logging_utils import (
     log_level,
     print_prompt_completions_sample,
     print_time,
 )
-from verifiers.utils.path_utils import get_eval_results_path
-from verifiers.utils.pricing_utils import (
+from verifiers.legacy.utils.path_utils import get_eval_results_path
+from verifiers.legacy.utils.pricing_utils import (
     compute_eval_cost,
     fetch_prime_pricing,
     format_cost_usd,
     is_prime_inference_url,
 )
-from verifiers.utils.save_utils import save_metadata
+from verifiers.legacy.utils.save_utils import save_metadata
 
 logger = logging.getLogger(__name__)
 FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
@@ -879,7 +882,7 @@ def print_info(results: GenerateOutputs):
 
 
 def print_timing(results: GenerateOutputs):
-    from verifiers.utils.logging_utils import print_time
+    from verifiers.legacy.utils.logging_utils import print_time
 
     outputs = results["outputs"]
 
@@ -1099,7 +1102,7 @@ async def run_evaluation(
                 console_logging=config.disable_tui,
             )
             if on_log_file is not None:
-                from verifiers.serve import EnvServer
+                from verifiers.legacy.serve import EnvServer
 
                 for path in EnvServer.get_all_log_files(log_dir, num_workers):
                     on_log_file(path)
@@ -1165,7 +1168,7 @@ async def run_evaluations(config: EvalRunConfig) -> None:
 
     on_progress: list[ProgressCallback] | None = None
     if config.heartbeat_url is not None:
-        from verifiers.utils.heartbeat import Heartbeat
+        from verifiers.legacy.utils.heartbeat import Heartbeat
 
         heart = Heartbeat(config.heartbeat_url)
         on_progress = [lambda *_a, **_kw: asyncio.create_task(heart.beat())]  # ty:ignore[invalid-assignment]
@@ -1212,7 +1215,7 @@ async def run_evaluations_tui(
             If False, refresh in-place.
         compact: If True, show compact summary (settings + stats, skip example prompts).
     """
-    from verifiers.utils.eval_display import EvalDisplay, is_tty
+    from verifiers.legacy.utils.eval_display import EvalDisplay, is_tty
 
     # fall back to non-display mode if not a tty
     if not is_tty():
@@ -1222,7 +1225,7 @@ async def run_evaluations_tui(
 
     heart = None
     if config.heartbeat_url is not None:
-        from verifiers.utils.heartbeat import Heartbeat
+        from verifiers.legacy.utils.heartbeat import Heartbeat
 
         heart = Heartbeat(config.heartbeat_url)
 

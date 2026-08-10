@@ -521,7 +521,7 @@ def _timing_parts(
     ``(label, value)`` tuples for the parenthesised breakdown (e.g. model/env
     inside generation).
     """
-    from verifiers.utils.logging_utils import print_time
+    from verifiers.legacy.utils.logging_utils import print_time
 
     parts: list[tuple[str, str, list[tuple[str, str]]]] = []
     if setup > 0:

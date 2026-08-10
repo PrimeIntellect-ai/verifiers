@@ -30,9 +30,9 @@ from anthropic.types import (
     ToolParam as AnthropicToolParam,
 )
 
-from verifiers.clients.client import Client
-from verifiers.errors import EmptyModelResponseError, OverlongPromptError
-from verifiers.types import (
+from verifiers.legacy.clients.client import Client
+from verifiers.legacy.errors import EmptyModelResponseError, OverlongPromptError
+from verifiers.legacy.types import (
     AssistantMessage,
     ClientConfig,
     FinishReason,
@@ -49,7 +49,7 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
-from verifiers.utils.client_utils import setup_anthropic_client
+from verifiers.legacy.utils.client_utils import setup_anthropic_client
 
 
 ANTHROPIC_ADAPTIVE_THINKING_MODELS = {

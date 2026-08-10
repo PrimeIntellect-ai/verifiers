@@ -6,17 +6,17 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any, cast, get_origin
 
-import verifiers as vf
-from verifiers.decorators import discover_decorated
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.decorators import discover_decorated
+from verifiers.legacy.types import (
     GroupRewardFunc,
     RewardFunc,
     RolloutScore,
     State,
     TASK_INPUT_FIELDS,
 )
-from verifiers.utils.async_utils import maybe_await
-from verifiers.utils.async_utils import maybe_call_with_named_args
+from verifiers.legacy.utils.async_utils import maybe_await
+from verifiers.legacy.utils.async_utils import maybe_call_with_named_args
 
 ScoreObjectProvider = Callable[[State], Mapping[str, object]]
 GroupScoreObjectProvider = Callable[[list[State]], Mapping[str, object]]

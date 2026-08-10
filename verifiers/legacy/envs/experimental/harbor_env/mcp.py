@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-import verifiers as vf
+import verifiers.legacy as vf
 
 logger = logging.getLogger(__name__)
 

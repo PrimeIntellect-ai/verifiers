@@ -11,9 +11,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.errors import Error
-from verifiers.types import ErrorData, Messages
-from verifiers.utils.error_utils import ErrorChain
+from verifiers.legacy.errors import Error
+from verifiers.legacy.types import ErrorData, Messages
+from verifiers.legacy.utils.error_utils import ErrorChain
 
 LOGGER_NAME = "verifiers"
 
@@ -163,7 +163,7 @@ def print_prompt_completions_sample(
     step: int,
     num_samples: int = 1,
 ) -> None:
-    from verifiers.utils.message_utils import format_messages
+    from verifiers.legacy.utils.message_utils import format_messages
 
     console = Console()
     table = Table(show_header=True, header_style="bold white", expand=True)

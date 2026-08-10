@@ -15,7 +15,7 @@ import msgpack
 import zmq
 import zmq.asyncio
 
-from verifiers.serve.server.env_server import EnvServer
+from verifiers.legacy.serve.server.env_server import EnvServer
 
 # Pre-serialized health response — avoids repeated packing on every ping.
 _HEALTH_RESPONSE = msgpack.packb({"success": True, "error": None}, use_bin_type=True)

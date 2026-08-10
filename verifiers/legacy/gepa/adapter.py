@@ -8,21 +8,21 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 from gepa.core.adapter import EvaluationBatch
 from openai import OpenAI
 
-from verifiers.clients import Client
-from verifiers.envs.environment import Environment
-from verifiers.types import (
+from verifiers.legacy.clients import Client
+from verifiers.legacy.envs.environment import Environment
+from verifiers.legacy.types import (
     ClientConfig,
     Messages,
     RolloutInput,
     RolloutOutput,
     SamplingArgs,
 )
-from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.message_utils import message_to_printable
-from verifiers.utils.save_utils import make_serializable
+from verifiers.legacy.utils.client_utils import resolve_client_config
+from verifiers.legacy.utils.message_utils import message_to_printable
+from verifiers.legacy.utils.save_utils import make_serializable
 
 if TYPE_CHECKING:
-    from verifiers.gepa.display import GEPADisplay
+    from verifiers.legacy.gepa.display import GEPADisplay
 
 logger = logging.getLogger(__name__)
 

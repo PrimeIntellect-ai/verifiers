@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from verifiers.types import ClientConfig, SamplingArgs
+from verifiers.legacy.types import ClientConfig, SamplingArgs
 
 
 @dataclass

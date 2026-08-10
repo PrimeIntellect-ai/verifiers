@@ -12,11 +12,11 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 
-from verifiers.types import (
+from verifiers.legacy.types import (
     ClientConfig,
     EndpointClientConfig,
 )
-from verifiers.utils.response_utils import strip_routed_experts_data
+from verifiers.legacy.utils.response_utils import strip_routed_experts_data
 
 logger = logging.getLogger(__name__)
 

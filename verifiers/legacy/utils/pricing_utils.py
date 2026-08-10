@@ -4,7 +4,7 @@ import logging
 from collections.abc import Mapping
 from typing import cast
 
-from verifiers.types import EvalCost, ModelPricing, TokenUsage
+from verifiers.legacy.types import EvalCost, ModelPricing, TokenUsage
 
 logger = logging.getLogger(__name__)
 

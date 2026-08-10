@@ -13,8 +13,8 @@ import requests
 import tenacity as tc
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.types import (
     AssistantMessage,
     Message,
     Messages,
@@ -22,8 +22,8 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.message_utils import from_raw_message
-from verifiers.utils.tool_utils import is_valid_tool_content_parts
+from verifiers.legacy.utils.message_utils import from_raw_message
+from verifiers.legacy.utils.tool_utils import is_valid_tool_content_parts
 
 
 def _optional_openenv_type(module_name: str, attr: str) -> type[Any] | None:

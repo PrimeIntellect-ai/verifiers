@@ -48,14 +48,14 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any
 
-import verifiers as vf
-from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
-from verifiers.envs.experimental.composable.harness import Harness
-from verifiers.envs.experimental.composable.task import TaskSet
-from verifiers.envs.experimental.utils.file_locks import shared_path_lock
-from verifiers.envs.tool_env import ToolMonitorRubric
-from verifiers.types import State, TrajectoryStep
-from verifiers.utils.logging_utils import print_size, print_time
+import verifiers.legacy as vf
+from verifiers.legacy.envs.experimental.cli_agent_env import CliAgentEnv
+from verifiers.legacy.envs.experimental.composable.harness import Harness
+from verifiers.legacy.envs.experimental.composable.task import TaskSet
+from verifiers.legacy.envs.experimental.utils.file_locks import shared_path_lock
+from verifiers.legacy.envs.tool_env import ToolMonitorRubric
+from verifiers.legacy.types import State, TrajectoryStep
+from verifiers.legacy.utils.logging_utils import print_size, print_time
 
 logger = logging.getLogger(__name__)
 

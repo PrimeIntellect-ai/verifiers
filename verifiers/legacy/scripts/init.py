@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-import verifiers as vf
+import verifiers.legacy as vf
 
 README_TEMPLATE = """\
 # {env_id_dash}
@@ -93,7 +93,7 @@ __all__ = {exports}
 """
 
 V0_ENVIRONMENT_TEMPLATE = """\
-import verifiers as vf
+import verifiers.legacy as vf
 
 
 def load_environment(**kwargs) -> vf.Environment:

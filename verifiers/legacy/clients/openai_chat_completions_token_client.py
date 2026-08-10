@@ -12,7 +12,7 @@ from openai.types.chat.chat_completion_message_function_tool_call_param import (
     Function,
 )
 
-from verifiers.clients.openai_chat_completions_client import (
+from verifiers.legacy.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
     OpenAIChatMessage,
     OpenAIChatMessages,
@@ -20,8 +20,8 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAITool,
     handle_openai_overlong_prompt,
 )
-from verifiers.types import SamplingArgs, State
-from verifiers.utils.client_utils import (
+from verifiers.legacy.types import SamplingArgs, State
+from verifiers.legacy.utils.client_utils import (
     post_chat_completion_with_routed_experts_sidecar,
 )
 

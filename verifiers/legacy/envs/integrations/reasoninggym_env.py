@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 from datasets import Dataset
 
-import verifiers as vf
+import verifiers.legacy as vf
 
 try:
     import reasoning_gym as rg

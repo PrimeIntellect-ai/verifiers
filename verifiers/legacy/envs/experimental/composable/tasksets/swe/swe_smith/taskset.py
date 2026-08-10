@@ -29,9 +29,9 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
-import verifiers as vf
+import verifiers.legacy as vf
 from datasets import load_dataset
-from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.legacy.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 logger = logging.getLogger(__name__)
 

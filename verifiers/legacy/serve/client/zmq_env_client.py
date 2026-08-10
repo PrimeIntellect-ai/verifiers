@@ -11,10 +11,10 @@ import msgpack
 import zmq
 import zmq.asyncio
 
-from verifiers.utils.logging_utils import print_time
-from verifiers.utils.serve_utils import msgpack_encoder
-from verifiers.serve.client.env_client import EnvClient
-from verifiers.serve.types import (
+from verifiers.legacy.utils.logging_utils import print_time
+from verifiers.legacy.utils.serve_utils import msgpack_encoder
+from verifiers.legacy.serve.client.env_client import EnvClient
+from verifiers.legacy.serve.types import (
     BaseRequest,
     BaseResponseT,
     HealthRequest,

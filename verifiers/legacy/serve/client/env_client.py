@@ -3,14 +3,14 @@
 import logging
 from abc import ABC, abstractmethod
 
-from verifiers.types import (
+from verifiers.legacy.types import (
     ClientConfig,
     RolloutInput,
     RolloutOutput,
     SamplingArgs,
 )
-from verifiers.utils.client_utils import resolve_client_config
-from verifiers.serve.types import (
+from verifiers.legacy.utils.client_utils import resolve_client_config
+from verifiers.legacy.serve.types import (
     HealthRequest,
     HealthResponse,
     RunGroupRequest,

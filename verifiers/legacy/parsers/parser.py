@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Callable
 
-from verifiers.types import Messages
+from verifiers.legacy.types import Messages
 
 
 class Parser:

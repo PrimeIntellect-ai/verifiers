@@ -2,8 +2,8 @@
 
 from typing import Callable
 
-from verifiers.parsers.parser import Parser
-from verifiers.types import Messages
+from verifiers.legacy.parsers.parser import Parser
+from verifiers.legacy.types import Messages
 
 
 class ThinkParser(Parser):

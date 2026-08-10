@@ -1,11 +1,11 @@
 from typing import Any
 
-from verifiers.rubrics.rubric import (
+from verifiers.legacy.rubrics.rubric import (
     GroupScoreObjectProvider,
     Rubric,
     ScoreObjectProvider,
 )
-from verifiers.types import (
+from verifiers.legacy.types import (
     RewardFunc,
     State,
 )

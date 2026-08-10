@@ -16,16 +16,19 @@ import asyncio
 import json
 from typing import Any
 
-import verifiers as vf
-from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
-from verifiers.envs.experimental.opencode_env import OpenCodeEnv
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.envs.experimental.cli_agent_env import CliAgentEnv
+from verifiers.legacy.envs.experimental.opencode_env import OpenCodeEnv
+from verifiers.legacy.types import (
     Messages,
     Response,
     State,
     Tool,
 )
-from verifiers.utils.interception_utils import deliver_response, synthesize_stream
+from verifiers.legacy.utils.interception_utils import (
+    deliver_response,
+    synthesize_stream,
+)
 
 
 class OpenCodeRLMMonitorRubric(vf.Rubric):

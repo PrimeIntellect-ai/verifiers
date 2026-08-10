@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from prime_sandboxes import AsyncSandboxClient, CommandTimeoutError
 
-from verifiers.utils.thread_utils import (
+from verifiers.legacy.utils.thread_utils import (
     get_or_create_thread_attr,
     register_executor,
     unregister_executor,

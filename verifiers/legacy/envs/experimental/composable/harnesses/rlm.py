@@ -9,13 +9,13 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import Callable
 
-from verifiers.envs.experimental.composable import Harness
-from verifiers.envs.experimental.utils.git_checkout_cache import (
+from verifiers.legacy.envs.experimental.composable import Harness
+from verifiers.legacy.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
 )
-from verifiers.types import Messages, State, SystemMessage, TrajectoryStep
-from verifiers.utils.path_utils import CACHE_DIR
+from verifiers.legacy.types import Messages, State, SystemMessage, TrajectoryStep
+from verifiers.legacy.utils.path_utils import CACHE_DIR
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 DEFAULT_RLM_REF = "main"

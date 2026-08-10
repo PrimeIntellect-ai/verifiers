@@ -3,7 +3,7 @@
 """Protocol defining the interface for browser mode implementations."""
 
 from typing import Protocol, Any, TYPE_CHECKING
-import verifiers as vf
+import verifiers.legacy as vf
 
 if TYPE_CHECKING:
     from ..browser_env import BrowserEnv

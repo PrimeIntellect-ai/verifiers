@@ -4,8 +4,8 @@ import re
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from verifiers.parsers.parser import Parser
-from verifiers.types import Messages
+from verifiers.legacy.parsers.parser import Parser
+from verifiers.legacy.types import Messages
 
 
 class XMLParser(Parser):

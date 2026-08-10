@@ -184,7 +184,7 @@ def mini_swe_agent_harness(
     extra_config_specs: list[str] | None = None,
 ):
     """Create a Harness configured for mini-SWE-agent."""
-    from verifiers.envs.experimental.composable import Harness
+    from verifiers.legacy.envs.experimental.composable import Harness
 
     if task_system_prompt:
         if system_prompt:

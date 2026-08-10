@@ -16,17 +16,17 @@ from typing import Any, cast
 
 from gepa.api import optimize
 
-import verifiers as vf
-from verifiers import setup_logging
-from verifiers.clients import resolve_client
-from verifiers.envs.env_group import ENV_GROUP_INFO_KEY
-from verifiers.gepa.adapter import VerifiersGEPAAdapter, make_reflection_lm
-from verifiers.gepa.display import GEPADisplay
-from verifiers.gepa.gepa_utils import save_gepa_results
-from verifiers.types import ClientConfig, EndpointConfig
-from verifiers.utils.eval_utils import load_endpoints
-from verifiers.utils.import_utils import load_toml
-from verifiers.utils.path_utils import get_gepa_results_path
+import verifiers.legacy as vf
+from verifiers.legacy import setup_logging
+from verifiers.legacy.clients import resolve_client
+from verifiers.legacy.envs.env_group import ENV_GROUP_INFO_KEY
+from verifiers.legacy.gepa.adapter import VerifiersGEPAAdapter, make_reflection_lm
+from verifiers.legacy.gepa.display import GEPADisplay
+from verifiers.legacy.gepa.gepa_utils import save_gepa_results
+from verifiers.legacy.types import ClientConfig, EndpointConfig
+from verifiers.legacy.utils.eval_utils import load_endpoints
+from verifiers.legacy.utils.import_utils import load_toml
+from verifiers.legacy.utils.path_utils import get_gepa_results_path
 
 logger = logging.getLogger(__name__)
 

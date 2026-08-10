@@ -3,10 +3,10 @@
 import json
 from typing import Callable, cast
 
-import verifiers as vf
-from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
-from verifiers.utils.async_utils import maybe_await
-from verifiers.utils.tool_utils import (
+import verifiers.legacy as vf
+from verifiers.legacy.types import AssistantMessage, Messages, ToolCall, ToolMessage
+from verifiers.legacy.utils.async_utils import maybe_await
+from verifiers.legacy.utils.tool_utils import (
     convert_func_to_tool_def,
     is_valid_tool_content_parts,
 )

@@ -13,9 +13,9 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
-import verifiers as vf
-from verifiers.serve.server.env_router import EnvRouter
-from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
+import verifiers.legacy as vf
+from verifiers.legacy.serve.server.env_router import EnvRouter
+from verifiers.legacy.utils.process_utils import monitor_death_pipe, set_proc_title
 
 
 class EnvServer(ABC):
@@ -87,7 +87,7 @@ class EnvServer(ABC):
 
     async def run(self) -> None:
         """Run the server with signal-based graceful shutdown."""
-        from verifiers.utils.thread_utils import install_default_executor
+        from verifiers.legacy.utils.thread_utils import install_default_executor
 
         install_default_executor()
 
@@ -119,7 +119,7 @@ class EnvServer(ABC):
     @staticmethod
     def get_all_log_files(log_dir: str, num_workers: int) -> list[Path]:
         """Return all log file paths: the server log followed by each worker log."""
-        from verifiers.serve.server.env_worker import EnvWorker
+        from verifiers.legacy.serve.server.env_worker import EnvWorker
 
         server_log = EnvServer.get_log_file(log_dir)
         worker_logs = [
@@ -138,7 +138,7 @@ class EnvServer(ABC):
 
         # Router juggles stats, worker responses, and request dispatch on a
         # single loop; the default 32-thread executor silently caps to_thread.
-        from verifiers.utils.thread_utils import scale_executors
+        from verifiers.legacy.utils.thread_utils import scale_executors
 
         scale_executors(concurrency=512)
 

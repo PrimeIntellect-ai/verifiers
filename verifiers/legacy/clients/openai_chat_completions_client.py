@@ -34,13 +34,13 @@ from openai.types.chat.chat_completion_user_message_param import (
 )
 from openai.types.shared_params import FunctionDefinition
 
-from verifiers.clients.client import Client
-from verifiers.errors import (
+from verifiers.legacy.clients.client import Client
+from verifiers.legacy.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
     OverlongPromptError,
 )
-from verifiers.types import (
+from verifiers.legacy.types import (
     AssistantMessage,
     ClientConfig,
     FinishReason,
@@ -59,7 +59,7 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
-from verifiers.utils.client_utils import (
+from verifiers.legacy.utils.client_utils import (
     post_chat_completion_with_routed_experts_sidecar,
     setup_openai_client,
 )

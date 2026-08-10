@@ -1,13 +1,13 @@
 from typing import Any, cast
 
-from verifiers.clients.openai_chat_completions_client import (
+from verifiers.legacy.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
     OpenAIChatMessages,
     OpenAIChatResponse,
     OpenAITool,
     handle_openai_overlong_prompt,
 )
-from verifiers.types import (
+from verifiers.legacy.types import (
     AssistantMessage,
     Messages,
     Response,

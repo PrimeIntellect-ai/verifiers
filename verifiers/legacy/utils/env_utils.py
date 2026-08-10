@@ -6,12 +6,12 @@ import logging
 from types import ModuleType
 from typing import Callable
 
-from verifiers.envs.environment import Environment
-from verifiers.utils.config_utils import MissingKeyError
+from verifiers.legacy.envs.environment import Environment
+from verifiers.legacy.utils.config_utils import MissingKeyError
 
 
 def load_environment(env_id: str, **env_args) -> Environment:
-    logger = logging.getLogger("verifiers.utils.env_utils")
+    logger = logging.getLogger("verifiers.legacy.utils.env_utils")
     logger.info(f"Loading environment: {env_id}")
 
     module_name = env_module_name(env_id)

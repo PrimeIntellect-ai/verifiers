@@ -8,7 +8,7 @@ import os
 from typing import Any, cast
 
 from dotenv import load_dotenv
-import verifiers as vf
+import verifiers.legacy as vf
 from stagehand import AsyncStagehand
 from stagehand.session import AsyncSession
 

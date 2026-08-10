@@ -2,8 +2,8 @@
 
 from typing import Callable, TypeGuard, cast
 
-import verifiers as vf
-from verifiers.types import ErrorData
+import verifiers.legacy as vf
+from verifiers.legacy.types import ErrorData
 
 
 def get_error_chain(

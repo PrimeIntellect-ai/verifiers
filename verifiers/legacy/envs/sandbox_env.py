@@ -7,8 +7,8 @@ from typing import Any, TypedDict, cast
 import tenacity as tc
 from prime_sandboxes import CommandTimeoutError
 
-import verifiers as vf
-from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
+import verifiers.legacy as vf
+from verifiers.legacy.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
 
 try:

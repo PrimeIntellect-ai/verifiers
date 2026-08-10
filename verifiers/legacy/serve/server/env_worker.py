@@ -22,20 +22,20 @@ import zmq
 import zmq.asyncio
 from pydantic import BaseModel
 
-import verifiers as vf
-from verifiers.clients import Client, resolve_client
-from verifiers.serve.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.clients import Client, resolve_client
+from verifiers.legacy.serve.types import (
     BaseResponse,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
 )
-from verifiers.types import ClientConfig
-from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
-from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
-from verifiers.utils.serve_utils import msgpack_encoder
+from verifiers.legacy.types import ClientConfig
+from verifiers.legacy.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
+from verifiers.legacy.utils.client_utils import resolve_client_config
+from verifiers.legacy.utils.process_utils import monitor_death_pipe, set_proc_title
+from verifiers.legacy.utils.serve_utils import msgpack_encoder
 
 
 class EnvWorkerStats(BaseModel):
@@ -363,7 +363,7 @@ class EnvWorker:
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 
-        from verifiers.utils.thread_utils import (
+        from verifiers.legacy.utils.thread_utils import (
             install_default_executor,
             scale_executors,
         )

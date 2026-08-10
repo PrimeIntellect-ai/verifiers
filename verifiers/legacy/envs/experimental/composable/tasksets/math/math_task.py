@@ -4,7 +4,7 @@
 
 Usage::
 
-    from verifiers.envs.experimental.composable.tasksets.math import MathTaskSet
+    from verifiers.legacy.envs.experimental.composable.tasksets.math import MathTaskSet
 
     task = MathTaskSet()
     task = MathTaskSet("hendrycks/math")
@@ -12,8 +12,10 @@ Usage::
 
 import logging
 
-from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
-from verifiers.rubrics.experimental.hybrid_math_rubric import RemoteHybridMathRubric
+from verifiers.legacy.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.legacy.rubrics.experimental.hybrid_math_rubric import (
+    RemoteHybridMathRubric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +141,8 @@ class MathTaskSet(SandboxTaskSet):
         )
 
     def get_rubric(self):
-        from verifiers.types import ClientConfig
-        from verifiers.utils.client_utils import setup_openai_client
+        from verifiers.legacy.types import ClientConfig
+        from verifiers.legacy.utils.client_utils import setup_openai_client
 
         judge_client = None
         if self._use_judge_fallback and self._judge_api_key_var:

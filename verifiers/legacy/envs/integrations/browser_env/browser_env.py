@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Any, Literal
 
-import verifiers as vf
+import verifiers.legacy as vf
 
 from .modes.base import BrowserMode
 from .modes.cua_mode import CUAMode

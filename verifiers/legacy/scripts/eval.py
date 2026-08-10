@@ -2,7 +2,7 @@
 
 import os
 
-from verifiers.utils.path_utils import (
+from verifiers.legacy.utils.path_utils import (
     find_latest_incomplete_eval_results_path,
     is_valid_eval_results_path,
 )
@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any, cast
 
 
-from verifiers import setup_logging
-from verifiers.types import (
+from verifiers.legacy import setup_logging
+from verifiers.legacy.types import (
     ClientConfig,
     ClientType,
     EndpointClientConfig,
@@ -29,7 +29,7 @@ from verifiers.types import (
     EvalRunConfig,
     _validate_extra_headers_value,
 )
-from verifiers.utils.eval_utils import (
+from verifiers.legacy.utils.eval_utils import (
     get_log_level,
     load_endpoints,
     load_toml_config,
@@ -37,8 +37,8 @@ from verifiers.utils.eval_utils import (
     run_evaluations,
     run_evaluations_tui,
 )
-from verifiers.utils.import_utils import load_toml
-from verifiers.utils.install_utils import check_hub_env_installed
+from verifiers.legacy.utils.import_utils import load_toml
+from verifiers.legacy.utils.install_utils import check_hub_env_installed
 
 logger = logging.getLogger(__name__)
 

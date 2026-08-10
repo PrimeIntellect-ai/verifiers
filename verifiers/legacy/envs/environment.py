@@ -28,26 +28,26 @@ from typing import (
     final,
 )
 
-from verifiers.clients import Client, resolve_client
-from verifiers.decorators import discover_decorated
-from verifiers.serve import ZMQEnvClient
-from verifiers.utils.client_utils import (
+from verifiers.legacy.clients import Client, resolve_client
+from verifiers.legacy.decorators import discover_decorated
+from verifiers.legacy.serve import ZMQEnvClient
+from verifiers.legacy.utils.client_utils import (
     resolve_client_config,
     resolve_client_configs,
 )
-from verifiers.utils.eval_utils import filter_inputs
-from verifiers.utils.path_utils import is_valid_eval_results_path
-from verifiers.utils.serve_utils import get_free_port
-from verifiers.utils.thread_utils import scale_executors
+from verifiers.legacy.utils.eval_utils import filter_inputs
+from verifiers.legacy.utils.path_utils import is_valid_eval_results_path
+from verifiers.legacy.utils.serve_utils import get_free_port
+from verifiers.legacy.utils.thread_utils import scale_executors
 
 if TYPE_CHECKING:
     from datasets import Dataset
 
-import verifiers as vf
-from verifiers.parsers.parser import Parser
-from verifiers.rubrics.rubric import Rubric
-from verifiers.serve import EnvClient
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.parsers.parser import Parser
+from verifiers.legacy.rubrics.rubric import Rubric
+from verifiers.legacy.serve import EnvClient
+from verifiers.legacy.types import (
     ClientConfig,
     DatasetBuilder,
     GenerateMetadata,
@@ -67,15 +67,15 @@ from verifiers.types import (
     Tool,
     flatten_task_input,
 )
-from verifiers.utils.async_utils import (
+from verifiers.legacy.utils.async_utils import (
     maybe_call_with_named_args,
     maybe_retry,
     maybe_semaphore,
     with_sem,
 )
-from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import normalize_messages
-from verifiers.utils.save_utils import (
+from verifiers.legacy.utils.error_utils import ErrorChain
+from verifiers.legacy.utils.message_utils import normalize_messages
+from verifiers.legacy.utils.save_utils import (
     GenerateOutputsBuilder,
     load_outputs,
     make_dataset,
@@ -86,7 +86,7 @@ from verifiers.utils.save_utils import (
     state_to_output,
     validate_resume_metadata,
 )
-from verifiers.utils.usage_utils import StateUsageTracker
+from verifiers.legacy.utils.usage_utils import StateUsageTracker
 
 _MESSAGE_TYPE_UNSET = object()
 
@@ -1385,7 +1385,7 @@ class Environment(ABC):
             This method is subject to change. External users should avoid
             depending on it directly.
         """
-        from verifiers.serve import ZMQEnvServer
+        from verifiers.legacy.serve import ZMQEnvServer
 
         address = address or f"tcp://127.0.0.1:{get_free_port()}"
         extra_env_kwargs = extra_env_kwargs or {}
@@ -1442,7 +1442,7 @@ class Environment(ABC):
             self.death_pipe_writer.close()
             self.death_pipe_writer = None
         if self.env_server_process is not None:
-            from verifiers.utils.process_utils import terminate_process
+            from verifiers.legacy.utils.process_utils import terminate_process
 
             terminate_process(self.env_server_process)
             self.env_server_process = None

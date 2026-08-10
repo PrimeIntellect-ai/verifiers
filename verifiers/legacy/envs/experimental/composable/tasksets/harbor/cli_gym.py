@@ -25,11 +25,11 @@ from typing import Any
 
 import yaml
 
-from verifiers.envs.experimental.composable import SandboxSpec
-from verifiers.envs.experimental.composable.tasksets.harbor.harbor import (
+from verifiers.legacy.envs.experimental.composable import SandboxSpec
+from verifiers.legacy.envs.experimental.composable.tasksets.harbor.harbor import (
     HarborDatasetTaskSet,
 )
-from verifiers.envs.experimental.composable.tasksets.harbor.terminal_lego import (
+from verifiers.legacy.envs.experimental.composable.tasksets.harbor.terminal_lego import (
     _normalize_task_names,
 )
 

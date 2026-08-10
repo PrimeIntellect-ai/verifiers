@@ -3,7 +3,7 @@
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
-from verifiers.types import Response, TokenUsage, Usage
+from verifiers.legacy.types import Response, TokenUsage, Usage
 
 
 def response_usage_tokens(response: Response) -> tuple[int, int]:

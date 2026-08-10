@@ -29,10 +29,12 @@ from openai.types.chat.chat_completion_chunk import (
     Choice as ChunkChoice,
 )
 
-from verifiers.clients.openai_responses_client import OPENAI_RESPONSES_OUTPUT_FIELD
-from verifiers.errors import InfraError
-from verifiers.types import Response, Tool
-from verifiers.utils.logging_utils import print_time, truncate
+from verifiers.legacy.clients.openai_responses_client import (
+    OPENAI_RESPONSES_OUTPUT_FIELD,
+)
+from verifiers.legacy.errors import InfraError
+from verifiers.legacy.types import Response, Tool
+from verifiers.legacy.utils.logging_utils import print_time, truncate
 
 logger = logging.getLogger(__name__)
 

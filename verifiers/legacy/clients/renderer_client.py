@@ -34,12 +34,12 @@ from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
 from renderers.client import _maybe_offload, generate
 
-from verifiers.clients.client import Client
-from verifiers.clients.openai_chat_completions_client import (
+from verifiers.legacy.clients.client import Client
+from verifiers.legacy.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
-from verifiers.errors import EmptyModelResponseError, OverlongPromptError
-from verifiers.types import (
+from verifiers.legacy.errors import EmptyModelResponseError, OverlongPromptError
+from verifiers.legacy.types import (
     AssistantMessage,
     ClientConfig,
     FinishReason,
@@ -57,7 +57,7 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
-from verifiers.utils.client_utils import setup_openai_client
+from verifiers.legacy.utils.client_utils import setup_openai_client
 
 # Module-level bridge counters. Incremented by every RendererClient instance
 # that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's

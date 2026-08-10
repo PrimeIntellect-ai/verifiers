@@ -4,8 +4,8 @@ import textwrap
 import time
 from typing import Any, TypedDict
 
-import verifiers as vf
-from verifiers.envs.sandbox_env import SandboxEnv, SandboxState
+import verifiers.legacy as vf
+from verifiers.legacy.envs.sandbox_env import SandboxEnv, SandboxState
 
 
 class PythonWorkerState(TypedDict):

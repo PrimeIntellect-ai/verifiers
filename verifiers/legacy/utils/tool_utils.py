@@ -2,7 +2,7 @@ from typing import Any
 
 from agents.function_schema import function_schema
 
-from verifiers.types import Tool
+from verifiers.legacy.types import Tool
 
 VALID_TOOL_CONTENT_PART_TYPES = frozenset({"text", "image_url"})
 

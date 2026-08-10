@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-GEPA_SCHEMA_VERSION = "verifiers.gepa.v1"
+GEPA_SCHEMA_VERSION = "verifiers.legacy.gepa.v1"
 GEPA_EVAL_KIND = "gepa"
 GEPA_OPTIMIZATION_TARGET = "system_prompt"
 

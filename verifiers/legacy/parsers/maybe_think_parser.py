@@ -2,7 +2,7 @@
 
 from typing import Callable
 
-from verifiers.parsers.parser import Parser
+from verifiers.legacy.parsers.parser import Parser
 
 
 class MaybeThinkParser(Parser):

@@ -2,8 +2,8 @@ from typing import Any
 
 from datasets import Dataset, load_dataset
 
-import verifiers as vf
-from verifiers.envs.experimental.opencode_env import OpenCodeEnv
+import verifiers.legacy as vf
+from verifiers.legacy.envs.experimental.opencode_env import OpenCodeEnv
 
 
 class OpenCodeQAEnv(OpenCodeEnv):

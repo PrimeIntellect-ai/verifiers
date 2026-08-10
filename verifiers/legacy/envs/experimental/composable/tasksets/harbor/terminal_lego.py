@@ -12,8 +12,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterator
 
-from verifiers.envs.experimental.composable import SandboxSpec
-from verifiers.envs.experimental.composable.tasksets.harbor.harbor import (
+from verifiers.legacy.envs.experimental.composable import SandboxSpec
+from verifiers.legacy.envs.experimental.composable.tasksets.harbor.harbor import (
     HarborDatasetTaskSet,
     _load_task_entry,
 )

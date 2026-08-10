@@ -7,13 +7,13 @@ alias finder below, so importing this package root stays side-effect free (the
 v0 surface only loads when something touches it).
 """
 
-import importlib
-import importlib.abc
-import importlib.machinery
-import importlib.util
 import sys
+from importlib import import_module
+from importlib.abc import Loader, MetaPathFinder
+from importlib.machinery import ModuleSpec
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
+from importlib.util import find_spec
 from typing import TYPE_CHECKING
 
 try:
@@ -40,7 +40,7 @@ LEGACY_MODULES = frozenset(
 )
 
 
-class LegacyAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+class LegacyAliasFinder(MetaPathFinder, Loader):
     """Resolve `verifiers.<v0 module>` to `verifiers.legacy.<module>`.
 
     The loaded module is the legacy module object itself (one instance, aliased
@@ -63,12 +63,12 @@ class LegacyAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         if tail.split(".", 1)[0] not in LEGACY_MODULES:
             return None
         try:
-            legacy_spec = importlib.util.find_spec(self._legacy_prefix + tail)
+            legacy_spec = find_spec(self._legacy_prefix + tail)
         except ModuleNotFoundError:
             legacy_spec = None
         if legacy_spec is None:  # unknown submodule: fail like any missing import
             return None
-        spec = importlib.machinery.ModuleSpec(
+        spec = ModuleSpec(
             fullname,
             self,
             origin=legacy_spec.origin,
@@ -79,9 +79,7 @@ class LegacyAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def create_module(self, spec):
         # The already-initialized legacy module keeps its own __name__/__spec__
         # (`module_from_spec` only fills attributes that are missing).
-        return importlib.import_module(
-            self._legacy_prefix + spec.name.removeprefix(self._prefix)
-        )
+        return import_module(self._legacy_prefix + spec.name.removeprefix(self._prefix))
 
     def exec_module(self, module):
         pass  # imported (or in progress) under its legacy name already
@@ -97,7 +95,7 @@ def __getattr__(name: str):
     `from verifiers import *` keeps its pre-move meaning."""
     if name.startswith("_") and name != "__all__":
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    legacy = importlib.import_module("verifiers.legacy")
+    legacy = import_module("verifiers.legacy")
     return getattr(legacy, name)
 
 

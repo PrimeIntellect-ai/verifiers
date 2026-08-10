@@ -238,6 +238,12 @@ Documentation = "https://github.com/primeintellect-ai/verifiers"
 Repository = "https://github.com/primeintellect-ai/verifiers.git"
 Issues = "https://github.com/primeintellect-ai/verifiers/issues"
 
+[tool.ruff.lint.isort]
+# The legacy tree answers at both verifiers.* and verifiers.legacy.* (the
+# package-root alias); path probing would classify the moved submodules as
+# third-party, so pin the whole namespace first-party.
+known-first-party = ["verifiers"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]

@@ -7,14 +7,14 @@ from typing import Any, TypeAlias
 from openai import AsyncOpenAI
 from openai.types.responses import Response as OpenAIResponsesNativeResponse
 
-from verifiers.clients.client import Client
-from verifiers.clients.openai_chat_completions_client import (
+from verifiers.legacy.clients.client import Client
+from verifiers.legacy.clients.openai_chat_completions_client import (
     content_to_text,
     get_usage_field,
     handle_openai_overlong_prompt,
 )
-from verifiers.errors import EmptyModelResponseError, InvalidModelResponseError
-from verifiers.types import (
+from verifiers.legacy.errors import EmptyModelResponseError, InvalidModelResponseError
+from verifiers.legacy.types import (
     AssistantMessage,
     ClientConfig,
     FinishReason,
@@ -31,7 +31,7 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
-from verifiers.utils.client_utils import setup_openai_client
+from verifiers.legacy.utils.client_utils import setup_openai_client
 
 OpenAIResponsesInput: TypeAlias = list[dict[str, Any]]
 OpenAIResponsesTool: TypeAlias = dict[str, Any]

@@ -22,8 +22,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from verifiers.envs.experimental.composable.task import SandboxSpec
-    from verifiers.types import State, TrajectoryStep
+    from verifiers.legacy.envs.experimental.composable.task import SandboxSpec
+    from verifiers.legacy.types import State, TrajectoryStep
 
 
 @dataclass

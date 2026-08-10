@@ -27,10 +27,10 @@ import zmq
 import zmq.asyncio
 from pydantic import BaseModel
 
-from verifiers.serve.server.env_worker import EnvWorkerStats
-from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
-from verifiers.utils.process_utils import terminate_process, terminate_processes
-from verifiers.utils.serve_utils import make_ipc_address
+from verifiers.legacy.serve.server.env_worker import EnvWorkerStats
+from verifiers.legacy.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
+from verifiers.legacy.utils.process_utils import terminate_process, terminate_processes
+from verifiers.legacy.utils.serve_utils import make_ipc_address
 
 # Callback type: (client_id, request_id, response_bytes) -> awaitable
 OnResponseCallback = Callable[[bytes, bytes, bytes], Awaitable[None]]
@@ -171,7 +171,7 @@ class EnvRouter:
 
     def start_worker(self, worker_id: int) -> WorkerHandle:
         """Start an EnvWorker process."""
-        from verifiers.serve.server.env_worker import EnvWorker
+        from verifiers.legacy.serve.server.env_worker import EnvWorker
 
         worker_name = self.get_worker_name(worker_id)
         worker_addr = self.get_worker_address(worker_id)

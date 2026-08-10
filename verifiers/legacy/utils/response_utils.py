@@ -2,7 +2,7 @@ import asyncio
 import dataclasses
 from typing import Any
 
-from verifiers.types import (
+from verifiers.legacy.types import (
     AssistantMessage,
     Messages,
     Response,

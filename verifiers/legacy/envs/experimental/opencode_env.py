@@ -9,11 +9,11 @@ from typing import Callable
 
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
-from verifiers.types import AssistantMessage, Messages, ToolCall
-from verifiers.utils.logging_utils import truncate
-from verifiers.utils.path_utils import write_temp_file
+import verifiers.legacy as vf
+from verifiers.legacy.envs.experimental.cli_agent_env import CliAgentEnv
+from verifiers.legacy.types import AssistantMessage, Messages, ToolCall
+from verifiers.legacy.utils.logging_utils import truncate
+from verifiers.legacy.utils.path_utils import write_temp_file
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@ from datasets import Dataset
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from verifiers.types import (
+from verifiers.legacy.types import (
     ClientConfig,
     GenerateMetadata,
     GenerateOutputs,
@@ -26,12 +26,12 @@ from verifiers.types import (
     TokenUsage,
     Tool,
 )
-from verifiers.utils.error_utils import error_data, validate_error_data
-from verifiers.utils.message_utils import (
+from verifiers.legacy.utils.error_utils import error_data, validate_error_data
+from verifiers.legacy.utils.message_utils import (
     sanitize_tool_calls,
     serialize_messages_for_output,
 )
-from verifiers.utils.metric_utils import (
+from verifiers.legacy.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
     FinalInputTokensMetric,
@@ -41,12 +41,12 @@ from verifiers.utils.metric_utils import (
     PassAtKMetric,
     RewardMetric,
 )
-from verifiers.utils.path_utils import get_results_path
-from verifiers.utils.usage_utils import (
+from verifiers.legacy.utils.path_utils import get_results_path
+from verifiers.legacy.utils.usage_utils import (
     StateUsageTracker,
     response_usage_tokens,
 )
-from verifiers.utils.version_utils import get_version_info
+from verifiers.legacy.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +267,9 @@ def state_to_output(
         else:
             trajectory = state.get("trajectory", [])
             if isinstance(trajectory, list):
-                from verifiers.utils.usage_utils import compute_context_token_metrics
+                from verifiers.legacy.utils.usage_utils import (
+                    compute_context_token_metrics,
+                )
 
                 token_usage.update(compute_context_token_metrics(trajectory))
         output["token_usage"] = token_usage

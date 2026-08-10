@@ -5,9 +5,9 @@ from typing import Any, Protocol, TypeAlias, cast
 
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers.rubrics.rubric import Rubric
-from verifiers.types import MessageType, State
+import verifiers.legacy as vf
+from verifiers.legacy.rubrics.rubric import Rubric
+from verifiers.legacy.types import MessageType, State
 
 
 class StepResetEnv(Protocol):

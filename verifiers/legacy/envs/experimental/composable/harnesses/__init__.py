@@ -1,6 +1,6 @@
 # ruff: noqa
 
-from verifiers.envs.experimental.composable.harnesses.rlm import (
+from verifiers.legacy.envs.experimental.composable.harnesses.rlm import (
     DEFAULT_RLM_EXEC_TIMEOUT,
     DEFAULT_RLM_MAX_TURNS,
     DEFAULT_RLM_REF,
@@ -9,7 +9,7 @@ from verifiers.envs.experimental.composable.harnesses.rlm import (
     build_run_command as build_rlm_run_command,
     rlm_harness,
 )
-from verifiers.envs.experimental.composable.harnesses.opencode import (
+from verifiers.legacy.envs.experimental.composable.harnesses.opencode import (
     DEFAULT_DISABLED_TOOLS,
     DEFAULT_RELEASE_REPO,
     DEFAULT_RELEASE_VERSION,
@@ -20,7 +20,7 @@ from verifiers.envs.experimental.composable.harnesses.opencode import (
     build_opencode_run_command,
     opencode_harness,
 )
-from verifiers.envs.experimental.composable.harnesses.mini_swe_agent import (
+from verifiers.legacy.envs.experimental.composable.harnesses.mini_swe_agent import (
     MINI_SWE_AGENT_CONFIG,
     MINI_SWE_AGENT_INSTALL_SCRIPT,
     build_mini_swe_agent_install_script,

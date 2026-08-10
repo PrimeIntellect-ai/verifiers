@@ -33,8 +33,8 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any, Callable
 
-from verifiers.envs.experimental.composable._filter import _resolve_filter_fn
-from verifiers.types import DatasetBuilder, Messages, State
+from verifiers.legacy.envs.experimental.composable._filter import _resolve_filter_fn
+from verifiers.legacy.types import DatasetBuilder, Messages, State
 
 
 def discover_sibling_dir(taskset_cls: type, dirname: str) -> Traversable | Path | None:
@@ -277,7 +277,7 @@ class TaskSet:
     def __getitem__(self, i: int) -> Task:
         row = self.dataset[i]
         info = row.get("info") or {}
-        from verifiers.types import UserMessage
+        from verifiers.legacy.types import UserMessage
 
         instruction = self.get_instruction(info)
         return Task(
@@ -371,7 +371,7 @@ class TaskSet:
         except ImportError:  # pragma: no cover
             tqdm = None  # type: ignore[assignment]  # ty:ignore[invalid-assignment]
 
-        import verifiers as vf
+        import verifiers.legacy as vf
 
         logger = logging.getLogger(__name__)
         ds = self.get_dataset()
@@ -530,7 +530,7 @@ class TaskSet:
 
         else:
             from prime_sandboxes import CreateSandboxRequest
-            from verifiers.utils.threaded_sandbox_client import (
+            from verifiers.legacy.utils.threaded_sandbox_client import (
                 ThreadedAsyncSandboxClient,
             )
 

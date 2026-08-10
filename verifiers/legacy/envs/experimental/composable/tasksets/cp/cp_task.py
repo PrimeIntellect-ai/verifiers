@@ -4,7 +4,7 @@
 
 Usage::
 
-    from verifiers.envs.experimental.composable.tasksets.cp import CPTaskSet
+    from verifiers.legacy.envs.experimental.composable.tasksets.cp import CPTaskSet
     taskset = CPTaskSet()
 """
 
@@ -13,8 +13,8 @@ import logging
 import random
 from copy import deepcopy
 
-import verifiers as vf
-from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+import verifiers.legacy as vf
+from verifiers.legacy.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 logger = logging.getLogger(__name__)
 

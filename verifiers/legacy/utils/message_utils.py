@@ -8,7 +8,7 @@ from typing import Any, Literal, TypeAlias, cast, overload
 
 from rich.text import Text
 
-from verifiers.types import (
+from verifiers.legacy.types import (
     AssistantMessage,
     ImageUrlContentPart,
     InputAudioContentPart,
@@ -201,7 +201,7 @@ def maybe_normalize_messages(
     field_name: str = "messages",
 ) -> Messages:
     """Normalize messages only if needed, logging a warning on first occurrence."""
-    from verifiers.utils.logging_utils import warning_once
+    from verifiers.legacy.utils.logging_utils import warning_once
 
     requires_normalize = not isinstance(value, list) or not all(
         isinstance(m, Message) for m in value

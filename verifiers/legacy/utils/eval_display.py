@@ -26,16 +26,16 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.types import EvalConfig, EvalCost, GenerateOutputs, TokenUsage
-from verifiers.utils.display_utils import (
+from verifiers.legacy.types import EvalConfig, EvalCost, GenerateOutputs, TokenUsage
+from verifiers.legacy.utils.display_utils import (
     BaseDisplay,
     format_numeric,
     make_aligned_row,
     make_kv_line,
 )
-from verifiers.utils.display_utils import format_timing_rich
-from verifiers.utils.message_utils import format_messages
-from verifiers.utils.pricing_utils import format_cost_usd
+from verifiers.legacy.utils.display_utils import format_timing_rich
+from verifiers.legacy.utils.message_utils import format_messages
+from verifiers.legacy.utils.pricing_utils import format_cost_usd
 
 
 def _eval_label(config: EvalConfig) -> str:
@@ -1244,4 +1244,4 @@ class EvalDisplay(BaseDisplay):
 
 
 # Re-export is_tty for convenience
-from verifiers.utils.display_utils import is_tty  # noqa: E402, F401
+from verifiers.legacy.utils.display_utils import is_tty  # noqa: E402, F401

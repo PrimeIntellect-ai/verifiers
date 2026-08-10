@@ -20,7 +20,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
+from verifiers.legacy.utils.display_utils import BaseDisplay, make_aligned_row
 
 
 @dataclass

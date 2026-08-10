@@ -8,7 +8,7 @@ from typing import Any, Callable, cast
 
 from datasets import Dataset
 
-import verifiers as vf
+import verifiers.legacy as vf
 
 try:
     import nltk

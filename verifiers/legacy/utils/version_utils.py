@@ -7,7 +7,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from verifiers.types import VersionInfo
+from verifiers.legacy.types import VersionInfo
 
 logger = logging.getLogger(__name__)
 

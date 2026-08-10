@@ -1,6 +1,6 @@
 # ruff: noqa
 
-from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import (
+from verifiers.legacy.envs.experimental.composable.tasksets.swe.swe_tasksets import (
     make_multiswe_taskset,
     make_openswe_taskset,
     make_r2e_taskset,
@@ -19,22 +19,24 @@ from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import (
     make_swesmith_taskset,
     make_swesmith_ts_taskset,
 )
-from verifiers.envs.experimental.composable.tasksets.math.math_task import MathTaskSet
-from verifiers.envs.experimental.composable.tasksets.cp.cp_task import (
+from verifiers.legacy.envs.experimental.composable.tasksets.math.math_task import (
+    MathTaskSet,
+)
+from verifiers.legacy.envs.experimental.composable.tasksets.cp.cp_task import (
     CPRubric,
     CPTaskSet,
 )
-from verifiers.envs.experimental.composable.tasksets.harbor.harbor import (
+from verifiers.legacy.envs.experimental.composable.tasksets.harbor.harbor import (
     HarborDatasetRubric,
     HarborDatasetTaskSet,
     HarborRubric,
     HarborTaskSet,
 )
-from verifiers.envs.experimental.composable.tasksets.harbor.cli_gym import (
+from verifiers.legacy.envs.experimental.composable.tasksets.harbor.cli_gym import (
     CLIGymTaskSet,
     make_cli_gym_taskset,
 )
-from verifiers.envs.experimental.composable.tasksets.harbor.terminal_lego import (
+from verifiers.legacy.envs.experimental.composable.tasksets.harbor.terminal_lego import (
     TerminalLegoTaskSet,
     make_terminal_lego_taskset,
 )

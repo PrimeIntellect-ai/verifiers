@@ -4,7 +4,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from verifiers.types import EvalConfig
+from verifiers.legacy.types import EvalConfig
 
 logger = logging.getLogger(__name__)
 

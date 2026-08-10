@@ -109,39 +109,39 @@ __all__ = [
 ]
 
 _LAZY_IMPORTS = {
-    "Client": "verifiers.clients.client:Client",
+    "Client": "verifiers.legacy.clients.client:Client",
     "AnthropicMessagesClient": (
-        "verifiers.clients.anthropic_messages_client:AnthropicMessagesClient"
+        "verifiers.legacy.clients.anthropic_messages_client:AnthropicMessagesClient"
     ),
     "OpenAIChatCompletionsClient": (
-        "verifiers.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
+        "verifiers.legacy.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
     ),
-    "RendererClient": ("verifiers.clients.renderer_client:RendererClient"),
+    "RendererClient": ("verifiers.legacy.clients.renderer_client:RendererClient"),
     "OpenAICompletionsClient": (
-        "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
+        "verifiers.legacy.clients.openai_completions_client:OpenAICompletionsClient"
     ),
     "OpenAIResponsesClient": (
-        "verifiers.clients.openai_responses_client:OpenAIResponsesClient"
+        "verifiers.legacy.clients.openai_responses_client:OpenAIResponsesClient"
     ),
-    "Environment": "verifiers.envs.environment:Environment",
-    "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
-    "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
-    "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
-    "ToolEnv": "verifiers.envs.tool_env:ToolEnv",
-    "EnvGroup": "verifiers.envs.env_group:EnvGroup",
-    "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
-    "load_environment": "verifiers.utils.env_utils:load_environment",
-    "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
-    "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
-    "PythonEnv": "verifiers.envs.python_env:PythonEnv",
-    "GymEnv": "verifiers.envs.experimental.gym_env:GymEnv",
-    "CliAgentEnv": "verifiers.envs.experimental.cli_agent_env:CliAgentEnv",
-    "HarborEnv": "verifiers.envs.experimental.harbor_env:HarborEnv",
-    "MCPEnv": "verifiers.envs.experimental.mcp_env:MCPEnv",
-    "ReasoningGymEnv": "verifiers.envs.integrations.reasoninggym_env:ReasoningGymEnv",
-    "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
-    "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
-    "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
+    "Environment": "verifiers.legacy.envs.environment:Environment",
+    "MultiTurnEnv": "verifiers.legacy.envs.multiturn_env:MultiTurnEnv",
+    "SingleTurnEnv": "verifiers.legacy.envs.singleturn_env:SingleTurnEnv",
+    "StatefulToolEnv": "verifiers.legacy.envs.stateful_tool_env:StatefulToolEnv",
+    "ToolEnv": "verifiers.legacy.envs.tool_env:ToolEnv",
+    "EnvGroup": "verifiers.legacy.envs.env_group:EnvGroup",
+    "JudgeRubric": "verifiers.legacy.rubrics.judge_rubric:JudgeRubric",
+    "load_environment": "verifiers.legacy.utils.env_utils:load_environment",
+    "MathRubric": "verifiers.legacy.rubrics.math_rubric:MathRubric",
+    "SandboxEnv": "verifiers.legacy.envs.sandbox_env:SandboxEnv",
+    "PythonEnv": "verifiers.legacy.envs.python_env:PythonEnv",
+    "GymEnv": "verifiers.legacy.envs.experimental.gym_env:GymEnv",
+    "CliAgentEnv": "verifiers.legacy.envs.experimental.cli_agent_env:CliAgentEnv",
+    "HarborEnv": "verifiers.legacy.envs.experimental.harbor_env:HarborEnv",
+    "MCPEnv": "verifiers.legacy.envs.experimental.mcp_env:MCPEnv",
+    "ReasoningGymEnv": "verifiers.legacy.envs.integrations.reasoninggym_env:ReasoningGymEnv",
+    "TextArenaEnv": "verifiers.legacy.envs.integrations.textarena_env:TextArenaEnv",
+    "BrowserEnv": "verifiers.legacy.envs.integrations.browser_env:BrowserEnv",
+    "OpenEnvEnv": "verifiers.legacy.envs.integrations.openenv_env:OpenEnvEnv",
 }
 
 

@@ -2,7 +2,7 @@
 Browser Environment - Unified browser automation with DOM and CUA modes.
 
 Usage:
-    from verifiers.envs.integrations.browser_env import BrowserEnv
+    from verifiers.legacy.envs.integrations.browser_env import BrowserEnv
 
     # DOM mode - natural language browser automation
     env = BrowserEnv(

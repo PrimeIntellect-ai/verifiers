@@ -5,9 +5,9 @@ import json
 from abc import abstractmethod
 from typing import Callable, cast
 
-import verifiers as vf
-from verifiers.types import Tool, ToolMessage
-from verifiers.utils.tool_utils import convert_func_to_tool_def
+import verifiers.legacy as vf
+from verifiers.legacy.types import Tool, ToolMessage
+from verifiers.legacy.utils.tool_utils import convert_func_to_tool_def
 
 
 def filter_signature(func, args_to_skip):

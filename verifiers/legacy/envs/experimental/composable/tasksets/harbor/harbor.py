@@ -12,8 +12,8 @@ try:
 except ImportError:
     import tomli as tomllib
 
-import verifiers as vf
-from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+import verifiers.legacy as vf
+from verifiers.legacy.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 logger = logging.getLogger(__name__)
 

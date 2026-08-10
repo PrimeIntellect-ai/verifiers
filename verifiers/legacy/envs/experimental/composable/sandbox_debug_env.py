@@ -7,14 +7,14 @@ import time
 from typing import Any, ClassVar, Literal
 from warnings import warn
 
-import verifiers as vf
+import verifiers.legacy as vf
 from prime_sandboxes import CreateSandboxRequest
-from verifiers.envs.experimental.sandbox_mixin import (
+from verifiers.legacy.envs.experimental.sandbox_mixin import (
     SandboxMixin,
     SandboxMonitorRubric,
     SandboxSetupError,
 )
-from verifiers.types import Messages, State
+from verifiers.legacy.types import Messages, State
 
 from .task import SandboxTaskSet
 

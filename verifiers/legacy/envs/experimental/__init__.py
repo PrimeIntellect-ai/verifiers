@@ -1,6 +1,6 @@
 # ruff: noqa
 
-from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
+from verifiers.legacy.envs.experimental.sandbox_mixin import SandboxMixin
 
 __all__ = [
     "SandboxMixin",
@@ -18,15 +18,15 @@ __all__ = [
 
 def __getattr__(name: str):
     _lazy = {
-        "SandboxSpec": "verifiers.envs.experimental.composable:SandboxSpec",
-        "SandboxTaskSet": "verifiers.envs.experimental.composable:SandboxTaskSet",
-        "Task": "verifiers.envs.experimental.composable:Task",
-        "TaskSet": "verifiers.envs.experimental.composable:TaskSet",
-        "Harness": "verifiers.envs.experimental.composable:Harness",
-        "ComposableEnv": "verifiers.envs.experimental.composable:ComposableEnv",
-        "SandboxDebugEnv": "verifiers.envs.experimental.composable:SandboxDebugEnv",
-        "SandboxDebugRubric": "verifiers.envs.experimental.composable:SandboxDebugRubric",
-        "SWEDebugEnv": "verifiers.envs.experimental.composable:SWEDebugEnv",
+        "SandboxSpec": "verifiers.legacy.envs.experimental.composable:SandboxSpec",
+        "SandboxTaskSet": "verifiers.legacy.envs.experimental.composable:SandboxTaskSet",
+        "Task": "verifiers.legacy.envs.experimental.composable:Task",
+        "TaskSet": "verifiers.legacy.envs.experimental.composable:TaskSet",
+        "Harness": "verifiers.legacy.envs.experimental.composable:Harness",
+        "ComposableEnv": "verifiers.legacy.envs.experimental.composable:ComposableEnv",
+        "SandboxDebugEnv": "verifiers.legacy.envs.experimental.composable:SandboxDebugEnv",
+        "SandboxDebugRubric": "verifiers.legacy.envs.experimental.composable:SandboxDebugRubric",
+        "SWEDebugEnv": "verifiers.legacy.envs.experimental.composable:SWEDebugEnv",
     }
     if name in _lazy:
         import importlib

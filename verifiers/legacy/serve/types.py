@@ -7,7 +7,7 @@ from typing import Annotated, Literal, TypeAlias, TypeVar
 from pydantic import BaseModel, BeforeValidator, ConfigDict
 from pydantic import SkipValidation
 
-from verifiers.types import (
+from verifiers.legacy.types import (
     ClientConfig,
     RolloutInput,
     RolloutOutput,

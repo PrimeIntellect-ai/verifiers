@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any, Protocol, runtime_checkable
 
-from verifiers.types import RolloutOutput
+from verifiers.legacy.types import RolloutOutput
 
 
 @runtime_checkable

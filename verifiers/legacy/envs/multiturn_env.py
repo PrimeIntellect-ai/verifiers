@@ -6,9 +6,9 @@ import time
 from abc import abstractmethod
 from typing import final
 
-import verifiers as vf
-from verifiers.clients import Client
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.clients import Client
+from verifiers.legacy.types import (
     Messages,
     Response,
     RolloutInput,
@@ -17,11 +17,11 @@ from verifiers.types import (
     TimeSpan,
     TrajectoryStep,
 )
-from verifiers.utils.message_utils import (
+from verifiers.legacy.utils.message_utils import (
     concat_messages,
     maybe_normalize_messages,
 )
-from verifiers.utils.response_utils import (
+from verifiers.legacy.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
 )

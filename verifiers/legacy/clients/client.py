@@ -13,8 +13,8 @@ from anthropic import (
 from openai import AuthenticationError as OpenAIAuthenticationError
 from openai import PermissionDeniedError as OpenAIPermissionDeniedError
 
-from verifiers.errors import Error, ModelError
-from verifiers.types import (
+from verifiers.legacy.errors import Error, ModelError
+from verifiers.legacy.types import (
     ClientConfig,
     Messages,
     Response,

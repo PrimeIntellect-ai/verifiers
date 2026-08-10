@@ -5,7 +5,7 @@ that are shared across all OpenCode-based environments (SWE, Lean, Math, etc.).
 
 Usage::
 
-    from verifiers.envs.experimental.composable.harnesses.opencode import opencode_harness
+    from verifiers.legacy.envs.experimental.composable.harnesses.opencode import opencode_harness
     harness = opencode_harness(system_prompt="You are a coding agent...")
 """
 
@@ -248,10 +248,10 @@ def opencode_harness(
 
     Usage::
 
-        from verifiers.envs.experimental.composable.harnesses.opencode import opencode_harness
+        from verifiers.legacy.envs.experimental.composable.harnesses.opencode import opencode_harness
         harness = opencode_harness(system_prompt="You are a coding agent...")
     """
-    from verifiers.envs.experimental.composable import Harness
+    from verifiers.legacy.envs.experimental.composable import Harness
 
     if task_system_prompt:
         if system_prompt:

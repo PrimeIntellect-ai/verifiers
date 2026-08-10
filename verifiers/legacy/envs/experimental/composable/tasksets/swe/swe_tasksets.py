@@ -1,6 +1,6 @@
 """SWE TaskSet factories.
 
-from verifiers.envs.experimental.composable.tasksets.swe import make_r2e_taskset, make_swebench_taskset
+from verifiers.legacy.envs.experimental.composable.tasksets.swe import make_r2e_taskset, make_swebench_taskset
 
 r2e = make_r2e_taskset()
 bench = make_swebench_taskset()
@@ -8,7 +8,7 @@ bench = make_swebench_taskset()
 
 from typing import Any
 
-from verifiers.envs.experimental.composable import TaskSet
+from verifiers.legacy.envs.experimental.composable import TaskSet
 
 
 def make_swe_taskset(
@@ -42,7 +42,7 @@ def make_swe_taskset(
 
 def make_r2e_taskset(**kwargs: Any) -> TaskSet:
     """R2E-Gym TaskSet (default: 4578 instances)."""
-    from verifiers.envs.experimental.composable.tasksets.swe.r2e_gym import (
+    from verifiers.legacy.envs.experimental.composable.tasksets.swe.r2e_gym import (
         R2EGymTaskSet,
     )
 
@@ -51,7 +51,7 @@ def make_r2e_taskset(**kwargs: Any) -> TaskSet:
 
 def make_swebench_taskset(**kwargs: Any) -> TaskSet:
     """SWE-bench Verified TaskSet."""
-    from verifiers.envs.experimental.composable.tasksets.swe.swe_bench import (
+    from verifiers.legacy.envs.experimental.composable.tasksets.swe.swe_bench import (
         SWEBenchTaskSet,
     )
 
@@ -60,7 +60,7 @@ def make_swebench_taskset(**kwargs: Any) -> TaskSet:
 
 def make_multiswe_taskset(**kwargs: Any) -> TaskSet:
     """Multi-SWE-RL TaskSet."""
-    from verifiers.envs.experimental.composable.tasksets.swe.multi_swe import (
+    from verifiers.legacy.envs.experimental.composable.tasksets.swe.multi_swe import (
         MultiSWETaskSet,
     )
 
@@ -69,7 +69,7 @@ def make_multiswe_taskset(**kwargs: Any) -> TaskSet:
 
 def make_openswe_taskset(**kwargs: Any) -> TaskSet:
     """OpenSWE TaskSet."""
-    from verifiers.envs.experimental.composable.tasksets.swe.openswe import (
+    from verifiers.legacy.envs.experimental.composable.tasksets.swe.openswe import (
         OpenSWETaskSet,
     )
 
@@ -83,7 +83,7 @@ def make_swelego_real_taskset(**kwargs: Any) -> TaskSet:
     upstream SWE-Lego/SWE-Lego-Real-Data that drops rows with truncated pytest
     parametrize test IDs in FAIL_TO_PASS / PASS_TO_PASS (11.5% of upstream).
     """
-    from verifiers.envs.experimental.composable.tasksets.swe.swe_lego import (
+    from verifiers.legacy.envs.experimental.composable.tasksets.swe.swe_lego import (
         SWELegoTaskSet,
     )
 
@@ -92,7 +92,7 @@ def make_swelego_real_taskset(**kwargs: Any) -> TaskSet:
 
 def make_scaleswe_taskset(**kwargs: Any) -> TaskSet:
     """Scale-SWE TaskSet (AweAI-Team/Scale-SWE, Python issue-resolving tasks)."""
-    from verifiers.envs.experimental.composable.tasksets.swe.scale_swe import (
+    from verifiers.legacy.envs.experimental.composable.tasksets.swe.scale_swe import (
         ScaleSWETaskSet,
     )
 
@@ -105,7 +105,7 @@ def make_swerebench_v2_taskset(**kwargs: Any) -> TaskSet:
     Use ``filter_fn`` to filter rows, for example
     ``"lambda x: x['info']['language'] == 'python'"`` for one language.
     """
-    from verifiers.envs.experimental.composable.tasksets.swe.swe_rebench_v2 import (
+    from verifiers.legacy.envs.experimental.composable.tasksets.swe.swe_rebench_v2 import (
         SWERebenchV2TaskSet,
     )
 
@@ -129,7 +129,7 @@ def make_swesmith_taskset(language: str = "py", **kwargs: Any) -> TaskSet:
         language: one of py, go, java, js, ts, rs, cpp, php.
         **kwargs: forwarded to ``SWESmithTaskSet``.
     """
-    from verifiers.envs.experimental.composable.tasksets.swe.swe_smith import (
+    from verifiers.legacy.envs.experimental.composable.tasksets.swe.swe_smith import (
         SWESmithTaskSet,
     )
 

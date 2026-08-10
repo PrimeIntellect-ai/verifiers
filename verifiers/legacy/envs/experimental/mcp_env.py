@@ -10,8 +10,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent, Tool as MCPTool
 
-import verifiers as vf
-from verifiers.types import Tool, ToolMessage
+import verifiers.legacy as vf
+from verifiers.legacy.types import Tool, ToolMessage
 
 
 @dataclass

@@ -9,8 +9,8 @@ from typing import Any
 
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers.utils.import_utils import load_toml
+import verifiers.legacy as vf
+from verifiers.legacy.utils.import_utils import load_toml
 
 from .mcp import HarborMCPHealthcheck, HarborMCPMixin
 

@@ -11,12 +11,12 @@ import subprocess
 from typing import IO
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from verifiers.envs.experimental.utils.file_locks import (
+from verifiers.legacy.envs.experimental.utils.file_locks import (
     exclusive_file_lock,
     exclusive_path_lock,
     sibling_lock_path,
 )
-from verifiers.utils.path_utils import CACHE_DIR
+from verifiers.legacy.utils.path_utils import CACHE_DIR
 
 _IN_USE_LOCK_SUFFIX = ".in-use.lock"
 

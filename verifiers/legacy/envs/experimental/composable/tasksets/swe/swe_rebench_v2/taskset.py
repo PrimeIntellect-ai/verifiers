@@ -33,11 +33,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import verifiers as vf
+import verifiers.legacy as vf
 from datasets import load_dataset
-from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.legacy.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
-from verifiers.envs.experimental.composable.tasksets.swe.shared.test_patch import (
+from verifiers.legacy.envs.experimental.composable.tasksets.swe.shared.test_patch import (
     revert_and_reapply_test_patch,
 )
 

@@ -28,10 +28,10 @@ from prime_sandboxes import (
 )
 from prime_sandboxes.core import APIClient
 
-import verifiers as vf
-from verifiers.utils.logging_utils import print_time
-from verifiers.utils.path_utils import write_temp_file
-from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
+import verifiers.legacy as vf
+from verifiers.legacy.utils.logging_utils import print_time
+from verifiers.legacy.utils.path_utils import write_temp_file
+from verifiers.legacy.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
 # Enable httpx debug logging if HTTPX_LOG_LEVEL is set
 _httpx_log_level = os.environ.get("HTTPX_LOG_LEVEL", "").upper()

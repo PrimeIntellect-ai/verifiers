@@ -16,15 +16,15 @@ from prime_sandboxes import (
 )
 from prime_tunnel import Tunnel
 
-import verifiers as vf
-from verifiers.clients import Client
-from verifiers.envs.experimental.sandbox_mixin import (
+import verifiers.legacy as vf
+from verifiers.legacy.clients import Client
+from verifiers.legacy.envs.experimental.sandbox_mixin import (
     SandboxMixin,
     SandboxMonitorRubric,
     SandboxTimeouts,
     is_retryable_sandbox_read_error,
 )
-from verifiers.types import (
+from verifiers.legacy.types import (
     AssistantMessage,
     Messages,
     MessageType,
@@ -34,13 +34,13 @@ from verifiers.types import (
     Tool,
     ToolCall,
 )
-from verifiers.utils.interception_utils import (
+from verifiers.legacy.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
     synthesize_stream,
 )
-from verifiers.utils.logging_utils import print_time, truncate
-from verifiers.utils.message_utils import normalize_messages
+from verifiers.legacy.utils.logging_utils import print_time, truncate
+from verifiers.legacy.utils.message_utils import normalize_messages
 
 logger = logging.getLogger(__name__)
 

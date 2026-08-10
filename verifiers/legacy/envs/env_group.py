@@ -4,16 +4,16 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast, final
 
-import verifiers as vf
-from verifiers.clients import Client
-from verifiers.types import (
+import verifiers.legacy as vf
+from verifiers.legacy.clients import Client
+from verifiers.legacy.types import (
     ClientConfig,
     Messages,
     RolloutInput,
     SamplingArgs,
 )
-from verifiers.utils.client_utils import resolve_client_config
-from verifiers.serve import EnvClient
+from verifiers.legacy.utils.client_utils import resolve_client_config
+from verifiers.legacy.serve import EnvClient
 
 if TYPE_CHECKING:
     from datasets import Dataset

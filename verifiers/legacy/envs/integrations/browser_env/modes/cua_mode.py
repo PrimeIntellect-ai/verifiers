@@ -18,7 +18,7 @@ from typing import Any, Literal
 import aiohttp
 import tenacity as tc
 from tenacity import AsyncRetrying
-import verifiers as vf
+import verifiers.legacy as vf
 
 
 # Conditional imports for sandbox mode

@@ -1,11 +1,11 @@
-from verifiers.envs.experimental.utils.file_locks import (
+from verifiers.legacy.envs.experimental.utils.file_locks import (
     exclusive_file_lock,
     exclusive_path_lock,
     shared_file_lock,
     shared_path_lock,
     sibling_lock_path,
 )
-from verifiers.envs.experimental.utils.git_checkout_cache import (
+from verifiers.legacy.envs.experimental.utils.git_checkout_cache import (
     DEFAULT_GIT_CHECKOUT_CACHE_ROOT,
     resolve_git_checkout,
     validate_git_checkout,
