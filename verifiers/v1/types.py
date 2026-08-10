@@ -2,7 +2,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
@@ -243,15 +243,5 @@ class SamplingConfig(BaseModel):
 Sampling = SamplingConfig
 
 
-def _validate_id(plugin_id: str) -> str:
-    if "/" in plugin_id or "@" in plugin_id:
-        raise ValueError(
-            f"{plugin_id!r} is not a plugin id — an id is the installed package's "
-            "name (hub `org/name[@version]` references are not supported; install "
-            "the package first)"
-        )
-    return plugin_id
-
-
-ID = Annotated[str, AfterValidator(_validate_id)]
+ID = str
 """Plugin id: the installed package's name."""

@@ -23,7 +23,7 @@ except PackageNotFoundError:  # source tree without install metadata
 
 # The v0 modules that moved under `verifiers.legacy` and stay importable at
 # their old top-level paths.
-_LEGACY_MODULES = frozenset(
+LEGACY_MODULES = frozenset(
     {
         "clients",
         "decorators",
@@ -40,7 +40,7 @@ _LEGACY_MODULES = frozenset(
 )
 
 
-class _LegacyAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+class LegacyAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     """Resolve `verifiers.<v0 module>` to `verifiers.legacy.<module>`.
 
     The loaded module is the legacy module object itself (one instance, aliased
@@ -60,7 +60,7 @@ class _LegacyAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         ):
             return None
         tail = fullname.removeprefix(self._prefix)
-        if tail.split(".", 1)[0] not in _LEGACY_MODULES:
+        if tail.split(".", 1)[0] not in LEGACY_MODULES:
             return None
         try:
             legacy_spec = importlib.util.find_spec(self._legacy_prefix + tail)
@@ -87,8 +87,8 @@ class _LegacyAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         pass  # imported (or in progress) under its legacy name already
 
 
-if not any(isinstance(finder, _LegacyAliasFinder) for finder in sys.meta_path):
-    sys.meta_path.insert(0, _LegacyAliasFinder())
+if not any(isinstance(finder, LegacyAliasFinder) for finder in sys.meta_path):
+    sys.meta_path.insert(0, LegacyAliasFinder())
 
 
 def __getattr__(name: str):
