@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 INSTALL_SOURCE = (Path(__file__).resolve().parent / "install.sh").read_text()
 
-PRIME_AGENT_ACP = ACP()
+PRIME_AGENT_ACP = ACP(metadata_expected=True)
 PROVIDER = "intercept"
 # models.json stores this variable NAME, never the secret: Prime Agent resolves
 # `process.env[apiKey] || apiKey`, so the token reaches the agent only through

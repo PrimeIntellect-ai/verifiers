@@ -104,10 +104,12 @@ def quiescent_at_end(trace) -> bool:
     about completeness must assert this rather than trusting `end_turn`.
     """
     final = field_history(trace, "quiescence")[-1]
-    return final.get("outstandingSubagents") == 0 and (
-        final.get("remainingAutonomousContinuations") in (0, None)
-        or isinstance(final.get("remainingAutonomousContinuations"), int)
-    )
+    # An integer is evidence of a producer snapshot, not quiescence. In
+    # particular a positive remaining continuation means autonomous work is
+    # explicitly still scheduled.
+    return final.get("outstandingSubagents") == 0 and final.get(
+        "remainingAutonomousContinuations"
+    ) in (0, None)
 
 
 def no_outstanding_subagents(trace) -> bool:

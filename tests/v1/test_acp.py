@@ -139,6 +139,41 @@ class _MetaClient:
             self.output_changed.notify_all()
 
 
+class _PromptMetaClient(_MetaClient):
+    """Small lifecycle-aware stand-in for `VerifiersACPClient` prompt tests."""
+
+    def __init__(self):
+        super().__init__()
+        self.visible_reply = ""
+        self.message_id = None
+        self.tool_calls = {}
+        self._open = False
+        self.unattributed_acp_meta = {}
+        self._ambiguous = False
+
+    def reset(self):
+        self.visible_reply = ""
+        self.message_id = None
+        self.tool_calls = {}
+
+    def begin_prompt_metadata(self, *, expected):
+        if self._ambiguous:
+            raise RuntimeError("ACP metadata arrived after its prompt lifecycle closed")
+        self.turn_acp_meta = {}
+        self._open = expected
+
+    def close_prompt_metadata(self):
+        self._open = False
+
+    async def emit(self, event):
+        async with self.output_changed:
+            target = self.turn_acp_meta if self._open else self.unattributed_acp_meta
+            target.setdefault("ns", []).append(event)
+            if not self._open:
+                self._ambiguous = True
+            self.output_changed.notify_all()
+
+
 @pytest.mark.asyncio
 async def test_late_metadata_keeps_full_grace_before_the_first_event(monkeypatch):
     """A first event arriving after the settle interval must not be dropped.
@@ -154,7 +189,7 @@ async def test_late_metadata_keeps_full_grace_before_the_first_event(monkeypatch
         await client.emit({"late": True})
 
     task = asyncio.create_task(emit_late())
-    await runner.wait_for_late_metadata(client)
+    await runner.wait_for_late_metadata(client, expected=True)
     # Snapshot at RETURN time: awaiting the producer first would let a dropped
     # event land afterwards and make the assertion vacuous.
     collected = len(client.turn_acp_meta.get("ns", []))
@@ -175,7 +210,7 @@ async def test_late_metadata_collects_a_trailing_update(monkeypatch):
         await client.emit({"trailing": True})
 
     task = asyncio.create_task(emit_two())
-    await runner.wait_for_late_metadata(client)
+    await runner.wait_for_late_metadata(client, expected=True)
     collected = len(client.turn_acp_meta.get("ns", []))
     await task
     assert collected == 2
@@ -188,7 +223,9 @@ async def test_late_metadata_does_not_delay_a_turn_that_already_has_metadata(
     """Otherwise every prompt pays a fixed delay it does not need."""
     runner = load_runner_without_acp_dependency(monkeypatch)
     started = asyncio.get_event_loop().time()
-    await runner.wait_for_late_metadata(_MetaClient({"ns": [{"done": True}]}))
+    await runner.wait_for_late_metadata(
+        _MetaClient({"ns": [{"done": True}]}), expected=True
+    )
     elapsed = asyncio.get_event_loop().time() - started
     assert elapsed < runner.LATE_UPDATE_GRACE_SECONDS / 2, elapsed
 
@@ -198,25 +235,13 @@ async def test_prompt_starts_metadata_collection_at_the_prompt_boundary(monkeypa
     """Session-start updates must not shorten the first prompt update's grace."""
     runner = load_runner_without_acp_dependency(monkeypatch)
 
-    class PromptClient(_MetaClient):
-        def __init__(self):
-            super().__init__({"ns": [{"from_session_start": True}]})
-            self.visible_reply = ""
-            self.message_id = None
-            self.tool_calls = {}
-
-        def reset(self):
-            self.visible_reply = ""
-            self.message_id = None
-            self.tool_calls = {}
+    client = _PromptMetaClient()
 
     class Connection:
         async def prompt(self, **kwargs):
             client.visible_reply = "reply"
             asyncio.create_task(emit_prompt_metadata())
             return types.SimpleNamespace(stop_reason="end_turn")
-
-    client = PromptClient()
 
     async def emit_prompt_metadata():
         # Longer than the settle window but inside the first-event grace period.
@@ -228,9 +253,94 @@ async def test_prompt_starts_metadata_collection_at_the_prompt_boundary(monkeypa
         Connection(),
         None,
         "session",
-        {"messages": [{"role": "user", "content": "hi"}], "system_prompt": ""},
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "system_prompt": "",
+            "metadata_expected": True,
+        },
         is_new=True,
     )
 
     assert reply == "reply"
     assert client.turn_acp_meta == {"ns": [{"from_prompt": True}]}
+
+
+@pytest.mark.asyncio
+async def test_no_metadata_prompt_has_no_grace_delay(monkeypatch):
+    """Unnegotiated ACP preserves the old zero-metadata latency path."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = _PromptMetaClient()
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            client.visible_reply = "reply"
+            return types.SimpleNamespace(stop_reason="end_turn")
+
+    started = asyncio.get_running_loop().time()
+    assert (
+        await runner.prompt(
+            client,
+            Connection(),
+            None,
+            "session",
+            {"messages": [{"role": "user", "content": "hi"}], "system_prompt": ""},
+            is_new=True,
+        )
+        == "reply"
+    )
+    assert asyncio.get_running_loop().time() - started < 0.1
+
+
+@pytest.mark.asyncio
+async def test_delayed_event_after_closed_turn_fails_next_turn(monkeypatch):
+    """ACP 0.11 has no prompt id, so late metadata cannot be guessed forward."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = _PromptMetaClient()
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            client.visible_reply = "reply"
+            return types.SimpleNamespace(stop_reason="end_turn")
+
+    config = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "system_prompt": "",
+        "metadata_expected": True,
+    }
+    assert await runner.prompt(
+        client, Connection(), None, "session", config, is_new=True
+    )
+    await client.emit({"late": True})
+    assert client.turn_acp_meta == {}
+    assert client.unattributed_acp_meta == {"ns": [{"late": True}]}
+    with pytest.raises(RuntimeError, match="after its prompt lifecycle closed"):
+        await runner.prompt(client, Connection(), None, "session", config, is_new=False)
+
+
+@pytest.mark.asyncio
+async def test_metadata_lifecycle_preserves_order_and_quarantines_late_events(
+    monkeypatch,
+):
+    """Two turns cannot share an uncorrelated ACP 0.11 extension event."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+
+    def update(event):
+        value = runner.SessionInfoUpdate()
+        value.field_meta = {"ns": event}
+        return value
+
+    client.begin_prompt_metadata(expected=True)
+    await client.session_update("session", update({"turn": 1, "state": "start"}))
+    await client.session_update("session", update({"turn": 1, "state": "done"}))
+    assert client.turn_acp_meta == {
+        "ns": [{"turn": 1, "state": "start"}, {"turn": 1, "state": "done"}]
+    }
+    client.close_prompt_metadata()
+
+    # This producer update lacks ACP 0.11 prompt correlation, so it must be
+    # quarantined and make turn two an explicit infrastructure failure.
+    await client.session_update("session", update({"turn": 1, "state": "late"}))
+    assert client.unattributed_acp_meta == {"ns": [{"turn": 1, "state": "late"}]}
+    with pytest.raises(RuntimeError, match="refusing to attach"):
+        client.begin_prompt_metadata(expected=True)
