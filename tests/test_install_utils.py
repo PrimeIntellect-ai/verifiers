@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from verifiers.v1.utils.install_utils import (
+from verifiers.utils.install_utils import (
     check_hub_env_installed,
     is_hub_env,
     is_installed,

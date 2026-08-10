@@ -244,12 +244,14 @@ Sampling = SamplingConfig
 
 
 def _validate_id(plugin_id: str) -> str:
-    from verifiers.v1.utils.install_utils import is_hub_env, parse_env_id
-
-    if is_hub_env(plugin_id):
-        parse_env_id(plugin_id)  # raises ValueError on a malformed org/name[@version]
+    if "/" in plugin_id or "@" in plugin_id:
+        raise ValueError(
+            f"{plugin_id!r} is not a plugin id — an id is the installed package's "
+            "name (hub `org/name[@version]` references are not supported; install "
+            "the package first)"
+        )
     return plugin_id
 
 
 ID = Annotated[str, AfterValidator(_validate_id)]
-"""Plugin id: `name`, `org/name`, or `org/name@version`."""
+"""Plugin id: the installed package's name."""
