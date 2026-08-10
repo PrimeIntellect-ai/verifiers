@@ -1,7 +1,9 @@
 """ACP metadata accumulation preserves ordered, namespaced extension events."""
 
 import asyncio
+import hashlib
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -9,8 +11,6 @@ from pathlib import Path
 import pytest
 from acp_correlation_transcripts import (
     NAMESPACE,
-    cancelled,
-    error_incomplete,
     error_terminal,
     global_sequence_turn_two,
     late_child,
@@ -98,6 +98,34 @@ def test_acp_run_forwards_trace_to_the_recording_path() -> None:
     # The public one-shot path has a mandatory trace; this preserves the
     # lifecycle refactor's model-turn invariant rather than silently dropping it.
     assert "calls_before = len(trace.calls)" in source
+
+
+CANONICAL_TRANSCRIPT = (
+    Path(__file__).parent / "fixtures" / "acp-correlation-transcripts.json"
+)
+CANONICAL_TRANSCRIPT_SHA256 = (
+    "cacde7827aadf186db2ce1af1ea6f3b6d109504fa94945633bd9c0d96106b882"
+)
+
+
+def canonical_cases() -> dict[str, list[dict]]:
+    raw = CANONICAL_TRANSCRIPT.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == CANONICAL_TRANSCRIPT_SHA256
+    document = json.loads(raw)
+    assert document["schema"] == "ai.primeintellect.prime-agent/v1"
+    return document["cases"]
+
+
+def test_canonical_p2_fixture_is_exact_bytes_and_all_cases() -> None:
+    cases = canonical_cases()
+    assert set(cases) == {
+        "success",
+        "error_terminal",
+        "error_incomplete",
+        "cancelled",
+        "late_child",
+        "global_sequence_turn_two",
+    }
 
 
 def load_runner_without_acp_dependency(monkeypatch: pytest.MonkeyPatch):
@@ -796,18 +824,19 @@ async def test_one_shot_run_records_only_validated_meta_json_into_trace(monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("transcript", "error"),
+    ("case", "error"),
     [
-        (success, None),
-        (error_terminal, "correlated error"),
-        (error_incomplete, "incomplete correlated error"),
-        (cancelled, "lacks a correlated"),
-        (late_child, "lacks a correlated"),
+        ("success", None),
+        ("error_terminal", "correlated error"),
+        ("error_incomplete", "incomplete correlated error"),
+        ("cancelled", "lacks a correlated"),
+        ("late_child", "lacks a correlated"),
     ],
 )
 async def test_exact_p2_shaped_transcripts_have_expected_v3_outcomes(
-    monkeypatch, transcript, error
+    monkeypatch, case, error
 ):
+    transcript = lambda: canonical_cases()[case]
     runner = load_runner_without_acp_dependency(monkeypatch)
     client = runner.VerifiersACPClient()
     client.begin_prompt_metadata(expected=True)
@@ -956,3 +985,35 @@ async def test_one_shot_error_terminal_meta_is_recorded_for_trace(monkeypatch):
     )
     assert result.exit_code == 1
     assert trace.info["acp_meta"][NAMESPACE] == error_terminal()
+
+
+@pytest.mark.asyncio
+async def test_one_shot_success_records_canonical_meta_after_real_model_turn():
+    """A successful ACP.run needs a newly committed node and keeps exact meta."""
+    baseline_call = types.SimpleNamespace(node=None)
+    committed_call = types.SimpleNamespace(node=object())
+
+    class Runtime:
+        async def prepare_uv_script(self, *args, **kwargs):
+            return ["runner"]
+
+        async def run(self, command, env):
+            return types.SimpleNamespace(exit_code=0, stderr="")
+
+        async def write(self, path, data):
+            pass
+
+        async def run_program(self, command, env):
+            trace.calls.append(committed_call)
+            return types.SimpleNamespace(exit_code=0, stdout="reply", stderr="")
+
+        async def read(self, path):
+            return json.dumps({NAMESPACE: canonical_cases()["success"]}).encode()
+
+    trace = types.SimpleNamespace(calls=[baseline_call], stop_condition=None, info={})
+    result = await ACP(metadata_expected=True).run(
+        Runtime(), {}, ["agent"], "prompt", trace=trace
+    )
+    assert result.exit_code == 0
+    assert trace.calls == [baseline_call, committed_call]
+    assert trace.info["acp_meta"][NAMESPACE] == canonical_cases()["success"]
