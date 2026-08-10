@@ -317,6 +317,76 @@ async def test_delayed_event_after_closed_turn_fails_next_turn(monkeypatch):
         await runner.prompt(client, Connection(), None, "session", config, is_new=False)
 
 
+class _SessionLifetimeProducer:
+    """ACP producer fake whose notifications outlive a prompt response.
+
+    The transport and producer share one client for the entire session, as a
+    real ACP agent does. This deliberately differs from a unit-level `emit`:
+    the producer notification is scheduled by the connection after it resolves
+    the first prompt response.
+    """
+
+    def __init__(self, runner, client):
+        self.runner = runner
+        self.client = client
+        self.response_returned = asyncio.Event()
+        self.late_update = None
+        self.calls = 0
+
+    async def prompt(self, **kwargs):
+        self.calls += 1
+        self.client.visible_reply = f"reply {self.calls}"
+        if self.calls == 1:
+            self.late_update = asyncio.create_task(self._emit_after_response())
+            self.response_returned.set()
+        return types.SimpleNamespace(stop_reason="end_turn")
+
+    async def _emit_after_response(self):
+        await self.response_returned.wait()
+        await asyncio.sleep(self.runner.LATE_UPDATE_GRACE_SECONDS * 2)
+        update = self.runner.SessionInfoUpdate()
+        update.field_meta = {"ns": {"producer": "after-response"}}
+        await self.client.session_update("session", update)
+
+
+@pytest.mark.asyncio
+async def test_session_lifetime_producer_quarantines_post_response_metadata(
+    monkeypatch,
+):
+    """Without #806 correlation/silence, the next prompt fails rather than lies.
+
+    ACP 0.11 cannot attribute the producer event to either turn after prompt
+    one closes. Preserve it as infrastructure evidence and fail prompt two
+    promptly; do not weaken quarantine while #806 remains unresolved.
+    """
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    monkeypatch.setattr(runner, "LATE_METADATA_SETTLE_SECONDS", 0.001)
+    monkeypatch.setattr(runner, "LATE_UPDATE_GRACE_SECONDS", 0.01)
+    client = runner.VerifiersACPClient()
+    producer = _SessionLifetimeProducer(runner, client)
+    config = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "system_prompt": "",
+        "metadata_expected": True,
+    }
+
+    assert (
+        await runner.prompt(client, producer, None, "session", config, is_new=True)
+        == "reply 1"
+    )
+    assert producer.late_update is not None
+    await producer.late_update
+    assert client.turn_acp_meta == {}
+    assert client.unattributed_acp_meta == {"ns": [{"producer": "after-response"}]}
+
+    with pytest.raises(RuntimeError, match="refusing to attach"):
+        await asyncio.wait_for(
+            runner.prompt(client, producer, None, "session", config, is_new=False),
+            timeout=0.1,
+        )
+    assert producer.calls == 1
+
+
 @pytest.mark.asyncio
 async def test_metadata_lifecycle_preserves_order_and_quarantines_late_events(
     monkeypatch,

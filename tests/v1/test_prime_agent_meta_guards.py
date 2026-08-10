@@ -16,6 +16,7 @@ from prime_agent_meta_guards import (
     gate_failure_reported,
     no_outstanding_subagents,
     observed_child_statuses,
+    quiescent_at_end,
     refinement_applied,
     spawned_and_finished,
 )
@@ -79,6 +80,38 @@ def test_quiescence_guards_track_the_final_snapshot():
     assert not no_outstanding_subagents(trace_with(idle, busy))
     assert quiescence_blocked_scoring(trace_with(busy, idle))
     assert not quiescence_blocked_scoring(trace_with(idle))
+
+
+@pytest.mark.parametrize(
+    ("final", "expected"),
+    [
+        (
+            {"outstandingSubagents": 0, "remainingAutonomousContinuations": 0},
+            True,
+        ),
+        (
+            {"outstandingSubagents": 1, "remainingAutonomousContinuations": 0},
+            False,
+        ),
+        (
+            {"outstandingSubagents": 0, "remainingAutonomousContinuations": 1},
+            False,
+        ),
+        ({"outstandingSubagents": 0}, False),
+        (
+            {"outstandingSubagents": 0, "remainingAutonomousContinuations": None},
+            False,
+        ),
+        ({"remainingAutonomousContinuations": 0}, False),
+        (
+            {"outstandingSubagents": None, "remainingAutonomousContinuations": 0},
+            False,
+        ),
+    ],
+)
+def test_quiescent_at_end_requires_explicit_zero_counters(final, expected):
+    """Only an explicit all-zero final snapshot is safe to score as quiescent."""
+    assert quiescent_at_end(trace_with({"quiescence": final})) is expected
 
 
 def test_autonomous_guards_reject_inert_configuration():
