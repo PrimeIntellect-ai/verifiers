@@ -2,8 +2,8 @@
 
 One `RolloutSession` per rollout, registered on an interception server under the rollout's
 secret. The rollout constructs it (model ctx, trace, task `@stop`s, limits) and the server
-drives it: routes each intercepted model call to it, runs `refused()` before each turn,
-and stashes the real failure on `error`. `RolloutLimits` is the framework's per-rollout
+drives it: assigns its model client at register, routes each intercepted model call to it,
+runs `refused()` before each turn, and stashes the real failure on `error`. `RolloutLimits` is the framework's per-rollout
 budget (turns / tokens), checked between turns.
 """
 
@@ -11,9 +11,12 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import TYPE_CHECKING
 
-from verifiers.v1.clients import ModelContext
+from pydantic import TypeAdapter
+
+from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.trace import Trace
 
 if TYPE_CHECKING:
@@ -64,6 +67,10 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    client: Client | None = None
+    """The model client serving this rollout's turns. The interception server assigns it at
+    `register` (one server-owned client per distinct endpoint config), so every rollout it
+    multiplexes shares one keepalive connection pool instead of opening its own."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
@@ -95,6 +102,11 @@ class RolloutSession:
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
 
+    @cached_property
+    def state_adapter(self) -> TypeAdapter:
+        """The rollout's state codec, built only when a state channel is used."""
+        return TypeAdapter(type(self.trace.state))
+
     def adopt(self, task: "asyncio.Task | None") -> None:
         """Track a handler task serving this session, for cancellation at release.
         Callers adopt in the same synchronous stretch that fetched the session, so
@@ -117,7 +129,7 @@ class RolloutSession:
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
-        call halts the harness (its model call errors out); Harness.run treats it as clean. A task
+        call halts the harness (its model call errors out); HarnessSession.turn treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
         if (limit := self.limits.reached(self.trace)) is not None:

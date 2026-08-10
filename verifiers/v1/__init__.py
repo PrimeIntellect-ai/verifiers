@@ -22,7 +22,7 @@ from verifiers.v1.configs.legacy import LegacyEnvConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.serve import (
     ElasticPoolConfig,
-    ServingConfig,
+    ServeConfig,
     StaticPoolConfig,
     pool_serve_kwargs,
 )
@@ -43,7 +43,7 @@ from verifiers.v1.errors import (
     TunnelError,
 )
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.harness import Harness
+from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     Criterion,
@@ -64,6 +64,7 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     RuntimeInfo,
+    RuntimeProcess,
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
@@ -241,10 +242,12 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TasksetConfig",
     "BaseConfig",
     "Harness",
+    "HarnessSession",
     "HarnessConfig",
     "ACP",
     "ModelContext",
     "Runtime",
+    "RuntimeProcess",
     "RuntimeConfig",
     "RuntimeInfo",
     "ProgramResult",
@@ -254,7 +257,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Env",
     "SingleAgentEnv",
     "EnvConfig",
-    "ServingConfig",
+    "ServeConfig",
     "LegacyEnvConfig",
     "resolve_env_field",
     "narrowed_env_annotation",

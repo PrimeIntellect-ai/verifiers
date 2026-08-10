@@ -4,10 +4,13 @@ import json
 import logging
 import shlex
 
+from pydantic import Field
+
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -18,13 +21,12 @@ PROVIDER = "intercept"
 KEY_VAR = "PI_INTERCEPT_KEY"
 HOME_VAR = "VF_PI_ORIGINAL_HOME"
 
-PI_DIR = "/tmp/vf-pi"
+PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 SKILLS_DIR = ".agents/skills"
-MCP_VERSION = "2.11.0"
-ACP_VERSION = "0.0.31"
-NODE_VERSION = "22.19.0"
+MCP_VERSION = "2.20.1"
+ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [
@@ -34,39 +36,14 @@ ACP_COMMAND = [
         f'export {HOME_VAR}="$HOME"; '
         'PI_CODING_AGENT_DIR="$PWD/$PI_CODING_AGENT_DIR"; '
         'export PI_CODING_AGENT_DIR HOME="$PI_CODING_AGENT_DIR"; '
-        f'export PATH="{PI_DIR}/node/bin:$PATH"; exec {ACP_BIN}'
+        f'export PATH="{NODE_BIN_DIR}:$PATH"; exec {ACP_BIN}'
     ),
 ]
 
 INSTALL = r"""
 set -e
-packages=/tmp/vf-pi/mcp
-node=/tmp/vf-pi/node
-node_ok() { node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; }
-
-if [ -f /etc/alpine-release ]; then
-    apk add --no-cache curl ca-certificates nodejs-current npm >/dev/null
-    if ! node_ok; then
-        sed -E -i 's/v[0-9]+\.[0-9]+/v3.22/g' /etc/apk/repositories
-        apk upgrade --available --no-cache >/dev/null
-        apk add --no-cache nodejs-current npm >/dev/null
-    fi
-    node_bin="$(dirname "$(command -v node)")"
-else
-    command -v curl >/dev/null 2>&1 \
-        || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
-    case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
-    if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_PI_NODE_VERSION" ]; then
-        case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
-        rm -rf "$node"
-        mkdir -p "$node"
-        curl -fsSL "https://nodejs.org/dist/v$VF_PI_NODE_VERSION/node-v$VF_PI_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
-            | tar -xz -C "$node" --strip-components=1
-    fi
-    node_bin="$node/bin"
-fi
-export PATH="$node_bin:$PATH"
-node_ok || { echo "pi-acp requires Node.js 22.19 or newer" >&2; exit 1; }
+packages=/var/tmp/vf-pi/mcp
+export PATH="/var/tmp/vf-node/bin:$PATH"
 
 versions="$VF_PI_VERSION:$VF_PI_MCP_VERSION:$VF_PI_ACP_VERSION"
 if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
@@ -111,7 +88,7 @@ PI_ACP = ACP()
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: str = "0.80.10"
+    version: str = Field(default="0.84.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Pi release to install, pinned for reproducibility."""
 
 
@@ -125,6 +102,7 @@ class PiHarness(Harness[PiHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
+        await ensure_node(runtime)
         logger.info(
             "pi: ensuring Pi %s and pi-acp %s are installed",
             self.config.version,
@@ -147,7 +125,6 @@ class PiHarness(Harness[PiHarnessConfig]):
                 "VF_PI_VERSION": self.config.version,
                 "VF_PI_MCP_VERSION": MCP_VERSION,
                 "VF_PI_ACP_VERSION": ACP_VERSION,
-                "VF_PI_NODE_VERSION": NODE_VERSION,
             },
         )
         if install.exit_code != 0:
@@ -248,4 +225,6 @@ class PiHarness(Harness[PiHarnessConfig]):
             ACP_COMMAND,
             prompt,
             session_path=f"{agent_dir}/acp-session",
+            # Pi can end after its final tool completes without a text message.
+            allow_empty_tool_reply=True,
         )

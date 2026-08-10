@@ -9,7 +9,9 @@ SSE requests are supported.
 One server multiplexes many rollouts: each rollout registers separate model and state
 capabilities, and the server routes each to the right session. So N rollouts need one
 server (and, behind a remote runtime, one tunnel) per pool member rather than one each —
-see `interception.pool`.
+see `interception.pool`. The server also owns the model clients (one per distinct endpoint
+config, assigned to each session at register and closed with the server), so its rollouts
+share one bounded keepalive connection pool upstream instead of churning per-rollout TCP.
 
 The server is a pure model boundary: one request, one turn — refusal checks (limits,
 `@stop`s), the model call, the graph commit, retry atomicity. A run's user exchange
@@ -30,10 +32,12 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from aiohttp import web
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
+from verifiers.v1.clients import Client, resolve_client
+from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1.errors import (
@@ -130,6 +134,7 @@ class InterceptionServer(Interception):
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
+        self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
         self.state_routes: dict[str, RolloutSession] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
@@ -147,8 +152,22 @@ class InterceptionServer(Interception):
         """Rollouts currently registered — what the pools balance on."""
         return len(self.sessions)
 
+    def _client(self, config: BaseClientConfig) -> Client:
+        """The server-owned client for `config` — one per distinct endpoint config, shared
+        by every session registered under it, so the rollouts this server multiplexes reuse
+        one bounded keepalive pool instead of each opening (and tearing down) their own
+        connections. Closed with the server."""
+        key = config.model_dump_json()
+        client = self.clients.get(key)
+        if client is None:
+            client = self.clients[key] = resolve_client(config)
+            self.stack.push_async_callback(client.close)
+        return client
+
     def register(self, session: RolloutSession) -> tuple[str, str]:
-        """Register separate capabilities for model inference and private task state."""
+        """Register separate capabilities for model inference and private task state, and
+        assign the session its server-owned model client."""
+        session.client = self._client(session.ctx.client)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
@@ -397,7 +416,7 @@ class InterceptionServer(Interception):
                 )
             if refused is not None:
                 # Refuse the model call to halt the harness (it sees an HTTP error;
-                # `Harness.run` treats a stopped rollout as the clean exit it is).
+                # `HarnessSession.turn` treats a stopped rollout as the clean exit it is).
                 return web.json_response(
                     dialect.error_body(f"rollout stopped: {refused}"),
                     status=400,
@@ -416,7 +435,7 @@ class InterceptionServer(Interception):
                     upstream_request = dialect.apply_overrides(
                         body, session.ctx.model, session.ctx.sampling
                     )
-                    call_response = await session.ctx.client.get_response(
+                    call_response = await session.client.get_response(
                         dialect,
                         body,
                         session.ctx.model,
@@ -543,7 +562,7 @@ class InterceptionServer(Interception):
                 upstream_request = dialect.apply_overrides(
                     body, session.ctx.model, session.ctx.sampling
                 )
-                reply = await session.ctx.client.relay(
+                reply = await session.client.relay(
                     dialect,
                     body,
                     session.ctx.model,
@@ -692,7 +711,7 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
-            result = await session.ctx.client.relay_aux(
+            result = await session.client.relay_aux(
                 dialect, route, await request.json(), headers=request.headers
             )
         except RolloutError as e:
@@ -737,7 +756,7 @@ class InterceptionServer(Interception):
         state = session.trace.state
         return web.Response(
             # TypeAdapter emits UTF-8 bytes directly, avoiding a JSON str copy in aiohttp.
-            body=TypeAdapter(type(state)).dump_json(state),
+            body=session.state_adapter.dump_json(state),
             content_type="application/json",
             charset="utf-8",
         )
@@ -768,7 +787,7 @@ class InterceptionServer(Interception):
         state_cls = type(session.trace.state)
         raw = await request.read()
         try:
-            new_state = state_cls.model_validate_json(raw)
+            new_state = session.state_adapter.validate_json(raw)
         except ValidationError as e:
             # Reject malformed, over-nested, or mismatched state before it enters the shared channel.
             logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)

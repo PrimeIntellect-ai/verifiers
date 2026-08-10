@@ -117,10 +117,8 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        reasoning = ctx.sampling.reasoning_effort not in (
-            None,
-            "none",
-        ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
+        # Opt-in via sampling: OpenClaw redacts persisted encrypted reasoning, so resumed sessions 400 replaying it.
+        reasoning = ctx.sampling.reasoning_effort not in (None, "none")
         directory = OPENCLAW_DIR.format(version=self.config.version)
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
@@ -166,7 +164,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                         "url": url,
                         "transport": "streamable-http",
                         "connectionTimeoutMs": 60_000,
-                        "requestTimeoutMs": 600_000,
+                        "requestTimeoutMs": int(self.config.tool_timeout * 1000),
                     }
                     for name, url in mcp_urls.items()
                 }

@@ -105,36 +105,51 @@ Prime VM; Prime accepts host-level entries.
 
 `artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Collect hooks run in the agent's box from the task's `finalize`, which is Harbor's own ordering — after the agent phase, before collection — and declared paths plus the `/logs/artifacts/` convention dir are then carried into the grading box and restored at their original paths ("no translation", as in Harbor).
 
+Two deliberate differences from `harbor run`:
+
+- **A failing collect hook fails the rollout.** Harbor logs it and carries on, because there the output is observability; here it is a grading input, and a silently absent file makes the verifier score a stale state.
+- **`destination` has no effect.** It positions a file in Harbor's host trial directory; verifiers has no trial directory (the trace is the record), and Harbor never lets `destination` affect verifier-side placement.
+
+## Separate verifier environments
+
+`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). For an ordinary task, the harbor env — this taskset's default — grades in `finalize`: the solver plays the task as usual, its declared artifacts and the `/logs/artifacts/` convention directory are collected while its box is alive, the box is torn down, and the env then provisions a fresh box, restores those artifacts, stages `tests/` fresh, and grades there, recording the verifier's rewards and metrics onto the solver's trace. A multi-step task grades a separate-verifier step immediately so `min_reward` can decide whether the next step runs. The grading box derives from the solver's runtime policy unless `--env.verifier-runtime.*` names its own (a network-restricted verifier on Prime needs `vm true`); infrastructure failures around it retry per `--env.verifier-retries` before the episode fails — a grading box that can't be reached never reads as reward 0. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
+
+Which image the verifier boots from follows Harbor: a declared `[verifier.environment]` if there is one, otherwise a fresh copy of `[environment]`, which is the task's own image.
+
+A declared `[verifier.environment]` needs a pullable `docker_image`. Without one Harbor would build the verifier image from `tests/Dockerfile`, and verifiers never builds images — so build and push it yourself and name the resulting reference, exactly as for `[environment]`. `ignore_dockerfile` grades in the agent's image instead, which means the verifier runs somewhere the task never declared; it warns when it does.
+
+Under any other env, a separate-verifier task refuses to grade in the agent's box rather than silently losing its isolation. `ignore_separate_verifier = true` forces every task back into shared grading, trading the isolation for one sandbox per task.
+
 ## Multi-step tasks
 
-`HarborTaskset` also loads Harbor's `[[steps]]` layout. It carries a default
-`HarborEnv` that dispatches each row by shape: ordinary tasks keep the normal
-single-agent path, while multi-step tasks run their ordered steps in one shared
-runtime. This default is inherited by custom `HarborTaskset` subclasses; an
-explicitly exported or CLI-selected environment still takes precedence.
+`HarborTaskset` loads Harbor's `[[steps]]` layout and uses `HarborEnv` only for
+Harbor tasksets. Ordinary Harbor rows keep their existing single-agent or
+separate-verifier path; a multi-step row runs its ordered steps in one shared
+agent runtime. Custom `HarborTaskset` subclasses inherit the same default env,
+while an explicitly selected env still takes precedence.
 
-Each step gets its own instruction, shared-plus-step test overlay, `workdir/`
-overlay and `setup.sh`, healthcheck, agent and verifier timeouts, verifier env,
-collect hooks, artifacts, and verifier result. `min_reward` stops the remaining
-steps, and `multi_step_reward_strategy = "mean" | "final"` produces the trial
-reward. Fresh steps are separate traces in one episode; their local verifier
-values remain as `harbor_step/<step>/<key>` metrics and every trace receives the
-aggregated trial reward.
+Each step gets its instruction, `workdir/` overlay and `setup.sh`, healthcheck,
+agent and verifier timeouts, shared-plus-step test overlay, verifier environment,
+collect hooks, artifacts, and shared or separate verifier box. `min_reward` stops
+the remaining steps. `multi_step_reward_strategy = "mean" | "final"` produces the
+trial reward, while `harbor_step/<step>/<key>` metrics retain each local score.
 
-Harbor starts a fresh agent session per step by default. To continue one harness
-session instead, set:
+Harbor starts a fresh agent session per step by default, producing one trace per
+executed step. To continue a single harness interaction instead, set:
 
 ```toml
 [env]
 resume_trajectory = true
 ```
 
-or pass `--env.resume-trajectory`. Resume support is validated by the selected
-harness before the first turn that needs it.
+or pass `--env.resume-trajectory`. The selected harness must support resumable
+interactions.
 
 ## Shortcomings
 
 verifiers does not have parity with Harbor yet, so some features are missing and currently being worked on. The most notable missing features right now are:
 
-- Agent/verifier phase-policy overrides, including per-step policies ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy))
-- Per-step agent/verifier users and separate verifier containers
+- Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
+- Per-step agent network-policy overrides and per-command agent/verifier users
+- Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
+- Sidecar services, and the sidecar artifacts and collect hooks that go with them ([Harbor Docs](https://www.harborframework.com/docs/tasks#sidecar-artifacts-and-collect-hooks))

@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib.metadata
-import io
 import logging
 import secrets
 import shlex
+import subprocess
 import sys
-import tarfile
+import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from functools import cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -39,8 +38,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Sandboxed servers install the working tree, so only wheel inputs need to cross the boundary.
-VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
+_SDIST_BUILD_TIMEOUT_SECONDS = 300
+
+
+@dataclass
+class _SdistBuildState:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    build: asyncio.Task[tuple[str, bytes]] | None = None
+    users: int = 0
+
+
+# Coordination and caching are process-local. Spawned env-server workers each
+# build once; within an event loop, concurrent rollouts share the completed artifact.
+_SDIST_BUILD_STATES: dict[tuple[Path, asyncio.AbstractEventLoop], _SdistBuildState] = {}
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
@@ -67,30 +77,88 @@ def _source_dir(cls: type) -> str | None:
     return None
 
 
-# These can be gigabytes and are not package source, so uploading them can stall startup.
-_TAR_EXCLUDE = {
-    "__pycache__",
-    ".venv",
-    ".git",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    "node_modules",
-}
-
-
 @cache
-def _tar_source(src: Path, members: tuple[str, ...] = ()) -> bytes:
-    def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
-        return None if _TAR_EXCLUDE & set(info.name.split("/")) else info
+def _build_sdist(src: Path) -> tuple[str, bytes]:
+    """Build a project's source distribution through its declared PEP 517 backend."""
+    with tempfile.TemporaryDirectory(prefix="vf-sdist-") as directory:
+        out = Path(directory)
+        command = [
+            "uv",
+            "build",
+            "--sdist",
+            "--no-create-gitignore",
+            "--color",
+            "never",
+            "--out-dir",
+            str(out),
+            ".",
+        ]
+        try:
+            # Run from the source root so uv discovers this project's workspace,
+            # uv.toml, indexes, constraints, and Python configuration rather than
+            # inheriting configuration from the launcher's working directory.
+            result = subprocess.run(
+                command,
+                cwd=src,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_SDIST_BUILD_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError as e:
+            raise ToolsetError(
+                f"cannot build source distribution for {src}: uv is not installed"
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise ToolsetError(
+                "source distribution build timed out after "
+                f"{_SDIST_BUILD_TIMEOUT_SECONDS}s for {src}"
+            ) from e
+        if result.returncode != 0:
+            detail = "\n".join(
+                part.strip() for part in (result.stdout, result.stderr) if part.strip()
+            )
+            raise ToolsetError(
+                f"source distribution build failed for {src}: {detail[-2000:]}"
+            )
+        artifacts = [path for path in out.iterdir() if path.is_file()]
+        if len(artifacts) != 1:
+            names = ", ".join(sorted(path.name for path in artifacts)) or "none"
+            raise ToolsetError(
+                f"build backend for {src} produced {len(artifacts)} source distributions: {names}"
+            )
+        artifact = artifacts[0]
+        return artifact.name, artifact.read_bytes()
 
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for member in members or ("",):
-            path = src / member if member else src
-            if path.exists():
-                tar.add(path, arcname=f"{src.name}/{member}".rstrip("/"), filter=keep)
-    return buf.getvalue()
+
+async def _cached_sdist(src: Path) -> tuple[str, bytes]:
+    """Build once per source without parking waiters in the thread pool."""
+    src = src.resolve()
+    key = (src, asyncio.get_running_loop())
+    state = _SDIST_BUILD_STATES.get(key)
+    if state is None:
+        state = _SdistBuildState()
+        _SDIST_BUILD_STATES[key] = state
+    state.users += 1
+    try:
+        async with state.lock:
+            # Coordinate before entering the default executor so concurrent
+            # same-source waiters do not occupy executor threads.
+            if state.build is None:
+                state.build = asyncio.create_task(asyncio.to_thread(_build_sdist, src))
+            build = state.build
+            try:
+                return await asyncio.shield(build)
+            except asyncio.CancelledError:
+                # Cancelling to_thread does not stop its worker. Keep the lock until
+                # that worker exits so a replacement caller cannot overlap the build.
+                with contextlib.suppress(Exception):
+                    await build
+                raise
+    finally:
+        state.users -= 1
+        if state.users == 0 and _SDIST_BUILD_STATES.get(key) is state:
+            del _SDIST_BUILD_STATES[key]
 
 
 def _verifiers_root() -> Path:
@@ -112,25 +180,37 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
             f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
             "a local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
-    root = "/tmp/vf-src"
+    # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
+    # the VM's root disk. Keep source, build scratch space, and uv's cache on the
+    # durable runtime filesystem so ordinary dependency installs cannot exhaust
+    # the tmpfs.
+    workdir = str(PurePosixPath(runtime.config.workdir))
+    root = str(PurePosixPath(workdir) / ".vf-src")
+    temp = str(PurePosixPath(workdir) / ".vf-tmp")
+    cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
     vf, env = _verifiers_root(), Path(source_dir)
-    await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS))
-    await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
-    venv = "/tmp/vf-venv"
-    # The upload carries no .git, so hatch-vcs falls back to version 0.0.0 — an env
-    # package's `verifiers>=...` floor would then resolve PyPI verifiers OVER the local
-    # build, silently running the server against a released (older) API. Pretend the
-    # local version so the floor is satisfied by the build we uploaded.
-    vf_version = importlib.metadata.version("verifiers")
+    vf_name, vf_data = await _cached_sdist(vf)
+    if env == vf:
+        env_name, env_data = vf_name, vf_data
+    else:
+        env_name, env_data = await _cached_sdist(env)
+    vf_remote = f"{root}/{vf_name}"
+    env_remote = f"{root}/{env_name}"
+    await runtime.write(vf_remote, vf_data)
+    if env_remote != vf_remote:
+        await runtime.write(env_remote, env_data)
+    venv = str(PurePosixPath(workdir) / ".vf-venv")
+    root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     extras = ",".join(type(server).EXTRAS)
+    vf_source = shlex.quote(vf_remote)
+    env_source = shlex.quote(env_remote + (f"[{extras}]" if extras else ""))
     setup = (
-        f"{_ENSURE_UV}; set -e; "
-        f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
-        f"uv venv {venv} && "
-        f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
-        f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
-        f"uv pip install --python {venv} "
-        f"{shlex.quote(f'{root}/{env.name}' + (f'[{extras}]' if extras else ''))}"
+        f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
+        f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
+        f"{_ENSURE_UV}; "
+        f"uv venv {venv_q} && "
+        f"uv pip install --python {venv_q} {vf_source} && "
+        f"uv pip install --python {venv_q} {env_source}"
     )
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:

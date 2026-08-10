@@ -35,7 +35,7 @@ dependencies = [
     "openai>=2.9.0",
     "openai-agents>=0.8.2",
     "prime-tunnel>=0.1.8",
-    "prime-sandboxes>=0.2.33",
+    "prime-sandboxes>=0.2.35",
     "pydantic>=2.12.3",
     "requests",
     "rich>=11.0.0",
@@ -51,7 +51,7 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers>=0.1.9.dev9",
+    "renderers>=0.1.9",
     "typing_extensions>=4.12.2",
 ]
 
@@ -72,7 +72,7 @@ dev = [
     "textarena==0.7.4",
 ]
 # V1 examples and support packages, resolved from their local sources below.
-# Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, serve) run straight
+# Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, validate) run straight
 # from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
@@ -107,11 +107,42 @@ notebook = [
 openenv = [
     "openenv>=0.4.1",
 ]
+nemo-gym = [
+    # NeMo Gym currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
+    "nemo-gym==0.4.0; python_version >= '3.12'",
+]
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
 default-groups = ["dev", "examples"]
+
+# NeMo Gym declares its full platform stack; this integration only starts resource servers.
+[[tool.uv.dependency-metadata]]
+name = "nemo-gym"
+version = "0.4.0"
+requires-python = ">=3.12"
+requires-dist = [
+    "aiohttp>=3.14.1",
+    "fastapi",
+    "gprof2dot",
+    "hydra-core",
+    "itsdangerous",
+    "mcp>=1.27,<2",
+    "omegaconf",
+    "openai>=2.9",
+    "orjson",
+    "pandas",
+    "pydantic",
+    "pydot",
+    "ray>=2.55.1",
+    "requests",
+    "rich",
+    "typing-extensions",
+    "uvicorn",
+    "wandb",
+    "yappi",
+]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -152,7 +183,6 @@ eval = "verifiers.v1.cli.eval.main:main"
 validate = "verifiers.v1.cli.validate:main"
 debug = "verifiers.v1.cli.debug:main"
 replay = "verifiers.v1.cli.replay:main"
-serve = "verifiers.v1.cli.serve:main"
 init = "verifiers.v1.cli.init:main"
 gepa = "verifiers.v1.cli.gepa:main"
 vf-gepa = "verifiers.scripts.gepa:main"

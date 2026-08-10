@@ -12,7 +12,12 @@ from verifiers.v1.errors import HarnessError, SandboxError, boundary
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Messages
-from verifiers.v1.utils.decorators import discover_decorated, invoke_all
+from verifiers.v1.utils.decorators import (
+    discover_decorated,
+    invoke_all,
+    seed,
+    unseed,
+)
 
 if TYPE_CHECKING:
     # Annotation-only: `Trace` appears in signatures only, so this module stays
@@ -122,10 +127,9 @@ class Harness(ABC, Generic[ConfigT]):
         data: TaskData,
         messages: Messages | None = None,
     ) -> None:
-        """Run ONE segment of the exchange: the program from launch (or, with
-        `messages`, the user's next turn(s) via `resume`) until it yields — a segment
-        ends when the program exits. The rollout loop owns the exchange across
-        segments (and stamps its end); a harness only ever sees one segment."""
+        """Run ONE segment of the exchange without retaining a process: the program
+        from launch (or, with `messages`, the user's next turn(s) via `resume`) until
+        it yields. The rollout loop owns the exchange across segments."""
         async with boundary(HarnessError, f"harness {self.config.id!r}"):
             if messages is None:
                 result = await self.launch(
@@ -135,19 +139,45 @@ class Harness(ABC, Generic[ConfigT]):
                 result = await self.resume(
                     ctx, trace, runtime, endpoint, secret, mcp_urls, data, messages
                 )
+        await self._check_result(trace, runtime, result)
+
+    async def _check_result(
+        self, trace: Trace, runtime: Runtime, result: ProgramResult
+    ) -> None:
         if trace.stop_condition is not None:
-            return  # a @stop refused a turn mid-rollout; the harness's exit is expected
-        if result.exit_code != 0:
-            # The real cause is at the END of a traceback, so keep the tail.
-            detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
-            if not await runtime.alive():
-                raise SandboxError(
-                    f"runtime died under harness {self.config.id!r} "
-                    f"(exit {result.exit_code}): {detail}"
-                )
-            raise HarnessError(
-                f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
+            return  # a @stop refused a turn mid-rollout; the exit is expected
+        if result.exit_code == 0:
+            return
+        # The real cause is at the END of a traceback, so keep the tail.
+        detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
+        if not await runtime.alive():
+            raise SandboxError(
+                f"runtime died under harness {self.config.id!r} "
+                f"(exit {result.exit_code}): {detail}"
             )
+        raise HarnessError(
+            f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
+        )
+
+    async def session(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> HarnessSession:
+        """Create the rollout-scoped handle that drives this harness.
+
+        The default adapts the existing launch/resume contract. Stateful harness
+        transports override this factory so one handle can own their live process,
+        connection, or native session for the rollout's full interaction.
+        """
+        return HarnessSession(
+            self, ctx, trace, runtime, endpoint, secret, mcp_urls, data
+        )
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Run this harness's `@metric` methods over the finished trace, recording
@@ -155,10 +185,12 @@ class Harness(ABC, Generic[ConfigT]):
         `runtime`) and can read what the harness left behind in the runtime."""
         available = {"task": trace.task.data, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
+        seed(trace.metrics, (fn.__name__ for fn in fns))
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
             results = await invoke_all(fns, available)
         for fn, result in zip(fns, results):
             if isinstance(result, Mapping):
+                unseed(trace.metrics, fn.__name__)
                 trace.record_metrics(result)
             else:
                 trace.record_metric(fn.__name__, result)
@@ -233,3 +265,69 @@ class Harness(ABC, Generic[ConfigT]):
         loop in-process instead of launching a program, as long as every model call
         goes through `endpoint` + `secret` — it then returns a synthetic success
         `ProgramResult`, and the trace is the record of what ran."""
+
+
+class HarnessSession:
+    """One rollout's stateful handle onto one harness execution.
+
+    The base adapter preserves the segment-oriented harness interface by invoking
+    `launch()` once and `resume()` for later caller turns. Specialized handles can
+    override `_run()` and `close()` to retain transport state across those turns.
+    """
+
+    def __init__(
+        self,
+        harness: Harness,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> None:
+        self.harness = harness
+        self.ctx = ctx
+        self.trace = trace
+        self.runtime = runtime
+        self.endpoint = endpoint
+        self.secret = secret
+        self.mcp_urls = mcp_urls
+        self.data = data
+        self._closed = False
+
+    async def turn(self, messages: Messages | None = None) -> None:
+        """Run one harness segment while retaining session state for the next."""
+        if self._closed:
+            raise HarnessError(
+                f"harness {self.harness.config.id!r} session is already closed"
+            )
+        async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
+            result = await self._run(messages)
+        await self.harness._check_result(self.trace, self.runtime, result)
+
+    async def _run(self, messages: Messages | None) -> ProgramResult:
+        if messages is None:
+            return await self.harness.launch(
+                self.ctx,
+                self.trace,
+                self.runtime,
+                self.endpoint,
+                self.secret,
+                self.mcp_urls,
+                self.data,
+            )
+        return await self.harness.resume(
+            self.ctx,
+            self.trace,
+            self.runtime,
+            self.endpoint,
+            self.secret,
+            self.mcp_urls,
+            self.data,
+            messages,
+        )
+
+    async def close(self) -> None:
+        """Close session-owned resources. Idempotent."""
+        self._closed = True

@@ -192,6 +192,12 @@ command = "test -f ready"
 interval_sec = 0.1
 timeout_sec = 1.0
 retries = 2
+
+[steps.verifier]
+environment_mode = "separate"
+
+[steps.verifier.environment]
+docker_image = "alpine:3.20"
 """
     )
 
@@ -211,6 +217,7 @@ retries = 2
     assert task.data.steps[0].timeout.scoring == 8
     assert task.data.steps[0].verifier_env == {"STEP": "one"}
     assert task.data.steps[1].healthcheck.command == "test -f ready"
+    assert task.data.steps[1].verifier.image == "alpine:3.20"
 
 
 @pytest.mark.asyncio
@@ -225,11 +232,6 @@ async def test_harbor_env_routes_and_aggregates_multi_step_tasks() -> None:
 
     class FakeRuntime:
         network_restricted = False
-
-        def reuse(self):
-            from contextlib import nullcontext
-
-            return nullcontext(self)
 
     class FakeAgent:
         def __init__(self, rewards):
@@ -303,23 +305,3 @@ async def test_harbor_env_leaves_single_step_tasks_on_the_plain_path() -> None:
 
     await env.run(task, SimpleNamespace(agent=agent))
     assert agent.calls == [(task, None)]
-
-
-@pytest.mark.asyncio
-async def test_restricted_runtime_reuse_requires_owner_opt_in() -> None:
-    from verifiers.v1.errors import SandboxError
-    from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
-
-    runtime = DockerRuntime(DockerConfig(allow=[]))
-    await runtime.prepare_setup()
-    with pytest.raises(SandboxError, match="single-rollout"):
-        await runtime.prepare_setup()
-    with runtime.reuse():
-        await runtime.prepare_setup()
-    with pytest.raises(SandboxError, match="single-rollout"):
-        await runtime.prepare_setup()
-
-    runtime._proxy = SimpleNamespace(policy=None)
-    runtime._cut = True
-    await runtime.prepare_execution(["http://framework.invalid:8000/v1"])
-    assert runtime._proxy.policy is not None

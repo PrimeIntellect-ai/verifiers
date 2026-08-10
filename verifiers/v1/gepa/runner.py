@@ -12,7 +12,7 @@ from gepa.api import optimize
 from gepa.core.result import GEPAResult
 
 from verifiers.v1.cli.output import append_episode, output_path, save_config
-from verifiers.v1.clients import ModelContext, resolve_client
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import Env
 from verifiers.v1.episode import Episode
 from verifiers.v1.gepa.adapter import GEPAAdapter
@@ -72,12 +72,11 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
         if run_dir is not None:
             await append_episode(run_dir, episode, write_lock)
 
-    # The client opens an httpx pool at construction, so build it inside the try that closes it —
-    # a failure while building ctx/reflection_lm must not leak the pool.
-    client = None
     try:
-        client = resolve_client(config.client)
-        ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
+        # The endpoint stays config: the interception server builds the live client.
+        ctx = ModelContext(
+            client=config.client, model=config.model, sampling=config.sampling
+        )
         reflection_lm = build_reflection_lm(config)
         serving = env.serving()
         loop.run_until_complete(serving.__aenter__())
@@ -125,6 +124,4 @@ def run_gepa(env: Env, config: GEPAConfig) -> GEPAResult:
         finally:
             loop.run_until_complete(serving.__aexit__(None, None, None))
     finally:
-        if client is not None:
-            loop.run_until_complete(client.close())
         loop.close()

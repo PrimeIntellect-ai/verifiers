@@ -18,11 +18,11 @@ A harness is the program the model is run in, e.g. Claude Code, Codex or mini-sw
 
 ## Agent
 
-An `Agent` is a reusable (harness × model × runtime policy) value with one executable arrow — `agent.run(task) -> Trace` — the building block environments hand to `run()`, and a scripting surface of its own (see [Agent](agent.md)).
+An Agent is the combination of harness × model × runtime policy which produces a `Trace`.
 
 ## Environment
 
-The control flow between agents: how many run on one task, in what order, judged how across the finished set. The default is the single-agent case; `--env.id` pairs a reusable interaction (best-of-n, a judge) with any taskset. One episode yields flat, self-contained traces — each stamped with its episode and agent — persisted whole (one episode per `traces.jsonl` line).
+An environment has one or multiple agents and defines the control flow among them.
 
 ## Toolset
 

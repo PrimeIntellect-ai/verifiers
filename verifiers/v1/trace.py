@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import traceback
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
@@ -171,6 +171,20 @@ class ModelCall(BaseModel):
     """The failure that ended this call, coupled to the exchange that caused it."""
 
 
+def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
+    """Per-call lower bound on newly fed-in tokens: each call's prompt beyond the
+    previous call's final sequence, clamped at zero. Exact while the history is
+    append-only; tokens the engine drops between calls (stripped reasoning, truncated
+    history) register as an undercount of that call's new input rather than going
+    negative."""
+    prev_total = 0
+    for call in calls:
+        if call.usage is None:
+            continue
+        yield call, max(0, call.usage.input_tokens - prev_total)
+        prev_total = call.usage.total_tokens
+
+
 class Branch(BaseModel):
     """A root-to-leaf graph path; each branch becomes one training sample."""
 
@@ -200,27 +214,44 @@ class Branch(BaseModel):
             mask.extend(node.mask)
         return mask
 
-    @property
-    def logprobs(self) -> list[float]:
-        """Per-token sampling logprobs aligned to `token_ids` — the node logprobs spread onto
-        their sampled positions, 0.0 on every non-sampled token."""
+    def spread(
+        self, values: Callable[[MessageNode], list[float] | None]
+    ) -> list[float]:
+        """A per-sampled-token node field widened to `token_ids`: each node's values land on its
+        sampled positions, 0.0 everywhere else. A node holding nothing contributes zeros."""
         out: list[float] = []
         for node in self.nodes:
-            mask = node.mask
-            sampled = sum(mask) if node.logprobs else 0
+            mask, node_values = node.mask, values(node) or []
+            sampled = sum(mask) if node_values else 0
             # Bulk-fill the canonical unsampled-prefix/sampled-suffix layout.
             if not sampled or all(mask[-sampled:]):
-                out += [0.0] * (len(mask) - sampled) + node.logprobs[:sampled]
-                out += [0.0] * max(0, sampled - len(node.logprobs))
+                out += [0.0] * (len(mask) - sampled) + node_values[:sampled]
+                out += [0.0] * max(0, sampled - len(node_values))
                 continue
             li = 0
-            for sampled in mask:
-                if sampled:
-                    out.append(node.logprobs[li] if li < len(node.logprobs) else 0.0)
+            for is_sampled in mask:
+                if is_sampled:
+                    out.append(node_values[li] if li < len(node_values) else 0.0)
                     li += 1
                 else:
                     out.append(0.0)
         return out
+
+    @property
+    def logprobs(self) -> list[float]:
+        """Per-token sampling logprobs aligned to `token_ids` — the node logprobs spread onto
+        their sampled positions, 0.0 on every non-sampled token."""
+        return self.spread(lambda node: node.logprobs)
+
+    @property
+    def advantages(self) -> list[float] | None:
+        """Per-token credit aligned to `token_ids`, spread like `logprobs` — or `None` when no node
+        on the path was ever assigned any, which a branch of zeros would otherwise be
+        indistinguishable from. A partially assigned path spreads, the unassigned nodes reading
+        0.0."""
+        if all(node.advantages is None for node in self.nodes):
+            return None
+        return self.spread(lambda node: node.advantages)
 
     @property
     def multi_modal_data(self) -> MultiModalData | None:
@@ -294,7 +325,9 @@ class Branch(BaseModel):
 
     @property
     def num_input_tokens(self) -> int:
-        return self.num_total_tokens - self.num_output_tokens
+        """Fed-in tokens (system + user + tool), counted once; a lower bound whenever
+        the engine drops tokens between calls."""
+        return sum(increment for _, increment in min_new_input_tokens(self.calls))
 
 
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
@@ -319,10 +352,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
 
-    rewards: dict[str, Reward] = Field(default_factory=dict)
-    """Named, weighted rewards"""
-    metrics: dict[str, float] = Field(default_factory=dict)
-    """Unweighted, named metrics"""
+    rewards: dict[str, Reward | None] = Field(default_factory=dict)
+    """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
+    preceding error)."""
+    metrics: dict[str, float | None] = Field(default_factory=dict)
+    """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata."""
     state: StateT = Field(default_factory=State, exclude=True)
@@ -346,7 +380,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def reward(self) -> float:
-        return sum(r.value for r in self.rewards.values())
+        return sum(r.value for r in self.rewards.values() if r is not None)
 
     @property
     def has_error(self) -> bool:
@@ -354,8 +388,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def num_input_tokens(self) -> int:
-        """Fed-in tokens (system + user + tool), counted once, summed across branches."""
-        return sum(branch.num_input_tokens for branch in self.branches)
+        """Fed-in tokens (system + user + tool), counted once across all branches —
+        calls on shared branch prefixes contribute once, not once per branch."""
+        seen: set[int] = set()
+        total = 0
+        for branch in self.branches:
+            # A call's predecessors are fixed by the graph, so its increment is the
+            # same in every branch containing it; keep the first occurrence.
+            for call, increment in min_new_input_tokens(branch.calls):
+                if id(call) not in seen:
+                    seen.add(id(call))
+                    total += increment
+        return total
 
     @property
     def num_output_tokens(self) -> int:

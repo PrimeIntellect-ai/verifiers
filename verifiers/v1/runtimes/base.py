@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import base64
 import contextlib
 import hashlib
 import logging
@@ -9,7 +10,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
@@ -52,6 +53,29 @@ class ProgramResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+class RuntimeProcess(ABC):
+    """A live process whose stdio crosses a runtime boundary."""
+
+    stdout: AsyncIterator[bytes]
+    stderr: AsyncIterator[bytes]
+
+    @abstractmethod
+    async def write(self, data: bytes) -> None:
+        pass
+
+    @abstractmethod
+    async def wait(self) -> int:
+        pass
+
+    @abstractmethod
+    async def terminate(self) -> None:
+        pass
+
+    @abstractmethod
+    async def kill(self) -> None:
+        pass
 
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
@@ -154,12 +178,16 @@ class Runtime(ABC):
 
     info: BaseRuntimeInfo
 
+    @property
+    def supports_live_processes(self) -> bool:
+        """Whether `open_process()` is implemented for this runtime instance."""
+        return type(self).open_process is not Runtime.open_process
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._setup_claimed = False
-        self._setup_reusable = False
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -217,6 +245,14 @@ class Runtime(ABC):
         still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
 
+    async def open_process(
+        self, argv: list[str], env: dict[str, str]
+    ) -> RuntimeProcess:
+        """Start a live process for a rollout-scoped harness session."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support live processes"
+        )
+
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
@@ -231,7 +267,14 @@ class Runtime(ABC):
         self,
         script: str | bytes,
         env: dict[str, str] | None = None,
+        *,
+        activate: bool = True,
     ) -> list[str]:
+        """Prepare a PEP 723 script and return an argv that runs it.
+
+        ``activate=False`` invokes the resolved script interpreter directly, keeping
+        its environment variables out of child processes spawned by the script.
+        """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         path = f"/tmp/vf-scripts/{digest}.py"
@@ -256,6 +299,8 @@ class Runtime(ABC):
                         -1
                     ]
         interpreter = self._uv_interpreters[digest]
+        if not activate:
+            return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)
         command = (
             'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
@@ -287,9 +332,42 @@ class Runtime(ABC):
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
+    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
+        """Read `path` into host memory. `max_bytes` caps the transfer, raising past
+        the cap — for a file written by something we don't control, whose size we
+        can't assume. The cap is enforced inside the box rather than after the
+        transfer, and base64 because `run` returns decoded text. Framework method —
+        override `_read`, not this."""
+        if max_bytes is None:
+            return await self._read(path)
+        # Through a temp file, not a pipe: `head | base64` exits with base64's 0
+        # even when the path is missing, and a missing file must raise here just
+        # as it does from `_read`.
+        result = await self.run(
+            [
+                "sh",
+                "-c",
+                (
+                    "t=$(mktemp) || exit 1; "
+                    'head -c "$1" -- "$2" > "$t" || { rm -f "$t"; exit 1; }; '
+                    'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
+                ),
+                "sh",
+                str(max_bytes + 1),
+                path,
+            ],
+            {},
+        )
+        if result.exit_code:
+            raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+        data = base64.b64decode(result.stdout)
+        if len(data) > max_bytes:
+            raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
+        return data
+
     @abstractmethod
-    async def read(self, path: str) -> bytes:
-        pass
+    async def _read(self, path: str) -> bytes:
+        """Read the whole file at `path`; `read` adds the optional transfer cap."""
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
@@ -300,36 +378,17 @@ class Runtime(ABC):
         return url
 
     async def prepare_setup(self) -> None:
-        """Claim the runtime for trusted setup; restricted runtimes may reject reuse."""
+        """Open egress for trusted setup when reusing a restricted runtime."""
         if not self.network_restricted:
             return
         if self._setup_claimed:
-            if self._setup_reusable:
-                return
-            raise SandboxError(
-                f"network-filtered {self.type} runtimes are single-rollout; "
-                "provision a fresh runtime instead of reusing this one"
-            )
+            await self.prepare_execution(None)
         self._setup_claimed = True
 
-    @contextlib.contextmanager
-    def reuse(self) -> Iterator[Self]:
-        """Allow sequential rollouts to borrow this runtime from one trusted owner.
-
-        A restricted runtime stays under its already-applied execution policy: this
-        never restores the permissive first-setup network. The opt-in only permits
-        another rollout lifecycle to use the same filesystem and process namespace.
-        """
-        previous = self._setup_reusable
-        self._setup_reusable = True
-        try:
-            yield self
-        finally:
-            self._setup_reusable = previous
-
-    async def prepare_execution(self, routes: list[str]) -> None:
+    async def prepare_execution(self, routes: list[str] | None) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
-        their policy here; `routes` identifies the interception and MCP endpoints."""
+        their policy here; `routes` identifies the interception and MCP endpoints.
+        None restores unrestricted egress for another trusted setup phase."""
 
     @property
     def network_restricted(self) -> bool:

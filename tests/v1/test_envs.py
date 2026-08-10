@@ -17,10 +17,8 @@ EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
-# v1 tasksets that can't run a plain-CI smoke eval — e.g. they need a docker/prime runtime or
-# clone a corpus CI can't read. Empty: the SWE/container and corpus tasksets live in
-# research-environments now.
-SKIP_EVAL: set[str] = set()
+# V1 tasksets that aren't part of the default CI install.
+SKIP_EVAL = {"nemo_gym_weather_v1"}
 
 # Per-run caps are seat fields; recipe envs name their own seats.
 SEATS: dict[str, tuple[str, ...]] = {
@@ -47,7 +45,7 @@ def test_eval(taskset: str):
         pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
     if os.getenv("PRIME_API_KEY"):
         model = [
-            "-m", "openai/gpt-4.1-mini",
+            "-m", "openai/gpt-5.6-luna",
             "--client.base-url", "https://api.pinference.ai/api/v1",
             "--client.api-key-var", "PRIME_API_KEY",
         ]  # fmt: skip
