@@ -236,3 +236,108 @@ async def test_request_error_remains_authoritative_when_error_metadata_is_opaque
         )
     assert client.visible_reply == ""
     assert "acp_meta" not in vars(client)
+
+
+# These source-level fixtures intentionally model the producer ABI rather than
+# importing P2.  V4 is the negative conformance surface: it records what a
+# future producer/consumer integration must prove with notify-gated tests, not
+# a claim that the current Python ACP 0.11 adapter has those opaque IDs.
+P2_TERMINAL_FIXTURE = {
+    "response": {
+        "promptTurnId": 7,
+        "eventSequence": 41,
+        "phase": "responseBoundary",
+        "outcome": "result",
+    },
+    "terminal": {
+        "promptTurnId": 7,
+        "eventSequence": 42,
+        "phase": "terminalQuiescence",
+        "outcome": "result",
+        "quiescence": {
+            "outstandingSubagents": 0,
+            "remainingAutonomousContinuations": 0,
+        },
+    },
+}
+
+
+def scoreable_terminal(events: list[dict], *, cancelled: bool) -> bool:
+    """Pure negative score gate for the producer terminal-publish contract.
+
+    A transport stop reason is deliberately absent: an ACP ``end_turn`` is not
+    causal evidence.  A cancellation observed before the producer has drained
+    its response/terminal publications makes the whole pair unscoreable.
+    """
+    if cancelled or len(events) != 2:
+        return False
+    response, terminal = events
+    counters = terminal.get("quiescence")
+    return (
+        response.get("phase") == "responseBoundary"
+        and response.get("outcome") == "result"
+        and terminal.get("phase") == "terminalQuiescence"
+        and terminal.get("outcome") == "result"
+        and terminal.get("promptTurnId") == response.get("promptTurnId")
+        and type(response.get("promptTurnId")) is int
+        and type(response.get("eventSequence")) is int
+        and type(terminal.get("eventSequence")) is int
+        and terminal["eventSequence"] > response["eventSequence"]
+        and counters
+        == {
+            "outstandingSubagents": 0,
+            "remainingAutonomousContinuations": 0,
+        }
+    )
+
+
+def test_p2_terminal_publish_fixture_requires_producer_pair_not_end_turn():
+    """A completed terminal is a producer pair, never an ACP stop reason."""
+    events = [P2_TERMINAL_FIXTURE["response"], P2_TERMINAL_FIXTURE["terminal"]]
+    assert scoreable_terminal(events, cancelled=False)
+    # ``end_turn`` is intentionally not accepted by the helper and cannot make
+    # a partial/uncorrelated transcript scoreable.
+    assert not scoreable_terminal([P2_TERMINAL_FIXTURE["terminal"]], cancelled=False)
+
+
+def test_cancel_before_response_publish_drops_the_entire_completion_pair():
+    """Notify-gated P2 test must observe no completion envelopes at this cut."""
+    assert not scoreable_terminal([], cancelled=True)
+
+
+def test_cancel_after_response_publish_before_terminal_drain_is_unscoreable():
+    """A response boundary alone must not survive a terminal-publish cancel race."""
+    assert not scoreable_terminal([P2_TERMINAL_FIXTURE["response"]], cancelled=True)
+    assert not scoreable_terminal([P2_TERMINAL_FIXTURE["response"]], cancelled=False)
+
+
+def test_cancel_during_terminal_publish_drain_cannot_score_the_queued_terminal():
+    """Cancellation linearizes before scoring even if a terminal notify was queued.
+
+    P2's production test must gate the notify promise at this exact point and
+    establish an unambiguous cancellation outcome.  Until that drain completes
+    without cancellation, consumers must treat the pair as unscoreable.
+    """
+    events = [P2_TERMINAL_FIXTURE["response"], P2_TERMINAL_FIXTURE["terminal"]]
+    assert not scoreable_terminal(events, cancelled=True)
+
+
+def test_error_or_nonzero_terminal_never_becomes_a_successful_completion_pair():
+    """Error and incomplete terminal transcripts stay observable but unscoreable."""
+    error_terminal = {
+        **P2_TERMINAL_FIXTURE["terminal"],
+        "outcome": "error",
+    }
+    incomplete = {
+        **P2_TERMINAL_FIXTURE["terminal"],
+        "quiescence": {
+            "outstandingSubagents": 1,
+            "remainingAutonomousContinuations": 0,
+        },
+    }
+    assert not scoreable_terminal(
+        [P2_TERMINAL_FIXTURE["response"], error_terminal], cancelled=False
+    )
+    assert not scoreable_terminal(
+        [P2_TERMINAL_FIXTURE["response"], incomplete], cancelled=False
+    )
