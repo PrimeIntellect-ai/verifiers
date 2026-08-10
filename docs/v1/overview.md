@@ -43,4 +43,4 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Agent](agent.md) — How to run standalone agents
 - [Env](env.md) — How to build multi-agent environments
 
-For the documentation for legacy environments, go to [the v0 documentation](../v0/overview.md).
+For the documentation for legacy environments, go to [the v0 documentation](../legacy/overview.md).

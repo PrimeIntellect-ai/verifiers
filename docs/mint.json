@@ -22,16 +22,46 @@
         {
           "group": "Legacy (v0)",
           "pages": [
-            "v0/overview",
-            "v0/environments",
-            "v0/evaluation",
-            "v0/training",
-            "v0/development",
-            "v0/reference",
-            "v0/faqs"
+            "legacy/overview",
+            "legacy/environments",
+            "legacy/evaluation",
+            "legacy/training",
+            "legacy/development",
+            "legacy/reference",
+            "legacy/faqs"
           ]
         }
       ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/v0/overview",
+      "destination": "/legacy/overview"
+    },
+    {
+      "source": "/v0/environments",
+      "destination": "/legacy/environments"
+    },
+    {
+      "source": "/v0/evaluation",
+      "destination": "/legacy/evaluation"
+    },
+    {
+      "source": "/v0/training",
+      "destination": "/legacy/training"
+    },
+    {
+      "source": "/v0/development",
+      "destination": "/legacy/development"
+    },
+    {
+      "source": "/v0/reference",
+      "destination": "/legacy/reference"
+    },
+    {
+      "source": "/v0/faqs",
+      "destination": "/legacy/faqs"
     }
   ]
 }
