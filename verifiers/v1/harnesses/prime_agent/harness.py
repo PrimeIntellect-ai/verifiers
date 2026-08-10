@@ -31,6 +31,8 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 # Prime Agent reads its agent directory from its packaged config name.
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
+# Temporary artifact blocker: retain the verified 0.7.0 default until an approved
+# replacement artifact supplies its exact version, URL, and SHA-256 together.
 DEFAULT_VERSION = "0.7.0"
 DEFAULT_TARBALL_SHA256 = (
     "88b6578518c72cd51a825bc80f28e0fef9a64c67de4a7d6fd7afd7ca1b34da0b"
