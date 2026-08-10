@@ -115,9 +115,8 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
 
     from verifiers.v1.configs.serve import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
-    from verifiers.v1.utils.logging import setup_logging
-
     from verifiers.v1.utils.loaders import load_taskset
+    from verifiers.v1.utils.logging import setup_logging
 
     server_kwargs = {
         "config_data": env_config_data(config.env),  # picklable across the spawn

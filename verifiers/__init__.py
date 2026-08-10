@@ -102,4 +102,4 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:  # static view of the forwarded surface
-    from verifiers.legacy import *  # noqa: F403
+    from verifiers.legacy import *

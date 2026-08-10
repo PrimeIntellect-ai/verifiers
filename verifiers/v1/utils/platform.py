@@ -14,10 +14,10 @@ from typing import Any
 
 import httpx
 
-from verifiers.v1.utils.prime_config import load_prime_config
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.prime_config import load_prime_config
 
 logger = logging.getLogger(__name__)
 
