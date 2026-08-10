@@ -240,7 +240,7 @@ Stop conditions, metrics, and rewards can also be plugged into any task from con
 single_turn = { fn = "my_hooks.py:two_turns" }
 
 [env.taskset.task.metrics]
-reply_length = { fn = "my_hooks.py:reply_length" }
+reply_length = { fn = "my_hooks.py:reply_length", priority = 10 }
 
 [env.taskset.task.rewards]
 exact_match = { fn = "my_hooks.py:exact_match", weight = 0.5 }
