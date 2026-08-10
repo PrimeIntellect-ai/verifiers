@@ -9,12 +9,11 @@ from collections import Counter
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACP
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -40,8 +39,6 @@ npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
 touch {ready}
 """
 
-CODEX_ACP = ACP()
-
 
 class CodexHarnessConfig(HarnessConfig):
     version: str = Field(default="0.146.1", pattern=r"^[A-Za-z0-9._+-]+$")
@@ -50,7 +47,7 @@ class CodexHarnessConfig(HarnessConfig):
     """Enable Codex's native multi-agent v2 tools."""
 
 
-class CodexHarness(Harness[CodexHarnessConfig]):
+class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
@@ -89,9 +86,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         )
         if install.exit_code != 0:
             raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
-        await CODEX_ACP.setup(self, runtime)
+        await self.acp.setup(self, runtime)
 
-    async def session(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -100,61 +97,21 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> HarnessSession:
-        if not runtime.supports_live_processes:
-            return await super().session(
-                ctx, trace, runtime, endpoint, secret, mcp_urls, data
-            )
+    ) -> ACPConfig:
         if data.system_prompt is not None and not isinstance(data.prompt, str):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
         env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
-        return CODEX_ACP.session(
-            self,
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            {},
-            data,
+        return ACPConfig(
             env=env,
             command=[
                 f"{NODE_BIN_DIR}/node",
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
             ],
             prompt=prompt,
-            system_prompt=system_prompt,
-        )
-
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ProgramResult:
-        if (
-            data.system_prompt is not None
-            and data.prompt is not None
-            and not isinstance(data.prompt, str)
-        ):
-            system_prompt, prompt = data.system_prompt, data.prompt
-        else:
-            system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
-        return await CODEX_ACP.run(
-            runtime,
-            env,
-            [
-                f"{NODE_BIN_DIR}/node",
-                ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
-            ],
-            prompt,
+            # Codex reads MCP servers from the config written by build_env().
+            mcp_urls={},
             system_prompt=system_prompt,
             session_path=f"{self.trace_home(trace)}/acp-session",
         )
