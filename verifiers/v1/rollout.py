@@ -30,7 +30,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages
-from verifiers.v1.utils.decorators import discover_decorated, invoke
+from verifiers.v1.utils.decorators import invoke
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +91,7 @@ class Rollout:
         )
         if on_trace is not None:
             on_trace(self.trace)
-        self._session = RolloutSession(
-            ctx, self.trace, discover_decorated(task, "stop"), limits
-        )
+        self._session = RolloutSession(ctx, self.trace, task.hooks("stop"), limits)
         self._stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None

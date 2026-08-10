@@ -1,11 +1,15 @@
-"""Resolve taskset, harness, judge, and environment plugins."""
+"""Resolve taskset, harness, judge, hook, and environment plugins."""
 
 import contextvars
+import functools
 import importlib
 import importlib.util
+import inspect
 import pkgutil
 from collections.abc import Callable
+from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from pydantic import ValidationError
 from pydantic_config import BaseConfig
@@ -13,6 +17,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.configs.task import HookConfig, RewardConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv
@@ -203,6 +208,58 @@ def load_harness(config: HarnessConfig) -> Harness:
 
 def load_judge(config: JudgeConfig) -> Judge:
     return judge_class(config.id)(config)
+
+
+@functools.cache
+def _file_module(path: str) -> ModuleType:
+    """Import a standalone `.py` file, cached by path so repeated hook loads share
+    one module object."""
+    resolved = Path(path).resolve()
+    spec = importlib.util.spec_from_file_location(resolved.stem, resolved)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot import hook module from {path!r}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def hook_fn(path: str) -> Callable[..., Any]:
+    """Resolve a hook import path: `pkg.module.function`, `pkg.module:function`, or
+    `path/to/file.py:function`."""
+    module_path, _, attr = path.rpartition(":")
+    if not module_path:
+        module_path, _, attr = path.rpartition(".")
+    if not module_path or not attr:
+        raise ValueError(
+            f"hook fn {path!r} must be `pkg.module.function`, `pkg.module:function`, "
+            "or `path/to/file.py:function`"
+        )
+    if module_path.endswith(".py"):
+        module = _file_module(module_path)
+    else:
+        module = importlib.import_module(module_path)
+    fn = getattr(module, attr, None)
+    if not callable(fn):
+        raise TypeError(f"hook fn {path!r} is not a function (got {fn!r})")
+    return fn
+
+
+def load_hook(name: str, config: HookConfig, attr: str) -> Callable[..., Any]:
+    """Build a task hook from a config entry: the imported function (sync or async)
+    wrapped under the plugged `name`, tagged like its `@vf.<attr>` equivalent."""
+    fn = hook_fn(config.fn)
+
+    @functools.wraps(fn)
+    async def hook(*args: Any, **kwargs: Any) -> Any:
+        result = fn(*args, **kwargs)
+        return await result if inspect.isawaitable(result) else result
+
+    hook.__name__ = name
+    setattr(hook, attr, True)
+    setattr(hook, f"{attr}_priority", config.priority)
+    if isinstance(config, RewardConfig):
+        hook._vf_weight = config.weight
+    return hook
 
 
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:

@@ -231,6 +231,23 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
 
 To override the judge model, set `env.taskset.task.judge.model` in your config (it is a string).
 
+## Plugging hooks via config
+
+Stop conditions, metrics, and rewards can also be plugged into any task from config, without touching the taskset's code. Each entry names a function by import path (`pkg.module.function`, `pkg.module:function`, or `path/to/file.py:function`); functions may be sync or async and declare what they need by parameter name (`task`, `trace`, `runtime` — stops receive the trace only):
+
+```toml
+[env.taskset.task.stops]
+single_turn = { fn = "my_hooks.py:two_turns" }
+
+[env.taskset.task.metrics]
+reply_length = { fn = "my_hooks.py:reply_length" }
+
+[env.taskset.task.rewards]
+exact_match = { fn = "my_hooks.py:exact_match", weight = 0.5 }
+```
+
+Plugged hooks merge with the task's decorated `@vf.stop` / `@vf.metric` / `@vf.reward` methods; a plugged hook replaces a decorated one with the same name, so an existing signal can be swapped out (like `single_turn` above). Rewards take a `weight`, and every entry takes a `priority` (higher runs first).
+
 ## Beyond one agent
 
 One episode doesn't have to be one agent run: agents, the control flow between agents, and cross-agent rewards are the environment's job — see [The Env](env.md).

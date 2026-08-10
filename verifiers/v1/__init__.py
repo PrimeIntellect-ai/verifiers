@@ -26,7 +26,7 @@ from verifiers.v1.configs.serve import (
     StaticPoolConfig,
     pool_serve_kwargs,
 )
-from verifiers.v1.configs.task import TaskConfig
+from verifiers.v1.configs.task import HookConfig, RewardConfig, TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
@@ -240,6 +240,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Taskset",
     "TaskConfig",
     "TasksetConfig",
+    "HookConfig",
+    "RewardConfig",
     "BaseConfig",
     "Harness",
     "HarnessSession",
