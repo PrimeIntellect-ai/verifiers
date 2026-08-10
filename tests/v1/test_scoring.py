@@ -2,7 +2,7 @@ import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
-HOOKS_PY = """
+PLUGGED_FNS_PY = """
 def reply_length(trace) -> float:
     return float(len(trace.last_reply or ""))
 
@@ -34,15 +34,15 @@ class HookTask(vf.Task[HookData]):
         return 0.5
 
 
-async def test_config_plugged_hooks_merge_and_override(tmp_path) -> None:
-    hooks = tmp_path / "hooks.py"
-    hooks.write_text(HOOKS_PY)
+async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
+    fns = tmp_path / "fns.py"
+    fns.write_text(PLUGGED_FNS_PY)
     config = vf.TaskConfig(
-        stops={"single_turn": vf.HookConfig(fn=f"{hooks}:two_turns")},
-        metrics={"reply_length": vf.HookConfig(fn=f"{hooks}:reply_length")},
+        stops={"single_turn": vf.DecoratedFunctionConfig(fn=f"{fns}:two_turns")},
+        metrics={"reply_length": vf.DecoratedFunctionConfig(fn=f"{fns}:reply_length")},
         rewards={
-            "exact_match": vf.RewardConfig(fn=f"{hooks}:exact_match", weight=0.5),
-            "lcs": vf.RewardConfig(fn=f"{hooks}:marker", weight=2.0),
+            "exact_match": vf.RewardFunctionConfig(fn=f"{fns}:exact_match", weight=0.5),
+            "lcs": vf.RewardFunctionConfig(fn=f"{fns}:marker", weight=2.0),
         },
     )
     task = HookTask(HookData(idx=0, prompt="abc", answer="cba"), config)

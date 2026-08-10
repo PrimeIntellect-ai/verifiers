@@ -8,18 +8,23 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.judge import Judges, check_judges, resolve_judges
 
 
-class HookConfig(BaseConfig):
-    """A hook function plugged into a task by import path."""
+class FunctionConfig(BaseConfig):
+    """A function plugged in by import path."""
 
     fn: str
-    """Import path to the hook function: `pkg.module.function`, `pkg.module:function`,
+    """Import path to the function: `pkg.module.function`, `pkg.module:function`,
     or `path/to/file.py:function`."""
+
+
+class DecoratedFunctionConfig(FunctionConfig):
+    """A plugged function standing in for a decorated task method."""
+
     priority: int = 0
-    """Execution order among the task's hooks — higher runs first, ties break by name."""
+    """Execution order, like the decorator's — higher runs first, ties break by name."""
 
 
-class RewardConfig(HookConfig):
-    """A reward hook plugged into a task by import path."""
+class RewardFunctionConfig(DecoratedFunctionConfig):
+    """A plugged function standing in for a `@vf.reward` task method."""
 
     weight: FiniteFloat = 1.0
 
@@ -35,14 +40,14 @@ class TaskConfig(BaseConfig):
     judges: Judges = Field(default_factory=list)
     """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
 
-    stops: dict[str, HookConfig] = Field(default_factory=dict)
+    stops: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
     """Stop conditions `(trace) -> bool` plugged by name, merged with the task's
-    `@vf.stop` methods (a plugged hook replaces a decorated one with the same name),
-    set through `--env.taskset.task.stops`."""
-    metrics: dict[str, HookConfig] = Field(default_factory=dict)
+    `@vf.stop` methods (a plugged function replaces a decorated one with the same
+    name), set through `--env.taskset.task.stops`."""
+    metrics: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
     """Metrics `(task, trace, runtime) -> float` plugged by name, merged with the
     task's `@vf.metric` methods, set through `--env.taskset.task.metrics`."""
-    rewards: dict[str, RewardConfig] = Field(default_factory=dict)
+    rewards: dict[str, RewardFunctionConfig] = Field(default_factory=dict)
     """Weighted rewards `(task, trace, runtime) -> float` plugged by name, merged with
     the task's `@vf.reward` methods, set through `--env.taskset.task.rewards`."""
 

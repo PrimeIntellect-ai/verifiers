@@ -232,10 +232,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return [load_judge(config) for config in self.config.judges]
 
     def hooks(self, attr: str) -> list[Callable[..., Any]]:
-        """The task's `@vf.<attr>` methods merged with the config-plugged entries — a
-        plugged hook replaces a decorated one with the same name — sorted by
+        """The task's `@vf.<attr>` methods merged with the config-plugged functions —
+        a plugged function replaces a decorated method with the same name — sorted by
         descending priority then name."""
-        from verifiers.v1.utils.loaders import load_hook
+        from verifiers.v1.utils.loaders import load_plugged_fn
 
         plugged = {
             "stop": self.config.stops,
@@ -243,7 +243,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
             "reward": self.config.rewards,
         }[attr]
         merged = {fn.__name__: fn for fn in discover_decorated(self, attr)}
-        merged |= {name: load_hook(name, spec, attr) for name, spec in plugged.items()}
+        merged |= {
+            name: load_plugged_fn(name, spec, attr) for name, spec in plugged.items()
+        }
         fns = list(merged.values())
         fns.sort(key=lambda fn: (-getattr(fn, f"{attr}_priority", 0), fn.__name__))
         return fns
