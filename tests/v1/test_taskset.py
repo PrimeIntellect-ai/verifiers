@@ -1,6 +1,7 @@
 """`Taskset` iteration and the `head`/`shuffle` views over list, generator,
 and `INFINITE` `load` implementations."""
 
+import asyncio
 import itertools
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -305,3 +306,70 @@ async def test_harbor_env_leaves_single_step_tasks_on_the_plain_path() -> None:
 
     await env.run(task, SimpleNamespace(agent=agent))
     assert agent.calls == [(task, None)]
+
+
+@pytest.mark.parametrize("phase", ["setup", "finalize"])
+@pytest.mark.asyncio
+async def test_harbor_resumed_steps_enforce_non_agent_timeouts(
+    phase, monkeypatch
+) -> None:
+    from verifiers.v1.tasksets.harbor import (
+        HarborData,
+        HarborEnv,
+        HarborStep,
+        HarborTask,
+    )
+
+    class FakeInteraction:
+        trace = SimpleNamespace(info={}, record_metric=lambda *args: None)
+
+        async def turn(self, prompt):
+            return SimpleNamespace(terminated=False)
+
+    class FakeAgent:
+        @asynccontextmanager
+        async def interaction(self, task, runtime=None):
+            yield FakeInteraction()
+
+    async def setup(step_task, runtime):
+        if phase == "setup" and step_task.data.current_step == "two":
+            await asyncio.sleep(1)
+
+    async def collect_step(step_task, trace, runtime):
+        if phase == "finalize":
+            await asyncio.sleep(1)
+
+    async def stage_tests(step_task, runtime):
+        return None
+
+    async def step_graded(step_task, runtime):
+        return {"reward": 1.0}
+
+    monkeypatch.setattr(HarborTask, "setup", setup)
+    monkeypatch.setattr(HarborTask, "collect_step", collect_step)
+    monkeypatch.setattr(HarborTask, "_stage_tests", stage_tests)
+    monkeypatch.setattr(HarborTask, "_step_graded", step_graded)
+
+    steps = [
+        HarborStep(
+            name="one",
+            prompt="one",
+            timeout=vf.TaskTimeout(agent=1, finalize=0.001, scoring=1),
+        )
+    ]
+    if phase == "setup":
+        steps[0] = steps[0].model_copy(
+            update={"timeout": vf.TaskTimeout(agent=1, finalize=1, scoring=1)}
+        )
+        steps.append(
+            HarborStep(
+                name="two",
+                prompt="two",
+                timeout=vf.TaskTimeout(setup=0.001, agent=1),
+            )
+        )
+    task = HarborTask(HarborData(idx=0, task_dir="/task", steps=steps))
+    env = object.__new__(HarborEnv)
+
+    with pytest.raises(TimeoutError):
+        await env._run_resumed(task, SimpleNamespace(agent=FakeAgent()), object())

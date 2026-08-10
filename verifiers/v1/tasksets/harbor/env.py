@@ -112,7 +112,7 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
             for index, step in enumerate(task.data.steps):
                 step_task = task.for_step(step)
                 if index:
-                    await step_task.setup(runtime)
+                    await asyncio.wait_for(step_task.setup(runtime), step.timeout.setup)
                 segment = await asyncio.wait_for(
                     interaction.turn(None if index == 0 else step.prompt),
                     step.timeout.agent,
@@ -121,7 +121,10 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
                     interaction.trace.info["harbor_stopped_before_step"] = step.name
                     break
 
-                await step_task.collect_step(interaction.trace, runtime)
+                await asyncio.wait_for(
+                    step_task.collect_step(interaction.trace, runtime),
+                    step.timeout.finalize,
+                )
                 if step_task.data.verifier is not None:
                     config = self._verifier_config(step_task)
                     grader = HarborTask(verifier_box_data(step_task.data))
