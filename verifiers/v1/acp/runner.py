@@ -224,6 +224,11 @@ async def prompt(
     if not blocks:
         raise ValueError("ACP prompt has no content")
     client.reset()
+    # Initialization, session creation, and resume can emit SessionInfoUpdates.
+    # Keep those in acp_meta history, but start a fresh live-response bucket at the
+    # prompt boundary so pre-prompt metadata neither leaks into this response nor
+    # shortens the first-event grace period below.
+    client.turn_acp_meta = {}
     try:
         response = await connection.prompt(session_id=session_id, prompt=blocks)
     except RequestError as error:

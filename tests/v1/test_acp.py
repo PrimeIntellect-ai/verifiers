@@ -191,3 +191,46 @@ async def test_late_metadata_does_not_delay_a_turn_that_already_has_metadata(
     await runner.wait_for_late_metadata(_MetaClient({"ns": [{"done": True}]}))
     elapsed = asyncio.get_event_loop().time() - started
     assert elapsed < runner.LATE_UPDATE_GRACE_SECONDS / 2, elapsed
+
+
+@pytest.mark.asyncio
+async def test_prompt_starts_metadata_collection_at_the_prompt_boundary(monkeypatch):
+    """Session-start updates must not shorten the first prompt update's grace."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+
+    class PromptClient(_MetaClient):
+        def __init__(self):
+            super().__init__({"ns": [{"from_session_start": True}]})
+            self.visible_reply = ""
+            self.message_id = None
+            self.tool_calls = {}
+
+        def reset(self):
+            self.visible_reply = ""
+            self.message_id = None
+            self.tool_calls = {}
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            client.visible_reply = "reply"
+            asyncio.create_task(emit_prompt_metadata())
+            return types.SimpleNamespace(stop_reason="end_turn")
+
+    client = PromptClient()
+
+    async def emit_prompt_metadata():
+        # Longer than the settle window but inside the first-event grace period.
+        await asyncio.sleep(0.3)
+        await client.emit({"from_prompt": True})
+
+    reply = await runner.prompt(
+        client,
+        Connection(),
+        None,
+        "session",
+        {"messages": [{"role": "user", "content": "hi"}], "system_prompt": ""},
+        is_new=True,
+    )
+
+    assert reply == "reply"
+    assert client.turn_acp_meta == {"ns": [{"from_prompt": True}]}
