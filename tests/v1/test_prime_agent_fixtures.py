@@ -284,7 +284,19 @@ async def test_prime_agent_setup_forwards_resolved_environment(monkeypatch):
         "verifiers.v1.harnesses.prime_agent.harness.PRIME_AGENT_ACP.setup", setup
     )
     await harness.setup(runtime)
-    assert calls[0][1]["HTTPS_PROXY"] == "http://proxy"
+    command, environment = calls[0]
+    assert environment["HTTPS_PROXY"] == "http://proxy"
+
+    # With a command argument, flock's operand is a lock-file path, not an
+    # already-open descriptor. It must therefore name the shared install lock,
+    # rather than the accidental relative file named "9".
+    guarded = command[-1]
+    assert "flock -x 9 sh -c" not in guarded
+    assert guarded.startswith(
+        "mkdir -p /var/tmp/vf-prime-agent && "
+        "flock -x /var/tmp/vf-prime-agent/install.lock sh -c "
+    )
+    assert "9>/var/tmp/vf-prime-agent/install.lock" not in guarded
 
 
 def test_prime_agent_cleanup_removes_state_and_tmpdir_together():

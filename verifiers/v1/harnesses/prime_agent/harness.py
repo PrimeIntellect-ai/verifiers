@@ -178,7 +178,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         # SIGKILL that blocks every later install.
         guarded = (
             f"mkdir -p {shlex.quote(INSTALL_ROOT)} && "
-            f"flock -x 9 sh -c {shlex.quote(INSTALL_SOURCE)} 9>{shlex.quote(lock)}"
+            f"flock -x {shlex.quote(lock)} sh -c {shlex.quote(INSTALL_SOURCE)}"
         )
         result = await runtime.run(
             ["sh", "-c", guarded],
