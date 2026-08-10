@@ -6,6 +6,7 @@ import json
 import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
@@ -23,8 +24,22 @@ MAX_PACKET_BYTES = 128 * 1024 * 1024
 __all__ = ["ACP"]
 
 
+def _record_acp_meta(trace: Trace, meta: dict[str, list[Any]]) -> None:
+    if not meta:
+        return
+    recorded = trace.info.setdefault("acp_meta", {})
+    for namespace, events in meta.items():
+        recorded.setdefault(namespace, []).extend(events)
+
+
 class ACP:
     """Run one-shot ACP agents or create rollout-scoped ACP sessions."""
+
+    def __init__(self, *, metadata_expected: bool = False) -> None:
+        # ACP 0.11 does not advertise extension metadata in its protocol
+        # capabilities. Harnesses therefore opt in only when their producer
+        # contract guarantees the `SessionInfoUpdate.field_meta` extension.
+        self.metadata_expected = metadata_expected
 
     async def setup(self, harness: Harness, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -63,6 +78,7 @@ class ACP:
             prompt=prompt,
             system_prompt=system_prompt,
             session_meta=session_meta,
+            metadata_expected=self.metadata_expected,
         )
 
     async def run(
@@ -77,6 +93,7 @@ class ACP:
         session_path: str | None = None,
         session_meta: dict | None = None,
         allow_empty_tool_reply: bool = False,
+        trace: Trace | None = None,
     ) -> ProgramResult:
         """Run one ACP segment without retaining its process."""
         return await self._run(
@@ -89,6 +106,7 @@ class ACP:
             session_path=session_path,
             session_meta=session_meta,
             allow_empty_tool_reply=allow_empty_tool_reply,
+            trace=trace,
         )
 
     async def _run(
@@ -103,6 +121,7 @@ class ACP:
         session_path: str | None = None,
         session_meta: dict | None = None,
         allow_empty_tool_reply: bool = False,
+        trace: Trace | None = None,
     ) -> ProgramResult:
         if prompt is None:
             raise ValueError("ACP requires a prompt")
@@ -119,6 +138,7 @@ class ACP:
             "session_path": session_path,
             "session_meta": session_meta or {},
             "allow_empty_tool_reply": allow_empty_tool_reply,
+            "metadata_expected": self.metadata_expected,
         }
         program = await runtime.prepare_uv_script(
             ACP_SOURCE,
@@ -130,9 +150,16 @@ class ACP:
         if created.exit_code != 0:
             raise RuntimeError(f"ACP config directory failed: {created.stderr.strip()}")
         path = f"{directory}/config.json"
+        meta_path = f"{directory}/meta.json"
+        config["meta_path"] = meta_path
         try:
             await runtime.write(path, json.dumps(config).encode())
-            return await runtime.run_program([*program, "once", path], env)
+            result = await runtime.run_program([*program, "once", path], env)
+            if trace is not None:
+                with contextlib.suppress(Exception):
+                    meta = json.loads((await runtime.read(meta_path)).decode())
+                    _record_acp_meta(trace, meta)
+            return result
         finally:
             await run_shielded(runtime.run(["rm", "-rf", directory], {}))
 
@@ -184,6 +211,7 @@ class ACPHarnessSession(HarnessSession):
         prompt: str | Messages | None,
         system_prompt: str | None,
         session_meta: dict | None,
+        metadata_expected: bool,
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
         self.env = env
@@ -191,6 +219,7 @@ class ACPHarnessSession(HarnessSession):
         self.prompt = prompt
         self.system_prompt = system_prompt
         self.session_meta = session_meta or {}
+        self.metadata_expected = metadata_expected
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
         self._stderr_tail = bytearray()
@@ -234,6 +263,7 @@ class ACPHarnessSession(HarnessSession):
             "system_prompt": self.system_prompt or "",
             "session_path": None,
             "session_meta": self.session_meta,
+            "metadata_expected": self.metadata_expected,
         }
         async with self._lock:
             if self._closed:
@@ -252,6 +282,8 @@ class ACPHarnessSession(HarnessSession):
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
+        if meta := response.get("meta"):
+            _record_acp_meta(self.trace, meta)
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
