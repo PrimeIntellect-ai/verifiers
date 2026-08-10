@@ -64,8 +64,6 @@ prime eval run my-task-v1 --env.id agentic-judge \
   --env.judge.runtime.type docker                           # a judge agent verifies each attempt in a sandbox
 ```
 
-When specifying Hub tasksets, always include the owner to resolve them correctly.
-
 ## Disabling tools
 
 Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
@@ -208,13 +206,3 @@ Do not average these categories together without reporting failure rate.
 - Always inspect samples before attributing a delta to model quality.
 - Keep taskset, harness, runtime, sampling, and selected task indices fixed across variants.
 - Do not overinterpret a tiny smoke run.
-
-## Legacy bridge
-
-For a real v0 package only:
-
-```bash
-prime eval run --legacy.id legacy-env --legacy.args.split test -n 5
-```
-
-Label the result as bridged v0. Do not present `legacy.args` as the v1 config contract.

@@ -76,10 +76,10 @@ dev = [
 # from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
-    "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
-    "proposer-solver-v1", "reverse-text-v1", "color-codeword-v1",
-    "wordle-v1", "openenv-wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
-    "kuhn-poker-v1",
+    "gsm8k", "glossary", "deepwiki", "wiki-search", "code-golf",
+    "proposer-solver", "reverse-text", "color-codeword",
+    "wordle", "openenv-wordle", "alphabet-sort", "scratchpad",
+    "kuhn-poker",
 ]
 
 [project.optional-dependencies]
@@ -151,19 +151,19 @@ default = true
 
 [tool.uv.sources]
 compact = { path = "environments/compact", editable = true }
-glossary-v1 = { path = "environments/glossary_v1", editable = true }
-deepwiki-v1 = { path = "environments/deepwiki_v1", editable = true }
-wiki-search-v1 = { path = "environments/wiki_search_v1", editable = true }
-gsm8k-v1 = { path = "environments/gsm8k_v1", editable = true }
-code-golf-v1 = { path = "environments/code_golf_v1", editable = true }
-proposer-solver-v1 = { path = "environments/proposer_solver_v1", editable = true }
-reverse-text-v1 = { path = "environments/reverse_text_v1", editable = true }
-wordle-v1 = { path = "environments/wordle_v1", editable = true }
-openenv-wordle-v1 = { path = "environments/openenv_wordle_v1", editable = true }
-color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
-alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
-scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
-kuhn-poker-v1 = { path = "environments/kuhn_poker_v1", editable = true }
+glossary = { path = "environments/glossary", editable = true }
+deepwiki = { path = "environments/deepwiki", editable = true }
+wiki-search = { path = "environments/wiki_search", editable = true }
+gsm8k = { path = "environments/gsm8k", editable = true }
+code-golf = { path = "environments/code_golf", editable = true }
+proposer-solver = { path = "environments/proposer_solver", editable = true }
+reverse-text = { path = "environments/reverse_text", editable = true }
+wordle = { path = "environments/wordle", editable = true }
+openenv-wordle = { path = "environments/openenv_wordle", editable = true }
+color-codeword = { path = "environments/color_codeword", editable = true }
+alphabet-sort = { path = "environments/alphabet_sort", editable = true }
+scratchpad = { path = "environments/scratchpad", editable = true }
+kuhn-poker = { path = "environments/kuhn_poker", editable = true }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.
@@ -238,6 +238,12 @@ Documentation = "https://github.com/primeintellect-ai/verifiers"
 Repository = "https://github.com/primeintellect-ai/verifiers.git"
 Issues = "https://github.com/primeintellect-ai/verifiers/issues"
 
+[tool.ruff.lint.isort]
+# The legacy tree answers at both verifiers.* and verifiers.legacy.* (the
+# package-root alias); path probing would classify the moved submodules as
+# third-party, so pin the whole namespace first-party.
+known-first-party = ["verifiers"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
@@ -300,7 +306,7 @@ redundant-cast = "ignore"
 exclude = ["environments", "verifiers/v1"]
 
 [[tool.ty.overrides]]
-include = ["verifiers/envs/experimental/composable/tasksets/**"]
+include = ["verifiers/legacy/envs/experimental/composable/tasksets/**"]
 
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"

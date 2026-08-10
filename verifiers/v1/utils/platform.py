@@ -14,10 +14,10 @@ from typing import Any
 
 import httpx
 
-from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.prime_config import load_prime_config
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +229,7 @@ def push_traces(
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
     traces = [trace for episode in episodes for trace in episode.traces]
-    env_name = (config.env.taskset.id) or config.legacy.id
+    env_name = config.env.taskset.id
     metrics = run_metrics(episodes, traces)
     num_examples = len({t.task.data.idx for t in traces})
     metadata = {

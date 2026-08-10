@@ -2,11 +2,8 @@
 
 import hashlib
 import json
-from collections.abc import Hashable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TypeVar
-
-K = TypeVar("K", bound=Hashable)
 
 
 def task_key(data: Mapping) -> str:
@@ -15,7 +12,7 @@ def task_key(data: Mapping) -> str:
 
 
 def distribute(
-    selected_keys: list[K], owed: dict[K, int], num_results: int
+    selected_keys: list[str], owed: dict[str, int], num_results: int
 ) -> list[int]:
     """Spread each key's owed results over its selected instances, in order."""
     remaining = dict(owed)

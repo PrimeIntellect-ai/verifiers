@@ -244,7 +244,7 @@ Sampling = SamplingConfig
 
 
 def _validate_id(plugin_id: str) -> str:
-    from verifiers.utils.install_utils import is_hub_env, parse_env_id
+    from verifiers.v1.utils.install_utils import is_hub_env, parse_env_id
 
     if is_hub_env(plugin_id):
         parse_env_id(plugin_id)  # raises ValueError on a malformed org/name[@version]

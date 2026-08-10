@@ -301,7 +301,7 @@ async def test_shared_tool_isolation(
 ):
     """A shared writable tool isolates state across concurrent rollouts and runtimes."""
     traces = await run_v1_server(
-        "scratchpad-v1",
+        "scratchpad",
         harness="null",
         runtime={"type": harness_runtime},
         output_dir=tmp_path,
@@ -584,7 +584,7 @@ async def test_kuhn_poker_self_play(run_v1, tmp_path):
     """The turn-coupled proof env: one Kuhn poker hand, both seats live interactions
     of the run's own model (self-play), refereed host-side, paid out zero-sum."""
     traces = await run_v1(
-        "kuhn-poker-v1",
+        "kuhn-poker",
         harness=None,  # both seats pin the null harness themselves
         output_dir=tmp_path,
         max_turns=8,
@@ -646,7 +646,7 @@ async def test_replay_round_trip(run_v1, tmp_path):
 
     run_dir = tmp_path / "run"
     (source,) = await run_v1(
-        "reverse-text-v1",
+        "reverse-text",
         harness="null",
         runtime={"type": "subprocess"},
         output_dir=run_dir,

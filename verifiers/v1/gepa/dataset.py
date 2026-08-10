@@ -24,7 +24,7 @@ def split_tasks(
 
 def resolve_gepa_seed_prompt(tasks: list[Task], initial_prompt: str | None) -> str:
     """The system prompt GEPA starts optimizing from: `initial_prompt` if given, else the first
-    task that sets `system_prompt`. Some tasksets (e.g. `gsm8k-v1`) bake instructions into
+    task that sets `system_prompt`. Some tasksets (e.g. `gsm8k`) bake instructions into
     `prompt` rather than `system_prompt` and can't be optimized this way — pass `--initial-prompt`
     to seed one explicitly.
 
@@ -38,7 +38,7 @@ def resolve_gepa_seed_prompt(tasks: list[Task], initial_prompt: str | None) -> s
             return task.data.system_prompt
     raise ValueError(
         "no task in this taskset sets Task.system_prompt — some tasksets bake instructions "
-        "directly into `prompt` instead (e.g. gsm8k-v1) and can't be optimized this way. Pass "
+        "directly into `prompt` instead (e.g. gsm8k) and can't be optimized this way. Pass "
         "--initial-prompt to seed one explicitly, or pick a taskset whose load() sets "
-        "system_prompt on its task data (e.g. reverse-text-v1, lean, textarena)."
+        "system_prompt on its task data (e.g. reverse-text, lean, textarena)."
     )

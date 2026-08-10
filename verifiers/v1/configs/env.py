@@ -42,8 +42,7 @@ class EnvConfig(BaseConfig):
     to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
     # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`).
-    The id stays empty only for a legacy (v0) run, which sets the top-level `id`."""
+    """The seed taskset — the rows every rollout starts from (`--env.taskset.id`)."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
@@ -80,8 +79,8 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _refuse_env_level_harness(cls, data):
-        """Point an env-level `harness` key (v0 muscle memory) at the seat that owns
-        it; a subclass declaring a role named `harness` keeps the key."""
+        """Point an env-level `harness` key at the seat that owns it; a subclass
+        declaring a role named `harness` keeps the key."""
         if (
             isinstance(data, dict)
             and "harness" in data

@@ -132,7 +132,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
             )
 ```
 
-Two rules follow from infinity: a run over an infinite taskset must be bounded with `num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is an error: there is no whole set to sample from — bound the stream first (`taskset.head(n).shuffle()`). The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort_v1`, `color_codeword_v1`, or the built-in `textarena` taskset).
+Two rules follow from infinity: a run over an infinite taskset must be bounded with `num_tasks` (`-n` on the CLI — omitting it is an error), and `shuffle` is an error: there is no whole set to sample from — bound the stream first (`taskset.head(n).shuffle()`). The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
 ## Adding Tools
 

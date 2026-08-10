@@ -12,7 +12,6 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.utils.pricing_utils import format_cost_usd
 from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.cli.eval import EvalConfig
@@ -68,6 +67,12 @@ _MARK_WIDTH = max(len(label) for label in _MARK_LABEL.values())
 _MARK = {
     state: escape(f"[{label:<{_MARK_WIDTH}}]") for state, label in _MARK_LABEL.items()
 }
+
+
+def format_cost_usd(cost_usd: float) -> str:
+    if cost_usd >= 1:
+        return f"${cost_usd:.2f}"
+    return f"${cost_usd:.4f}"
 
 
 def _seat_value(config: EvalConfig, read):

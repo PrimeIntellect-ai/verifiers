@@ -18,7 +18,6 @@ from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_fi
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig, Judges
-from verifiers.v1.configs.legacy import LegacyEnvConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.serve import (
     ElasticPoolConfig,
@@ -266,7 +265,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SingleAgentEnv",
     "EnvConfig",
     "ServeConfig",
-    "LegacyEnvConfig",
     "resolve_env_field",
     "narrowed_env_annotation",
     "SingleAgentEnvConfig",

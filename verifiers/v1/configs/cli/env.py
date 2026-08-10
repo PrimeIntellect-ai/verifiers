@@ -1,9 +1,8 @@
-"""Run-config plumbing around the `[env]` block: narrowing the `env` field of every
-config that owns one, and the retired keys such a config refuses.
+"""Run-config plumbing around the `[env]` block: narrowing the `env` field of
+every config that owns one.
 
 A run composes the blocks it needs — `[env]` (what runs, `configs/env.py`),
-`[serve]` (how it's hosted, `configs/serve.py`), `[legacy]` (the v0 bridge,
-`configs/legacy.py`) — plus its own fields. Nothing here is a base class: the eval
+`[serve]` (how it's hosted, `configs/serve.py`) — plus its own fields. Nothing here is a base class: the eval
 CLI, GEPA, and a trainer each declare their blocks and call these.
 
 Declare the env field as `SerializeAsAny[EnvConfig] = Field(default_factory=

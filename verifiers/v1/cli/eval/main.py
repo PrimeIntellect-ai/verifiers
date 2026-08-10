@@ -25,7 +25,7 @@ from verifiers.v1.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run eval [<taskset-id>] [--env.id <id>] [--legacy.id <env-id> (v0)] [options] [@ file.toml]\n"
+    "usage: uv run eval [<taskset-id>] [--env.id <id>] [options] [@ file.toml]\n"
     "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
 )
 
@@ -50,9 +50,6 @@ def main(argv: list[str] | None = None) -> None:
             )
         config = load_resume_config(resume_dir)
     else:
-        legacy_id = any(
-            a == "--legacy.id" or a.startswith("--legacy.id=") for a in argv
-        )
         # An env-block flag (or a since-moved flat axis) skips the usage gate so the
         # typed parse renders its did-you-mean instead of a bare usage line.
         typed_axis = any(
@@ -61,13 +58,12 @@ def main(argv: list[str] | None = None) -> None:
         )
         if (
             not extract_id(argv, "env.taskset")
-            and not legacy_id
             and not references_config_file(argv)
             and not typed_axis
         ):
             raise SystemExit(
                 USAGE
-            )  # need a taskset (positional / --env.taskset.id), a v0 --legacy.id, or a @ file.toml
+            )  # need a taskset (positional / --env.taskset.id) or a @ file.toml
 
         with plugin_errors():
             config_type = narrow_config(EvalConfig, argv)
@@ -80,17 +76,13 @@ def main(argv: list[str] | None = None) -> None:
             setup_logging("DEBUG" if config.verbose else "INFO")
             logger.info("wrote config to %s", write_config(config, output_path(config)))
             return
-    if config.is_legacy and config.resume is not None:
-        raise SystemExit("--resume is not supported for legacy (v0) evals")
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
-    # slots, so it's in-process only (`server + rich` is rejected at config validation). Legacy
-    # always runs in-process via the bridge.
-    rich = config.rich and not config.is_legacy
+    # slots, so it's in-process only (`server + rich` is rejected at config validation).
     # Always tee the run's logs to a file under the output dir (in-process and server mode).
     log_file = str(output_path(config) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
-    if rich:
+    if config.rich:
         setup_logging(level, log_file=log_file, console=False)
         # drop stray stdlib records that bypass loguru (else they print over the UI)
         logging.lastResort = None
@@ -103,13 +95,7 @@ def main(argv: list[str] | None = None) -> None:
     install_interrupt()
 
     try:
-        if (
-            config.is_legacy
-        ):  # v0 backwards-compat: run the classic env, bridged to Traces
-            from verifiers.v1.legacy import run_legacy_eval
-
-            episodes = asyncio.run(run_legacy_eval(config))
-        elif config.server:  # opt-in: drive rollouts through the env-server worker pool
+        if config.server:  # opt-in: drive rollouts through the env-server worker pool
             from verifiers.v1.cli.eval.runner import run_eval_server
 
             episodes = asyncio.run(run_eval_server(config))
@@ -120,11 +106,11 @@ def main(argv: list[str] | None = None) -> None:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
         # disk. Exit on the conventional Ctrl-C code without a traceback.
         raise SystemExit(130)
-    if config.push and not rich:
+    if config.push and not config.rich:
         from verifiers.v1.utils.platform import push_traces
 
         push_traces(episodes, config)
-    if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
+    if not config.rich:  # --rich is the whole output; otherwise dump each trace as JSON
         for episode in episodes:
             for trace in episode.traces:
                 print(trace.model_dump_json(indent=2, exclude_none=True))

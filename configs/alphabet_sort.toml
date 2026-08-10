@@ -1,11 +1,11 @@
-# alphabet-sort-v1 — multi-turn alphabetical sorting, driven by a colocated user simulator.
+# alphabet-sort — multi-turn alphabetical sorting, driven by a colocated user simulator.
 #
 #   uv run eval @ configs/alphabet_sort.toml --model <small-instruct-model>
 num_tasks = 5
 num_rollouts = 2
 
 [env.taskset]
-id = "alphabet-sort-v1"
+id = "alphabet-sort"
 min_turns = 2
 max_turns = 2
 

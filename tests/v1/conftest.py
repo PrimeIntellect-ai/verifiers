@@ -5,8 +5,7 @@ settings that still exercise the path, then assert on the resulting `Trace`(s) �
 not unit tests of individual components. They need a model API key (`PRIME_API_KEY`);
 without one the `e2e`-marked tests skip (config parsing still runs).
 
-`run_v1` / `run_v0` mirror the eval CLI's two paths (`run_eval` for a v1 taskset,
-`run_legacy_eval` for a v0 env). Placement coverage (harness x harness runtime x tool
+`run_v1` mirrors the eval CLI's server path (`run_eval`). Placement coverage (harness x harness runtime x tool
 server runtime) is PAIRWISE, not a full cross product: each test carries a curated list of
 combinations (in test_e2e.py) that hits every axis value and the cross-boundary pairs with
 distinct networking. The full cross bought flake exposure and CI minutes, not coverage — add
@@ -46,9 +45,8 @@ from verifiers.v1.utils.loaders import load_environment
 
 CI_MODEL = "openai/gpt-5.6-luna"
 
-# Fixture tasksets/envs (echo-v1, echo-agentic-v1, echo-v0, echo-multi-v0) live in
-# tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
-# v0 legacy bridge both resolve them by id (no install).
+# Fixture tasksets (echo-v1, echo-agentic-v1) live in tests/v1/fixtures, added to the
+# path via `pythonpath` in pyproject so the loader resolves them by id (no install).
 
 # The placement fixtures translate one parametrized value each; the combinations live on
 # the tests (`indirect=True`), so coverage is a visible, curated list — never an implicit
@@ -84,7 +82,7 @@ def pytest_configure(config) -> None:
     """Self-launching tool servers run `python -m <module>` in a fresh subprocess, which
     inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
     `PYTHONPATH` so a fixture server module (e.g. `tool_response_image_v1`)
-    resolves there too — an installed example package (e.g. `glossary_v1`) already would."""
+    resolves there too — an installed example package (e.g. `glossary`) already would."""
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")
     if fixtures not in existing.split(os.pathsep):
@@ -231,31 +229,3 @@ async def live_ctx():
         client=EvalClientConfig(),
         sampling=SamplingConfig(max_tokens=2048),
     )
-
-
-@pytest.fixture
-def run_v0():
-    """Run a legacy v0 env through the v1 bridge (the eval CLI's `--legacy.id` path)."""
-    from verifiers.v1.legacy import run_legacy_eval
-
-    async def _run(
-        env_id: str,
-        *,
-        output_dir: Path,
-        n: int = 1,
-        max_tokens: int = 2048,
-        args: dict | None = None,
-    ) -> list[Trace]:
-        config = EvalConfig(
-            legacy={"id": env_id, "args": args or {}},
-            model=CI_MODEL,
-            num_tasks=1,
-            num_rollouts=n,
-            sampling={"max_tokens": max_tokens},
-            rich=False,
-            output_dir=output_dir,
-        )
-        records = await run_legacy_eval(config)
-        return [t for r in records for t in r.traces]
-
-    return _run

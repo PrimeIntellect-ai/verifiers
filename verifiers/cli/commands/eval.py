@@ -2,7 +2,7 @@
 
 """Evaluation command module for external hosts."""
 
-from verifiers.scripts.eval import (
+from verifiers.legacy.scripts.eval import (
     build_extra_headers,
     build_parser,
     main,
