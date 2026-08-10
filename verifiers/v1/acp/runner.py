@@ -86,7 +86,8 @@ class VerifiersACPClient(Client):
         self._metadata_lifecycle_started = True
         self._prompt_turn_id += 1
         self._expected_prompt_turn_id = self._prompt_turn_id if expected else None
-        self._last_event_sequence = 0
+        # `eventSequence` belongs to the ACP connection, not an individual prompt.
+        # Never reset it here: a reused sequence is a cross-turn attribution error.
         self._boundary_outcome = None
         self._terminal_outcome = None
         self._correlation_error = None
@@ -126,6 +127,11 @@ class VerifiersACPClient(Client):
             self._reject_metadata(
                 namespace, event, "ACP metadata eventSequence regressed or duplicated"
             )
+        elif phase == "event":
+            # Progress is causal evidence but never terminal evidence. Preserve it
+            # intact for consumers/audit while withholding any scoring implication.
+            self._last_event_sequence = sequence
+            self.turn_acp_meta.setdefault(namespace, []).append(event)
         elif phase not in ("responseBoundary", "terminalQuiescence"):
             self._reject_metadata(
                 namespace, event, "ACP metadata has an unsupported phase"
@@ -156,7 +162,7 @@ class VerifiersACPClient(Client):
                 namespace, event, "ACP terminal outcome disagrees with responseBoundary"
             )
         else:
-            quiescence = event.get("terminalQuiescence")
+            quiescence = event.get("quiescence")
             if not isinstance(quiescence, dict) or (
                 type(quiescence.get("outstandingSubagents")) is not int
                 or quiescence["outstandingSubagents"] != 0
@@ -166,7 +172,7 @@ class VerifiersACPClient(Client):
                 self._reject_metadata(
                     namespace,
                     event,
-                    "ACP terminalQuiescence must contain explicit zero counters",
+                    "ACP terminal quiescence must contain explicit zero counters",
                 )
             else:
                 self._last_event_sequence = sequence
@@ -179,9 +185,14 @@ class VerifiersACPClient(Client):
             return
         if self._correlation_error is not None:
             raise RuntimeError(self._correlation_error)
-        if self._boundary_outcome is None or self._terminal_outcome is None:
+        if self._boundary_outcome is None:
             raise RuntimeError(
-                "ACP metadata lacks a correlated result/error, responseBoundary, and terminalQuiescence"
+                "ACP metadata lacks a correlated result/error responseBoundary"
+            )
+        if self._terminal_outcome is None:
+            raise RuntimeError(
+                "ACP metadata has an incomplete correlated "
+                f"{self._boundary_outcome} boundary without terminalQuiescence"
             )
         if self._terminal_outcome == "error":
             raise RuntimeError("ACP producer reported a correlated error")

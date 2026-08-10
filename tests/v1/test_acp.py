@@ -358,7 +358,7 @@ class _SessionLifetimeProducer:
                 "eventSequence": 2,
                 "phase": "terminalQuiescence",
                 "outcome": "result",
-                "terminalQuiescence": {
+                "quiescence": {
                     "outstandingSubagents": 0,
                     "remainingAutonomousContinuations": 0,
                 },
@@ -476,7 +476,7 @@ async def test_strict_metadata_requires_ordered_same_turn_terminal_envelope(
                 "eventSequence": 2,
                 "phase": "terminalQuiescence",
                 "outcome": "result",
-                "terminalQuiescence": {
+                "quiescence": {
                     "outstandingSubagents": 0,
                     "remainingAutonomousContinuations": 0,
                 },
@@ -540,7 +540,7 @@ async def test_strict_metadata_requires_ordered_same_turn_terminal_envelope(
                     "eventSequence": 1,
                     "phase": "terminalQuiescence",
                     "outcome": "result",
-                    "terminalQuiescence": {
+                    "quiescence": {
                         "outstandingSubagents": 0,
                         "remainingAutonomousContinuations": 0,
                     },
@@ -561,7 +561,7 @@ async def test_strict_metadata_requires_ordered_same_turn_terminal_envelope(
                     "eventSequence": 2,
                     "phase": "terminalQuiescence",
                     "outcome": "result",
-                    "terminalQuiescence": {
+                    "quiescence": {
                         "outstandingSubagents": 1,
                         "remainingAutonomousContinuations": 0,
                     },
@@ -614,7 +614,7 @@ async def test_correlated_error_remains_available_for_persistent_stream(monkeypa
             "eventSequence": 2,
             "phase": "terminalQuiescence",
             "outcome": "error",
-            "terminalQuiescence": {
+            "quiescence": {
                 "outstandingSubagents": 0,
                 "remainingAutonomousContinuations": 0,
             },
@@ -626,3 +626,120 @@ async def test_correlated_error_remains_available_for_persistent_stream(monkeypa
     with pytest.raises(RuntimeError, match="correlated error"):
         client.require_terminal_metadata(expected=True)
     assert client.turn_acp_meta["ns"][-1]["outcome"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_p2_to_v3_transcript_preserves_progress_and_scores_only_terminal_pair(
+    monkeypatch,
+):
+    """Canonical P2 transcript: progress survives, only boundary+terminal completes."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    transcript = (
+        {
+            "promptTurnId": 1,
+            "eventSequence": 11,
+            "phase": "event",
+            "subagents": [{"id": "child", "status": "running"}],
+        },
+        {
+            "promptTurnId": 1,
+            "eventSequence": 12,
+            "phase": "responseBoundary",
+            "outcome": "result",
+        },
+        {
+            "promptTurnId": 1,
+            "eventSequence": 13,
+            "phase": "terminalQuiescence",
+            "outcome": "result",
+            "quiescence": {
+                "outstandingSubagents": 0,
+                "remainingAutonomousContinuations": 0,
+            },
+        },
+    )
+    for event in transcript:
+        update = runner.SessionInfoUpdate()
+        update.field_meta = {"ai.primeintellect.prime-agent": event}
+        await client.session_update("session", update)
+    client.require_terminal_metadata(expected=True)
+    assert client.turn_acp_meta["ai.primeintellect.prime-agent"] == list(transcript)
+
+
+@pytest.mark.asyncio
+async def test_event_sequence_is_connection_global_across_two_prompt_turns(monkeypatch):
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+
+    async def emit(event):
+        update = runner.SessionInfoUpdate()
+        update.field_meta = {"ns": event}
+        await client.session_update("session", update)
+
+    client.begin_prompt_metadata(expected=True)
+    await emit(
+        {
+            "promptTurnId": 1,
+            "eventSequence": 1,
+            "phase": "responseBoundary",
+            "outcome": "result",
+        }
+    )
+    await emit(
+        {
+            "promptTurnId": 1,
+            "eventSequence": 2,
+            "phase": "terminalQuiescence",
+            "outcome": "result",
+            "quiescence": {
+                "outstandingSubagents": 0,
+                "remainingAutonomousContinuations": 0,
+            },
+        }
+    )
+    client.require_terminal_metadata(expected=True)
+    client.close_prompt_metadata()
+
+    client.begin_prompt_metadata(expected=True)
+    # Sequence reuse is illegal even though promptTurnId advanced correctly.
+    await emit(
+        {
+            "promptTurnId": 2,
+            "eventSequence": 1,
+            "phase": "responseBoundary",
+            "outcome": "result",
+        }
+    )
+    with pytest.raises(RuntimeError, match="regressed"):
+        client.require_terminal_metadata(expected=True)
+
+
+@pytest.mark.asyncio
+async def test_error_boundary_without_authoritative_terminal_is_incomplete(monkeypatch):
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    update = runner.SessionInfoUpdate()
+    update.field_meta = {
+        "ns": {
+            "promptTurnId": 1,
+            "eventSequence": 1,
+            "phase": "responseBoundary",
+            "outcome": "error",
+        }
+    }
+    await client.session_update("session", update)
+    with pytest.raises(RuntimeError, match="incomplete correlated error"):
+        client.require_terminal_metadata(expected=True)
+    assert client.turn_acp_meta["ns"][0]["outcome"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_cancel_has_no_terminal_claim_and_cannot_score(monkeypatch):
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    with pytest.raises(RuntimeError, match="lacks a correlated"):
+        client.require_terminal_metadata(expected=True)
