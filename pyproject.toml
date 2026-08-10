@@ -300,7 +300,7 @@ redundant-cast = "ignore"
 exclude = ["environments", "verifiers/v1"]
 
 [[tool.ty.overrides]]
-include = ["verifiers/envs/experimental/composable/tasksets/**"]
+include = ["verifiers/legacy/envs/experimental/composable/tasksets/**"]
 
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
