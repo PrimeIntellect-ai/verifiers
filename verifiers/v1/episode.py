@@ -16,7 +16,7 @@ class EnvInfo(BaseModel):
     """The env that ran the episode, self-describing without the run's config."""
 
     id: str = ""
-    """`EnvConfig.env_id`, e.g. `agentic-judge+gsm8k-v1`."""
+    """`EnvConfig.env_id`, e.g. `agentic-judge+gsm8k`."""
 
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):

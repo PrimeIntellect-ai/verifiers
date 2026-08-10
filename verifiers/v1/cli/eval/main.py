@@ -79,11 +79,10 @@ def main(argv: list[str] | None = None) -> None:
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
     # slots, so it's in-process only (`server + rich` is rejected at config validation).
-    rich = config.rich
     # Always tee the run's logs to a file under the output dir (in-process and server mode).
     log_file = str(output_path(config) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
-    if rich:
+    if config.rich:
         setup_logging(level, log_file=log_file, console=False)
         # drop stray stdlib records that bypass loguru (else they print over the UI)
         logging.lastResort = None
@@ -107,11 +106,11 @@ def main(argv: list[str] | None = None) -> None:
         # Graceful cleanup has already run (each rollout's `finally`); partial results are on
         # disk. Exit on the conventional Ctrl-C code without a traceback.
         raise SystemExit(130)
-    if config.push and not rich:
+    if config.push and not config.rich:
         from verifiers.v1.utils.platform import push_traces
 
         push_traces(episodes, config)
-    if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
+    if not config.rich:  # --rich is the whole output; otherwise dump each trace as JSON
         for episode in episodes:
             for trace in episode.traces:
                 print(trace.model_dump_json(indent=2, exclude_none=True))

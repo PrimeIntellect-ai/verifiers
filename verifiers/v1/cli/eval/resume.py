@@ -13,9 +13,8 @@ changed since the interrupted run re-runs, and nothing depends on `data.idx`.
 import json
 import tomllib
 from collections import Counter, defaultdict
-from collections.abc import Callable, Hashable
+from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
 
 from pydantic_core import from_json
 
@@ -24,8 +23,6 @@ from verifiers.v1.cli.resume import task_key
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import WireTrace
-
-K = TypeVar("K", bound=Hashable)
 
 
 def load_resume_config(resume_dir: Path) -> EvalConfig:
@@ -44,10 +41,10 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
 
 def load(
     resume_dir: Path,
-    selected_keys: list[K],
+    selected_keys: list[str],
     num_rollouts: int,
     complete: Callable[[Episode], bool] | None = None,
-) -> tuple[list[Episode], dict[K, int]]:
+) -> tuple[list[Episode], dict[str, int]]:
     """Load the good saved rollouts and diff them against the run's target: returns
     (kept episodes, rollouts owed per task key). `selected_keys` is one key per
     selected task (duplicates allowed — a key selected k times is owed up to
@@ -66,7 +63,7 @@ def load(
         return Episode.of(WireTrace.model_validate(row))
 
     verdict = complete if complete is not None else (lambda episode: episode.ok)
-    good: dict[K, list[tuple[bytes, Episode]]] = defaultdict(list)
+    good: dict[str, list[tuple[bytes, Episode]]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -101,7 +98,7 @@ def load(
                 )
     keep: list[bytes] = []
     episodes: list[Episode] = []
-    owed: dict[K, int] = {}
+    owed: dict[str, int] = {}
     for key, target in targets.items():
         rows = good.get(key, [])
         keep.extend(line for line, _ in rows)

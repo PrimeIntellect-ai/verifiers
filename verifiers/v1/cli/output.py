@@ -42,8 +42,8 @@ def output_path(config: EvalConfig) -> Path:
     taskset = config.env.taskset
     env = taskset.name if taskset.id else "no-taskset"
     if taskset.id and config.env.id:
-        # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k-v1` run must
-        # not share a parent dir with a plain `gsm8k-v1` one.
+        # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
+        # not share a parent dir with a plain `gsm8k` one.
         env = f"{env_name(config.env.id)}+{env}"
     # Every seat's resolved harness, distinct, in role order.
     harness = "+".join(

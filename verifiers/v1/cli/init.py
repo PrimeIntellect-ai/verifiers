@@ -197,7 +197,7 @@ A v1 verifiers environment, scaffolded with `init`.
 
 ## Develop
 
-1. Implement `load` and the `@reward` in `{pkg}/taskset.py` (see `environments/*_v1`).
+1. Implement `load` and the `@reward` in `{pkg}/taskset.py` (see `environments/`).
 2. Install + run:
 
 ```bash

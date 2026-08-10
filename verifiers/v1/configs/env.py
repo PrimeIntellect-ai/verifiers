@@ -79,8 +79,8 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _refuse_env_level_harness(cls, data):
-        """Point an env-level `harness` key (v0 muscle memory) at the seat that owns
-        it; a subclass declaring a role named `harness` keeps the key."""
+        """Point an env-level `harness` key at the seat that owns it; a subclass
+        declaring a role named `harness` keeps the key."""
         if (
             isinstance(data, dict)
             and "harness" in data
