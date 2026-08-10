@@ -41,6 +41,12 @@ def content_to_parts(content) -> MessageContent:
         elif p.get("type") == "image_url":
             url = (p.get("image_url") or {}).get("url", "")
             parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
+        elif p.get("type") == "image":
+            # HF-style shape: the URL string rides directly under ``image``.
+            # Normalize here so downstream (renderers, offload) sees one shape.
+            url = p.get("image")
+            if isinstance(url, str):
+                parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
     return parts
 
 
@@ -202,8 +208,8 @@ class TurnTokens(BaseModel):
         default=None, exclude=True
     )
     is_content: list[bool] | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
-    # attributed per node by the turn's `commit`, then dropped — never persisted.
+    # Transient carrier (excluded): the renderer's multimodal sidecar (raw-image descriptors,
+    # hashes, and placeholder offsets), attributed per node by the turn's `commit`, then dropped.
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the MoE expert-routing data from `generate` (expert ids
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,

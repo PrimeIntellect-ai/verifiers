@@ -41,6 +41,7 @@ from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1.errors import (
+    InterceptionError,
     OverlongPromptError,
     ProviderError,
     RolloutError,
@@ -331,6 +332,18 @@ class InterceptionServer(Interception):
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
+        try:
+            body = await session.client.prepare_request_body(dialect, body)
+        except RolloutError as e:
+            return self._fail(session, dialect, e)
+        except Exception as e:  # noqa: BLE001 - ingress boundary surfaces every prep failure
+            return self._fail(
+                session,
+                dialect,
+                InterceptionError(
+                    f"request preparation failed: {type(e).__name__}: {e}"
+                ),
+            )
         streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",

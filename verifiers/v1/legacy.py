@@ -9,6 +9,9 @@ is served over the **same** v1 ZMQ protocol as a native v1 env, returning v1
 rollout through a token-recording renderer client (so training keeps per-turn ids + logprobs),
 and maps the v0 ``RolloutOutput`` into a v1 ``Trace`` via ``rollout_output_to_trace``.
 
+Multimodal rollouts are out of scope: raw image offload and v1 MM sidecars are
+native-``TrainClient`` only. Bridging a multimodal v0 trajectory raises.
+
 This is the only place that imports the v0 ``verifiers`` API; all imports of it are lazy so
 v1 stays importable without the v0 package present.
 """
@@ -122,12 +125,27 @@ def _tool_calls(raw: Any) -> list[ToolCall] | None:
     return calls or None
 
 
+def _content_has_image(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        part = _as_dict(part)
+        if isinstance(part, dict) and part.get("type") in ("image", "image_url"):
+            return True
+    return False
+
+
 def _to_v1_messages(msgs: Any) -> list:
     out: list = []
     for m in msgs or []:
         m = _as_dict(m)
         if not isinstance(m, dict):
             continue
+        if _content_has_image(m.get("content")):
+            raise RuntimeError(
+                "The v1 legacy (v0) bridge does not support multimodal rollouts; "
+                "use a native v1 TrainClient environment instead."
+            )
         role = m.get("role")
         if role == "system":
             out.append(SystemMessage(content=content_to_parts(m.get("content"))))
@@ -187,6 +205,11 @@ def _to_v1_response(raw: Any, model: str, tokens: TurnTokens | None = None) -> R
 def _to_v1_tokens(raw: Any) -> TurnTokens | None:
     if not isinstance(raw, dict):
         return None
+    if raw.get("multi_modal_data") is not None:
+        raise RuntimeError(
+            "The v1 legacy (v0) bridge does not support multimodal rollouts; "
+            "use a native v1 TrainClient environment instead."
+        )
     if not raw.get("completion_ids") and not raw.get("prompt_ids"):
         return None
     return TurnTokens(
@@ -251,7 +274,10 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, the rollout's
     ``info``, and the task's system prompt / prompt / answer. A truncated v0 rollout is
     mapped to a v1 truncation stop condition (see ``_v1_stop_condition``) so
-    ``Trace.is_truncated`` derives ``True``."""
+    ``Trace.is_truncated`` derives ``True``.
+
+    Multimodal rollouts are rejected at ``_to_v1_messages`` / ``_to_v1_tokens``.
+    """
     model = str(out.get("model") or "")
 
     error = None
