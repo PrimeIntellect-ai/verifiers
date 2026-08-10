@@ -167,6 +167,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             mcp_urls=mcp_urls,
             session_path=f"{config_dir}/acp-session",
             session_meta=session_meta,
+            trace=trace,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
