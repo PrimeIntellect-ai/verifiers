@@ -5,6 +5,7 @@ import atexit
 import base64
 import contextlib
 import hashlib
+import os
 import logging
 import shlex
 import uuid
@@ -277,7 +278,7 @@ class Runtime(ABC):
         """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
-        path = f"/tmp/vf-scripts/{digest}.py"
+        path = f"/tmp/vf-scripts-{os.getuid()}/{digest}.py"  # per-uid: shared /tmp/vf-scripts may be owned by another user
         if digest not in self._uv_interpreters:
             async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
                 if digest not in self._uv_interpreters:
