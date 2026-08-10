@@ -36,6 +36,7 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+KEEPALIVE_INTERVAL_SECONDS = 15.0
 LATE_UPDATE_GRACE_SECONDS = 1.0
 
 
@@ -377,9 +378,21 @@ def write_packet(stream: Any, value: dict) -> None:
     data = json.dumps(value, ensure_ascii=False).encode()
     if len(data) > MAX_PACKET_BYTES:
         raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
-    stream.write(len(data).to_bytes(8, "big"))
-    stream.write(data)
+    # A response and the heartbeat task may write concurrently. Keep each packet
+    # in one write so their length-prefixed frames cannot interleave.
+    stream.write(len(data).to_bytes(8, "big") + data)
     stream.flush()
+
+
+async def emit_keepalives(
+    stream: Any,
+    *,
+    interval: float = KEEPALIVE_INTERVAL_SECONDS,
+) -> None:
+    """Keep the outer process stream active for the session's whole lifetime."""
+    while True:
+        await asyncio.sleep(interval)
+        write_packet(stream, {"type": "keepalive"})
 
 
 async def serve_stream() -> None:
@@ -390,6 +403,7 @@ async def serve_stream() -> None:
     await asyncio.get_running_loop().connect_read_pipe(
         lambda: protocol, sys.stdin.buffer
     )
+    keepalive = asyncio.create_task(emit_keepalives(sys.stdout.buffer))
     try:
         while request := await read_packet(reader):
             stop = False
@@ -417,6 +431,9 @@ async def serve_stream() -> None:
             if stop:
                 break
     finally:
+        keepalive.cancel()
+        with suppress(asyncio.CancelledError):
+            await keepalive
         if not closed:
             await session.close()
 

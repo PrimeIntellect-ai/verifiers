@@ -160,10 +160,13 @@ class _PacketReader:
         return data
 
     async def read(self) -> dict:
-        size = int.from_bytes(await self._readexactly(8), "big")
-        if size > MAX_PACKET_BYTES:
-            raise ValueError(f"ACP session packet is too large: {size} bytes")
-        return json.loads((await self._readexactly(size)).decode())
+        while True:
+            size = int.from_bytes(await self._readexactly(8), "big")
+            if size > MAX_PACKET_BYTES:
+                raise ValueError(f"ACP session packet is too large: {size} bytes")
+            packet = json.loads((await self._readexactly(size)).decode())
+            if packet.get("type") != "keepalive":
+                return packet
 
 
 class ACPHarnessSession(HarnessSession):
