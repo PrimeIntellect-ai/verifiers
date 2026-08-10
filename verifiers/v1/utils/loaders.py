@@ -4,7 +4,6 @@ import contextvars
 import functools
 import importlib
 import importlib.util
-import inspect
 import pkgutil
 from collections.abc import Callable
 from pathlib import Path
@@ -247,14 +246,13 @@ def plugged_fn(path: str) -> Callable[..., Any]:
 def load_plugged_fn(
     name: str, config: DecoratedFunctionConfig, attr: str
 ) -> Callable[..., Any]:
-    """Build a task hook from a config entry: the imported function (sync or async)
-    wrapped under the plugged `name`, tagged like its `@vf.<attr>` equivalent."""
+    """Build a task hook from a config entry: the imported async function wrapped
+    under the plugged `name`, tagged like its `@vf.<attr>` equivalent."""
     fn = plugged_fn(config.fn)
 
     @functools.wraps(fn)
-    async def plugged(*args: Any, **kwargs: Any) -> Any:
-        result = fn(*args, **kwargs)
-        return await result if inspect.isawaitable(result) else result
+    def plugged(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
 
     plugged.__name__ = name
     setattr(plugged, attr, True)

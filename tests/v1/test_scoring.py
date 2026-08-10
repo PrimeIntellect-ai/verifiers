@@ -3,7 +3,7 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 PLUGGED_FNS_PY = """
-def reply_length(trace) -> float:
+async def reply_length(trace) -> float:
     return float(len(trace.last_reply or ""))
 
 
@@ -11,11 +11,11 @@ async def exact_match(task, trace) -> float:
     return float(task.answer in (trace.last_reply or ""))
 
 
-def marker(trace) -> float:
+async def marker(trace) -> float:
     return 0.125
 
 
-def two_turns(trace) -> bool:
+async def two_turns(trace) -> bool:
     return trace.num_turns >= 2
 """
 

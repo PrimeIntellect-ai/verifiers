@@ -233,7 +233,7 @@ To override the judge model, set `env.taskset.task.judge.model` in your config (
 
 ## Plugging hooks via config
 
-Stop conditions, metrics, and rewards can also be plugged into any task from config, without touching the taskset's code. Each entry names a function by import path (`pkg.module.function`, `pkg.module:function`, or `path/to/file.py:function`); functions may be sync or async and declare what they need by parameter name (`task`, `trace`, `runtime` — stops receive the trace only):
+Stop conditions, metrics, and rewards can also be plugged into any task from config, without touching the taskset's code. Each entry names an async function by import path (`pkg.module.function`, `pkg.module:function`, or `path/to/file.py:function`); like decorated hooks, functions declare what they need by parameter name (`task`, `trace`, `runtime` — stops receive the trace only):
 
 ```toml
 [env.taskset.task.stops]
