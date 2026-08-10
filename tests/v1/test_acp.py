@@ -7,8 +7,17 @@ import types
 from pathlib import Path
 
 import pytest
+from acp_correlation_transcripts import (
+    NAMESPACE,
+    cancelled,
+    error_incomplete,
+    error_terminal,
+    global_sequence_turn_two,
+    late_child,
+    success,
+)
 
-from verifiers.v1.acp import _record_acp_meta
+from verifiers.v1.acp import ACP, _record_acp_meta
 
 
 def test_acp_meta_accumulates_history_without_flattening() -> None:
@@ -743,3 +752,119 @@ async def test_cancel_has_no_terminal_claim_and_cannot_score(monkeypatch):
     client.begin_prompt_metadata(expected=True)
     with pytest.raises(RuntimeError, match="lacks a correlated"):
         client.require_terminal_metadata(expected=True)
+
+
+@pytest.mark.asyncio
+async def test_one_shot_run_records_only_validated_meta_json_into_trace(monkeypatch):
+    """The actual one-shot wrapper reads meta.json and appends accepted history."""
+
+    class Runtime:
+        def __init__(self):
+            self.writes = {}
+
+        async def prepare_uv_script(self, *args, **kwargs):
+            return ["runner"]
+
+        async def run(self, command, env):
+            return types.SimpleNamespace(exit_code=0, stderr="")
+
+        async def write(self, path, data):
+            self.writes[path] = data
+
+        async def run_program(self, command, env):
+            return types.SimpleNamespace(exit_code=1, stdout="", stderr="")
+
+        async def read(self, path):
+            return json.dumps({NAMESPACE: success()}).encode()
+
+    import json
+
+    runtime = Runtime()
+    trace = types.SimpleNamespace(calls=[], stop_condition=None, info={})
+    result = await ACP(metadata_expected=True).run(
+        runtime, {}, ["agent"], "prompt", trace=trace
+    )
+    assert result.exit_code == 1
+    assert trace.info["acp_meta"][NAMESPACE] == success()
+    config = next(
+        json.loads(value)
+        for path, value in runtime.writes.items()
+        if path.endswith("config.json")
+    )
+    assert config["meta_path"].endswith("meta.json")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transcript", "error"),
+    [
+        (success, None),
+        (error_terminal, "correlated error"),
+        (error_incomplete, "incomplete correlated error"),
+        (cancelled, "lacks a correlated"),
+        (late_child, "lacks a correlated"),
+    ],
+)
+async def test_exact_p2_shaped_transcripts_have_expected_v3_outcomes(
+    monkeypatch, transcript, error
+):
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    for event in transcript():
+        update = runner.SessionInfoUpdate()
+        update.field_meta = {NAMESPACE: event}
+        await client.session_update("session", update)
+    if error is None:
+        client.require_terminal_metadata(expected=True)
+        assert client.acp_meta[NAMESPACE] == transcript()
+    else:
+        with pytest.raises(RuntimeError, match=error):
+            client.require_terminal_metadata(expected=True)
+
+
+@pytest.mark.asyncio
+async def test_exact_p2_late_child_and_global_turn_two_transcripts(monkeypatch):
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    for event in success():
+        update = runner.SessionInfoUpdate()
+        update.field_meta = {NAMESPACE: event}
+        await client.session_update("session", update)
+    client.require_terminal_metadata(expected=True)
+    client.close_prompt_metadata()
+    client.begin_prompt_metadata(expected=True)
+    for event in global_sequence_turn_two():
+        update = runner.SessionInfoUpdate()
+        update.field_meta = {NAMESPACE: event}
+        await client.session_update("session", update)
+    client.require_terminal_metadata(expected=True)
+    assert client.acp_meta[NAMESPACE] == success() + global_sequence_turn_two()
+    client.close_prompt_metadata()
+    late = late_child()[0]
+    update = runner.SessionInfoUpdate()
+    update.field_meta = {NAMESPACE: late}
+    await client.session_update("session", update)
+    assert client.unattributed_acp_meta[NAMESPACE][-1] == late
+
+
+@pytest.mark.asyncio
+async def test_accepted_metadata_records_once_in_turn_and_connection_stores(
+    monkeypatch,
+):
+    """Regression guard: accepted-event persistence must not recurse into itself."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    event = {
+        "promptTurnId": 1,
+        "eventSequence": 1,
+        "phase": "event",
+        "kind": "progress",
+    }
+    update = runner.SessionInfoUpdate()
+    update.field_meta = {NAMESPACE: event}
+    await client.session_update("session", update)
+    assert client.turn_acp_meta == {NAMESPACE: [event]}
+    assert client.acp_meta == {NAMESPACE: [event]}

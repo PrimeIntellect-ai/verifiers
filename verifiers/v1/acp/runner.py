@@ -100,6 +100,11 @@ class VerifiersACPClient(Client):
         self._ambiguous_meta = True
         self._correlation_error = reason
 
+    def _record_accepted_metadata(self, namespace: str, event: dict[str, Any]) -> None:
+        """Persist only an already validated producer record, in arrival order."""
+        self.turn_acp_meta.setdefault(namespace, []).append(event)
+        self.acp_meta.setdefault(namespace, []).append(event)
+
     def _accept_metadata(self, namespace: str, event: Any) -> None:
         """Validate one envelope event before it can enter trace-visible metadata."""
         if not isinstance(event, dict):
@@ -131,7 +136,7 @@ class VerifiersACPClient(Client):
             # Progress is causal evidence but never terminal evidence. Preserve it
             # intact for consumers/audit while withholding any scoring implication.
             self._last_event_sequence = sequence
-            self.turn_acp_meta.setdefault(namespace, []).append(event)
+            self._record_accepted_metadata(namespace, event)
         elif phase not in ("responseBoundary", "terminalQuiescence"):
             self._reject_metadata(
                 namespace, event, "ACP metadata has an unsupported phase"
@@ -148,7 +153,7 @@ class VerifiersACPClient(Client):
             else:
                 self._last_event_sequence = sequence
                 self._boundary_outcome = outcome
-                self.turn_acp_meta.setdefault(namespace, []).append(event)
+                self._record_accepted_metadata(namespace, event)
         elif self._boundary_outcome is None:
             self._reject_metadata(
                 namespace, event, "ACP terminalQuiescence preceded responseBoundary"
@@ -177,7 +182,7 @@ class VerifiersACPClient(Client):
             else:
                 self._last_event_sequence = sequence
                 self._terminal_outcome = outcome
-                self.turn_acp_meta.setdefault(namespace, []).append(event)
+                self._record_accepted_metadata(namespace, event)
 
     def require_terminal_metadata(self, *, expected: bool) -> None:
         """Reject partial envelopes; `end_turn` and elapsed time are not evidence."""
