@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from verifiers.legacy.types import (
+from verifiers.types import (
     Response,
     ResponseMessage,
     ResponseTokens,
@@ -18,7 +18,7 @@ from verifiers.legacy.types import (
     TrajectoryStep,
     TrajectoryStepTokens,
 )
-from verifiers.legacy.utils.response_utils import parse_response_tokens
+from verifiers.utils.response_utils import parse_response_tokens
 
 
 @pytest.mark.asyncio

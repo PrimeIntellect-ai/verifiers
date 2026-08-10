@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from verifiers.legacy.types import ClientConfig
-from verifiers.legacy.utils.eval_utils import load_endpoints
+from verifiers.types import ClientConfig
+from verifiers.utils.eval_utils import load_endpoints
 
 
 def test_load_endpoints_rejects_python_registry_path(tmp_path: Path):

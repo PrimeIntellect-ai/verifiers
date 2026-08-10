@@ -1,4 +1,4 @@
-"""Tests for verifiers.legacy.utils.eval_utils.
+"""Tests for verifiers.utils.eval_utils.
 
 Covers:
 - print_results indexing with multiple rollouts per example
@@ -6,8 +6,8 @@ Covers:
 
 import pytest
 
-from verifiers.legacy.types import GenerateOutputs
-from verifiers.legacy.utils.save_utils import states_to_outputs
+from verifiers.types import GenerateOutputs
+from verifiers.utils.save_utils import states_to_outputs
 
 
 def test_print_results_rollout_indexing(capsys, make_metadata, make_state, make_input):
@@ -18,7 +18,7 @@ def test_print_results_rollout_indexing(capsys, make_metadata, make_state, make_
     - r1: all first rollouts (indices 0, 2, 4, ...)
     - r2: all second rollouts (indices 1, 3, 5, ...)
     """
-    from verifiers.legacy.utils.eval_utils import print_results
+    from verifiers.utils.eval_utils import print_results
 
     num_examples = 3
     rollouts_per_example = 2
@@ -61,7 +61,7 @@ def test_print_results_rollout_indexing(capsys, make_metadata, make_state, make_
 
 def test_print_results_single_rollout(capsys, make_metadata, make_state, make_input):
     """Test print_results with single rollout per example (edge case)."""
-    from verifiers.legacy.utils.eval_utils import print_results
+    from verifiers.utils.eval_utils import print_results
 
     num_examples = 3
     rollouts_per_example = 1
@@ -88,7 +88,7 @@ def test_print_results_single_rollout(capsys, make_metadata, make_state, make_in
 
 
 def test_print_results_includes_eval_name(capsys, make_metadata, make_output):
-    from verifiers.legacy.utils.eval_utils import print_results
+    from verifiers.utils.eval_utils import print_results
 
     metadata = make_metadata(env_id="env1")
     metadata["name"] = "env1-short"
@@ -105,7 +105,7 @@ def test_print_results_includes_eval_name(capsys, make_metadata, make_output):
 
 def test_print_results_three_rollouts(capsys, make_metadata, make_state, make_input):
     """Test print_results with three rollouts per example."""
-    from verifiers.legacy.utils.eval_utils import print_results
+    from verifiers.utils.eval_utils import print_results
 
     num_examples = 2
     rollouts_per_example = 3
@@ -137,7 +137,7 @@ def test_print_results_three_rollouts(capsys, make_metadata, make_state, make_in
 
 
 def test_print_results_includes_usage(capsys, make_metadata, make_output):
-    from verifiers.legacy.utils.eval_utils import print_results
+    from verifiers.utils.eval_utils import print_results
 
     outputs = [
         make_output(example_id=0, reward=1.0, metrics={"test_metric": 1.0}),
@@ -157,7 +157,7 @@ def test_print_results_includes_usage(capsys, make_metadata, make_output):
 
 
 def test_attach_metadata_cost_uses_total_output_usage(make_metadata, make_output):
-    from verifiers.legacy.utils.eval_utils import _attach_metadata_cost
+    from verifiers.utils.eval_utils import _attach_metadata_cost
 
     outputs = [
         make_output(example_id=0, reward=1.0, metrics={"test_metric": 1.0}),
@@ -186,7 +186,7 @@ def test_attach_metadata_cost_uses_total_output_usage(make_metadata, make_output
 
 
 def test_print_results_labels_cost_as_all(capsys, make_metadata, make_output):
-    from verifiers.legacy.utils.eval_utils import print_results
+    from verifiers.utils.eval_utils import print_results
 
     outputs = [
         make_output(example_id=0, reward=1.0, metrics={"test_metric": 1.0}),
@@ -208,7 +208,7 @@ def test_print_results_labels_cost_as_all(capsys, make_metadata, make_output):
 def test_print_results_handles_heterogeneous_metrics(
     capsys, make_metadata, make_output
 ):
-    from verifiers.legacy.utils.eval_utils import print_results
+    from verifiers.utils.eval_utils import print_results
 
     outputs = [
         make_output(example_id=0, reward=1.0, metrics={"rlm_turns": 3.0}),

@@ -1,6 +1,6 @@
 """Tests for the base Parser class."""
 
-from verifiers.legacy import Parser
+from verifiers import Parser
 
 
 class TestParser:

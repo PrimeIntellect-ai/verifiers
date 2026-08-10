@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from verifiers.legacy.clients.nemorl_chat_completions_client import (
+from verifiers.clients.nemorl_chat_completions_client import (
     NeMoRLChatCompletionsClient,
 )
-from verifiers.legacy.types import ClientConfig
+from verifiers.types import ClientConfig
 
 
 def _make_nemo_gym_response_dict(
@@ -187,7 +187,7 @@ async def test_from_native_response_produces_response_tokens():
 @pytest.mark.asyncio
 async def test_to_native_prompt_emits_token_extras():
     """Assistant message extras flow onto the outgoing native dict."""
-    from verifiers.legacy.types import AssistantMessage, UserMessage
+    from verifiers.types import AssistantMessage, UserMessage
 
     client = _make_client()
     assistant = AssistantMessage(content="hello")
@@ -207,7 +207,7 @@ async def test_to_native_prompt_emits_token_extras():
 @pytest.mark.asyncio
 async def test_to_native_prompt_without_extras_is_clean():
     """AssistantMessages with no token extras serialize without token fields."""
-    from verifiers.legacy.types import AssistantMessage
+    from verifiers.types import AssistantMessage
 
     client = _make_client()
     native_messages, _ = await client.to_native_prompt(
@@ -220,10 +220,10 @@ async def test_to_native_prompt_without_extras_is_clean():
 @pytest.mark.asyncio
 async def test_get_response_annotates_from_trajectory():
     """get_response walks state['trajectory'] and annotates matching assistants."""
-    from verifiers.legacy.clients.nemorl_chat_completions_client import (
+    from verifiers.clients.nemorl_chat_completions_client import (
         _attach_trajectory_tokens_to_prompt,
     )
-    from verifiers.legacy.types import AssistantMessage, UserMessage
+    from verifiers.types import AssistantMessage, UserMessage
 
     a0 = AssistantMessage(content="turn0")
     a1 = AssistantMessage(content="turn1")
@@ -262,10 +262,10 @@ async def test_get_response_annotates_from_trajectory():
 
 @pytest.mark.asyncio
 async def test_get_response_empty_trajectory_is_noop():
-    from verifiers.legacy.clients.nemorl_chat_completions_client import (
+    from verifiers.clients.nemorl_chat_completions_client import (
         _attach_trajectory_tokens_to_prompt,
     )
-    from verifiers.legacy.types import AssistantMessage, UserMessage
+    from verifiers.types import AssistantMessage, UserMessage
 
     a = AssistantMessage(content="x")
     prompt = [UserMessage(content="u"), a]
@@ -275,10 +275,10 @@ async def test_get_response_empty_trajectory_is_noop():
 
 @pytest.mark.asyncio
 async def test_get_response_none_tokens_step_is_skipped():
-    from verifiers.legacy.clients.nemorl_chat_completions_client import (
+    from verifiers.clients.nemorl_chat_completions_client import (
         _attach_trajectory_tokens_to_prompt,
     )
-    from verifiers.legacy.types import AssistantMessage, UserMessage
+    from verifiers.types import AssistantMessage, UserMessage
 
     a0 = AssistantMessage(content="x")
     a1 = AssistantMessage(content="y")
@@ -303,10 +303,10 @@ async def test_get_response_none_tokens_step_is_skipped():
 @pytest.mark.asyncio
 async def test_get_response_positional_pairing_with_extra_leading_assistant():
     """Extra leading assistant messages (e.g. few-shot) are ignored; last N paired."""
-    from verifiers.legacy.clients.nemorl_chat_completions_client import (
+    from verifiers.clients.nemorl_chat_completions_client import (
         _attach_trajectory_tokens_to_prompt,
     )
-    from verifiers.legacy.types import AssistantMessage, UserMessage
+    from verifiers.types import AssistantMessage, UserMessage
 
     few_shot = AssistantMessage(content="few-shot example")
     a0 = AssistantMessage(content="turn0")

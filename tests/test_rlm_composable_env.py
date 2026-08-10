@@ -16,25 +16,25 @@ from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
-import verifiers.legacy as vf
-from verifiers.legacy.envs.experimental.composable import (
+import verifiers as vf
+from verifiers.envs.experimental.composable import (
     composable_env as composable_env_module,
 )
-from verifiers.legacy.envs.experimental.composable import (
+from verifiers.envs.experimental.composable import (
     ComposableEnv,
     Harness,
     SandboxSpec,
     SandboxTaskSet,
 )
-from verifiers.legacy.envs.experimental.composable.harnesses import rlm as rlm_module
-from verifiers.legacy.envs.experimental.utils import (
+from verifiers.envs.experimental.composable.harnesses import rlm as rlm_module
+from verifiers.envs.experimental.utils import (
     git_checkout_cache as git_checkout_cache_module,
 )
-from verifiers.legacy.envs.experimental.utils.file_locks import (
+from verifiers.envs.experimental.utils.file_locks import (
     exclusive_path_lock,
     shared_path_lock,
 )
-from verifiers.legacy.envs.experimental.composable.harnesses.rlm import (
+from verifiers.envs.experimental.composable.harnesses.rlm import (
     build_install_script,
     rlm_harness,
     resolve_local_checkout,
@@ -590,7 +590,7 @@ async def test_post_install_uploads_and_script_run_after_install():
 
 @pytest.mark.asyncio
 async def test_post_install_script_failure_raises():
-    import verifiers.legacy as vf
+    import verifiers as vf
 
     taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
     env = ComposableEnv(
@@ -782,7 +782,7 @@ async def test_rlm_harness_metrics_rubric_does_not_crash_scoring(tmp_path):
 
 def test_rlm_harness_keep_trajectory_step_drops_sub_agent_by_default():
     """Default config installs a filter that drops X-RLM-Depth > 0 steps."""
-    from verifiers.legacy.envs.experimental.composable.harnesses.rlm import (
+    from verifiers.envs.experimental.composable.harnesses.rlm import (
         _keep_only_parent_rlm_steps,
     )
 
@@ -819,7 +819,7 @@ async def test_cli_agent_get_model_response_stashes_headers_before_clear():
     from the stash key — see ``ComposableEnv.add_trajectory_step``.
     """
     from datasets import Dataset
-    import verifiers.legacy.envs.environment as environment_module
+    import verifiers.envs.environment as environment_module
 
     env = vf.CliAgentEnv(
         run_command="python agent.py",
@@ -927,7 +927,7 @@ async def test_composable_env_keep_trajectory_step_end_to_end(tmp_path):
     in the trajectory.
     """
     from datasets import Dataset
-    import verifiers.legacy.envs.environment as environment_module
+    import verifiers.envs.environment as environment_module
 
     taskset = MockSandboxTaskSet(dataset=_make_dataset(), name="test")
     env = ComposableEnv(

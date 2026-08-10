@@ -2,8 +2,8 @@
 
 import pytest
 
-from verifiers.legacy import Rubric, RubricGroup, XMLParser
-from verifiers.legacy.types import RolloutInput, RolloutTiming, State
+from verifiers import Rubric, RubricGroup, XMLParser
+from verifiers.types import RolloutInput, RolloutTiming, State
 
 
 class TestRubricGroup:

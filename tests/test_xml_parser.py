@@ -2,7 +2,7 @@
 
 import pytest
 
-from verifiers.legacy import XMLParser
+from verifiers import XMLParser
 
 
 class TestXMLParser:

@@ -3,7 +3,7 @@
 import pytest
 from datasets import Dataset
 
-from verifiers.legacy import Messages, MultiTurnEnv, Parser, Rubric, SingleTurnEnv, State
+from verifiers import Messages, MultiTurnEnv, Parser, Rubric, SingleTurnEnv, State
 
 
 class TestSingleTurnTiming:

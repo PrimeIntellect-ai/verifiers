@@ -25,7 +25,7 @@ class TestBrowserEnvValidation:
 
     def test_invalid_mode_raises(self):
         """Test that an invalid mode raises ValueError."""
-        from verifiers.legacy.envs.integrations.browser_env.browser_env import BrowserEnv
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
 
         with patch.dict(
             os.environ,
@@ -52,7 +52,7 @@ class TestCUAModeInit:
 
     def test_sandbox_mode_requires_prime_sandboxes(self):
         """Test that CUAMode sandbox mode requires prime-sandboxes package."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import (
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
             SANDBOX_AVAILABLE,
         )
 
@@ -61,8 +61,8 @@ class TestCUAModeInit:
 
     def test_use_sandbox_true_creates_sandbox_execution_mode(self):
         """Test that use_sandbox=True creates CUAMode with execution_mode='sandbox'."""
-        from verifiers.legacy.envs.integrations.browser_env.browser_env import BrowserEnv
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         with patch.dict(
             os.environ,
@@ -81,12 +81,12 @@ class TestCUAModeInit:
 
     def test_use_sandbox_false_creates_local_execution_mode(self):
         """Test that use_sandbox=False creates CUAMode with execution_mode='local'."""
-        from verifiers.legacy.envs.integrations.browser_env.browser_env import BrowserEnv
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         with patch.dict(os.environ, {}, clear=True):
             with patch(
-                "verifiers.legacy.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
+                "verifiers.envs.integrations.browser_env.modes.cua_mode.CUAMode.verify_server_connection"
             ):
                 env = BrowserEnv(
                     mode="cua",
@@ -106,8 +106,8 @@ class TestCUASandboxModeBackwardsCompat:
     def test_deprecated_cua_sandbox_mode_import(self):
         """Test that CUASandboxMode import still works with deprecation warning."""
         import warnings
-        from verifiers.legacy.envs.integrations.browser_env.modes import CUASandboxMode
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import (
+        from verifiers.envs.integrations.browser_env.modes import CUASandboxMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
             SANDBOX_AVAILABLE,
         )
 
@@ -130,7 +130,7 @@ class TestCUAModeScreenshotFilter:
 
     def test_filter_screenshots_keeps_recent(self):
         """Test that filter keeps the N most recent screenshots."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         mode = CUAMode(execution_mode="local", keep_recent_screenshots=2)
 
@@ -180,7 +180,7 @@ class TestCUAModeScreenshotFilter:
 
     def test_filter_screenshots_sandbox_mode(self):
         """Test that filter works in sandbox mode too."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import (
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import (
             CUAMode,
             SANDBOX_AVAILABLE,
         )
@@ -236,7 +236,7 @@ class TestCUAModeScreenshotFilter:
 
     def test_filter_screenshots_none_keeps_all(self):
         """Test that keep_recent_screenshots=None keeps all screenshots."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         mode = CUAMode(execution_mode="local", keep_recent_screenshots=None)
 
@@ -269,7 +269,7 @@ class TestCUAModeScreenshotFilter:
 
     def test_filter_screenshots_fewer_than_limit(self):
         """Test that filtering doesn't change messages when fewer than N screenshots."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         mode = CUAMode(execution_mode="local", keep_recent_screenshots=5)
 
@@ -306,7 +306,7 @@ class TestCUAModeResponseFormat:
 
     def test_format_response_success(self):
         """Test formatting a successful response."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         mode = CUAMode(execution_mode="local", save_screenshots=False)
 
@@ -327,7 +327,7 @@ class TestCUAModeResponseFormat:
 
     def test_format_response_failure(self):
         """Test formatting a failed response with error."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         mode = CUAMode(execution_mode="local", save_screenshots=False)
 
@@ -346,7 +346,7 @@ class TestCUAModeResponseFormat:
 
     def test_format_response_with_screenshot(self):
         """Test formatting includes image_url when screenshot present."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         mode = CUAMode(execution_mode="local", save_screenshots=False)
 
@@ -368,7 +368,7 @@ class TestCUAModeResponseFormat:
 
     def test_format_response_no_screenshot(self):
         """Test formatting handles missing screenshot gracefully."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.cua_mode import CUAMode
+        from verifiers.envs.integrations.browser_env.modes.cua_mode import CUAMode
 
         mode = CUAMode(execution_mode="local", save_screenshots=False)
 
@@ -393,7 +393,7 @@ class TestDOMModeLLMConfig:
 
     def test_get_llm_config_basic(self):
         """Test basic LLM config extraction."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.dom_mode import DOMMode
+        from verifiers.envs.integrations.browser_env.modes.dom_mode import DOMMode
 
         mode = DOMMode()
 
@@ -412,7 +412,7 @@ class TestDOMModeLLMConfig:
 
     def test_get_llm_config_non_openai(self):
         """Test LLM config includes baseURL for non-OpenAI endpoints."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.dom_mode import DOMMode
+        from verifiers.envs.integrations.browser_env.modes.dom_mode import DOMMode
 
         mode = DOMMode()
 
@@ -431,7 +431,7 @@ class TestDOMModeLLMConfig:
 
     def test_get_llm_config_no_client(self):
         """Test LLM config returns None when no client available."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.dom_mode import DOMMode
+        from verifiers.envs.integrations.browser_env.modes.dom_mode import DOMMode
 
         mode = DOMMode()
         state = {}
@@ -442,7 +442,7 @@ class TestDOMModeLLMConfig:
 
     def test_get_llm_config_no_model(self):
         """Test LLM config returns None when no model specified."""
-        from verifiers.legacy.envs.integrations.browser_env.modes.dom_mode import DOMMode
+        from verifiers.envs.integrations.browser_env.modes.dom_mode import DOMMode
 
         mode = DOMMode()
 
@@ -464,7 +464,7 @@ class TestBrowserEnvConstants:
 
     def test_mode_type_literal(self):
         """Test that ModeType includes expected values."""
-        from verifiers.legacy.envs.integrations.browser_env.browser_env import ModeType
+        from verifiers.envs.integrations.browser_env.browser_env import ModeType
         from typing import get_args
 
         args = get_args(ModeType)

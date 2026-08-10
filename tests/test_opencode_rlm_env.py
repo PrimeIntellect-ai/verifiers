@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from datasets import Dataset
 
-import verifiers.legacy as vf
-from verifiers.legacy.envs.experimental.opencode_rlm_env import (
+import verifiers as vf
+from verifiers.envs.experimental.opencode_rlm_env import (
     OpenCodeRLMEnv,
     OpenCodeRLMMonitorRubric,
 )
@@ -33,7 +33,7 @@ def make_dataset() -> Dataset:
 
 def build_env(**kwargs) -> OpenCodeRLMEnv:
     kwargs.setdefault("dataset", make_dataset())
-    with patch("verifiers.legacy.envs.environment.signal.signal"):
+    with patch("verifiers.envs.environment.signal.signal"):
         return OpenCodeRLMEnv(**kwargs)
 
 

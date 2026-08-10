@@ -9,8 +9,8 @@ using the last trajectory step.
 
 import pytest
 
-from verifiers.legacy.types import Response, ResponseMessage, Usage
-from verifiers.legacy.utils.usage_utils import compute_context_token_metrics
+from verifiers.types import Response, ResponseMessage, Usage
+from verifiers.utils.usage_utils import compute_context_token_metrics
 
 
 # =========================================================================
@@ -183,7 +183,7 @@ class TestContextMetrics:
 
 class TestContextTokenMetricClasses:
     def test_input_tokens_metric(self):
-        from verifiers.legacy.utils.metric_utils import InputTokensMetric
+        from verifiers.utils.metric_utils import InputTokensMetric
 
         m = InputTokensMetric()
         m.add_output({"token_usage": {"input_tokens": 100.0}})
@@ -191,7 +191,7 @@ class TestContextTokenMetricClasses:
         assert m.compute() == pytest.approx(150.0)
 
     def test_output_tokens_metric(self):
-        from verifiers.legacy.utils.metric_utils import OutputTokensMetric
+        from verifiers.utils.metric_utils import OutputTokensMetric
 
         m = OutputTokensMetric()
         m.add_output({"token_usage": {"output_tokens": 40.0}})
@@ -199,7 +199,7 @@ class TestContextTokenMetricClasses:
         assert m.compute() == pytest.approx(50.0)
 
     def test_final_input_tokens_metric(self):
-        from verifiers.legacy.utils.metric_utils import FinalInputTokensMetric
+        from verifiers.utils.metric_utils import FinalInputTokensMetric
 
         m = FinalInputTokensMetric()
         m.add_output({"token_usage": {"final_input_tokens": 50.0}})
@@ -207,7 +207,7 @@ class TestContextTokenMetricClasses:
         assert m.compute() == pytest.approx(75.0)
 
     def test_final_output_tokens_metric(self):
-        from verifiers.legacy.utils.metric_utils import FinalOutputTokensMetric
+        from verifiers.utils.metric_utils import FinalOutputTokensMetric
 
         m = FinalOutputTokensMetric()
         m.add_output({"token_usage": {"final_output_tokens": 150.0}})
@@ -215,7 +215,7 @@ class TestContextTokenMetricClasses:
         assert m.compute() == pytest.approx(200.0)
 
     def test_skips_outputs_without_token_usage(self):
-        from verifiers.legacy.utils.metric_utils import FinalInputTokensMetric
+        from verifiers.utils.metric_utils import FinalInputTokensMetric
 
         m = FinalInputTokensMetric()
         m.add_output({})

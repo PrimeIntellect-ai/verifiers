@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from verifiers.legacy.utils import pricing_utils
-from verifiers.legacy.utils.pricing_utils import (
+from verifiers.utils import pricing_utils
+from verifiers.utils.pricing_utils import (
     compute_cost_usd,
     compute_eval_cost,
     fetch_prime_pricing,

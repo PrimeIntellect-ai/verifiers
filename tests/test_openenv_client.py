@@ -2,9 +2,9 @@
 
 from typing import Any
 
-import verifiers.legacy as vf
-from verifiers.legacy.envs.integrations import openenv_env
-from verifiers.legacy.types import UserMessage
+import verifiers as vf
+from verifiers.envs.integrations import openenv_env
+from verifiers.types import UserMessage
 
 
 class StepResult:

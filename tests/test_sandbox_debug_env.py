@@ -1,7 +1,7 @@
 import pytest
 
-import verifiers.legacy as vf
-from verifiers.legacy.envs.experimental.composable import (
+import verifiers as vf
+from verifiers.envs.experimental.composable import (
     SandboxDebugEnv,
     SandboxDebugRubric,
     SandboxSpec,

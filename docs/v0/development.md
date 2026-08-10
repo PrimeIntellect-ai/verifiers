@@ -46,15 +46,17 @@ uv run pre-commit install
 ```text
 verifiers/
 ├── verifiers/          # Main package
-│   ├── legacy/         # v0 package
-│   │   ├── envs/           # Environment classes
-│   │   │   ├── integrations/   # Third-party wrappers (TextArena, ReasoningGym)
-│   │   │   └── experimental/   # Newer environments (MCP, Harbor, etc.)
-│   │   ├── parsers/        # Parser classes
-│   │   ├── rubrics/        # Rubric classes
-│   │   ├── scripts/        # Compatibility wrappers around verifiers/cli commands
-│   │   └── utils/          # Utilities
-│   └── cli/            # Prime-facing CLI modules and plugin exports
+│   ├── envs/           # Environment classes
+│   │   ├── integrations/   # Third-party wrappers (TextArena, ReasoningGym)
+│   │   └── experimental/   # Newer environments (MCP, Harbor, etc.)
+│   ├── parsers/        # Parser classes  
+│   ├── rubrics/        # Rubric classes
+│   ├── rl/             # Training infrastructure
+│   │   ├── inference/  # vLLM server utilities
+│   │   └── trainer/    # Trainer implementation
+│   ├── cli/            # Prime-facing CLI modules and plugin exports
+│   ├── scripts/        # Compatibility wrappers around verifiers/cli commands
+│   └── utils/          # Utilities
 ├── environments/       # Installable environment modules
 ├── configs/            # Example training configurations
 ├── tests/              # Test suite
@@ -89,7 +91,7 @@ Contributor guidance:
 
 - Add new prime-facing command logic under `verifiers/cli/commands/`.
 - Export new command modules through `PrimeCLIPlugin` in `verifiers/cli/plugins/prime.py`.
-- Keep `verifiers/legacy/scripts/*` as thin compatibility wrappers that call into `verifiers/cli`.
+- Keep `verifiers/scripts/*` as thin compatibility wrappers that call into `verifiers/cli`.
 
 ## Running Tests
 
@@ -259,7 +261,7 @@ prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 
 ```python
 # my_environment.py
-import verifiers.legacy as vf
+import verifiers as vf
 
 
 def load_environment(**kwargs):

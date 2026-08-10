@@ -1,6 +1,6 @@
 # ruff: noqa
 
-"""Tests for verifiers.legacy.utils.save_utils serialization behavior.
+"""Tests for verifiers.utils.save_utils serialization behavior.
 
 Covers:
 - make_serializable: JSON serialization for non-standard types
@@ -17,8 +17,8 @@ import pytest
 from openai import OpenAI
 from pydantic import BaseModel
 
-from verifiers.legacy.types import ClientConfig, Response, ResponseMessage, Usage
-from verifiers.legacy.utils.metric_utils import (
+from verifiers.types import ClientConfig, Response, ResponseMessage, Usage
+from verifiers.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
     InputTokensMetric,
@@ -27,7 +27,7 @@ from verifiers.legacy.utils.metric_utils import (
     PassAtKMetric,
     RewardMetric,
 )
-from verifiers.legacy.utils.save_utils import (
+from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     _delta_intermediate_mm_data,
     load_outputs,
@@ -37,7 +37,7 @@ from verifiers.legacy.utils.save_utils import (
     states_to_outputs,
     validate_resume_metadata,
 )
-from verifiers.legacy.utils.usage_utils import StateUsageTracker, response_usage_tokens
+from verifiers.utils.usage_utils import StateUsageTracker, response_usage_tokens
 
 
 # Test models for make_serializable tests
@@ -492,7 +492,7 @@ class TestLoadOutputs:
         )
         warnings = []
         monkeypatch.setattr(
-            "verifiers.legacy.utils.save_utils.logger.warning",
+            "verifiers.utils.save_utils.logger.warning",
             lambda *args, **kwargs: warnings.append(args),
         )
 
@@ -518,7 +518,7 @@ class TestLoadOutputs:
         )
         warnings = []
         monkeypatch.setattr(
-            "verifiers.legacy.utils.save_utils.logger.warning",
+            "verifiers.utils.save_utils.logger.warning",
             lambda *args, **kwargs: warnings.append(args),
         )
 

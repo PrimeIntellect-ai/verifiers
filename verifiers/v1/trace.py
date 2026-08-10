@@ -11,8 +11,6 @@ from pydantic import BaseModel, Field, PrivateAttr
 from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
-from verifiers import __version__
-
 if TYPE_CHECKING:
     from verifiers.v1.judge import JudgeResponse
 
@@ -95,6 +93,8 @@ class VersionInfo(BaseModel):
 
 
 def _current_build() -> VersionInfo:
+    # Lazy: `verifiers/__init__` (and its v0 surface) must not load with this module.
+    from verifiers import __version__
     from verifiers.v1.utils.version import verifiers_commit
 
     return VersionInfo(version=__version__, commit=verifiers_commit())

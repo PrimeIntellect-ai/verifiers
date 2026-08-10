@@ -1,6 +1,6 @@
 # ruff: noqa
 
-import verifiers.legacy as vf
+import verifiers
 
 
 class TestImports:
@@ -13,7 +13,7 @@ class TestImports:
     - No new PyPI release made with the fix
     - Impact: Users installing verifiers==0.1.3 from PyPI cannot import StatefulToolEnv even though the class exists in their installation.
 
-    This test ensures that all items in vf.__all__ can be imported,
+    This test ensures that all items in verifiers.__all__ can be imported,
     catching issues like the one above before they reach users.
     """
 
@@ -32,10 +32,10 @@ class TestImports:
 
     def test_all_items_are_importable(self):
         """Test that all items in __all__ can actually be imported."""
-        for item_name in vf.__all__:
+        for item_name in verifiers.__all__:
             try:
                 # This should not raise AttributeError
-                item = getattr(vf, item_name)
+                item = getattr(verifiers, item_name)
                 assert item is not None, f"{item_name} in __all__ but is None"
             except (AttributeError, ImportError) as e:
                 # Check if this is an expected optional dependency error
@@ -51,15 +51,15 @@ class TestImports:
     def test_lazy_imports_work(self):
         """Test that lazy imports work correctly."""
         # Dynamically detect lazy imports by checking verifiers module
-        lazy_imports = getattr(vf, "_LAZY_IMPORTS", {})
+        lazy_imports = getattr(verifiers, "_LAZY_IMPORTS", {})
 
         for name in lazy_imports.keys():
-            assert name in vf.__all__, f"Lazy import {name} not in __all__"
+            assert name in verifiers.__all__, f"Lazy import {name} not in __all__"
 
             # Try to access the lazy import - this might fail due to missing dependencies
             # but should not fail due to import errors in our code
             try:
-                item = getattr(vf, name)
+                item = getattr(verifiers, name)
                 assert item is not None
             except (AttributeError, ImportError) as e:
                 # This is expected for lazy imports when dependencies are missing

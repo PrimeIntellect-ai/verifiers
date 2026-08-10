@@ -1,4 +1,4 @@
-from verifiers.legacy.scripts.tui import PRIME_EVAL_VIEW_MESSAGE, main
+from verifiers.scripts.tui import PRIME_EVAL_VIEW_MESSAGE, main
 
 
 def test_vf_tui_points_to_prime_eval_view(capsys) -> None:

@@ -2,7 +2,7 @@
 
 """Environment initialization command module for external hosts."""
 
-from verifiers.legacy.scripts.init import main
+from verifiers.scripts.init import main
 
 
 if __name__ == "__main__":

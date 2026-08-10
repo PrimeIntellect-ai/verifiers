@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from datasets import Dataset
 
-import verifiers.legacy as vf
-from verifiers.legacy import Parser, Rubric, SingleTurnEnv
-from verifiers.legacy.types import RolloutTiming
+import verifiers as vf
+from verifiers import Parser, Rubric, SingleTurnEnv
+from verifiers.types import RolloutTiming
 
 
 class TestSingleTurnEnv:
@@ -59,7 +59,7 @@ class TestSingleTurnEnv:
         assert not await mock_singleturn_env.is_completed(state)
 
         # With trajectory steps
-        from verifiers.legacy.types import TrajectoryStep
+        from verifiers.types import TrajectoryStep
 
         state = {
             "trajectory": [
@@ -372,7 +372,7 @@ class TestSingleTurnEnv:
         )
 
         # Before any trajectory steps
-        from verifiers.legacy.types import State
+        from verifiers.types import State
 
         state = State(input=make_input())
         state["trajectory"] = []
@@ -380,7 +380,7 @@ class TestSingleTurnEnv:
         assert not await env.is_completed(state)
 
         # After one trajectory step
-        from verifiers.legacy.types import TrajectoryStep
+        from verifiers.types import TrajectoryStep
 
         state = State(input=make_input())
         state["trajectory"] = [

@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-import verifiers.legacy as vf
+import verifiers as vf
 
 
 class TestSetupLogging:

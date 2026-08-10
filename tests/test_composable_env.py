@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 
-import verifiers.legacy as vf
-from verifiers.legacy.envs.experimental.composable import (
+import verifiers as vf
+from verifiers.envs.experimental.composable import (
     ComposableEnv,
     Harness,
     SandboxSpec,
@@ -19,10 +19,10 @@ from verifiers.legacy.envs.experimental.composable import (
     TaskSet,
     discover_sibling_dir,
 )
-from verifiers.legacy.envs.experimental.composable.harnesses.mini_swe_agent import (
+from verifiers.envs.experimental.composable.harnesses.mini_swe_agent import (
     build_mini_swe_agent_install_script,
 )
-from verifiers.legacy.envs.experimental.composable.harnesses.opencode import (
+from verifiers.envs.experimental.composable.harnesses.opencode import (
     build_install_script as build_opencode_install_script,
 )
 

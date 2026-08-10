@@ -6,7 +6,7 @@ from typing import Annotated, Optional
 
 from pydantic import Field
 
-from verifiers.legacy.utils.tool_utils import convert_func_to_tool_def
+from verifiers.utils.tool_utils import convert_func_to_tool_def
 
 
 def tool_dump_without_strict(tool):

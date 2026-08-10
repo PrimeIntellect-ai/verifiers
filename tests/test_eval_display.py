@@ -1,7 +1,7 @@
 from rich.console import Console
 
-from verifiers.legacy.types import ClientConfig, EvalConfig
-from verifiers.legacy.utils.eval_display import EvalDisplay
+from verifiers.types import ClientConfig, EvalConfig
+from verifiers.utils.eval_display import EvalDisplay
 
 
 def make_config(

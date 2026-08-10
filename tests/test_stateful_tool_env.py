@@ -6,7 +6,7 @@ from json import JSONDecodeError
 import pytest
 from openai.types.chat import ChatCompletionUserMessageParam
 
-import verifiers.legacy as vf
+import verifiers as vf
 from tests.conftest import faulty_tool, secret_tool
 
 

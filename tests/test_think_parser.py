@@ -1,6 +1,6 @@
 """Tests for the ThinkParser class."""
 
-from verifiers.legacy import ThinkParser
+from verifiers import ThinkParser
 
 
 class TestThinkParser:

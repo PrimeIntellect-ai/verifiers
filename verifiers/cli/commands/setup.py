@@ -1,6 +1,6 @@
 """Workspace setup command module for external hosts."""
 
-from verifiers.legacy.scripts.setup import main, run_setup
+from verifiers.scripts.setup import main, run_setup
 
 __all__ = ["main", "run_setup"]
 

@@ -1,4 +1,4 @@
-import verifiers.legacy as vf
+import verifiers as vf
 
 
 def test_system_message_from_path_reads_file_verbatim(tmp_path):

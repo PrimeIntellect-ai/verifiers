@@ -2,7 +2,7 @@ import sys
 
 import pytest
 
-from verifiers.legacy.scripts import setup
+from verifiers.scripts import setup
 
 
 def test_run_setup_warns_to_use_prime_lab_setup(capsys) -> None:

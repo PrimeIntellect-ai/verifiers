@@ -7,11 +7,11 @@ from anthropic import BadRequestError as AnthropicBadRequestError
 from openai import AuthenticationError as OpenAIAuthenticationError
 from openai import BadRequestError as OpenAIBadRequestError
 
-from verifiers.legacy.clients.anthropic_messages_client import AnthropicMessagesClient
-from verifiers.legacy.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
-from verifiers.legacy.clients.openai_completions_client import OpenAICompletionsClient
-from verifiers.legacy.errors import OverlongPromptError
-from verifiers.legacy.types import TextMessage, UserMessage
+from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
+from verifiers.clients.openai_completions_client import OpenAICompletionsClient
+from verifiers.errors import OverlongPromptError
+from verifiers.types import TextMessage, UserMessage
 
 
 def _make_openai_auth_error() -> OpenAIAuthenticationError:
@@ -160,7 +160,7 @@ async def test_anthropic_overlong_prompt_raises_overlong_error(error_message: st
 @pytest.mark.asyncio
 async def test_anthropic_non_overlong_bad_request_not_converted():
     """A BadRequestError that is NOT about context length should propagate as-is (→ ModelError)."""
-    from verifiers.legacy.errors import ModelError
+    from verifiers.errors import ModelError
 
     client = AnthropicMessagesClient(
         _OverlongAnthropicClient("invalid parameter: temperature must be >= 0")
