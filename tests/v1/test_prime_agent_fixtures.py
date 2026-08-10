@@ -299,9 +299,149 @@ async def test_prime_agent_setup_forwards_resolved_environment(monkeypatch):
     assert "9>/var/tmp/vf-prime-agent/install.lock" not in guarded
 
 
-def test_prime_agent_cleanup_removes_state_and_tmpdir_together():
-    source = Path("verifiers/v1/harnesses/prime_agent/harness.py").read_text()
-    assert 'runtime.run(["rm", "-rf", root, self.tmp_dir(trace)]' in source
+class _CleanupRuntime:
+    def __init__(self, results):
+        self.results = iter(results)
+        self.calls: list[tuple[list[str], dict]] = []
+
+    async def run(self, command, environment):
+        self.calls.append((command, environment))
+        result = next(self.results)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+@pytest.fixture
+def prime_agent_cleanup():
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    trace = SimpleNamespace(id="cleanup-trace")
+    return harness, trace
+
+
+def _cleanup_result(exit_code=0, stderr="", *, timed_out=False):
+    return SimpleNamespace(exit_code=exit_code, stderr=stderr, timed_out=timed_out)
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_checks_both_deletion_results(prime_agent_cleanup):
+    harness, trace = prime_agent_cleanup
+    runtime = _CleanupRuntime([_cleanup_result(), _cleanup_result(), _cleanup_result()])
+
+    await harness.cleanup(trace, runtime)
+
+    root = harness.trace_root(trace)
+    tmp_dir = harness.tmp_dir(trace)
+    assert [call[0] for call in runtime.calls[1:]] == [
+        ["rm", "-rf", tmp_dir],
+        ["rm", "-rf", root],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_first_deletion_failure_preserves_retry_paths(
+    prime_agent_cleanup,
+):
+    from verifiers.v1.errors import SandboxError
+
+    harness, trace = prime_agent_cleanup
+    runtime = _CleanupRuntime(
+        [_cleanup_result(), _cleanup_result(exit_code=23, stderr="no")]
+    )
+
+    with pytest.raises(SandboxError, match="removal of per-trace tmp") as raised:
+        await harness.cleanup(trace, runtime)
+
+    root = harness.trace_root(trace)
+    tmp_dir = harness.tmp_dir(trace)
+    assert f"state root {root}; per-trace tmp {tmp_dir}" in str(raised.value)
+    assert "Confirmed removed this attempt: none" in str(raised.value)
+    assert [call[0] for call in runtime.calls[1:]] == [["rm", "-rf", tmp_dir]]
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_second_deletion_failure_reports_partial_cleanup(
+    prime_agent_cleanup,
+):
+    from verifiers.v1.errors import SandboxError
+
+    harness, trace = prime_agent_cleanup
+    runtime = _CleanupRuntime(
+        [_cleanup_result(), _cleanup_result(), _cleanup_result(exit_code=24)]
+    )
+
+    with pytest.raises(SandboxError, match="removal of state root") as raised:
+        await harness.cleanup(trace, runtime)
+
+    root = harness.trace_root(trace)
+    tmp_dir = harness.tmp_dir(trace)
+    assert f"Retry paths: state root {root}; per-trace tmp {tmp_dir}" in str(
+        raised.value
+    )
+    assert f"Confirmed removed this attempt: {tmp_dir}" in str(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "reason"),
+    [
+        (None, "no authoritative result"),
+        (TimeoutError(), "timed out"),
+    ],
+)
+async def test_prime_agent_cleanup_never_treats_unknown_deletion_as_success(
+    prime_agent_cleanup, result, reason
+):
+    from verifiers.v1.errors import SandboxError
+
+    harness, trace = prime_agent_cleanup
+    runtime = _CleanupRuntime([_cleanup_result(), result])
+
+    with pytest.raises(SandboxError, match=reason):
+        await harness.cleanup(trace, runtime)
+
+    # An unknown result for the first deletion must not advance to the root.
+    assert len(runtime.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_retry_is_idempotent_after_partial_failure(
+    prime_agent_cleanup,
+):
+    from verifiers.v1.errors import SandboxError
+
+    harness, trace = prime_agent_cleanup
+    # The first attempt confirms tmp removal but cannot confirm root removal.
+    first = _CleanupRuntime([_cleanup_result(), _cleanup_result(), _cleanup_result(1)])
+    with pytest.raises(SandboxError):
+        await harness.cleanup(trace, first)
+
+    # `rm -rf` makes retrying tmp safe even though the first attempt removed it.
+    retry = _CleanupRuntime([_cleanup_result(), _cleanup_result(), _cleanup_result()])
+    await harness.cleanup(trace, retry)
+    assert [call[0] for call in retry.calls[1:]] == [
+        ["rm", "-rf", harness.tmp_dir(trace)],
+        ["rm", "-rf", harness.trace_root(trace)],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_stop_failure_prevents_deletion(prime_agent_cleanup):
+    from verifiers.v1.errors import SandboxError
+
+    harness, trace = prime_agent_cleanup
+    runtime = _CleanupRuntime([_cleanup_result(exit_code=1, stderr="still live")])
+
+    with pytest.raises(SandboxError, match="daemon stop"):
+        await harness.cleanup(trace, runtime)
+
+    assert len(runtime.calls) == 1
+    assert runtime.calls[0][0][:2] == ["sh", "-c"]
 
 
 def test_version_validator_rejects_malformed_semver():

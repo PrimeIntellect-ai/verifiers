@@ -12,7 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import RolloutError
+from verifiers.v1.errors import RolloutError, SandboxError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -445,38 +445,123 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self.trace_root(trace)
+        tmp_dir = self.tmp_dir(trace)
         socket = f"{root}/daemon.sock"
+        cleanup_paths = f"state root {root}; per-trace tmp {tmp_dir}"
+
+        def infrastructure_error(
+            operation: str, path: str | None, reason: str, removed: list[str]
+        ) -> SandboxError:
+            # `rm -rf` may have removed some children before a remote runtime loses
+            # its result. Never claim that either whole path survived; name both
+            # deterministic paths so a retry can issue the idempotent removals.
+            confirmed = ", ".join(removed) if removed else "none"
+            target = f" {path}" if path else ""
+            return SandboxError(
+                f"prime-agent cleanup infrastructure error during {operation}{target}: "
+                f"{reason}. Retry paths: {cleanup_paths}. "
+                f"Confirmed removed this attempt: {confirmed}."
+            )
+
+        async def remove(path: str, label: str, removed: list[str]) -> None:
+            try:
+                result = await runtime.run(["rm", "-rf", path], {})
+            except TimeoutError as error:
+                raise infrastructure_error(
+                    f"removal of {label}", path, "timed out", removed
+                ) from error
+            except Exception as error:
+                raise infrastructure_error(
+                    f"removal of {label}", path, f"runtime failed: {error}", removed
+                ) from error
+            if result is None:
+                raise infrastructure_error(
+                    f"removal of {label}",
+                    path,
+                    "runtime returned no authoritative result",
+                    removed,
+                )
+            if getattr(result, "timed_out", False):
+                raise infrastructure_error(
+                    f"removal of {label}", path, "timed out", removed
+                )
+            exit_code = getattr(result, "exit_code", None)
+            if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+                raise infrastructure_error(
+                    f"removal of {label}",
+                    path,
+                    "runtime returned no authoritative exit status",
+                    removed,
+                )
+            if exit_code != 0:
+                stderr = str(getattr(result, "stderr", "")).strip()[-300:]
+                raise infrastructure_error(
+                    f"removal of {label}",
+                    path,
+                    f"exit {exit_code}: {stderr}",
+                    removed,
+                )
+            removed.append(path)
+
         try:
             # Stop this trace's daemon before deleting its state: a live worker
             # would keep writing into a removed directory. `daemon` is in the
             # CLI's REMOVED_COMMAND_NAMES, so the subcommand is plain `stop`.
-            stopped = await runtime.run(
-                [
-                    "sh",
-                    "-c",
-                    # Prepend the bundled Node inside the shell rather than passing
-                    # PATH in env: `docker exec --env PATH=...` REPLACES the image
-                    # PATH, and resolved_env usually has no PATH to fall back on.
-                    (
-                        f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
-                        f"exec {shlex.quote(self.prime_agent_bin())} stop "
-                        f"--daemon-socket {shlex.quote(socket)}"
-                    ),
-                ],
-                self._run_env(trace, ""),
-            )
-            if stopped.exit_code != 0:
-                # Keep the state directory: a failed stop may leave a live
-                # worker writing to it. Do not turn that failure into silent
-                # data loss by deleting the directory.
-                raise RuntimeError(
-                    "prime-agent: stopping the trace daemon failed "
-                    f"(exit {stopped.exit_code}): {stopped.stderr.strip()[-300:]}"
+            try:
+                stopped = await runtime.run(
+                    [
+                        "sh",
+                        "-c",
+                        # Prepend the bundled Node inside the shell rather than passing
+                        # PATH in env: `docker exec --env PATH=...` REPLACES the image
+                        # PATH, and resolved_env usually has no PATH to fall back on.
+                        (
+                            f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
+                            f"exec {shlex.quote(self.prime_agent_bin())} stop "
+                            f"--daemon-socket {shlex.quote(socket)}"
+                        ),
+                    ],
+                    self._run_env(trace, ""),
                 )
+            except TimeoutError as error:
+                raise infrastructure_error(
+                    "daemon stop", None, "timed out", []
+                ) from error
+            except Exception as error:
+                raise infrastructure_error(
+                    "daemon stop", None, f"runtime failed: {error}", []
+                ) from error
+            if stopped is None:
+                raise infrastructure_error(
+                    "daemon stop", None, "runtime returned no authoritative result", []
+                )
+            if getattr(stopped, "timed_out", False):
+                raise infrastructure_error("daemon stop", None, "timed out", [])
+            stop_exit_code = getattr(stopped, "exit_code", None)
+            if isinstance(stop_exit_code, bool) or not isinstance(stop_exit_code, int):
+                raise infrastructure_error(
+                    "daemon stop",
+                    None,
+                    "runtime returned no authoritative exit status",
+                    [],
+                )
+            if stop_exit_code != 0:
+                # Keep both directories: a failed stop may leave a live worker
+                # writing to them. Do not turn that failure into silent data loss.
+                stderr = str(getattr(stopped, "stderr", "")).strip()[-300:]
+                raise infrastructure_error(
+                    "daemon stop", None, f"exit {stop_exit_code}: {stderr}", []
+                )
+
+            # Delete the independently addressable temporary socket directory
+            # first, then the state root. Each result is checked before the next
+            # command, so a partial cleanup names exactly what is confirmed gone
+            # and what retry must remove; `rm -rf` makes that retry idempotent.
+            removed: list[str] = []
+            await remove(tmp_dir, "per-trace tmp", removed)
+            await remove(root, "state root", removed)
         except Exception:
-            logger.exception("prime-agent: daemon cleanup failed; retaining %s", root)
+            logger.exception(
+                "prime-agent: cleanup failed; retry paths are %s", cleanup_paths
+            )
             raise
-        else:
-            # Remove only this trace's state and its per-trace socket directory;
-            # never remove the shared install. TMPDIR is created only in _prepare.
-            await runtime.run(["rm", "-rf", root, self.tmp_dir(trace)], {})
