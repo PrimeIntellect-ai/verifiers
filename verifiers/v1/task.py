@@ -12,8 +12,8 @@ from __future__ import annotations
 import copy
 import inspect
 import logging
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, Self
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
@@ -164,8 +164,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
             available["runtime"] = runtime
 
         async with boundary(TaskError, f"task {type(self).__name__} scoring"):
-            metrics = discover_decorated(self, "metric")
-            rewards = discover_decorated(self, "reward")
+            metrics = self.hooks("metric")
+            rewards = self.hooks("reward")
             if runtime is None:
                 skipped = [
                     fn.__name__ for fn in (*metrics, *rewards) if requires_runtime(fn)
@@ -230,6 +230,25 @@ class Task(Generic[DataT, StateT, ConfigT]):
         from verifiers.v1.utils.loaders import load_judge
 
         return [load_judge(config) for config in self.config.judges]
+
+    def hooks(self, attr: str) -> list[Callable[..., Any]]:
+        """The task's `@vf.<attr>` methods merged with the config-plugged functions —
+        a plugged function replaces a decorated method with the same name — sorted by
+        descending priority then name."""
+        from verifiers.v1.utils.loaders import load_plugged_fn
+
+        plugged = {
+            "stop": self.config.stops,
+            "metric": self.config.metrics,
+            "reward": self.config.rewards,
+        }[attr]
+        merged = {fn.__name__: fn for fn in discover_decorated(self, attr)}
+        merged |= {
+            name: load_plugged_fn(name, spec, attr) for name, spec in plugged.items()
+        }
+        fns = list(merged.values())
+        fns.sort(key=lambda fn: (-getattr(fn, f"{attr}_priority", 0), fn.__name__))
+        return fns
 
     @classmethod
     def toolsets(cls, config: ConfigT) -> list[Toolset]:

@@ -1,11 +1,14 @@
-"""Resolve taskset, harness, judge, and environment plugins."""
+"""Resolve taskset, harness, judge, hook, and environment plugins."""
 
 import contextvars
+import functools
 import importlib
 import importlib.util
 import pkgutil
 from collections.abc import Callable
+from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from pydantic import ValidationError
 from pydantic_config import BaseConfig
@@ -13,6 +16,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.configs.task import DecoratedFunctionConfig, RewardFunctionConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv
@@ -203,6 +207,59 @@ def load_harness(config: HarnessConfig) -> Harness:
 
 def load_judge(config: JudgeConfig) -> Judge:
     return judge_class(config.id)(config)
+
+
+@functools.cache
+def file_module(path: str) -> ModuleType:
+    """Import a standalone `.py` file, cached by path so repeated plugged-fn loads
+    share one module object."""
+    resolved = Path(path).resolve()
+    spec = importlib.util.spec_from_file_location(resolved.stem, resolved)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot import module from {path!r}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def plugged_fn(path: str) -> Callable[..., Any]:
+    """Resolve a plugged function's import path: `pkg.module.function`,
+    `pkg.module:function`, or `path/to/file.py:function`."""
+    module_path, _, attr = path.rpartition(":")
+    if not module_path:
+        module_path, _, attr = path.rpartition(".")
+    if not module_path or not attr:
+        raise ValueError(
+            f"fn {path!r} must be `pkg.module.function`, `pkg.module:function`, "
+            "or `path/to/file.py:function`"
+        )
+    if module_path.endswith(".py"):
+        module = file_module(module_path)
+    else:
+        module = importlib.import_module(module_path)
+    fn = getattr(module, attr, None)
+    if not callable(fn):
+        raise TypeError(f"fn {path!r} is not a function (got {fn!r})")
+    return fn
+
+
+def load_plugged_fn(
+    name: str, config: DecoratedFunctionConfig, attr: str
+) -> Callable[..., Any]:
+    """Build a task hook from a config entry: the imported async function wrapped
+    under the plugged `name`, tagged like its `@vf.<attr>` equivalent."""
+    fn = plugged_fn(config.fn)
+
+    @functools.wraps(fn)
+    def plugged(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    plugged.__name__ = name
+    setattr(plugged, attr, True)
+    setattr(plugged, f"{attr}_priority", config.priority)
+    if isinstance(config, RewardFunctionConfig):
+        plugged._vf_weight = config.weight
+    return plugged
 
 
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
