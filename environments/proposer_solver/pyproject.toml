@@ -2,7 +2,7 @@
 name = "proposer-solver"
 version = "0.1.0"
 description = "proposer-solver — a proposer invents verified math problems; n solvers race them (showcases heterogeneous seats + cross-agent rewards)."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["verifiers"]
 
 [build-system]

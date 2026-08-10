@@ -2,7 +2,7 @@
 name = "alphabet-sort"
 version = "0.1.0"
 description = "alphabet-sort — maintain an alphabetically sorted list of names across turns, driven by a colocated user simulator."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["verifiers", "datasets"]
 
 [build-system]

@@ -2,7 +2,7 @@
 name = "glossary"
 version = "0.1.0"
 description = "glossary — task-specific tools via a vf-native Toolset class."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["verifiers"]
 
 [build-system]
