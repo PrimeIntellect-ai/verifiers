@@ -4,10 +4,14 @@ import asyncio
 import contextlib
 import json
 import secrets
+from abc import abstractmethod
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessSession
@@ -20,7 +24,23 @@ from verifiers.v1.utils.aio import run_shielded
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 
-__all__ = ["ACP"]
+__all__ = ["ACP", "ACPConfig", "ACPHarness"]
+
+ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
+
+
+@dataclass
+class ACPConfig:
+    """One harness's prepared ACP process and prompt."""
+
+    env: dict[str, str]
+    command: list[str]
+    prompt: str | Messages | None
+    mcp_urls: dict[str, str] | None = None
+    system_prompt: str | None = None
+    session_path: str | None = None
+    session_meta: dict | None = None
+    allow_empty_tool_reply: bool = False
 
 
 class ACP:
@@ -47,8 +67,9 @@ class ACP:
         prompt: str | Messages | None,
         system_prompt: str | None = None,
         session_meta: dict | None = None,
+        allow_empty_tool_reply: bool = False,
     ) -> "ACPHarnessSession":
-        """Create a persistent ACP-backed handle owned by one rollout."""
+        """Create a live ACP-backed handle owned by one rollout."""
         return ACPHarnessSession(
             harness,
             ctx,
@@ -63,6 +84,7 @@ class ACP:
             prompt=prompt,
             system_prompt=system_prompt,
             session_meta=session_meta,
+            allow_empty_tool_reply=allow_empty_tool_reply,
         )
 
     async def run(
@@ -72,6 +94,7 @@ class ACP:
         command: list[str],
         prompt: str | Messages | None,
         *,
+        trace: Trace,
         mcp_urls: dict[str, str] | None = None,
         system_prompt: str | None = None,
         session_path: str | None = None,
@@ -79,31 +102,7 @@ class ACP:
         allow_empty_tool_reply: bool = False,
     ) -> ProgramResult:
         """Run one ACP segment without retaining its process."""
-        return await self._run(
-            runtime,
-            env,
-            command,
-            prompt,
-            mcp_urls=mcp_urls,
-            system_prompt=system_prompt,
-            session_path=session_path,
-            session_meta=session_meta,
-            allow_empty_tool_reply=allow_empty_tool_reply,
-        )
-
-    async def _run(
-        self,
-        runtime: Runtime,
-        env: dict[str, str],
-        command: list[str],
-        prompt: str | Messages | None,
-        *,
-        mcp_urls: dict[str, str] | None = None,
-        system_prompt: str | None = None,
-        session_path: str | None = None,
-        session_meta: dict | None = None,
-        allow_empty_tool_reply: bool = False,
-    ) -> ProgramResult:
+        calls_before = len(trace.calls)
         if prompt is None:
             raise ValueError("ACP requires a prompt")
         messages = (
@@ -132,9 +131,90 @@ class ACP:
         path = f"{directory}/config.json"
         try:
             await runtime.write(path, json.dumps(config).encode())
-            return await runtime.run_program([*program, "once", path], env)
+            result = await runtime.run_program([*program, "once", path], env)
         finally:
             await run_shielded(runtime.run(["rm", "-rf", directory], {}))
+        _require_model_turn(trace, calls_before, result)
+        return result
+
+
+class ACPHarness(Harness[ConfigT]):
+    """Harness whose execution is completely described by an ACP configuration."""
+
+    acp = ACP()
+
+    @abstractmethod
+    async def prepare_acp(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> ACPConfig:
+        pass
+
+    async def session(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> HarnessSession:
+        if not runtime.supports_live_processes:
+            return HarnessSession(
+                self, ctx, trace, runtime, endpoint, secret, mcp_urls, data
+            )
+        config = await self.prepare_acp(
+            ctx, trace, runtime, endpoint, secret, mcp_urls, data
+        )
+        return self.acp.session(
+            self,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls if config.mcp_urls is None else config.mcp_urls,
+            data,
+            env=config.env,
+            command=config.command,
+            prompt=config.prompt,
+            system_prompt=config.system_prompt,
+            session_meta=config.session_meta,
+            allow_empty_tool_reply=config.allow_empty_tool_reply,
+        )
+
+    async def launch(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> ProgramResult:
+        config = await self.prepare_acp(
+            ctx, trace, runtime, endpoint, secret, mcp_urls, data
+        )
+        return await self.acp.run(
+            runtime,
+            config.env,
+            config.command,
+            config.prompt,
+            trace=trace,
+            mcp_urls=mcp_urls if config.mcp_urls is None else config.mcp_urls,
+            system_prompt=config.system_prompt,
+            session_path=config.session_path,
+            session_meta=config.session_meta,
+            allow_empty_tool_reply=config.allow_empty_tool_reply,
+        )
 
 
 def _packet(value: dict) -> bytes:
@@ -142,6 +222,17 @@ def _packet(value: dict) -> bytes:
     if len(data) > MAX_PACKET_BYTES:
         raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
     return len(data).to_bytes(8, "big") + data
+
+
+def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
+    if (
+        result.exit_code
+        or trace.stop_condition is not None
+        or any(call.node is not None for call in trace.calls[calls_before:])
+    ):
+        return
+    detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"
+    raise RuntimeError("ACP agent completed without committing a model turn: " + detail)
 
 
 class _PacketReader:
@@ -184,6 +275,7 @@ class ACPHarnessSession(HarnessSession):
         prompt: str | Messages | None,
         system_prompt: str | None,
         session_meta: dict | None,
+        allow_empty_tool_reply: bool,
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
         self.env = env
@@ -191,6 +283,7 @@ class ACPHarnessSession(HarnessSession):
         self.prompt = prompt
         self.system_prompt = system_prompt
         self.session_meta = session_meta or {}
+        self.allow_empty_tool_reply = allow_empty_tool_reply
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
         self._stderr_tail = bytearray()
@@ -234,6 +327,7 @@ class ACPHarnessSession(HarnessSession):
             "system_prompt": self.system_prompt or "",
             "session_path": None,
             "session_meta": self.session_meta,
+            "allow_empty_tool_reply": self.allow_empty_tool_reply,
         }
         async with self._lock:
             if self._closed:
@@ -244,6 +338,7 @@ class ACPHarnessSession(HarnessSession):
                 await self._start()
             assert self._process is not None
             assert self._reader is not None
+            calls_before = len(self.trace.calls)
             try:
                 await self._process.write(
                     _packet({"operation": "prompt", "config": config})
@@ -257,7 +352,9 @@ class ACPHarnessSession(HarnessSession):
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
-        return ProgramResult(exit_code=0, stdout=response.get("reply", ""), stderr="")
+        result = ProgramResult(exit_code=0, stdout=response.get("reply", ""), stderr="")
+        _require_model_turn(self.trace, calls_before, result)
+        return result
 
     async def _stop(self, *, graceful: bool) -> None:
         process, self._process = self._process, None

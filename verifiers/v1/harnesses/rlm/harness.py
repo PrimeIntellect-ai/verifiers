@@ -8,11 +8,10 @@ from typing import Literal
 
 from pydantic import Field, PositiveInt, model_validator
 
-from verifiers.v1.acp import ACP
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness, HarnessSession
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.decorators import metric
@@ -26,7 +25,6 @@ RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = ".vf-rlm"
-RLM_ACP = ACP()
 
 
 class RLMHarnessConfig(HarnessConfig):
@@ -63,7 +61,7 @@ class RLMHarnessConfig(HarnessConfig):
         return self
 
 
-class RLMHarness(Harness[RLMHarnessConfig]):
+class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
@@ -90,7 +88,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
-        await RLM_ACP.setup(self, runtime)
+        await self.acp.setup(self, runtime)
 
     def summarize_threshold(self, task_idx: int | None) -> str:
         """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index —
@@ -128,7 +126,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             env["RLM_SKILLS"] = ",".join(self.config.builtin_skills)
         return env
 
-    async def session(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -137,44 +135,12 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> HarnessSession:
-        if not runtime.supports_live_processes:
-            return await super().session(
-                ctx, trace, runtime, endpoint, secret, mcp_urls, data
-            )
+    ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        return RLM_ACP.session(
-            self,
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            mcp_urls,
-            data,
+        return ACPConfig(
             env=self._env(ctx, trace, endpoint, secret, data, system_prompt),
             command=[RLM_BIN, "--acp"],
             prompt=prompt,
-        )
-
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ProgramResult:
-        """Run one standalone ACP segment through the default session adapter."""
-        system_prompt, prompt = self.resolve_prompt(data)
-        return await RLM_ACP.run(
-            runtime,
-            self._env(ctx, trace, endpoint, secret, data, system_prompt),
-            [RLM_BIN, "--acp"],
-            prompt,
-            mcp_urls=mcp_urls,
         )
 
     @metric

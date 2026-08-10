@@ -95,9 +95,9 @@ def content_blocks(messages: list[dict], supports_images: bool) -> list:
     for message in messages:
         if transcript:
             separator = "\n\n" if blocks else ""
-            blocks.append(
-                text_block(f"{separator}[{message.get('role', 'message')}]\n")
-            )
+            role = message.get("role", "message")
+            label = "(system)" if role == "system" else f"[{role}]"
+            blocks.append(text_block(f"{separator}{label}\n"))
         content = message.get("content") or ""
         parts = (
             [{"type": "text", "text": content}] if isinstance(content, str) else content
@@ -149,7 +149,10 @@ def segment_messages(config: dict, is_new: bool) -> list[dict]:
         messages = messages[last_assistant + 1 :]
     if is_new and config["system_prompt"]:
         messages = [
-            {"role": "system", "content": config["system_prompt"]},
+            {
+                "role": "system",
+                "content": config["system_prompt"],
+            },
             *messages,
         ]
     return messages

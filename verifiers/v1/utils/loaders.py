@@ -291,10 +291,7 @@ def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
 
 def harness_config_type(harness_id: str) -> type[HarnessConfig]:
     """Resolve the harness's config specialization through its MRO."""
-    return (
-        concrete_type(harness_class(harness_id), HarnessConfig, origin=Harness)
-        or HarnessConfig
-    )
+    return concrete_type(harness_class(harness_id), HarnessConfig) or HarnessConfig
 
 
 def judge_config_type(judge_id: str) -> type[JudgeConfig]:
