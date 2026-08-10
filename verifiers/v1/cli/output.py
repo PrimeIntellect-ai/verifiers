@@ -22,6 +22,7 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.install import env_name
 
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
@@ -43,7 +44,7 @@ def output_path(config: EvalConfig) -> Path:
     if taskset.id and config.env.id:
         # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
         # not share a parent dir with a plain `gsm8k` one.
-        env = f"{config.env.id}+{env}"
+        env = f"{env_name(config.env.id)}+{env}"
     # Every seat's resolved harness, distinct, in role order.
     harness = "+".join(
         dict.fromkeys(h.name for h in config.env.agent_harnesses().values())

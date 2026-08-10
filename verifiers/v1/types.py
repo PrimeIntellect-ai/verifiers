@@ -2,7 +2,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
@@ -243,5 +243,13 @@ class SamplingConfig(BaseModel):
 Sampling = SamplingConfig
 
 
-ID = str
-"""Plugin id: the installed package's name."""
+def _validate_id(plugin_id: str) -> str:
+    from verifiers.v1.utils.install_utils import is_hub_env, parse_env_id
+
+    if is_hub_env(plugin_id):
+        parse_env_id(plugin_id)  # raises ValueError on a malformed org/name[@version]
+    return plugin_id
+
+
+ID = Annotated[str, AfterValidator(_validate_id)]
+"""Plugin id: `name`, `org/name`, or `org/name@version`."""

@@ -9,6 +9,7 @@ from pydantic import ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
 from verifiers.v1.types import ID
+from verifiers.v1.utils.install import env_name
 
 
 class HarnessConfig(BaseConfig):
@@ -29,7 +30,7 @@ class HarnessConfig(BaseConfig):
 
     @property
     def name(self) -> str:
-        return self.id
+        return env_name(self.id)
 
     @property
     def resolved_env(self) -> dict[str, str]:

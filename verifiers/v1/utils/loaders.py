@@ -21,6 +21,7 @@ from verifiers.v1.judge import Judge, judge_config_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.utils.generic import concrete_type, prefix_validation_error
+from verifiers.v1.utils.install import ensure_installed
 
 
 def builtin_harness_ids() -> list[str]:
@@ -75,7 +76,7 @@ def narrow_plugin_field(
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
-    module = plugin_id.replace("-", "_").lower()
+    module = ensure_installed(plugin_id)
     namespaced = f"{group}.{module}"
     target = namespaced if importlib.util.find_spec(namespaced) else module
     try:
@@ -95,8 +96,8 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
         raise ModuleNotFoundError(
             f"{kind} {plugin_id!r} not found (tried to import {target!r}). {article} {kind} is a "
             f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
-            f"ones ship with verifiers in the `{group}` package; anything else must be "
-            f"installed into this environment first.{hint}"
+            f"ones ship with verifiers in the `{group}` package, installed from "
+            f"the Environments Hub (`org/name`), or authored yourself.{hint}"
         ) from e
 
 
