@@ -42,19 +42,29 @@ LATE_UPDATE_GRACE_SECONDS = 1.0
 
 
 class VerifiersACPClient(Client):
+    """ACP client with a fail-closed, producer-versioned metadata contract.
+
+    ACP 0.11 does not correlate extension updates to requests. Timing is therefore
+    only liveness: metadata is attached only when the producer gives this client
+    a complete, ordered envelope for the currently open prompt turn.
+    """
+
     def __init__(self) -> None:
         self.visible_reply = ""
         self.message_id: str | None = None
         self.tool_calls: dict[str, str] = {}
-        # Only events accepted while an explicitly negotiated prompt lifecycle is
-        # open are eligible for a turn or trace. Everything else is retained
-        # separately as infrastructure evidence, never guessed onto a later turn.
         self.acp_meta: dict[str, list[Any]] = {}
         self.turn_acp_meta: dict[str, list[Any]] = {}
         self.unattributed_acp_meta: dict[str, list[Any]] = {}
         self._metadata_lifecycle_open = False
         self._metadata_lifecycle_started = False
         self._ambiguous_meta = False
+        self._prompt_turn_id = 0
+        self._expected_prompt_turn_id: int | None = None
+        self._last_event_sequence = 0
+        self._boundary_outcome: str | None = None
+        self._terminal_outcome: str | None = None
+        self._correlation_error: str | None = None
         self.output_changed = asyncio.Condition()
 
     def reset(self) -> None:
@@ -63,7 +73,7 @@ class VerifiersACPClient(Client):
         self.tool_calls = {}
 
     def begin_prompt_metadata(self, *, expected: bool) -> None:
-        """Open the one prompt lifecycle that may receive negotiated metadata."""
+        """Open one exact producer envelope; never infer ownership from time."""
         if self._ambiguous_meta:
             namespaces = ", ".join(sorted(self.unattributed_acp_meta))
             raise RuntimeError(
@@ -74,44 +84,107 @@ class VerifiersACPClient(Client):
         self.turn_acp_meta = {}
         self._metadata_lifecycle_open = expected
         self._metadata_lifecycle_started = True
+        self._prompt_turn_id += 1
+        self._expected_prompt_turn_id = self._prompt_turn_id if expected else None
+        self._last_event_sequence = 0
+        self._boundary_outcome = None
+        self._terminal_outcome = None
+        self._correlation_error = None
 
     def close_prompt_metadata(self) -> None:
-        """Make subsequent metadata explicitly unattributable until another prompt."""
         self._metadata_lifecycle_open = False
 
-    async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        async with self.output_changed:
-            if isinstance(update, ToolCall):
-                self.tool_calls[update.tool_call_id] = update.status or "pending"
-            elif isinstance(update, ToolCallUpdate):
-                if update.status:
-                    self.tool_calls[update.tool_call_id] = update.status
-            elif isinstance(update, SessionInfoUpdate):
-                target = (
-                    self.turn_acp_meta
-                    if self._metadata_lifecycle_open
-                    else self.unattributed_acp_meta
+    def _reject_metadata(self, namespace: str, event: Any, reason: str) -> None:
+        self.unattributed_acp_meta.setdefault(namespace, []).append(event)
+        self._ambiguous_meta = True
+        self._correlation_error = reason
+
+    def _accept_metadata(self, namespace: str, event: Any) -> None:
+        """Validate one envelope event before it can enter trace-visible metadata."""
+        if not isinstance(event, dict):
+            self._reject_metadata(
+                namespace, event, "ACP metadata event must be an object"
+            )
+            return
+        turn_id = event.get("promptTurnId")
+        sequence = event.get("eventSequence")
+        phase = event.get("phase")
+        outcome = event.get("outcome")
+        if type(turn_id) is not int or turn_id <= 0:
+            self._reject_metadata(
+                namespace, event, "ACP metadata has invalid promptTurnId"
+            )
+        elif turn_id != self._expected_prompt_turn_id:
+            self._reject_metadata(
+                namespace, event, "ACP metadata belongs to a foreign prompt turn"
+            )
+        elif type(sequence) is not int or sequence <= 0:
+            self._reject_metadata(
+                namespace, event, "ACP metadata has invalid eventSequence"
+            )
+        elif sequence <= self._last_event_sequence:
+            self._reject_metadata(
+                namespace, event, "ACP metadata eventSequence regressed or duplicated"
+            )
+        elif phase not in ("responseBoundary", "terminalQuiescence"):
+            self._reject_metadata(
+                namespace, event, "ACP metadata has an unsupported phase"
+            )
+        elif outcome not in ("result", "error"):
+            self._reject_metadata(
+                namespace, event, "ACP metadata has an unsupported outcome"
+            )
+        elif phase == "responseBoundary":
+            if self._boundary_outcome is not None:
+                self._reject_metadata(
+                    namespace, event, "ACP metadata has duplicate responseBoundary"
                 )
-                for namespace, event in (update.field_meta or {}).items():
-                    target.setdefault(namespace, []).append(event)
-                    if self._metadata_lifecycle_open:
-                        self.acp_meta.setdefault(namespace, []).append(event)
-                    elif self._metadata_lifecycle_started:
-                        # This update has no prompt id in ACP 0.11. Once a turn is
-                        # closed it is fundamentally ambiguous, so fail the next
-                        # prompt rather than misattribute it to that prompt.
-                        self._ambiguous_meta = True
-            elif isinstance(update, AgentMessageChunk) and isinstance(
-                update.content, TextContentBlock
-            ):
-                message_id = getattr(update, "message_id", None)
-                if message_id is not None and message_id != self.message_id:
-                    self.visible_reply = ""
-                    self.message_id = message_id
-                self.visible_reply += update.content.text
             else:
-                return
-            self.output_changed.notify_all()
+                self._last_event_sequence = sequence
+                self._boundary_outcome = outcome
+                self.turn_acp_meta.setdefault(namespace, []).append(event)
+        elif self._boundary_outcome is None:
+            self._reject_metadata(
+                namespace, event, "ACP terminalQuiescence preceded responseBoundary"
+            )
+        elif self._terminal_outcome is not None:
+            self._reject_metadata(
+                namespace, event, "ACP metadata has duplicate terminalQuiescence"
+            )
+        elif outcome != self._boundary_outcome:
+            self._reject_metadata(
+                namespace, event, "ACP terminal outcome disagrees with responseBoundary"
+            )
+        else:
+            quiescence = event.get("terminalQuiescence")
+            if not isinstance(quiescence, dict) or (
+                type(quiescence.get("outstandingSubagents")) is not int
+                or quiescence["outstandingSubagents"] != 0
+                or type(quiescence.get("remainingAutonomousContinuations")) is not int
+                or quiescence["remainingAutonomousContinuations"] != 0
+            ):
+                self._reject_metadata(
+                    namespace,
+                    event,
+                    "ACP terminalQuiescence must contain explicit zero counters",
+                )
+            else:
+                self._last_event_sequence = sequence
+                self._terminal_outcome = outcome
+                self.turn_acp_meta.setdefault(namespace, []).append(event)
+
+    def require_terminal_metadata(self, *, expected: bool) -> None:
+        """Reject partial envelopes; `end_turn` and elapsed time are not evidence."""
+        if not expected:
+            return
+        if self._correlation_error is not None:
+            raise RuntimeError(self._correlation_error)
+        if self._boundary_outcome is None or self._terminal_outcome is None:
+            raise RuntimeError(
+                "ACP metadata lacks a correlated result/error, responseBoundary, and terminalQuiescence"
+            )
+        if self._terminal_outcome == "error":
+            raise RuntimeError("ACP producer reported a correlated error")
 
     async def request_permission(
         self,
@@ -130,6 +203,35 @@ class VerifiersACPClient(Client):
             else DeniedOutcome(outcome="cancelled")
         )
         return RequestPermissionResponse(outcome=outcome)
+
+    async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        async with self.output_changed:
+            if isinstance(update, ToolCall):
+                self.tool_calls[update.tool_call_id] = update.status or "pending"
+            elif isinstance(update, ToolCallUpdate):
+                if update.status:
+                    self.tool_calls[update.tool_call_id] = update.status
+            elif isinstance(update, SessionInfoUpdate):
+                for namespace, event in (update.field_meta or {}).items():
+                    if self._metadata_lifecycle_open:
+                        self._accept_metadata(namespace, event)
+                    else:
+                        self.unattributed_acp_meta.setdefault(namespace, []).append(
+                            event
+                        )
+                        if self._metadata_lifecycle_started:
+                            self._ambiguous_meta = True
+            elif isinstance(update, AgentMessageChunk) and isinstance(
+                update.content, TextContentBlock
+            ):
+                message_id = getattr(update, "message_id", None)
+                if message_id is not None and message_id != self.message_id:
+                    self.visible_reply = ""
+                    self.message_id = message_id
+                self.visible_reply += update.content.text
+            else:
+                return
+            self.output_changed.notify_all()
 
 
 def _meta_event_count(client: VerifiersACPClient) -> int:
@@ -233,7 +335,10 @@ def segment_messages(config: dict, is_new: bool) -> list[dict]:
         messages = messages[last_assistant + 1 :]
     if is_new and config["system_prompt"]:
         messages = [
-            {"role": "system", "content": config["system_prompt"]},
+            {
+                "role": "system",
+                "content": config["system_prompt"],
+            },
             *messages,
         ]
     return messages
@@ -266,7 +371,7 @@ async def prompt(
     client.begin_prompt_metadata(expected=metadata_expected)
     try:
         try:
-            response = await connection.prompt(session_id=session_id, prompt=blocks)
+            await connection.prompt(session_id=session_id, prompt=blocks)
         except RequestError as error:
             detail = error.data.get("details") if isinstance(error.data, dict) else None
             raise RuntimeError(detail or str(error)) from error
@@ -288,20 +393,13 @@ async def prompt(
                 except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
                     pass
 
+        # This wait supplies liveness only. Ownership is established solely by
+        # the producer envelope validated below, never by a deadline or stop reason.
         await wait_for_late_metadata(client, expected=metadata_expected)
+        client.require_terminal_metadata(expected=metadata_expected)
 
-        tool_statuses = list(client.tool_calls.values())
-        completed_tool_turn = (
-            config.get("allow_empty_tool_reply", False)
-            and response.stop_reason == "end_turn"
-            and bool(tool_statuses)
-            and all(status in ("completed", "failed") for status in tool_statuses)
-        )
-        if not has_visible_reply() and not completed_tool_turn:
-            raise RuntimeError(
-                "ACP agent produced no visible reply "
-                f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
-            )
+        if not has_visible_reply():
+            raise RuntimeError("ACP agent produced no visible reply")
         return client.visible_reply
     finally:
         # ACP 0.11 has no event-to-prompt correlation id. Closing before the
@@ -520,9 +618,10 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
-                # Metadata is associated with successful prompt turns only. An
-                # exception can be raised after a later turn's notification was
-                # queued, so attaching it here risks attributing it incorrectly.
+                # A validated terminal envelope belongs to this request even when
+                # its outcome is error; preserve it for the persistent-stream caller.
+                if session.client.turn_acp_meta:
+                    response["meta"] = session.client.turn_acp_meta
                 session.client.turn_acp_meta = {}
             write_packet(sys.stdout.buffer, response)
             if stop:

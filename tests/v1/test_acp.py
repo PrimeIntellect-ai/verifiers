@@ -85,12 +85,10 @@ def test_acp_run_forwards_trace_to_the_recording_path() -> None:
     from verifiers.v1.acp import ACP
 
     assert "trace" in inspect.signature(ACP.run).parameters
-    assert "trace" in inspect.signature(ACP._run).parameters
     source = inspect.getsource(ACP.run)
-    # The forwarding argument itself, not merely the parameter.
-    assert "trace=trace" in source, (
-        "ACP.run accepts trace but never forwards it to _run"
-    )
+    # The public one-shot path has a mandatory trace; this preserves the
+    # lifecycle refactor's model-turn invariant rather than silently dropping it.
+    assert "calls_before = len(trace.calls)" in source
 
 
 def load_runner_without_acp_dependency(monkeypatch: pytest.MonkeyPatch):
@@ -164,6 +162,11 @@ class _PromptMetaClient(_MetaClient):
 
     def close_prompt_metadata(self):
         self._open = False
+
+    def require_terminal_metadata(self, *, expected):
+        # Timing tests use a deliberately minimal producer fake. Strict producer
+        # schema validation is covered against VerifiersACPClient below.
+        return None
 
     async def emit(self, event):
         async with self.output_changed:
@@ -337,9 +340,33 @@ class _SessionLifetimeProducer:
         self.calls += 1
         self.client.visible_reply = f"reply {self.calls}"
         if self.calls == 1:
+            await self._emit_terminal_envelope()
             self.late_update = asyncio.create_task(self._emit_after_response())
             self.response_returned.set()
         return types.SimpleNamespace(stop_reason="end_turn")
+
+    async def _emit_terminal_envelope(self):
+        for event in (
+            {
+                "promptTurnId": 1,
+                "eventSequence": 1,
+                "phase": "responseBoundary",
+                "outcome": "result",
+            },
+            {
+                "promptTurnId": 1,
+                "eventSequence": 2,
+                "phase": "terminalQuiescence",
+                "outcome": "result",
+                "terminalQuiescence": {
+                    "outstandingSubagents": 0,
+                    "remainingAutonomousContinuations": 0,
+                },
+            },
+        ):
+            update = self.runner.SessionInfoUpdate()
+            update.field_meta = {"ns": event}
+            await self.client.session_update("session", update)
 
     async def _emit_after_response(self):
         await self.response_returned.wait()
@@ -376,7 +403,7 @@ async def test_session_lifetime_producer_quarantines_post_response_metadata(
     )
     assert producer.late_update is not None
     await producer.late_update
-    assert client.turn_acp_meta == {}
+    assert client.turn_acp_meta["ns"][0]["phase"] == "responseBoundary"
     assert client.unattributed_acp_meta == {"ns": [{"producer": "after-response"}]}
 
     with pytest.raises(RuntimeError, match="refusing to attach"):
@@ -401,16 +428,201 @@ async def test_metadata_lifecycle_preserves_order_and_quarantines_late_events(
         return value
 
     client.begin_prompt_metadata(expected=True)
+    # A legacy arbitrary event must never become trace-visible merely because it
+    # arrived while the lifecycle was open.
     await client.session_update("session", update({"turn": 1, "state": "start"}))
-    await client.session_update("session", update({"turn": 1, "state": "done"}))
-    assert client.turn_acp_meta == {
-        "ns": [{"turn": 1, "state": "start"}, {"turn": 1, "state": "done"}]
-    }
+    assert client.turn_acp_meta == {}
+    with pytest.raises(RuntimeError, match="invalid promptTurnId"):
+        client.require_terminal_metadata(expected=True)
     client.close_prompt_metadata()
 
-    # This producer update lacks ACP 0.11 prompt correlation, so it must be
-    # quarantined and make turn two an explicit infrastructure failure.
+    # A post-close producer update is equally quarantined and blocks a new turn.
     await client.session_update("session", update({"turn": 1, "state": "late"}))
-    assert client.unattributed_acp_meta == {"ns": [{"turn": 1, "state": "late"}]}
+    assert len(client.unattributed_acp_meta["ns"]) == 2
     with pytest.raises(RuntimeError, match="refusing to attach"):
         client.begin_prompt_metadata(expected=True)
+
+
+@pytest.mark.asyncio
+async def test_strict_metadata_requires_ordered_same_turn_terminal_envelope(
+    monkeypatch,
+):
+    """Only result/error + responseBoundary + terminalQuiescence may attach."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+
+    def update(event):
+        value = runner.SessionInfoUpdate()
+        value.field_meta = {"ns": event}
+        return value
+
+    client.begin_prompt_metadata(expected=True)
+    await client.session_update(
+        "session",
+        update(
+            {
+                "promptTurnId": 1,
+                "eventSequence": 1,
+                "phase": "responseBoundary",
+                "outcome": "result",
+            }
+        ),
+    )
+    await client.session_update(
+        "session",
+        update(
+            {
+                "promptTurnId": 1,
+                "eventSequence": 2,
+                "phase": "terminalQuiescence",
+                "outcome": "result",
+                "terminalQuiescence": {
+                    "outstandingSubagents": 0,
+                    "remainingAutonomousContinuations": 0,
+                },
+            }
+        ),
+    )
+    client.require_terminal_metadata(expected=True)
+    assert [event["phase"] for event in client.turn_acp_meta["ns"]] == [
+        "responseBoundary",
+        "terminalQuiescence",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "events, error",
+    [
+        (
+            [
+                {
+                    "promptTurnId": 0,
+                    "eventSequence": 1,
+                    "phase": "responseBoundary",
+                    "outcome": "result",
+                }
+            ],
+            "promptTurnId",
+        ),
+        (
+            [
+                {
+                    "promptTurnId": 2,
+                    "eventSequence": 1,
+                    "phase": "responseBoundary",
+                    "outcome": "result",
+                }
+            ],
+            "foreign",
+        ),
+        (
+            [
+                {
+                    "promptTurnId": 1,
+                    "eventSequence": 1,
+                    "phase": "terminalQuiescence",
+                    "outcome": "result",
+                }
+            ],
+            "preceded",
+        ),
+        (
+            [
+                {
+                    "promptTurnId": 1,
+                    "eventSequence": 1,
+                    "phase": "responseBoundary",
+                    "outcome": "result",
+                },
+                {
+                    "promptTurnId": 1,
+                    "eventSequence": 1,
+                    "phase": "terminalQuiescence",
+                    "outcome": "result",
+                    "terminalQuiescence": {
+                        "outstandingSubagents": 0,
+                        "remainingAutonomousContinuations": 0,
+                    },
+                },
+            ],
+            "regressed",
+        ),
+        (
+            [
+                {
+                    "promptTurnId": 1,
+                    "eventSequence": 1,
+                    "phase": "responseBoundary",
+                    "outcome": "result",
+                },
+                {
+                    "promptTurnId": 1,
+                    "eventSequence": 2,
+                    "phase": "terminalQuiescence",
+                    "outcome": "result",
+                    "terminalQuiescence": {
+                        "outstandingSubagents": 1,
+                        "remainingAutonomousContinuations": 0,
+                    },
+                },
+            ],
+            "explicit zero",
+        ),
+    ],
+)
+async def test_strict_metadata_rejects_adversarial_envelopes(
+    monkeypatch, events, error
+):
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    for event in events:
+        value = runner.SessionInfoUpdate()
+        value.field_meta = {"ns": event}
+        await client.session_update("session", value)
+    with pytest.raises(RuntimeError, match=error):
+        client.require_terminal_metadata(expected=True)
+    assert client.unattributed_acp_meta
+
+
+@pytest.mark.asyncio
+async def test_end_turn_never_establishes_metadata_correlation(monkeypatch):
+    """A transport stop reason is not producer result/error or quiescence evidence."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    with pytest.raises(RuntimeError, match="lacks a correlated"):
+        client.require_terminal_metadata(expected=True)
+
+
+@pytest.mark.asyncio
+async def test_correlated_error_remains_available_for_persistent_stream(monkeypatch):
+    """The terminal error envelope is preserved before prompt surfaces failure."""
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    client.begin_prompt_metadata(expected=True)
+    for event in (
+        {
+            "promptTurnId": 1,
+            "eventSequence": 1,
+            "phase": "responseBoundary",
+            "outcome": "error",
+        },
+        {
+            "promptTurnId": 1,
+            "eventSequence": 2,
+            "phase": "terminalQuiescence",
+            "outcome": "error",
+            "terminalQuiescence": {
+                "outstandingSubagents": 0,
+                "remainingAutonomousContinuations": 0,
+            },
+        },
+    ):
+        update = runner.SessionInfoUpdate()
+        update.field_meta = {"ns": event}
+        await client.session_update("session", update)
+    with pytest.raises(RuntimeError, match="correlated error"):
+        client.require_terminal_metadata(expected=True)
+    assert client.turn_acp_meta["ns"][-1]["outcome"] == "error"
