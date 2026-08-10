@@ -262,14 +262,18 @@ P2_TERMINAL_FIXTURE = {
 }
 
 
-def scoreable_terminal(events: list[dict], *, cancelled: bool) -> bool:
-    """Pure negative score gate for the producer terminal-publish contract.
+def scoreable_terminal(
+    events: list[dict], *, cancelled: bool, completion_cut_sealed: bool
+) -> bool:
+    """Pure gate for P2's early completion-cut contract.
 
-    A transport stop reason is deliberately absent: an ACP ``end_turn`` is not
-    causal evidence.  A cancellation observed before the producer has drained
-    its response/terminal publications makes the whole pair unscoreable.
+    A producer atomically seals a complete zero-quiescence pair *before* it
+    queues either notification. Cancellation before that cut is unscoreable;
+    cancellation after the cut, including while either notify is gated, cannot
+    relabel the durable pair as cancelled. An ACP ``end_turn`` is deliberately
+    absent because it is never causal evidence.
     """
-    if cancelled or len(events) != 2:
+    if len(events) != 2 or (cancelled and not completion_cut_sealed):
         return False
     response, terminal = events
     counters = terminal.get("quiescence")
@@ -278,10 +282,15 @@ def scoreable_terminal(events: list[dict], *, cancelled: bool) -> bool:
         and response.get("outcome") == "result"
         and terminal.get("phase") == "terminalQuiescence"
         and terminal.get("outcome") == "result"
-        and terminal.get("promptTurnId") == response.get("promptTurnId")
         and type(response.get("promptTurnId")) is int
+        and response["promptTurnId"] > 0
+        and type(terminal.get("promptTurnId")) is int
+        and terminal["promptTurnId"] > 0
+        and terminal["promptTurnId"] == response["promptTurnId"]
         and type(response.get("eventSequence")) is int
+        and response["eventSequence"] > 0
         and type(terminal.get("eventSequence")) is int
+        and terminal["eventSequence"] > 0
         and terminal["eventSequence"] > response["eventSequence"]
         and counters
         == {
@@ -294,32 +303,73 @@ def scoreable_terminal(events: list[dict], *, cancelled: bool) -> bool:
 def test_p2_terminal_publish_fixture_requires_producer_pair_not_end_turn():
     """A completed terminal is a producer pair, never an ACP stop reason."""
     events = [P2_TERMINAL_FIXTURE["response"], P2_TERMINAL_FIXTURE["terminal"]]
-    assert scoreable_terminal(events, cancelled=False)
+    assert scoreable_terminal(events, cancelled=False, completion_cut_sealed=True)
     # ``end_turn`` is intentionally not accepted by the helper and cannot make
     # a partial/uncorrelated transcript scoreable.
-    assert not scoreable_terminal([P2_TERMINAL_FIXTURE["terminal"]], cancelled=False)
+    assert not scoreable_terminal(
+        [P2_TERMINAL_FIXTURE["terminal"]],
+        cancelled=False,
+        completion_cut_sealed=True,
+    )
 
 
-def test_cancel_before_response_publish_drops_the_entire_completion_pair():
-    """Notify-gated P2 test must observe no completion envelopes at this cut."""
-    assert not scoreable_terminal([], cancelled=True)
+def test_cancel_before_completion_cut_is_unscoreable_and_has_no_pair():
+    """A pre-cut cancel must publish no response/terminal completion evidence."""
+    assert not scoreable_terminal([], cancelled=True, completion_cut_sealed=False)
 
 
-def test_cancel_after_response_publish_before_terminal_drain_is_unscoreable():
-    """A response boundary alone must not survive a terminal-publish cancel race."""
-    assert not scoreable_terminal([P2_TERMINAL_FIXTURE["response"]], cancelled=True)
-    assert not scoreable_terminal([P2_TERMINAL_FIXTURE["response"]], cancelled=False)
+def test_cancel_before_completion_cut_rejects_even_a_claimed_full_pair():
+    """A consumer must not trust a pair unless producer sealing was irrevocable."""
+    events = [P2_TERMINAL_FIXTURE["response"], P2_TERMINAL_FIXTURE["terminal"]]
+    assert not scoreable_terminal(events, cancelled=True, completion_cut_sealed=False)
 
 
-def test_cancel_during_terminal_publish_drain_cannot_score_the_queued_terminal():
-    """Cancellation linearizes before scoring even if a terminal notify was queued.
+def test_cancel_after_irrevocable_cut_during_response_publish_is_durable():
+    """Notify-gated response publication cannot relabel a sealed pair cancelled."""
+    events = [P2_TERMINAL_FIXTURE["response"], P2_TERMINAL_FIXTURE["terminal"]]
+    assert scoreable_terminal(events, cancelled=True, completion_cut_sealed=True)
 
-    P2's production test must gate the notify promise at this exact point and
-    establish an unambiguous cancellation outcome.  Until that drain completes
-    without cancellation, consumers must treat the pair as unscoreable.
+
+def test_cancel_after_irrevocable_cut_during_terminal_publish_is_durable():
+    """Terminal-drain cancellation is likewise after the producer completion cut.
+
+    P2's notify-gated production test establishes this linearization; this V4
+    negative fixture only locks its consumer-facing consequence.
     """
     events = [P2_TERMINAL_FIXTURE["response"], P2_TERMINAL_FIXTURE["terminal"]]
-    assert not scoreable_terminal(events, cancelled=True)
+    assert scoreable_terminal(events, cancelled=True, completion_cut_sealed=True)
+
+
+def test_terminal_gate_rejects_bool_nonpositive_and_foreign_ids():
+    """Opaque IDs/sequences must be strict positive integers on both records."""
+    events = [P2_TERMINAL_FIXTURE["response"], P2_TERMINAL_FIXTURE["terminal"]]
+    for record_index, field, value in (
+        (0, "promptTurnId", True),
+        (1, "promptTurnId", False),
+        (0, "promptTurnId", 0),
+        (1, "promptTurnId", -1),
+        (0, "eventSequence", True),
+        (1, "eventSequence", False),
+        (0, "eventSequence", 0),
+        (1, "eventSequence", -1),
+    ):
+        mutated = [dict(record) for record in events]
+        mutated[record_index][field] = value
+        assert not scoreable_terminal(
+            mutated, cancelled=False, completion_cut_sealed=True
+        ), (record_index, field, value)
+
+    foreign_turn = [dict(record) for record in events]
+    foreign_turn[1]["promptTurnId"] = 8
+    assert not scoreable_terminal(
+        foreign_turn, cancelled=False, completion_cut_sealed=True
+    )
+
+    nonincreasing = [dict(record) for record in events]
+    nonincreasing[1]["eventSequence"] = nonincreasing[0]["eventSequence"]
+    assert not scoreable_terminal(
+        nonincreasing, cancelled=False, completion_cut_sealed=True
+    )
 
 
 def test_error_or_nonzero_terminal_never_becomes_a_successful_completion_pair():
@@ -336,8 +386,12 @@ def test_error_or_nonzero_terminal_never_becomes_a_successful_completion_pair():
         },
     }
     assert not scoreable_terminal(
-        [P2_TERMINAL_FIXTURE["response"], error_terminal], cancelled=False
+        [P2_TERMINAL_FIXTURE["response"], error_terminal],
+        cancelled=False,
+        completion_cut_sealed=True,
     )
     assert not scoreable_terminal(
-        [P2_TERMINAL_FIXTURE["response"], incomplete], cancelled=False
+        [P2_TERMINAL_FIXTURE["response"], incomplete],
+        cancelled=False,
+        completion_cut_sealed=True,
     )
