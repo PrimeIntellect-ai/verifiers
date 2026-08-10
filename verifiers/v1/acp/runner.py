@@ -30,14 +30,12 @@ from acp.schema import (
     HttpMcpServer,
     PermissionOption,
     RequestPermissionResponse,
-    SessionInfoUpdate,
     TextContentBlock,
     ToolCall,
     ToolCallUpdate,
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
-LATE_METADATA_SETTLE_SECONDS = 0.05
 LATE_UPDATE_GRACE_SECONDS = 1.0
 
 
@@ -46,38 +44,12 @@ class VerifiersACPClient(Client):
         self.visible_reply = ""
         self.message_id: str | None = None
         self.tool_calls: dict[str, str] = {}
-        # Only events accepted while an explicitly negotiated prompt lifecycle is
-        # open are eligible for a turn or trace. Everything else is retained
-        # separately as infrastructure evidence, never guessed onto a later turn.
-        self.acp_meta: dict[str, list[Any]] = {}
-        self.turn_acp_meta: dict[str, list[Any]] = {}
-        self.unattributed_acp_meta: dict[str, list[Any]] = {}
-        self._metadata_lifecycle_open = False
-        self._metadata_lifecycle_started = False
-        self._ambiguous_meta = False
         self.output_changed = asyncio.Condition()
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
         self.tool_calls = {}
-
-    def begin_prompt_metadata(self, *, expected: bool) -> None:
-        """Open the one prompt lifecycle that may receive negotiated metadata."""
-        if self._ambiguous_meta:
-            namespaces = ", ".join(sorted(self.unattributed_acp_meta))
-            raise RuntimeError(
-                "ACP metadata arrived after its prompt lifecycle closed "
-                f"(namespaces: {namespaces or 'unknown'}); refusing to attach it "
-                "to a later turn"
-            )
-        self.turn_acp_meta = {}
-        self._metadata_lifecycle_open = expected
-        self._metadata_lifecycle_started = True
-
-    def close_prompt_metadata(self) -> None:
-        """Make subsequent metadata explicitly unattributable until another prompt."""
-        self._metadata_lifecycle_open = False
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         async with self.output_changed:
@@ -86,21 +58,6 @@ class VerifiersACPClient(Client):
             elif isinstance(update, ToolCallUpdate):
                 if update.status:
                     self.tool_calls[update.tool_call_id] = update.status
-            elif isinstance(update, SessionInfoUpdate):
-                target = (
-                    self.turn_acp_meta
-                    if self._metadata_lifecycle_open
-                    else self.unattributed_acp_meta
-                )
-                for namespace, event in (update.field_meta or {}).items():
-                    target.setdefault(namespace, []).append(event)
-                    if self._metadata_lifecycle_open:
-                        self.acp_meta.setdefault(namespace, []).append(event)
-                    elif self._metadata_lifecycle_started:
-                        # This update has no prompt id in ACP 0.11. Once a turn is
-                        # closed it is fundamentally ambiguous, so fail the next
-                        # prompt rather than misattribute it to that prompt.
-                        self._ambiguous_meta = True
             elif isinstance(update, AgentMessageChunk) and isinstance(
                 update.content, TextContentBlock
             ):
@@ -130,47 +87,6 @@ class VerifiersACPClient(Client):
             else DeniedOutcome(outcome="cancelled")
         )
         return RequestPermissionResponse(outcome=outcome)
-
-
-def _meta_event_count(client: VerifiersACPClient) -> int:
-    return sum(len(events) for events in client.turn_acp_meta.values())
-
-
-async def wait_for_late_metadata(client: VerifiersACPClient, *, expected: bool) -> None:
-    """Settle metadata only for a harness that explicitly negotiated it.
-
-    Ordinary ACP harnesses must retain their historical zero-metadata fast path:
-    they neither open a metadata lifecycle nor pay this grace period. A capable
-    producer still gets one bounded grace window for its final ordered updates.
-    """
-    if not expected:
-        return
-
-    async def settle() -> None:
-        while True:
-            before = _meta_event_count(client)
-            # Nothing has arrived yet: hold the full grace window for the first
-            # event. Once metadata exists, only wait the short settle interval for
-            # a straggler, so a metadata-bearing turn pays no fixed delay.
-            timeout = (
-                LATE_METADATA_SETTLE_SECONDS if before else LATE_UPDATE_GRACE_SECONDS
-            )
-            async with client.output_changed:
-                try:
-                    await asyncio.wait_for(
-                        client.output_changed.wait_for(
-                            lambda seen=before: _meta_event_count(client) != seen
-                        ),
-                        timeout=timeout,
-                    )
-                except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
-                    return
-
-    # Overall ceiling, so a chatty stream cannot extend the turn indefinitely.
-    try:
-        await asyncio.wait_for(settle(), timeout=LATE_UPDATE_GRACE_SECONDS)
-    except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
-        pass
 
 
 def content_blocks(messages: list[dict], supports_images: bool) -> list:
@@ -239,11 +155,6 @@ def segment_messages(config: dict, is_new: bool) -> list[dict]:
     return messages
 
 
-def write_meta(path: str | None, client: VerifiersACPClient) -> None:
-    if path is not None:
-        Path(path).write_text(json.dumps(client.acp_meta, ensure_ascii=False))
-
-
 async def prompt(
     client: VerifiersACPClient,
     connection: Any,
@@ -259,55 +170,43 @@ async def prompt(
     if not blocks:
         raise ValueError("ACP prompt has no content")
     client.reset()
-    metadata_expected = bool(config.get("metadata_expected", False))
-    # Initialization, session creation, and resume can emit SessionInfoUpdates.
-    # The harness must explicitly opt in before a prompt lifecycle accepts them:
-    # no-metadata ACP agents retain their exact historical prompt fast path.
-    client.begin_prompt_metadata(expected=metadata_expected)
     try:
-        try:
-            response = await connection.prompt(session_id=session_id, prompt=blocks)
-        except RequestError as error:
-            detail = error.data.get("details") if isinstance(error.data, dict) else None
-            raise RuntimeError(detail or str(error)) from error
+        response = await connection.prompt(session_id=session_id, prompt=blocks)
+    except RequestError as error:
+        detail = error.data.get("details") if isinstance(error.data, dict) else None
+        raise RuntimeError(detail or str(error)) from error
 
-        # ACP 0.11 dispatches notifications in background tasks but resolves a
-        # request response directly in its receive loop. An agent that sends its
-        # final session/update immediately before session/prompt returns can
-        # therefore wake this coroutine before the update handler has run.
-        def has_visible_reply() -> bool:
-            return bool(client.visible_reply.strip())
+    # ACP 0.11 dispatches notifications in background tasks but resolves a request
+    # response directly in its receive loop. An agent that sends its final
+    # session/update immediately before session/prompt returns can therefore wake
+    # this coroutine before the update handler has run. Wait specifically for text:
+    # a completed tool update may also arrive first and must not hide a later reply.
+    def has_visible_reply() -> bool:
+        return bool(client.visible_reply.strip())
 
-        if not has_visible_reply():
-            async with client.output_changed:
-                try:
-                    await asyncio.wait_for(
-                        client.output_changed.wait_for(has_visible_reply),
-                        timeout=LATE_UPDATE_GRACE_SECONDS,
-                    )
-                except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
-                    pass
+    if not has_visible_reply():
+        async with client.output_changed:
+            try:
+                await asyncio.wait_for(
+                    client.output_changed.wait_for(has_visible_reply),
+                    timeout=LATE_UPDATE_GRACE_SECONDS,
+                )
+            except asyncio.TimeoutError:  # noqa: UP041 - Python 3.10 compatibility
+                pass
 
-        await wait_for_late_metadata(client, expected=metadata_expected)
-
-        tool_statuses = list(client.tool_calls.values())
-        completed_tool_turn = (
-            config.get("allow_empty_tool_reply", False)
-            and response.stop_reason == "end_turn"
-            and bool(tool_statuses)
-            and all(status in ("completed", "failed") for status in tool_statuses)
+    tool_statuses = list(client.tool_calls.values())
+    completed_tool_turn = (
+        config.get("allow_empty_tool_reply", False)
+        and response.stop_reason == "end_turn"
+        and bool(tool_statuses)
+        and all(status in ("completed", "failed") for status in tool_statuses)
+    )
+    if not has_visible_reply() and not completed_tool_turn:
+        raise RuntimeError(
+            "ACP agent produced no visible reply "
+            f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
         )
-        if not has_visible_reply() and not completed_tool_turn:
-            raise RuntimeError(
-                "ACP agent produced no visible reply "
-                f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
-            )
-        return client.visible_reply
-    finally:
-        # ACP 0.11 has no event-to-prompt correlation id. Closing before the
-        # caller exposes this response ensures a late update cannot leak into a
-        # subsequent turn; it is quarantined and fails that later turn instead.
-        client.close_prompt_metadata()
+    return client.visible_reply
 
 
 async def run_once(config: dict) -> str:
@@ -355,17 +254,14 @@ async def run_once(config: dict) -> str:
             else:
                 raise RuntimeError("ACP agent does not support resuming sessions")
 
-        try:
-            reply = await prompt(
-                client,
-                connection,
-                capabilities,
-                session_id,
-                config,
-                is_new=is_new,
-            )
-        finally:
-            write_meta(config.get("meta_path"), client)
+        reply = await prompt(
+            client,
+            connection,
+            capabilities,
+            session_id,
+            config,
+            is_new=is_new,
+        )
         if session_path and is_new:
             session_path.parent.mkdir(parents=True, exist_ok=True)
             session_path.write_text(session_id)
@@ -504,9 +400,6 @@ async def serve_stream() -> None:
                         "ok": True,
                         "reply": await session.run(request["config"]),
                     }
-                    if session.client.turn_acp_meta:
-                        response["meta"] = session.client.turn_acp_meta
-                    session.client.turn_acp_meta = {}
                 elif operation == "shutdown":
                     await session.close()
                     closed = True
@@ -520,10 +413,6 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
-                # Metadata is associated with successful prompt turns only. An
-                # exception can be raised after a later turn's notification was
-                # queued, so attaching it here risks attributing it incorrectly.
-                session.client.turn_acp_meta = {}
             write_packet(sys.stdout.buffer, response)
             if stop:
                 break
