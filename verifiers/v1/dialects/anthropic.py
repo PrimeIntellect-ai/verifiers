@@ -16,6 +16,7 @@ from anthropic.types import Usage as AnthropicUsage
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
+    capability_notice,
     is_remote_url,
     parse_sse_event,
 )
@@ -407,6 +408,86 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             ):
                 return capability
         return _tool_capability(body.get("tools"), "tools")
+
+    def mediate_external_capabilities(self, body: dict) -> tuple[dict, list[str]]:
+        mediated = dict(body)
+        if "messages" in mediated:
+            mediated["messages"] = [
+                dict(message) if isinstance(message, dict) else message
+                for message in mediated["messages"] or []
+            ]
+        capabilities: list[str] = []
+
+        for key in ("container", "mcp_servers"):
+            if mediated.pop(key, None):
+                capabilities.append(key)
+
+        system = mediated.get("system")
+        if isinstance(system, list):
+            safe_system = []
+            for index, block in enumerate(system):
+                path = f"system[{index}]"
+                if capability := _content_capability(block, path):
+                    capabilities.append(capability)
+                    safe_system.append(
+                        {"type": "text", "text": capability_notice([capability])}
+                    )
+                else:
+                    safe_system.append(block)
+            mediated["system"] = safe_system
+        elif capability := _content_capability(system, "system"):
+            capabilities.append(capability)
+            mediated["system"] = capability_notice([capability])
+
+        for message_index, message in enumerate(mediated.get("messages") or []):
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                safe_content = []
+                for block_index, block in enumerate(content):
+                    path = f"messages[{message_index}].content[{block_index}]"
+                    if capability := _content_capability(block, path):
+                        capabilities.append(capability)
+                        safe_content.append(
+                            {"type": "text", "text": capability_notice([capability])}
+                        )
+                    else:
+                        safe_content.append(block)
+                message["content"] = safe_content
+            elif capability := _content_capability(
+                content, f"messages[{message_index}].content"
+            ):
+                capabilities.append(capability)
+                message["content"] = [
+                    {"type": "text", "text": capability_notice([capability])}
+                ]
+
+        tools = []
+        for index, tool in enumerate(mediated.get("tools") or []):
+            capability = _tool_capability([tool], "tools")
+            if capability is None:
+                tools.append(tool)
+            else:
+                capabilities.append(
+                    capability.replace("tools[0]", f"tools[{index}]", 1)
+                )
+        if len(tools) != len(mediated.get("tools") or []):
+            mediated["tools"] = tools
+            mediated.pop("tool_choice", None)
+
+        if capabilities:
+            notice = capability_notice(capabilities)
+            system = mediated.get("system")
+            if isinstance(system, str):
+                mediated["system"] = f"{system}\n\n{notice}"
+            elif isinstance(system, list):
+                system.append({"type": "text", "text": notice})
+            else:
+                mediated["system"] = notice
+            if not mediated.get("messages"):
+                mediated["messages"] = [{"role": "user", "content": notice}]
+        return mediated, capabilities
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
         return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}

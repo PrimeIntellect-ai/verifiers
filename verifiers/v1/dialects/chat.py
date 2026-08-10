@@ -17,6 +17,7 @@ from openai.types.chat import ChatCompletion
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
+    capability_notice,
     is_remote_url,
     parse_sse_event,
 )
@@ -405,6 +406,86 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                 ):
                     return f"{path}.type"
         return None
+
+    def mediate_external_capabilities(self, body: dict) -> tuple[dict, list[str]]:
+        mediated = dict(body)
+        if "messages" in mediated:
+            mediated["messages"] = [
+                dict(message) if isinstance(message, dict) else message
+                for message in mediated["messages"] or []
+            ]
+        capabilities: list[str] = []
+
+        if self.external_capability({"model": mediated.get("model")}) == "model":
+            capabilities.append("model")
+
+        if mediated.pop("web_search_options", None) is not None:
+            capabilities.append("web_search_options")
+
+        audio = mediated.get("audio")
+        voice = audio.get("voice") if isinstance(audio, dict) else None
+        if isinstance(voice, dict) and voice.get("id"):
+            capabilities.append("audio.voice.id")
+            mediated.pop("audio")
+            modalities = mediated.get("modalities")
+            if isinstance(modalities, list):
+                mediated["modalities"] = [
+                    item for item in modalities if item != "audio"
+                ] or ["text"]
+
+        if capability := self.external_capability(
+            {"tool_choice": mediated.get("tool_choice")}
+        ):
+            capabilities.append(capability)
+            mediated.pop("tool_choice", None)
+
+        tools = []
+        for index, tool in enumerate(mediated.get("tools") or []):
+            if (
+                isinstance(tool, dict)
+                and tool.get("type", "function") in _CLIENT_TOOL_TYPES
+            ):
+                tools.append(tool)
+            else:
+                capabilities.append(f"tools[{index}].type")
+        if len(tools) != len(mediated.get("tools") or []):
+            mediated["tools"] = tools
+
+        for message_index, message in enumerate(mediated.get("messages") or []):
+            if not isinstance(message, dict):
+                continue
+            if isinstance(message.get("audio"), dict) and message["audio"].get("id"):
+                path = f"messages[{message_index}].audio.id"
+                capabilities.append(path)
+                message.pop("audio")
+                if message.get("content") is None:
+                    message["content"] = capability_notice([path])
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            safe_content = []
+            for part_index, part in enumerate(content):
+                path = f"messages[{message_index}].content[{part_index}]"
+                capability = self.external_capability(
+                    {"messages": [{"role": message.get("role"), "content": [part]}]}
+                )
+                if capability is None:
+                    safe_content.append(part)
+                else:
+                    capability = capability.replace("messages[0].content[0]", path)
+                    capabilities.append(capability)
+                    safe_content.append(
+                        {"type": "text", "text": capability_notice([capability])}
+                    )
+            message["content"] = safe_content
+
+        prompt_capabilities = [path for path in capabilities if path != "model"]
+        if prompt_capabilities:
+            mediated.setdefault("messages", []).insert(
+                0,
+                {"role": "system", "content": capability_notice(prompt_capabilities)},
+            )
+        return mediated, capabilities
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         messages: Messages = []

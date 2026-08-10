@@ -35,6 +35,17 @@ def is_remote_url(value: object) -> bool:
     )
 
 
+def capability_notice(capabilities: list[str]) -> str:
+    """A value-free policy error that can safely be added to the model prompt."""
+    paths = ", ".join(dict.fromkeys(capabilities))
+    return (
+        f"Runtime network policy error: provider-side capability paths [{paths}] "
+        "are unavailable. Continue without those capabilities; use local tools or "
+        "inline data already present in the conversation, and do not retry the blocked "
+        "provider-side operation."
+    )
+
+
 def is_sse_done_event(raw: bytes) -> bool:
     """Whether one complete SSE event carries the DONE sentinel."""
     # Ordinary OpenAI events carry JSON objects; reject their hot path before splitting lines.
@@ -159,6 +170,13 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """The first native request path that asks the provider to resolve an outside
         resource or execute a hosted tool. Paths, never values, make rejection diagnostics
         useful without echoing URLs, credentials, or other request content."""
+
+    @abstractmethod
+    def mediate_external_capabilities(self, body: ReqT) -> tuple[ReqT, list[str]]:
+        """Remove provider-side capabilities from a native request and add a policy
+        error to its prompt so the model can continue without them. The returned paths
+        never contain request values. Capabilities intrinsic to the selected model cannot
+        be removed and stay in the returned body for the interception server to reject."""
 
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:

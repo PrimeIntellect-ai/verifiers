@@ -6,6 +6,7 @@ with distinct networking — instead of fanning the full cross product. prime/mo
 are local-only (their marks are excluded in CI)."""
 
 import json
+from copy import deepcopy
 
 import aiohttp
 import pytest
@@ -13,6 +14,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.clients.client import RelayReply
 from verifiers.v1.dialects import AnthropicDialect, ChatDialect, ResponsesDialect
+from verifiers.v1.errors import InterceptionError
 from verifiers.v1.interception import InterceptionServer
 from verifiers.v1.runtimes import (
     DockerConfig,
@@ -458,6 +460,13 @@ def _anthropic_content(block):
 )
 def test_dialect_external_capability(dialect, body, path):
     assert dialect.external_capability(body) == path
+    mediated, capabilities = dialect.mediate_external_capabilities(body)
+    assert path in capabilities
+    if path == "model":
+        assert dialect.external_capability(mediated) == path
+    else:
+        assert dialect.external_capability(mediated) is None
+        assert path in json.dumps(mediated)
 
 
 @pytest.mark.parametrize(
@@ -593,6 +602,7 @@ def test_inline_data_and_client_tools_are_not_external_capabilities():
 class _RecordingClient(vf.Client):
     def __init__(self):
         self.calls: list[str] = []
+        self.requests: list[dict] = []
         self.response = vf.Response(
             id="response-1",
             created=0,
@@ -602,46 +612,102 @@ class _RecordingClient(vf.Client):
             raw={},
         )
 
-    async def get_response(self, *args, **kwargs):
+    async def get_response(self, dialect, body, *args, **kwargs):
         self.calls.append("get_response")
+        self.requests.append(deepcopy(body))
         return self.response.model_copy(deep=True)
 
-    async def relay(self, dialect, *args, **kwargs):
+    async def relay(self, dialect, body, *args, **kwargs):
         self.calls.append("relay")
+        self.requests.append(deepcopy(body))
 
         async def chunks():
-            event = {
-                "type": "response.completed",
-                "response": {
-                    "id": "response-1",
-                    "created_at": 0,
-                    "model": "test-model",
-                    "status": "completed",
-                    "output": [
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [
+            if isinstance(dialect, ResponsesDialect):
+                events = [
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "response-1",
+                            "created_at": 0,
+                            "model": "test-model",
+                            "status": "completed",
+                            "output": [
                                 {
-                                    "type": "output_text",
-                                    "text": "ok",
-                                    "annotations": [],
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [
+                                        {
+                                            "type": "output_text",
+                                            "text": "ok",
+                                            "annotations": [],
+                                        }
+                                    ],
                                 }
                             ],
-                        }
-                    ],
-                },
-            }
-            yield f"data: {json.dumps(event)}\n\n".encode()
-            yield b"data: [DONE]\n\n"
+                        },
+                    }
+                ]
+            elif isinstance(dialect, ChatDialect):
+                events = [
+                    {
+                        "id": "response-1",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant", "content": "ok"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    }
+                ]
+            else:
+                events = [
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "response-1",
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [],
+                            "model": "test-model",
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        },
+                    },
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "ok"},
+                    },
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                        "usage": {"output_tokens": 1},
+                    },
+                    {"type": "message_stop"},
+                ]
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n".encode()
+            if not isinstance(dialect, AnthropicDialect):
+                yield b"data: [DONE]\n\n"
 
         async def close():
             pass
 
         return RelayReply("text/event-stream", chunks(), close)
 
-    async def relay_aux(self, *args, **kwargs):
+    async def relay_aux(self, dialect, route, body, *args, **kwargs):
         self.calls.append("relay_aux")
+        self.requests.append(deepcopy(body))
         return {"input_tokens": 1}
 
 
@@ -688,6 +754,24 @@ async def _post(session, dialect, body, route=None):
     "dialect,body,path",
     [
         (
+            ChatDialect(),
+            {
+                "model": "ignored",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.com/a.png"},
+                            }
+                        ],
+                    }
+                ],
+            },
+            "messages[0].content[0].image_url.url",
+        ),
+        (
             ResponsesDialect(),
             {
                 "model": "ignored",
@@ -715,17 +799,27 @@ async def _post(session, dialect, body, route=None):
         ),
     ],
 )
-async def test_restricted_interception_blocks_before_upstream(dialect, body, path):
+@pytest.mark.parametrize("stream", [False, True])
+async def test_restricted_interception_mediates_before_upstream(
+    dialect, body, path, stream
+):
     client = _RecordingClient()
     session = _session(client)
+    body["stream"] = stream
     status, response = await _post(session, dialect, body)
 
-    assert status == 400
-    assert path in response
+    assert status == 200
     assert "do-not-echo" not in response
-    assert client.calls == []
-    assert session.trace.calls == []
-    assert session.trace.nodes == []
+    assert client.calls == ["relay" if stream else "get_response"]
+    assert len(client.requests) == 1
+    upstream = json.dumps(client.requests[0])
+    assert path in upstream
+    assert "Runtime network policy error" in upstream
+    assert "do-not-echo" not in upstream
+    assert "https://example.com" not in upstream
+    assert dialect.external_capability(client.requests[0]) is None
+    assert len(session.trace.calls) == 1
+    assert session.trace.num_turns == 1
     assert session.inflight == {}
 
 
@@ -757,14 +851,24 @@ async def test_restricted_interception_scans_effective_overrides(model, sampling
         },
     )
 
-    assert status == 400
-    assert path in response
-    assert client.calls == []
-    assert session.trace.calls == []
-    assert session.trace.nodes == []
+    if path == "model":
+        assert status == 400
+        assert path in response
+        assert client.calls == []
+        assert session.trace.calls == []
+        assert session.trace.nodes == []
+        assert isinstance(session.error, InterceptionError)
+    else:
+        assert status == 200
+        assert client.calls == ["get_response"]
+        assert path in json.dumps(client.requests[0])
+        assert path not in client.requests[0]
+        assert len(session.trace.calls) == 1
+        assert session.trace.num_turns == 1
+        assert session.error is None
 
 
-async def test_restricted_anthropic_count_tokens_blocks_before_upstream():
+async def test_restricted_anthropic_count_tokens_mediates_before_upstream():
     dialect = AnthropicDialect()
     client = _RecordingClient()
     status, response = await _post(
@@ -784,9 +888,13 @@ async def test_restricted_anthropic_count_tokens_blocks_before_upstream():
         },
         dialect.aux_routes[0],
     )
-    assert status == 400
-    assert "messages[0].content[0].source.url" in response
-    assert client.calls == []
+    assert status == 200
+    assert "https://example.com" not in response
+    assert client.calls == ["relay_aux"]
+    upstream = json.dumps(client.requests[0])
+    assert "messages[0].content[0].source.url" in upstream
+    assert "https://example.com" not in upstream
+    assert dialect.external_capability(client.requests[0]) is None
 
     allowed_client = _RecordingClient()
     status, _ = await _post(

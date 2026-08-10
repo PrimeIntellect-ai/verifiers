@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
+    capability_notice,
     is_remote_url,
     iter_sse_reverse,
 )
@@ -391,6 +392,112 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             elif kind not in _CLIENT_TOOL_CHOICES:
                 return "tool_choice.type"
         return _tools_capability(body.get("tools"), "tools")
+
+    def mediate_external_capabilities(self, body: dict) -> tuple[dict, list[str]]:
+        mediated = dict(body)
+        capabilities: list[str] = []
+
+        for field in ("previous_response_id", "conversation"):
+            if mediated.pop(field, None) is not None:
+                capabilities.append(field)
+
+        prompt = mediated.get("prompt")
+        if prompt is not None:
+            capability = self.external_capability({"prompt": prompt})
+            if capability is not None:
+                capabilities.append(capability)
+                mediated.pop("prompt")
+
+        raw_input = mediated.get("input")
+        if isinstance(raw_input, list):
+            safe_input = []
+            for item_index, item in enumerate(raw_input):
+                item_path = f"input[{item_index}]"
+                if not isinstance(item, dict):
+                    safe_input.append(item)
+                    continue
+                item = dict(item)
+
+                content_field = None
+                if item.get("type") in (
+                    "function_call_output",
+                    "custom_tool_call_output",
+                    "computer_call_output",
+                ):
+                    content_field = "output"
+                elif item.get("type") in (None, "message") and "content" in item:
+                    content_field = "content"
+
+                content = item.get(content_field) if content_field else None
+                if isinstance(content, list):
+                    safe_content = []
+                    for part_index, part in enumerate(content):
+                        part_path = f"{item_path}.{content_field}[{part_index}]"
+                        capability = _content_capability(part, part_path)
+                        if capability is None:
+                            safe_content.append(part)
+                        else:
+                            capabilities.append(capability)
+                            safe_content.append(
+                                {
+                                    "type": "input_text",
+                                    "text": capability_notice([capability]),
+                                }
+                            )
+                    item[content_field] = safe_content
+
+                capability = _content_capability(item, item_path)
+                if capability is None:
+                    safe_input.append(item)
+                else:
+                    capabilities.append(capability)
+                    safe_input.append(
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": capability_notice([capability]),
+                                }
+                            ],
+                        }
+                    )
+            mediated["input"] = safe_input
+        elif capability := _content_capability(raw_input, "input"):
+            capabilities.append(capability)
+            mediated["input"] = capability_notice([capability])
+
+        tools = []
+        for index, tool in enumerate(mediated.get("tools") or []):
+            capability = _tools_capability([tool], "tools")
+            if capability is None:
+                tools.append(tool)
+            else:
+                capabilities.append(
+                    capability.replace("tools[0]", f"tools[{index}]", 1)
+                )
+        if len(tools) != len(mediated.get("tools") or []):
+            mediated["tools"] = tools
+
+        choice = mediated.get("tool_choice")
+        if choice is not None and (
+            capability := self.external_capability({"tool_choice": choice})
+        ):
+            capabilities.append(capability)
+            mediated.pop("tool_choice")
+
+        if capabilities:
+            notice = capability_notice(capabilities)
+            instructions = mediated.get("instructions")
+            mediated["instructions"] = (
+                f"{instructions}\n\n{notice}"
+                if isinstance(instructions, str)
+                else notice
+            )
+            if mediated.get("input") is None:
+                mediated["input"] = notice
+        return mediated, capabilities
 
     def is_terminal_event(self, chunk: bytes) -> bool:
         # A Responses client (e.g. codex) ends its turn on `response.completed`, before the

@@ -41,6 +41,7 @@ from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1.errors import (
+    InterceptionError,
     OverlongPromptError,
     ProviderError,
     RolloutError,
@@ -258,25 +259,32 @@ class InterceptionServer(Interception):
             status=getattr(error, "status_code", 502),
         )
 
-    def _capability_rejection(
+    def _mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
-    ) -> web.Response | None:
+    ) -> tuple[dict, web.Response | None]:
         if not session.network_restricted:
-            return None
-        capability = dialect.external_capability(body)
+            return body, None
+        mediated, capabilities = dialect.mediate_external_capabilities(body)
+        if capabilities:
+            logger.warning(
+                "interception removed provider capabilities: id=%s paths=%s",
+                session.trace.id,
+                ",".join(capabilities),
+            )
+        capability = dialect.external_capability(mediated)
         if capability is None:
-            return None
+            return mediated, None
+
+        error = InterceptionError(
+            f"provider-side capability {capability!r} cannot be disabled for the selected model"
+        )
+        session.error = error
         logger.warning(
-            "interception blocked provider capability: id=%s path=%s",
+            "interception blocked intrinsic provider capability: id=%s path=%s",
             session.trace.id,
             capability,
         )
-        return web.json_response(
-            dialect.error_body(
-                f"provider-side capability {capability!r} is disabled by the runtime network policy"
-            ),
-            status=400,
-        )
+        return mediated, web.json_response(dialect.error_body(str(error)), status=400)
 
     def record_call(
         self,
@@ -351,12 +359,11 @@ class InterceptionServer(Interception):
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
-        upstream_request = dialect.apply_overrides(
-            body, session.ctx.model, session.ctx.sampling
-        )
-        rejection = self._capability_rejection(session, dialect, upstream_request)
+        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        body, rejection = self._mediate_capabilities(session, dialect, body)
         if rejection is not None:
             return rejection
+        upstream_request = body
         streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
@@ -739,7 +746,7 @@ class InterceptionServer(Interception):
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             body = await request.json()
-            rejection = self._capability_rejection(session, dialect, body)
+            body, rejection = self._mediate_capabilities(session, dialect, body)
             if rejection is not None:
                 return rejection
             result = await session.client.relay_aux(
