@@ -352,6 +352,8 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         return ChatStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Preserve the program's native fields, overlaying only what the eval owns: the model and
-        # the sampling knobs it set (later keys win, so the eval's override the program's).
-        return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
+        return {
+            **{k: v for k, v in body.items() if k not in self.sampling_fields},
+            "model": model,
+            **sampling.model_dump(exclude_none=True),
+        }
