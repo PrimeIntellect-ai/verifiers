@@ -13,6 +13,7 @@ from dataclasses import field as dataclass_field
 from typing import Any
 
 from openai.types.chat import ChatCompletion
+from pydantic_core import to_json
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
@@ -48,6 +49,59 @@ FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
 # Fireworks / Kimi), `reasoning_details` (OpenRouter / MiniMax).
 REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
+# Kimi qualifies MCP tools as `mcp__<server>__<tool>`; `TOOL_PREFIX = None`
+# intentionally leaves the server name empty.
+BARE_MCP_TOOL_PREFIX = "mcp____"
+
+
+def replace_chat_tool_names(value: Any, aliases: Mapping[str, str]) -> Any:
+    """Return a chat wire value with matching `name` fields replaced recursively."""
+    if not aliases:
+        return value
+    if isinstance(value, dict):
+        return {
+            key: aliases.get(item, item)
+            if key == "name" and isinstance(item, str)
+            else replace_chat_tool_names(item, aliases)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [replace_chat_tool_names(item, aliases) for item in value]
+    return value
+
+
+def alias_bare_mcp_tool_names(body: dict) -> tuple[dict, dict[str, str]]:
+    """Expose Kimi's empty-server MCP namespace as bare chat tool names."""
+    names = {
+        function["name"]
+        for tool in body.get("tools") or []
+        if isinstance(function := tool.get("function"), dict)
+        and isinstance(function.get("name"), str)
+    }
+    aliases = {
+        name: name.removeprefix(BARE_MCP_TOOL_PREFIX)
+        for name in names
+        if name.startswith(BARE_MCP_TOOL_PREFIX)
+    }
+    if collisions := set(aliases.values()) & (names - aliases.keys()):
+        raise ValueError(
+            f"bare MCP tools collide with harness tools: {', '.join(sorted(collisions))}"
+        )
+    return replace_chat_tool_names(body, aliases), {
+        visible: internal for internal, visible in aliases.items()
+    }
+
+
+def restore_chat_sse_tool_names(raw: bytes, aliases: Mapping[str, str]) -> bytes:
+    """Restore tool names in one complete chat SSE event."""
+    if not aliases:
+        return raw
+    event = parse_sse_event(raw)
+    restored = replace_chat_tool_names(event, aliases)
+    if restored == event:
+        return raw
+    terminator = raw[len(raw.rstrip(b"\r\n")) :]
+    return b"data: " + to_json(restored) + terminator
 
 
 def reasoning_text(data: Mapping[str, Any]) -> str | None:
