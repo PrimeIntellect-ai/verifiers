@@ -590,6 +590,240 @@ def test_inline_data_and_client_tools_are_not_external_capabilities():
         assert dialect.external_capability({"tool_choice": "auto"}) is None
 
 
+# --- Provider SDK drift -----------------------------------------------------------
+# The capability walkers fail closed: an unknown `type` is rejected in restricted
+# runtimes. These tests pin every `type` literal the pinned provider SDKs can emit to
+# an explicit classification (client-executed, conditionally client-executed, or
+# provider-side), so an SDK bump that introduces new provider surface fails here with
+# the new names instead of silently 400ing restricted evals or forwarding an escape.
+
+
+def _sdk_type_literals(*aliases) -> frozenset[str]:
+    """Every string Literal reachable from the aliases' `type` fields."""
+    import typing
+
+    found: set[str] = set()
+
+    def collect(hint) -> None:
+        if typing.get_origin(hint) is typing.Literal:
+            found.update(arg for arg in typing.get_args(hint) if isinstance(arg, str))
+            return
+        for arg in typing.get_args(hint):
+            collect(arg)
+
+    def visit(node) -> None:
+        if isinstance(node, type):
+            try:
+                hint = typing.get_type_hints(node, include_extras=True).get("type")
+            except (NameError, TypeError):  # aliases the SDK leaves unresolvable
+                hint = None
+            if hint is not None:
+                collect(hint)
+            return
+        if typing.get_origin(node) is typing.Literal:
+            collect(node)
+            return
+        for arg in typing.get_args(node):
+            visit(arg)
+
+    for alias in aliases:
+        visit(alias)
+    return frozenset(found)
+
+
+# Tools that execute on OpenAI's side, deliberately rejected under restriction.
+_RESPONSES_PROVIDER_TOOLS = frozenset(
+    {
+        "code_interpreter",
+        "file_search",
+        "image_generation",
+        "mcp",
+        "programmatic_tool_calling",
+        "web_search",
+        "web_search_2025_08_26",
+        "web_search_preview",
+        "web_search_preview_2025_03_11",
+    }
+)
+# Allowed only in client-executed shapes (nested tools, execution=client, local env).
+_RESPONSES_CONDITIONAL_TOOLS = frozenset({"namespace", "shell", "tool_search"})
+_RESPONSES_PROVIDER_TOOL_CHOICES = frozenset(
+    {
+        "code_interpreter",
+        "computer_use",
+        "file_search",
+        "image_generation",
+        "mcp",
+        "programmatic_tool_calling",
+        "web_search_preview",
+        "web_search_preview_2025_03_11",
+    }
+)
+# Input items the walker handles structurally (wrappers, nested content, messages).
+_RESPONSES_WRAPPED_INPUT_TYPES = frozenset(
+    {
+        "additional_tools",
+        "computer_call_output",
+        "custom_tool_call_output",
+        "function_call_output",
+        "message",
+        "tool_search_output",
+    }
+)
+# Input items that reference provider-held state or provider-executed calls.
+_RESPONSES_PROVIDER_INPUT_TYPES = frozenset(
+    {
+        "code_interpreter_call",
+        "file_search_call",
+        "image_generation_call",
+        "item_reference",
+        "mcp_approval_request",
+        "mcp_approval_response",
+        "mcp_call",
+        "mcp_list_tools",
+        "program",
+        "program_output",
+        "web_search_call",
+    }
+)
+
+
+def test_responses_dialect_classifies_sdk_type_literals():
+    from openai.types.responses import ResponseInputItemParam, ToolParam
+    from openai.types.responses.response_create_params import ToolChoice
+
+    from verifiers.v1.dialects import responses
+
+    tools = _sdk_type_literals(ToolParam)
+    classified = (
+        responses._CLIENT_TOOL_TYPES
+        | _RESPONSES_CONDITIONAL_TOOLS
+        | _RESPONSES_PROVIDER_TOOLS
+    )
+    assert tools <= classified, (
+        f"unclassified Responses tools: {sorted(tools - classified)}"
+    )
+    dialect = ResponsesDialect()
+    for kind in tools & _RESPONSES_PROVIDER_TOOLS:
+        assert (
+            dialect.external_capability({"tools": [{"type": kind}]}) == "tools[0].type"
+        )
+    for kind in tools & responses._CLIENT_TOOL_TYPES:
+        assert dialect.external_capability({"tools": [{"type": kind}]}) is None
+
+    choices = _sdk_type_literals(ToolChoice)
+    classified = (
+        responses._CLIENT_TOOL_CHOICES
+        | _RESPONSES_PROVIDER_TOOL_CHOICES
+        | {"allowed_tools", "none", "auto", "required"}
+    )
+    assert choices <= classified, (
+        f"unclassified Responses tool choices: {sorted(choices - classified)}"
+    )
+    for kind in choices & _RESPONSES_PROVIDER_TOOL_CHOICES:
+        assert (
+            dialect.external_capability({"tool_choice": {"type": kind}})
+            == "tool_choice.type"
+        )
+
+    items = _sdk_type_literals(ResponseInputItemParam)
+    classified = (
+        responses._SAFE_INPUT_TYPES
+        | _RESPONSES_WRAPPED_INPUT_TYPES
+        | _RESPONSES_PROVIDER_INPUT_TYPES
+    )
+    assert items <= classified, (
+        f"unclassified Responses input items: {sorted(items - classified)}"
+    )
+    for kind in items & _RESPONSES_PROVIDER_INPUT_TYPES:
+        assert dialect.external_capability({"input": [{"type": kind}]}) is not None
+
+
+# Tools that execute on Anthropic's side, deliberately rejected under restriction.
+_ANTHROPIC_PROVIDER_TOOLS = frozenset(
+    {
+        "advisor_20260301",
+        "code_execution_20250522",
+        "code_execution_20250825",
+        "code_execution_20260120",
+        "code_execution_20260521",
+        "mcp_toolset",
+        "tool_search_tool_bm25",
+        "tool_search_tool_bm25_20251119",
+        "tool_search_tool_regex",
+        "tool_search_tool_regex_20251119",
+        "web_fetch_20250910",
+        "web_fetch_20260209",
+        "web_fetch_20260309",
+        "web_fetch_20260318",
+        "web_search_20250305",
+        "web_search_20260209",
+        "web_search_20260318",
+    }
+)
+
+
+def test_anthropic_dialect_classifies_sdk_type_literals():
+    from anthropic.types import ContentBlockParam, ToolUnionParam
+    from anthropic.types.beta import BetaContentBlockParam, BetaToolUnionParam
+
+    from verifiers.v1.dialects import anthropic
+
+    tools = _sdk_type_literals(ToolUnionParam, BetaToolUnionParam)
+    classified = anthropic._CLIENT_TOOL_TYPES | _ANTHROPIC_PROVIDER_TOOLS | {"custom"}
+    assert tools <= classified, (
+        f"unclassified Anthropic tools: {sorted(tools - classified)}"
+    )
+    dialect = AnthropicDialect()
+    for kind in tools & _ANTHROPIC_PROVIDER_TOOLS:
+        assert (
+            dialect.external_capability({"tools": [{"type": kind}]}) == "tools[0].type"
+        )
+    for kind in tools & anthropic._CLIENT_TOOL_TYPES:
+        assert dialect.external_capability({"tools": [{"type": kind}]}) is None
+
+    content = _sdk_type_literals(ContentBlockParam, BetaContentBlockParam)
+    # `tool_result` recurses into its content; `container_upload` names a provider file.
+    classified = (
+        anthropic._SAFE_CONTENT_TYPES
+        | anthropic._CONTENT_WRAPPERS
+        | {"tool_result", "container_upload"}
+    )
+    assert content <= classified, (
+        f"unclassified Anthropic content blocks: {sorted(content - classified)}"
+    )
+
+
+def test_chat_dialect_classifies_sdk_type_literals():
+    import typing
+
+    from openai.types import ChatModel
+    from openai.types.chat import (
+        ChatCompletionContentPartParam,
+        ChatCompletionToolUnionParam,
+    )
+
+    from verifiers.v1.dialects import chat
+
+    tools = _sdk_type_literals(ChatCompletionToolUnionParam)
+    assert tools <= chat._CLIENT_TOOL_TYPES, (
+        f"unclassified Chat tools: {sorted(tools - chat._CLIENT_TOOL_TYPES)}"
+    )
+
+    parts = _sdk_type_literals(ChatCompletionContentPartParam)
+    # The part types the chat walker inspects for remote references or passes through.
+    handled = frozenset({"text", "refusal", "input_audio", "image_url", "file"})
+    assert parts <= handled, (
+        f"unclassified Chat content parts: {sorted(parts - handled)}"
+    )
+
+    dialect = ChatDialect()
+    for model in typing.get_args(ChatModel):
+        if "search" in model:
+            assert dialect.external_capability({"model": model}) == "model"
+            assert dialect.external_capability({"model": f"openai/{model}"}) == "model"
+
+
 class _RecordingClient(vf.Client):
     def __init__(self):
         self.calls: list[str] = []
