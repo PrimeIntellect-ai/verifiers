@@ -210,7 +210,7 @@ def load_judge(config: JudgeConfig) -> Judge:
 
 
 @functools.cache
-def _file_module(path: str) -> ModuleType:
+def file_module(path: str) -> ModuleType:
     """Import a standalone `.py` file, cached by path so repeated plugged-fn loads
     share one module object."""
     resolved = Path(path).resolve()
@@ -234,7 +234,7 @@ def plugged_fn(path: str) -> Callable[..., Any]:
             "or `path/to/file.py:function`"
         )
     if module_path.endswith(".py"):
-        module = _file_module(module_path)
+        module = file_module(module_path)
     else:
         module = importlib.import_module(module_path)
     fn = getattr(module, attr, None)
