@@ -57,18 +57,11 @@ _TERMINAL_MARKERS = tuple(
 )
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
-_HOSTED_TOOL_TYPES = frozenset(
-    {
-        "file_search",
-        "mcp",
-        "code_interpreter",
-        "programmatic_tool_calling",
-        "image_generation",
-        "web_search_preview",
-        "web_search_preview_2025_03_11",
-    }
-)
 _WEB_TOOL_TYPE = re.compile(r"web_search(?:_\d{4}_\d{2}_\d{2})?").fullmatch
+_HOSTED_TOOL_TYPE = re.compile(
+    r"file_search|mcp|code_interpreter|programmatic_tool_calling|image_generation|"
+    r"web_search_preview(?:_\d{4}_\d{2}_\d{2})?"
+).fullmatch
 _TEXT_TOOL_OUTPUT_TYPES = frozenset({"function_call_output", "custom_tool_call_output"})
 _BLANK_PNG = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
@@ -177,7 +170,9 @@ def _mediate_tools(
         ):
             mediated.append(tool)
             continue
-        if kind in _HOSTED_TOOL_TYPES or kind in ("tool_search", "shell"):
+        if isinstance(kind, str) and (
+            _HOSTED_TOOL_TYPE(kind) or kind in ("tool_search", "shell")
+        ):
             capabilities.append(f"{item_path}.type")
         else:
             mediated.append(tool)
@@ -454,10 +449,11 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
         if isinstance(choice, dict):
             kind = choice.get("type")
             valid_choice = not (
-                kind in _HOSTED_TOOL_TYPES
-                or isinstance(kind, str)
-                and _WEB_TOOL_TYPE(kind)
+                isinstance(kind, str)
+                and (_HOSTED_TOOL_TYPE(kind) or _WEB_TOOL_TYPE(kind))
             )
+            if kind in ("shell", "tool_search"):
+                valid_choice = any(tool.get("type") == kind for tool in tools)
             if kind == "allowed_tools":
                 choice_tools, choice_capabilities = _mediate_tools(
                     choice.get("tools"), "tool_choice.tools", policy

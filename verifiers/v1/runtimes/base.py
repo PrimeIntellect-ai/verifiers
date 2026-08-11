@@ -57,7 +57,10 @@ def network_rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
     pattern = (parsed.hostname or "").rstrip(".")
     if not pattern or (parsed.scheme and parsed.scheme != scheme):
         return False
-    rule_port = parsed.port
+    try:
+        rule_port = parsed.port
+    except ValueError:
+        return False
     if parsed.scheme and rule_port is None:
         rule_port = 443 if parsed.scheme == "https" else 80
     if rule_port is not None and rule_port != port:
