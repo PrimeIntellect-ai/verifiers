@@ -77,37 +77,39 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def _content_capability(value, path: str, policy: NetworkPolicyConfig) -> str | None:
+def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if capability := _content_capability(item, f"{path}[{index}]", policy):
-                return capability
+            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
+                return blocked
         return None
     if not isinstance(value, dict):
         return None
+
     kind = value.get("type")
     if kind in ("image", "document"):
+        source_path = f"{path}.source"
         source = value.get("source") or {}
         if not isinstance(source, dict):
-            return f"{path}.source"
+            return source_path
         source_kind = source.get("type")
-        url = source.get("url")
-        if source_kind == "url" and blocked_url(
-            url if isinstance(url, str) else None, policy
-        ):
-            return f"{path}.source.url"
+        if source_kind == "content":
+            return blocked_content_path(
+                source.get("content"), f"{source_path}.content", policy
+            )
+        if source_kind == "url":
+            url = source.get("url")
+            if blocked_url(url if isinstance(url, str) else None, policy):
+                return f"{source_path}.url"
         if source_kind == "file":
             return (
-                f"{path}.source.file_id"
+                f"{source_path}.file_id"
                 if source.get("file_id")
-                else f"{path}.source.type"
-            )
-        if source_kind == "content":
-            return _content_capability(
-                source.get("content"), f"{path}.source.content", policy
+                else f"{source_path}.type"
             )
         if source_kind not in ("base64", "text", "url"):
-            return f"{path}.source.type"
+            return f"{source_path}.type"
+
     if kind in (
         "container_upload",
         "code_execution_output",
@@ -115,30 +117,30 @@ def _content_capability(value, path: str, policy: NetworkPolicyConfig) -> str | 
     ) and value.get("file_id"):
         return f"{path}.file_id"
     if "content" in value:
-        return _content_capability(value.get("content"), f"{path}.content", policy)
+        return blocked_content_path(value["content"], f"{path}.content", policy)
     return None
 
 
-def _mediate_content(value, path: str, policy: NetworkPolicyConfig):
+def mediate_content(value, path: str, policy: NetworkPolicyConfig):
     if not isinstance(value, list):
-        capability = _content_capability(value, path, policy)
-        return ("" if capability else value), ([capability] if capability else [])
+        blocked = blocked_content_path(value, path, policy)
+        return ("", [blocked]) if blocked else (value, [])
+
     mediated = []
     capabilities = []
     for index, block in enumerate(value):
         item_path = f"{path}[{index}]"
         if isinstance(block, dict) and block.get("type") == "tool_result":
-            content, removed = _mediate_content(
+            content, removed = mediate_content(
                 block.get("content"), f"{item_path}.content", policy
             )
             if removed:
                 block["content"] = content or ""
                 capabilities.extend(removed)
-            mediated.append(block)
-        elif capability := _content_capability(block, item_path, policy):
-            capabilities.append(capability)
-        else:
-            mediated.append(block)
+        elif blocked := blocked_content_path(block, item_path, policy):
+            capabilities.append(blocked)
+            continue
+        mediated.append(block)
     return mediated, capabilities
 
 
@@ -365,7 +367,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             if mediated.pop(key, None):
                 capabilities.append(key)
 
-        system, removed = _mediate_content(mediated.get("system"), "system", policy)
+        system, removed = mediate_content(mediated.get("system"), "system", policy)
         capabilities.extend(removed)
         if removed:
             if system:
@@ -376,7 +378,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         for message_index, message in enumerate(mediated.get("messages") or []):
             if not isinstance(message, dict):
                 continue
-            content, removed = _mediate_content(
+            content, removed = mediate_content(
                 message.get("content"), f"messages[{message_index}].content", policy
             )
             capabilities.extend(removed)

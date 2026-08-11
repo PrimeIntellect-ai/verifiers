@@ -184,53 +184,56 @@ def _mediate_tools(
     return mediated, capabilities
 
 
-def _content_capability(value, path: str, policy: NetworkPolicyConfig) -> str | None:
+def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if capability := _content_capability(item, f"{path}[{index}]", policy):
-                return capability
+            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
+                return blocked
         return None
     if not isinstance(value, dict):
         return None
+
     kind = value.get("type")
+    url_field = None
     if kind == "input_file":
+        url_field = "file_url"
+    elif kind in ("input_image", "computer_screenshot"):
+        url_field = "image_url"
+    if url_field:
         if value.get("file_id"):
             return f"{path}.file_id"
-        file_url = value.get("file_url")
-        if blocked_url(file_url if isinstance(file_url, str) else None, policy):
-            return f"{path}.file_url"
-    if kind in ("input_image", "computer_screenshot"):
-        if value.get("file_id"):
-            return f"{path}.file_id"
-        image_url = value.get("image_url")
-        if blocked_url(image_url if isinstance(image_url, str) else None, policy):
-            return f"{path}.image_url"
+        url = value.get(url_field)
+        if blocked_url(url if isinstance(url, str) else None, policy):
+            return f"{path}.{url_field}"
+
     if kind == "reasoning" and value.get("id") and not value.get("encrypted_content"):
         return f"{path}.id"
     if kind == "item_reference" or kind is None and set(value) == {"id"}:
         return f"{path}.id"
+
     if kind in (
         "computer_call_output",
         "function_call_output",
         "custom_tool_call_output",
     ):
-        return _content_capability(value.get("output"), f"{path}.output", policy)
+        return blocked_content_path(value.get("output"), f"{path}.output", policy)
     if kind in (None, "message") and "role" in value and "content" in value:
-        return _content_capability(value.get("content"), f"{path}.content", policy)
+        return blocked_content_path(value["content"], f"{path}.content", policy)
     return None
 
 
-def _mediate_content(value, path: str, policy: NetworkPolicyConfig):
+def mediate_content(value, path: str, policy: NetworkPolicyConfig):
     if not isinstance(value, list):
-        capability = _content_capability(value, path, policy)
-        return ("" if capability else value), ([capability] if capability else [])
+        blocked = blocked_content_path(value, path, policy)
+        return ("", [blocked]) if blocked else (value, [])
+
     mediated = []
     capabilities = []
     for index, part in enumerate(value):
-        if capability := _content_capability(part, f"{path}[{index}]", policy):
-            capabilities.append(capability)
-        else:
-            mediated.append(part)
+        if blocked := blocked_content_path(part, f"{path}[{index}]", policy):
+            capabilities.append(blocked)
+            continue
+        mediated.append(part)
     return mediated, capabilities
 
 
@@ -411,7 +414,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                     content_field = "content"
 
                 if content_field:
-                    content, removed = _mediate_content(
+                    content, removed = mediate_content(
                         item.get(content_field), f"{item_path}.{content_field}", policy
                     )
                     capabilities.extend(removed)
@@ -419,11 +422,11 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                         item[content_field] = content or ""
 
                 scan = {**item, content_field: []} if content_field else item
-                capability = _content_capability(scan, item_path, policy)
-                if capability is None:
+                blocked = blocked_content_path(scan, item_path, policy)
+                if blocked is None:
                     safe_input.append(item)
                 else:
-                    capabilities.append(capability)
+                    capabilities.append(blocked)
                     if kind == "computer_call_output":
                         item["output"] = {
                             "type": "computer_screenshot",
@@ -431,8 +434,8 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                         }
                         safe_input.append(item)
             mediated["input"] = safe_input
-        elif capability := _content_capability(raw_input, "input", policy):
-            capabilities.append(capability)
+        elif blocked := blocked_content_path(raw_input, "input", policy):
+            capabilities.append(blocked)
             mediated["input"] = []
 
         tools, tool_capabilities = _mediate_tools(
