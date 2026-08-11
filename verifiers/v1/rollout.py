@@ -98,6 +98,7 @@ class Rollout:
             (hook_boundary(fn, allow_trace=False), fn)
             for fn in discover_decorated(task, "intercept")
         ]
+        stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
@@ -111,7 +112,7 @@ class Rollout:
                     else ["*"]
                 )
             ),
-            stops=task.hooks("stop"),
+            trace_stops=[fn for boundary, fn in stops if boundary is Trace],
             limits=limits,
             request_interceptors=[
                 fn for boundary, fn in interceptors if boundary is Request
@@ -119,6 +120,8 @@ class Rollout:
             response_interceptors=[
                 fn for boundary, fn in interceptors if boundary is Response
             ],
+            request_stops=[fn for boundary, fn in stops if boundary is Request],
+            response_stops=[fn for boundary, fn in stops if boundary is Response],
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -299,15 +302,16 @@ class Rollout:
                             "system_prompt": system_prompt,
                         }
                     )
-                self._harness_session = await self.harness.session(
-                    self.ctx,
-                    self.trace,
-                    runtime,
-                    self._endpoint,
-                    self._secret,
-                    self._urls,
-                    harness_data,
-                )
+                if not self._session.stopped:
+                    self._harness_session = await self.harness.session(
+                        self.ctx,
+                        self.trace,
+                        runtime,
+                        self._endpoint,
+                        self._secret,
+                        self._urls,
+                        harness_data,
+                    )
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
@@ -320,7 +324,7 @@ class Rollout:
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
-        return True
+        return not self._session.stopped
 
     async def step(self, messages: Messages | None = None) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
@@ -351,6 +355,8 @@ class Rollout:
                     )
                     messages = prepared.messages
                     self.trace.request_rewrites.extend(rewrites)
+                    if self._session.stopped:
+                        return False
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget —

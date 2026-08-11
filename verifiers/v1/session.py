@@ -100,7 +100,9 @@ class RolloutSession:
     trace: Trace
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     """The resolved execution policy, including task-level restrictions."""
-    stops: list[Callable[..., Awaitable[bool] | bool]] = field(default_factory=list)
+    trace_stops: list[Callable[..., Awaitable[bool] | bool]] = field(
+        default_factory=list
+    )
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     request_interceptors: list[Callable] = field(default_factory=list)
     response_interceptors: list[Callable] = field(default_factory=list)
@@ -138,10 +140,10 @@ class RolloutSession:
         return self.trace.stop_condition is not None
 
     async def rewrite_request(
-        self, request: Request
+        self, request: Request, *, run_stops: bool = True
     ) -> tuple[Request, list[InterceptRecord], str | None]:
         """Run typed request interceptors and stops over one canonical request."""
-        if not self.request_interceptors and not self.request_stops:
+        if not self.request_interceptors and (not run_stops or not self.request_stops):
             return request, [], None
         turn = graph.prepare_turn(self.trace, request.messages)
         prepared_users = self.prepared_users.copy()
@@ -159,13 +161,13 @@ class RolloutSession:
                 candidates.add(position)
                 if self.prepared_tool_results.get(message.tool_call_id) == message:
                     prepared.add(position)
-        if candidates and candidates == prepared:
-            return request, [], None
+        already_intercepted = candidates and candidates == prepared
 
         current = request
         records: list[InterceptRecord] = []
         try:
-            for handler in self.request_interceptors:
+            interceptors = [] if already_intercepted else self.request_interceptors
+            for handler in interceptors:
                 candidate = current.model_copy(deep=True)
                 result = await call_hook(
                     handler, {Request: candidate, Trace: self.trace}
@@ -204,7 +206,8 @@ class RolloutSession:
                     current = result
                     records.append(InterceptRecord(handler=handler.__name__))
 
-            for stop in self.request_stops:
+            stops = self.request_stops if run_stops else []
+            for stop in stops:
                 candidate = current.model_copy(deep=True)
                 result = await call_hook(stop, {Request: candidate, Trace: self.trace})
                 if not isinstance(result, bool):
@@ -236,19 +239,15 @@ class RolloutSession:
     ) -> tuple[Request, list[InterceptRecord]]:
         """Intercept caller-owned user turns before the harness stores them."""
         branch = self.trace.messages
-        rewritten, records, stopped = await self.rewrite_request(
-            Request(messages=[*branch, *request.messages])
+        rewritten, records, _ = await self.rewrite_request(
+            Request(messages=[*branch, *request.messages]), run_stops=False
         )
         tail = rewritten.messages[len(branch) :]
-        if stopped is not None:
-            graph.prepare_turn(self.trace, rewritten.messages).commit_prompt()
-            self.trace.stop(stopped)
-        else:
-            self.prepared_users.update(
-                graph.message_hash(message)
-                for message in tail
-                if isinstance(message, UserMessage)
-            )
+        self.prepared_users.update(
+            graph.message_hash(message)
+            for message in tail
+            if isinstance(message, UserMessage)
+        )
         return Request(messages=tail), records
 
     async def rewrite_response(
@@ -392,10 +391,8 @@ class RolloutSession:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
             return limit
-        for stop in self.stops:
-            result = stop(self.trace)
-            if inspect.isawaitable(result):
-                result = await result
+        for stop in self.trace_stops:
+            result = await call_hook(stop, {Trace: self.trace})
             if not isinstance(result, bool):
                 raise TaskError(f"@stop must return bool, got {type(result).__name__}")
             if result:
