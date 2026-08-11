@@ -116,13 +116,34 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
 
 
 class PrimeProcess(RuntimeProcess):
-    def __init__(self, process) -> None:
+    def __init__(self, process, reattach) -> None:
         self._process = process
+        self._reattach = reattach
         self.stdout: AsyncIterator[bytes] = process.stdout
         self.stderr: AsyncIterator[bytes] = process.stderr
 
     async def write(self, data: bytes) -> None:
         await self._process.write_stdin(data)
+
+    async def reattach(self) -> bool:
+        """Swap in a fresh Connect stream to the same remote process.
+
+        The gateway keeps a command session alive when its client stream dies;
+        Connect(pid) resumes live output (bytes emitted while detached are
+        dropped, and only the start event is replayed). The old handle's pump
+        already failed, so tear it down without signalling the process."""
+        if self._reattach is None:
+            return False
+        pid = self._process.pid
+        old = self._process
+        old._remote_exited = True  # aclose() must not signal the live process
+        with contextlib.suppress(BaseException):
+            await old.aclose()
+        process = await self._reattach(pid)
+        self._process = process
+        self.stdout = process.stdout
+        self.stderr = process.stderr
+        return True
 
     async def wait(self) -> int:
         return await self._process.wait()
@@ -299,7 +320,87 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
-        return PrimeProcess(process)
+        return PrimeProcess(process, self._reattach_process)
+
+    async def _reattach_process(self, pid: int):
+        """Connect a fresh transport to a still-running command session."""
+        from connectrpc.client import ConnectClient
+        from connectrpc.method import IdempotencyLevel, MethodInfo
+        from prime_sandboxes._proto.command_session import command_session_pb2
+        from prime_sandboxes.process import AsyncSandboxProcess
+        from prime_sandboxes.rpc_command_session import (
+            COMMAND_SESSION_SEND_INPUT_RPC_METHOD,
+            COMMAND_SESSION_SEND_SIGNAL_RPC_METHOD,
+            build_command_session_send_input_request,
+            build_command_session_send_signal_request,
+        )
+        from prime_sandboxes.sandbox import (
+            _LIVE_PROCESS_TIMEOUT_MS,
+            _PROCESS_INPUT_TIMEOUT_MS,
+            _PROCESS_SIGNAL_TIMEOUT_MS,
+            _live_process_transport,
+        )
+        from pyqwest import Client as HTTPClient
+
+        sandbox_id = self.info.id
+        assert sandbox_id is not None
+        auth = await self._client._auth_cache.get_or_refresh(sandbox_id)
+        gateway_url = auth["gateway_url"].rstrip("/")
+        base_url = f"{gateway_url}/{auth['user_ns']}/{auth['job_id']}"
+        headers = {"Authorization": f"Bearer {auth['token']}"}
+        transport = _live_process_transport()
+        http_client = HTTPClient(transport=transport)
+        stream_client = ConnectClient(base_url, http_client=http_client)
+
+        async def write_stdin(pid: int, data: bytes) -> None:
+            await self._client._execute_process_control_rpc(
+                sandbox_id,
+                build_command_session_send_input_request(pid, data),
+                COMMAND_SESSION_SEND_INPUT_RPC_METHOD,
+                _PROCESS_INPUT_TIMEOUT_MS,
+                "stdin",
+                http_client=http_client,
+            )
+
+        async def send_signal(pid: int, signal: Literal["terminate", "kill"]) -> None:
+            await self._client._execute_process_control_rpc(
+                sandbox_id,
+                build_command_session_send_signal_request(pid, signal),
+                COMMAND_SESSION_SEND_SIGNAL_RPC_METHOD,
+                _PROCESS_SIGNAL_TIMEOUT_MS,
+                "signal",
+                http_client=http_client,
+            )
+
+        connect_method = MethodInfo(
+            name="Connect",
+            service_name="command_session.CommandSession",
+            input=command_session_pb2.ConnectRequest,
+            output=command_session_pb2.ConnectResponse,
+            idempotency_level=IdempotencyLevel.UNKNOWN,
+        )
+        stream = stream_client.execute_server_stream(
+            request=command_session_pb2.ConnectRequest(
+                session=command_session_pb2.CommandSessionSelector(pid=pid)
+            ),
+            method=connect_method,
+            headers=headers,
+            timeout_ms=_LIVE_PROCESS_TIMEOUT_MS,
+        )
+        try:
+            return await AsyncSandboxProcess._create(
+                stream_client,
+                stream,
+                write_stdin,
+                send_signal,
+                transport=transport,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await stream_client.close()
+            with contextlib.suppress(Exception):
+                await transport.aclose()
+            raise
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public

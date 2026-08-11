@@ -77,6 +77,14 @@ class RuntimeProcess(ABC):
     async def kill(self) -> None:
         pass
 
+    async def reattach(self) -> bool:
+        """Reconnect stdio to the same remote process after a stream failure.
+
+        Returns True when ``stdout``/``stderr`` now yield from a fresh stream,
+        False when this runtime cannot reattach (the default). Bytes emitted
+        while detached may be lost; callers must realign their own framing."""
+        return False
+
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
     """A Modal-style GPU spec -> (type, count) for providers that want them split:
