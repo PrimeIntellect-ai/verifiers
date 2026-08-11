@@ -226,7 +226,9 @@ async def test_arrival_order_is_observable_but_not_trusted_correlation(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_opaque_error_metadata_remains_observable_and_error_authoritative(monkeypatch):
+async def test_opaque_error_metadata_remains_observable_and_error_authoritative(
+    monkeypatch,
+):
     """Metadata storage does not convert a provider error into end_turn success."""
     runner = load_runner_without_acp_dependency(monkeypatch)
     client = runner.VerifiersACPClient()
