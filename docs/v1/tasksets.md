@@ -246,7 +246,14 @@ reply_length = { fn = "my_hooks.py:reply_length", priority = 10 }
 exact_match = { fn = "my_hooks.py:exact_match", weight = 0.5 }
 ```
 
-Plugged hooks merge with the task's decorated `@vf.stop` / `@vf.metric` / `@vf.reward` methods; a plugged hook replaces a decorated one with the same name, so an existing signal can be swapped out (like `single_turn` above). Rewards take a `weight`, and every entry takes a `priority` (higher runs first).
+Plugged hooks merge with the task's decorated `@vf.stop` / `@vf.metric` / `@vf.reward` methods; a plugged hook replaces a decorated one with the same name, so an existing signal can be swapped out (like `single_turn` above). Rewards take a `weight`, and every entry takes a `priority` (higher runs first); unset fields keep the replaced method's values.
+
+Leaving `fn` out keeps the task's own decorated method and only overrides its metadata — for example, turning an existing zero-weight reward into a training signal:
+
+```toml
+[env.taskset.task.rewards]
+exact_match = { weight = 1.0 }
+```
 
 ## Beyond one agent
 

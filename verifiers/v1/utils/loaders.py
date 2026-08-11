@@ -244,11 +244,24 @@ def plugged_fn(path: str) -> Callable[..., Any]:
 
 
 def load_plugged_fn(
-    name: str, config: DecoratedFunctionConfig, attr: str
+    name: str,
+    config: DecoratedFunctionConfig,
+    attr: str,
+    decorated: Callable[..., Any] | None = None,
 ) -> Callable[..., Any]:
-    """Build a task hook from a config entry: the imported async function wrapped
-    under the plugged `name`, tagged like its `@vf.<attr>` equivalent."""
-    fn = plugged_fn(config.fn)
+    """Build a task hook from a config entry: the imported async function — or, with
+    no `fn`, the task's `decorated` method it overrides — wrapped under the plugged
+    `name`, tagged like its `@vf.<attr>` equivalent. Unset metadata fields keep the
+    wrapped function's tags."""
+    if config.fn:
+        fn = plugged_fn(config.fn)
+    elif decorated is not None:
+        fn = decorated
+    else:
+        raise ValueError(
+            f"{attr} {name!r} plugs no `fn` and the task has no @vf.{attr} "
+            f"method named {name!r} to override"
+        )
 
     @functools.wraps(fn)
     def plugged(*args: Any, **kwargs: Any) -> Any:
@@ -256,9 +269,15 @@ def load_plugged_fn(
 
     plugged.__name__ = name
     setattr(plugged, attr, True)
-    setattr(plugged, f"{attr}_priority", config.priority)
+    priority = config.priority
+    if priority is None:
+        priority = getattr(fn, f"{attr}_priority", 0)
+    setattr(plugged, f"{attr}_priority", priority)
     if isinstance(config, RewardFunctionConfig):
-        plugged._vf_weight = config.weight
+        weight = config.weight
+        if weight is None:
+            weight = getattr(fn, "_vf_weight", 1.0)
+        plugged._vf_weight = weight
     return plugged
 
 
