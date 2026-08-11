@@ -153,13 +153,15 @@ async def main() -> None:
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": result}
             )
-            message = await chat(messages, toolset)
+            # After a tool result, only `summarize` is advertised — saving notes is
+            # the only action left in the turn.
+            message = await chat(messages, [SUMMARIZE])
             if not message.tool_calls:
                 print(message.content or "")  # finishing right after a result is fine
                 return
             call = message.tool_calls[0]
             if len(message.tool_calls) > 1 or call.function.name != "summarize":
-                return  # after a tool result, only `summarize` is allowed
+                return  # a non-`summarize` call after the result ends the rollout
             args = json.loads(call.function.arguments or "{}")
             notes = args.get("notes") or notes
 
