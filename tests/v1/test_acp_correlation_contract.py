@@ -101,7 +101,10 @@ def has_verified_producer_correlation(events: list[dict]) -> bool:
         and event["promptTurnId"] > 0
         and type(event.get("eventSequence")) is int
         and event["eventSequence"] > 0
-        and (event.get("phase"), event.get("outcome"))
+        and (
+            event.get("phase"),
+            event.get("outcome"),
+        )
         in VALID_PRODUCER_PHASE_OUTCOMES
         for event in events
     )
