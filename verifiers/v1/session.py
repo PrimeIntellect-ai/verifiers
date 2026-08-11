@@ -8,19 +8,30 @@ budget (turns / tokens), checked between turns.
 """
 
 import asyncio
+import inspect
 import logging
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
+from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
+from verifiers.v1.errors import RolloutError, TaskError
+from verifiers.v1.on_request import RequestHandler, RequestRewrite
+from verifiers.v1.on_response import ResponseHandler, ResponseRewrite
+from verifiers.v1.terminate import Terminate, Termination
 from verifiers.v1.trace import Trace
-
-if TYPE_CHECKING:
-    from verifiers.v1.errors import RolloutError
+from verifiers.v1.types import (
+    AssistantMessage,
+    Messages,
+    Response,
+    ToolMessage,
+    UserMessage,
+)
+from verifiers.v1.utils.decorators import invoke
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +78,9 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    request_handlers: list[RequestHandler] = field(default_factory=list)
+    response_handlers: list[ResponseHandler] = field(default_factory=list)
+    supports_tool_rewrite: bool = False
     client: Client | None = None
     """The model client serving this rollout's turns. The interception server assigns it at
     `register` (one server-owned client per distinct endpoint config), so every rollout it
@@ -101,6 +115,223 @@ class RolloutSession:
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
+    pending_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
+    prepared_tool_results: dict[str, object] = field(default_factory=dict)
+    prepared_users: Counter[str] = field(default_factory=Counter)
+
+    @property
+    def terminated(self) -> bool:
+        return self.trace.termination is not None
+
+    def terminate(self, termination: Termination) -> None:
+        """Apply one hook termination to the canonical trace."""
+        if self.terminated:
+            return
+        self.trace.rewards.clear()
+        self.trace.record_reward(f"terminate/{termination.handler}", termination.reward)
+        self.trace.termination = termination
+        self.trace.stop(termination.reason)
+
+    async def rewrite_request(
+        self, messages: Messages
+    ) -> tuple[Messages, list[RequestRewrite], Termination | None]:
+        """Run request hooks sequentially over each new user or tool message."""
+        if not self.request_handlers:
+            return messages, [], None
+        turn = graph.prepare_turn(self.trace, messages)
+        rewritten = list(messages)
+        records: list[RequestRewrite] = []
+        try:
+            for position in range(turn.tail_start, len(rewritten)):
+                original = rewritten[position]
+                if not isinstance(original, (UserMessage, ToolMessage)):
+                    continue
+                if isinstance(original, UserMessage):
+                    key = graph.message_hash(original)
+                    if self.prepared_users[key]:
+                        self.prepared_users[key] -= 1
+                        continue
+                if isinstance(original, ToolMessage) and (
+                    self.prepared_tool_results.pop(original.tool_call_id, object())
+                    == original.content
+                ):
+                    continue
+                for handler in self.request_handlers:
+                    view = turn.scoped_trace(rewritten, end=position + 1)
+                    result = invoke(handler, {"request": view.messages, "trace": view})
+                    if inspect.isawaitable(result):
+                        result = await result
+                    if result is None:
+                        continue
+                    name = getattr(handler, "__name__", type(handler).__name__)
+                    if isinstance(result, Terminate):
+                        self.pending_tool_results.clear()
+                        return (
+                            rewritten[: position + 1],
+                            records,
+                            Termination(
+                                **result.model_dump(),
+                                handler=name,
+                                boundary="request",
+                            ),
+                        )
+                    if isinstance(result, str):
+                        result = original.model_copy(update={"content": result})
+                    if not isinstance(result, type(original)):
+                        raise TypeError(
+                            f"expected {type(original).__name__}, got "
+                            f"{type(result).__name__}"
+                        )
+                    if isinstance(result, ToolMessage):
+                        assert isinstance(original, ToolMessage)
+                        if result.tool_call_id != original.tool_call_id:
+                            raise ValueError(
+                                "request hooks cannot change a tool-call ID"
+                            )
+                    if result == original:
+                        continue
+                    rewritten[position] = original = result
+                    records.append(
+                        RequestRewrite(
+                            handler=name,
+                            target=original.role,
+                        )
+                    )
+        except RolloutError:
+            raise
+        except Exception as error:
+            raise TaskError(
+                f"@on_request failed: {type(error).__name__}: {error}"
+            ) from error
+        return rewritten, records, None
+
+    async def prepare_users(
+        self, messages: Messages
+    ) -> tuple[Messages, list[RequestRewrite]]:
+        """Rewrite caller-owned user turns before the harness stores them."""
+        branch = self.trace.messages
+        rewritten, records, termination = await self.rewrite_request(
+            [*branch, *messages]
+        )
+        tail = rewritten[len(branch) :]
+        if termination is not None:
+            graph.prepare_turn(self.trace, rewritten).commit_prompt()
+            self.terminate(termination)
+        self.prepared_users.update(
+            graph.message_hash(message)
+            for message in tail
+            if isinstance(message, UserMessage)
+        )
+        return tail, records
+
+    async def rewrite_response(
+        self, response: Response, turn: graph.PendingTurn
+    ) -> tuple[Response, list[ResponseRewrite], Termination | None]:
+        """Run response hooks sequentially over the harness-visible response."""
+        records: list[ResponseRewrite] = []
+        try:
+            for handler in self.response_handlers:
+                view = turn.scoped_trace(response=response.message)
+                result = invoke(handler, {"response": response, "trace": view})
+                if inspect.isawaitable(result):
+                    result = await result
+                if result is None:
+                    continue
+                name = getattr(handler, "__name__", type(handler).__name__)
+                if isinstance(result, Terminate):
+                    self.pending_tool_results.clear()
+                    return (
+                        response,
+                        records,
+                        Termination(
+                            **result.model_dump(),
+                            handler=name,
+                            boundary="response",
+                        ),
+                    )
+                if isinstance(result, str):
+                    result = AssistantMessage(content=result)
+                if isinstance(result, ToolMessage):
+                    if not self.supports_tool_rewrite:
+                        raise ValueError(
+                            "this harness cannot inject synthetic tool results; "
+                            "return vf.Terminate to block the call"
+                        )
+                    calls = {
+                        call.id: call.name for call in response.message.tool_calls or []
+                    }
+                    if result.tool_call_id not in calls:
+                        raise ValueError(
+                            "a synthetic result must reference this response's tool call"
+                        )
+                    self.pending_tool_results[result.tool_call_id] = result
+                    target = calls[result.tool_call_id]
+                elif isinstance(result, AssistantMessage):
+                    if (
+                        result.reasoning_content
+                        or result.tool_calls
+                        or result.provider_state
+                    ):
+                        raise ValueError(
+                            "response rewrites must be an inert text-only message"
+                        )
+                    response = response.model_copy(
+                        update={"message": result, "finish_reason": "stop"}
+                    )
+                    self.pending_tool_results.clear()
+                    target = "assistant"
+                else:
+                    raise TypeError(
+                        "response hooks must return AssistantMessage, ToolMessage, "
+                        "str, or None"
+                    )
+                records.append(
+                    ResponseRewrite(
+                        handler=name,
+                        target=target,
+                    )
+                )
+        except RolloutError:
+            raise
+        except Exception as error:
+            raise TaskError(
+                f"@on_response failed: {type(error).__name__}: {error}"
+            ) from error
+        return response, records, None
+
+    async def handle_tool(self, phase: str, message: ToolMessage) -> dict:
+        """Return the model-visible result before a supporting harness records it."""
+        synthetic = self.pending_tool_results.pop(message.tool_call_id, None)
+        if phase == "before" and synthetic is None:
+            return {"action": "allow"}
+        candidate = synthetic or message
+        branches = [
+            branch
+            for branch in self.trace.branches
+            if branch.nodes
+            and isinstance(branch.nodes[-1].message, AssistantMessage)
+            and any(
+                call.id == message.tool_call_id
+                for call in branch.nodes[-1].message.tool_calls or []
+            )
+        ]
+        if len(branches) != 1:
+            raise TaskError(
+                f"tool call {message.tool_call_id!r} matched {len(branches)} branches"
+            )
+        prompt = [*branches[0].messages, candidate]
+        rewritten, records, termination = await self.rewrite_request(prompt)
+        candidate = rewritten[-1]
+        assert isinstance(candidate, ToolMessage)
+        self.trace.request_rewrites.extend(records)
+        if termination is not None:
+            graph.prepare_turn(self.trace, [*prompt[:-1], candidate]).commit_prompt()
+            self.terminate(termination)
+            return {"action": "stop", "reason": termination.reason}
+        self.prepared_tool_results[candidate.tool_call_id] = candidate.content
+        if synthetic is not None or candidate != message:
+            return {"action": "rewrite", "message": candidate.model_dump()}
+        return {"action": "allow"}
 
     @cached_property
     def state_adapter(self) -> TypeAdapter:

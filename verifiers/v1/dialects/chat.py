@@ -6,6 +6,7 @@ and responses (`parse_response`). Reasoning extraction mirrors the v0 chat clien
 read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning_details`).
 """
 
+import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -291,7 +292,9 @@ class ChatStreamParser(StreamParser):
             ],
             "usage": self.usage,
         }
-        return response_from_wire(ModdedChatCompletion.model_validate(completion))
+        response = response_from_wire(ModdedChatCompletion.model_validate(completion))
+        response.raw = completion
+        return response
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
@@ -323,6 +326,8 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     response_type = ModdedChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
+        if body.get("n", 1) != 1:
+            raise ValueError("chat completions require n=1")
         messages: Messages = []
         tool_names: dict[str, str] = {}
         for raw in body.get("messages", []):
@@ -347,6 +352,41 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
+
+    def rewrite_request(self, body: dict, before: Messages, after: Messages) -> None:
+        for native, original, rewritten in zip(
+            body.get("messages", []), before, after, strict=True
+        ):
+            if rewritten != original:
+                native["content"] = message_to_wire(rewritten)["content"]
+                if isinstance(rewritten, ToolMessage):
+                    if rewritten.name is None:
+                        native.pop("name", None)
+                    else:
+                        native["name"] = rewritten.name
+
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        for choice in raw.get("choices") or []:
+            if isinstance(choice.get("message"), dict):
+                choice["message"] = {"role": "assistant", "content": text}
+                choice["finish_reason"] = "stop"
+                choice.pop("logprobs", None)
+
+    def stream_events(self, raw: dict) -> list[bytes]:
+        choice = (raw.get("choices") or [{}])[0]
+        chunk = {
+            **{key: value for key, value in raw.items() if key != "choices"},
+            "object": "chat.completion.chunk",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": choice.get("message")
+                    or {"role": "assistant", "content": ""},
+                    "finish_reason": choice.get("finish_reason"),
+                }
+            ],
+        }
+        return [f"data: {json.dumps(chunk)}\n\n".encode(), b"data: [DONE]\n\n"]
 
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()

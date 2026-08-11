@@ -368,12 +368,77 @@ class PendingTurn:
             for span in tail_spans
         ]
 
+    def scoped_trace(
+        self,
+        prompt: list[Message] | None = None,
+        *,
+        end: int | None = None,
+        response: AssistantMessage | None = None,
+    ) -> Trace:
+        """Return the single branch, including an uncommitted hook candidate."""
+        messages = self.prompt if prompt is None else prompt
+        end = len(messages) if end is None else end
+        prefix = self.prefix_node_ids[:end]
+        if prompt is not None:
+            prefix = prefix[
+                : next(
+                    (
+                        i
+                        for i, node_id in enumerate(prefix)
+                        if self.trace.nodes[node_id].message != messages[i]
+                    ),
+                    len(prefix),
+                )
+            ]
+        nodes = [
+            self.trace.nodes[node_id].model_copy(
+                update={"parent": i - 1 if i else None}, deep=True
+            )
+            for i, node_id in enumerate(prefix)
+        ]
+        nodes.extend(
+            MessageNode.model_construct(
+                parent=len(nodes) - 1 if nodes else None,
+                message=message.model_copy(deep=True),
+            )
+            for message in messages[len(prefix) : end]
+        )
+        if response is not None:
+            nodes.append(
+                MessageNode.model_construct(
+                    parent=len(nodes) - 1 if nodes else None,
+                    message=response.model_copy(deep=True),
+                    sampled=True,
+                )
+            )
+        remap = {node_id: i for i, node_id in enumerate(prefix)}
+        calls = [
+            call.model_copy(update={"node": remap[call.node]})
+            for call in self.trace.calls
+            if call.node in remap
+        ]
+        view = self.trace.model_copy(update={"nodes": nodes, "calls": calls})
+        view._head_index = {}
+        return view
+
     def commit(self, response: Response, tools: list[Tool] | None = None) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
         assistant_id = _commit_turn(self, response)
         if tools:
             self.trace.tools = tools
         return assistant_id
+
+    def commit_prompt(self, tools: list[Tool] | None = None) -> None:
+        """Record an input that terminated before model inference."""
+        parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
+        index = _head_index(self.trace)
+        for message in self.tail:
+            previous = parent
+            self.trace.nodes.append(MessageNode(parent=parent, message=message))
+            parent = len(self.trace.nodes) - 1
+            index[(previous, message_hash(message))] = parent
+        if tools:
+            self.trace.tools = tools
 
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:

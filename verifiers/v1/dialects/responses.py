@@ -211,9 +211,11 @@ class ResponsesStreamParser(StreamParser):
         events = self.terminal_events or self.events
         for event in iter_sse_reverse(b"".join(events)):
             if event.get("type") in FINAL_EVENTS:
-                return response_from_wire(
+                response = response_from_wire(
                     OpenAIResponse.model_validate(event["response"])
                 )
+                response.raw = event["response"]
+                return response
         raise ValueError("Responses stream ended without a terminal event")
 
 
@@ -314,6 +316,118 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
 
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
+
+    def rewrite_request(self, body: dict, before: Messages, after: Messages) -> None:
+        original = [m for m in before if isinstance(m, (UserMessage, ToolMessage))]
+        rewritten = [m for m in after if isinstance(m, (UserMessage, ToolMessage))]
+        items = body.get("input")
+        if isinstance(items, str):
+            if original != rewritten:
+                message = rewritten[0]
+                content = (
+                    message.content
+                    if isinstance(message.content, str)
+                    else [
+                        {"type": "input_text", "text": part.text}
+                        if isinstance(part, TextContentPart)
+                        else {
+                            "type": "input_image",
+                            "image_url": part.image_url.url,
+                        }
+                        for part in message.content
+                    ]
+                )
+                body["input"] = (
+                    content
+                    if isinstance(content, str)
+                    else [{"role": "user", "content": content}]
+                )
+            return
+
+        targets = []
+        for item in items or []:
+            role = item.get("role")
+            kind = item.get("type") or ""
+            assistant = role == "assistant" or (
+                role is None and not kind.endswith(("_output", "_response"))
+            )
+            if assistant or role in ("system", "developer"):
+                continue
+            targets.append(item)
+        for item, old, new in zip(targets, original, rewritten, strict=True):
+            if old == new:
+                continue
+            content = (
+                new.content
+                if isinstance(new.content, str)
+                else [
+                    {"type": "input_text", "text": part.text}
+                    if isinstance(part, TextContentPart)
+                    else {
+                        "type": "input_image",
+                        "image_url": part.image_url.url,
+                    }
+                    for part in new.content
+                ]
+            )
+            item["output" if isinstance(new, ToolMessage) else "content"] = content
+
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        original = next(
+            (
+                item
+                for item in raw.get("output") or []
+                if isinstance(item, dict) and item.get("type") == "message"
+            ),
+            {},
+        )
+        raw["output"] = [
+            {
+                "type": "message",
+                "id": original.get("id") or "msg_intercepted",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        ]
+        raw.update(status="completed", error=None, incomplete_details=None)
+        raw.pop("required_action", None)
+        if "output_text" in raw:
+            raw["output_text"] = text
+
+    def stream_events(self, raw: dict) -> list[bytes]:
+        item = raw["output"][0]
+        part = item["content"][0]
+        common = {"output_index": 0, "item_id": item["id"], "content_index": 0}
+        head = {
+            **raw,
+            "status": "in_progress",
+            "output": [],
+            "completed_at": None,
+        }
+        events = [
+            ("response.created", {"response": head}),
+            (
+                "response.output_item.added",
+                {"output_index": 0, "item": {**item, "content": []}},
+            ),
+            (
+                "response.content_part.added",
+                {**common, "part": {**part, "text": ""}},
+            ),
+            ("response.output_text.delta", {**common, "delta": part["text"]}),
+            ("response.output_text.done", {**common, "text": part["text"]}),
+            ("response.content_part.done", {**common, "part": part}),
+            ("response.output_item.done", {"output_index": 0, "item": item}),
+            ("response.completed", {"response": raw}),
+        ]
+        return [
+            *(
+                f"data: {json.dumps({'type': kind, 'sequence_number': i, **data})}\n\n".encode()
+                for i, (kind, data) in enumerate(events)
+            ),
+            b"data: [DONE]\n\n",
+        ]
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()

@@ -168,6 +168,18 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         return self.response_type.model_validate(raw)
 
     @abstractmethod
+    def rewrite_request(self, body: ReqT, before: Messages, after: Messages) -> None:
+        """Patch rewritten user/tool messages into the native conversation."""
+
+    @abstractmethod
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        """Replace the native assistant response with inert text."""
+
+    @abstractmethod
+    def stream_events(self, raw: dict) -> list[bytes]:
+        """Serialize a rewritten response as a minimal native SSE stream."""
+
+    @abstractmethod
     def stream_parser(self) -> StreamParser:
         """Create the per-request incremental parser for a native SSE response."""
 

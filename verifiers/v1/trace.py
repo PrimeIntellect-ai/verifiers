@@ -18,13 +18,17 @@ from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.on_request import RequestRewrite
+from verifiers.v1.on_response import ResponseRewrite
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
+from verifiers.v1.terminate import Termination
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     KeptTokens,
+    Message,
     Messages,
     Sampling,
     Tool,
@@ -351,6 +355,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph; branches are derived views and storage stays linear in turns."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
+    request_rewrites: list[RequestRewrite] = Field(default_factory=list)
+    """Changes made by `@on_request`, in execution order."""
+    response_rewrites: list[ResponseRewrite] = Field(default_factory=list)
+    """Changes made by `@on_response`, in execution order."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -371,6 +379,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the trace completed successfully."""
     stop_condition: str | None = None
     """What stopped the trace."""
+    termination: Termination | None = None
+    """The `vf.Terminate` decision that ended this rollout at a model boundary."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     timing: Timing = Field(default_factory=Timing)
@@ -438,6 +448,19 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return branches
 
     @property
+    def messages(self) -> Messages:
+        """Messages on the final branch, including a hook candidate in scoped traces."""
+        branches = self.branches
+        return branches[-1].messages if branches else []
+
+    @property
+    def last_message(self) -> Message:
+        """The final message, including a hook candidate in scoped traces."""
+        if not self.nodes:
+            raise ValueError("trace has no messages")
+        return self.nodes[-1].message
+
+    @property
     def num_branches(self) -> int:
         return len(graph.leaves(self))
 
@@ -448,6 +471,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @property
     def is_truncated(self) -> bool:
         """True for framework limits or a length-finished final response."""
+        if self.termination is not None:
+            return False
         if self.stop_condition in (
             "max_turns",
             "max_input_tokens",
@@ -515,6 +540,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.record_metric(name, value)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
+        if self.termination is not None:
+            return
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 
