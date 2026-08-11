@@ -50,8 +50,9 @@ class TestImports:
 
     def test_lazy_imports_work(self):
         """Test that lazy imports work correctly."""
-        # Dynamically detect lazy imports by checking verifiers module
-        lazy_imports = getattr(verifiers, "_LAZY_IMPORTS", {})
+        # The lazy table lives on the legacy package; the root forwards its names.
+        lazy_imports = verifiers.legacy._LAZY_IMPORTS
+        assert lazy_imports, "legacy lazy-import table is empty"
 
         for name in lazy_imports.keys():
             assert name in verifiers.__all__, f"Lazy import {name} not in __all__"
