@@ -326,12 +326,14 @@ def test_producer_abi_rejects_opaque_or_partial_claims():
         [{"promptTurnId": 7, "eventSequence": 41, "phase": "responseBoundary"}]
     )
     assert not has_verified_producer_correlation(
-        [{
-            "promptTurnId": 7,
-            "eventSequence": 41,
-            "phase": "opaqueBoundary",
-            "outcome": "result",
-        }]
+        [
+            {
+                "promptTurnId": 7,
+                "eventSequence": 41,
+                "phase": "opaqueBoundary",
+                "outcome": "result",
+            }
+        ]
     )
 
 
