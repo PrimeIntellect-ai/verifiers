@@ -159,7 +159,14 @@ async def test_end_turn_without_completed_tool_has_no_correlation_evidence(monke
             return types.SimpleNamespace(stop_reason="end_turn")
 
     with pytest.raises(RuntimeError, match="produced no visible reply"):
-        await runner.prompt(client, Connection(), None, "session", config(allow_empty_tool_reply=True), is_new=True)
+        await runner.prompt(
+            client,
+            Connection(),
+            None,
+            "session",
+            config(allow_empty_tool_reply=True),
+            is_new=True,
+        )
     assert client.acp_meta == {}
     assert client.turn_acp_meta == {}
     assert not has_verified_producer_correlation([])
