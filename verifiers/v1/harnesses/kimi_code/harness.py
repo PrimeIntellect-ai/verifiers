@@ -83,7 +83,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     ) -> ACPConfig:
         kimi_home = f"{KIMI_HOME}/{trace.id}"
         provider_type = {
-            "chat_completions": "kimi",
+            "chat_completions": "openai",
             "responses": "openai_responses",
             "anthropic_messages": "anthropic",
         }[self.config.transport]

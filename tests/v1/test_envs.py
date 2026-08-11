@@ -47,7 +47,7 @@ def test_eval(taskset: str):
         pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
     if os.getenv("PRIME_API_KEY"):
         model = [
-            "-m", "openai/gpt-5.6-sol",
+            "-m", "openai/gpt-5.6-luna",
             "--client.base-url", "https://api.pinference.ai/api/v1",
             "--client.api-key-var", "PRIME_API_KEY",
         ]  # fmt: skip

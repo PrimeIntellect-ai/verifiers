@@ -43,7 +43,7 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.loaders import load_environment
 
-CI_MODEL = "openai/gpt-5.6-sol"
+CI_MODEL = "openai/gpt-5.6-luna"
 
 # Fixture tasksets (echo-v1, echo-agentic-v1) live in tests/v1/fixtures, added to the
 # path via `pythonpath` in pyproject so the loader resolves them by id (no install).
