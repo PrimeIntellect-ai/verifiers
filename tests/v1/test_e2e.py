@@ -23,7 +23,12 @@ CHAT_PLACEMENTS = [
     pair("null", "subprocess", "null-harness-in-subprocess"),
     pair("bash", "docker", "bash-harness-in-docker"),
     pair("rlm", "docker", "rlm-harness-in-docker"),
-    pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
+    pytest.param(
+        {"id": "kimi-code", "transport": "responses"},
+        "docker",
+        marks=[mark.kimi_code, mark.docker],
+        id="kimi-code-responses-harness-in-docker",
+    ),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
 ]
@@ -34,7 +39,12 @@ CHAT_PLACEMENTS = [
 AGENTIC_PLACEMENTS = [
     pair("bash", "subprocess", "bash-harness-in-subprocess"),
     pair("rlm", "docker", "rlm-harness-in-docker"),
-    pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
+    pytest.param(
+        {"id": "kimi-code", "transport": "responses"},
+        "docker",
+        marks=[mark.kimi_code, mark.docker],
+        id="kimi-code-responses-harness-in-docker",
+    ),
     pair("codex", "docker", "codex-harness-in-docker"),
     pair("claude-code", "docker", "claude-code-harness-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
@@ -59,8 +69,18 @@ ACP_RESUME_PLACEMENTS = [
     pair("claude-code", "docker", "claude-code-acp-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
     pair("rlm", "docker", "rlm-acp-in-docker"),
-    pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
-    pair("pi", "docker", "pi-acp-in-docker"),
+    pytest.param(
+        {"id": "kimi-code", "transport": "responses"},
+        "docker",
+        marks=[mark.kimi_code, mark.docker],
+        id="kimi-code-responses-acp-in-docker",
+    ),
+    pytest.param(
+        {"id": "pi", "transport": "responses"},
+        "docker",
+        marks=[mark.pi, mark.docker],
+        id="pi-responses-acp-in-docker",
+    ),
     pair("pool", "docker", "pool-acp-in-docker"),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("pool", "prime", "pool-acp-in-prime"),

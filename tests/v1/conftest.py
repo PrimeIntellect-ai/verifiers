@@ -43,7 +43,7 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.loaders import load_environment
 
-CI_MODEL = "openai/gpt-5.6-luna"
+CI_MODEL = "openai/gpt-5.6-sol"
 
 # Fixture tasksets (echo-v1, echo-agentic-v1) live in tests/v1/fixtures, added to the
 # path via `pythonpath` in pyproject so the loader resolves them by id (no install).
@@ -119,7 +119,7 @@ def _eval_config(
     taskset: str,
     *,
     output_dir: Path,
-    harness: str | None = "null",
+    harness: str | dict[str, object] | None = "null",
     n: int = 1,
     num_tasks: int = 1,
     max_tokens: int = 2048,
@@ -143,7 +143,9 @@ def _eval_config(
     env_cfg = dict(env or {})
     _configure_prime_runtimes(taskset_cfg)
     if harness:
-        env_cfg.setdefault("agent", {})["harness"] = {"id": harness}
+        env_cfg.setdefault("agent", {})["harness"] = (
+            {"id": harness} if isinstance(harness, str) else dict(harness)
+        )
     if runtime:
         runtime_cfg = dict(runtime)
         _configure_prime_runtimes(runtime_cfg)

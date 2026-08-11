@@ -19,9 +19,6 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-PROVIDER = "intercept"
-KEY_VAR = "CODEX_INTERCEPT_KEY"
-
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
 ACP_VERSION = "1.1.10"
@@ -191,27 +188,24 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             }
         config = {
             "model": ctx.model,
-            "model_provider": PROVIDER,
-            "model_providers": {
-                PROVIDER: {
-                    "name": PROVIDER,
-                    "base_url": endpoint,
-                    "env_key": KEY_VAR,
-                    "wire_api": "responses",
-                    "requires_openai_auth": False,
-                }
-            },
             "features": features,
         }
         return {
             **self.config.resolved_env,
-            "CODEX_API_KEY": secret,
-            KEY_VAR: secret,
-            "APP_SERVER_LOGS": f"{home}/logs",
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
-            "DEFAULT_AUTH_REQUEST": json.dumps({"methodId": "api-key"}),
+            "DEFAULT_AUTH_REQUEST": json.dumps(
+                {
+                    "methodId": "gateway",
+                    "_meta": {
+                        "gateway": {
+                            "baseUrl": endpoint,
+                            "headers": {"Authorization": f"Bearer {secret}"},
+                            "providerName": "Verifiers",
+                        }
+                    },
+                }
+            ),
             "INITIAL_AGENT_MODE": "agent-full-access",
-            "MODEL_PROVIDER": PROVIDER,
             "NO_BROWSER": "1",
         }

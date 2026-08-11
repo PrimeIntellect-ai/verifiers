@@ -3,6 +3,7 @@
 import json
 import logging
 import shlex
+from typing import Literal
 
 from pydantic import Field
 
@@ -47,6 +48,10 @@ fi
 class PiHarnessConfig(HarnessConfig):
     version: str = Field(default="0.84.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Pi release to install, pinned for reproducibility."""
+    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
+        "chat_completions"
+    )
+    """Model API transport."""
 
 
 class PiHarness(ACPHarness[PiHarnessConfig]):
@@ -106,12 +111,22 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
         provider, separator, model = ctx.model.partition("/")
         if not separator:
-            provider, model = "intercept", ctx.model
+            provider, model = "openai", ctx.model
+        api = {
+            "chat_completions": "openai-completions",
+            "responses": "openai-responses",
+            "anthropic_messages": "anthropic-messages",
+        }[self.config.transport]
+        base_url = (
+            endpoint.removesuffix("/v1")
+            if self.config.transport == "anthropic_messages"
+            else endpoint
+        )
         models = {
             "providers": {
                 provider: {
-                    "baseUrl": endpoint.removesuffix("/v1"),
-                    "api": "anthropic-messages",
+                    "baseUrl": base_url,
+                    "api": api,
                     "apiKey": f"${KEY_VAR}",
                     "models": [
                         {

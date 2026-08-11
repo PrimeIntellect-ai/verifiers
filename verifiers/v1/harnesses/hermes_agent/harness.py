@@ -49,7 +49,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             raise ValueError("Hermes Agent ACP does not support disabling tools")
 
         home = f"/tmp/vf-hermes/{trace.id}"
-        model: dict[str, object] = {"provider": "intercept", "default": ctx.model}
+        provider_name = ctx.model.partition("/")[0] if "/" in ctx.model else "openai"
+        model: dict[str, object] = {"provider": provider_name, "default": ctx.model}
         if ctx.sampling.max_tokens is not None:
             model["max_tokens"] = ctx.sampling.max_tokens
         provider = {
@@ -66,7 +67,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "approvals": {"mode": "off"},
             # Session titles are UI metadata, not part of the agent conversation.
             "auxiliary": {"title_generation": {"enabled": False}},
-            "providers": {"intercept": provider},
+            "providers": {provider_name: provider},
         }
         await runtime.write(f"{home}/config.yaml", json.dumps(config).encode())
         if not self.config.use_bundled_skill:
