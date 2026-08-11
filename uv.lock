@@ -337,6 +337,14 @@ wheels = [
 ]
 
 [[package]]
+name = "bash-interception"
+version = "0.1.0"
+source = { editable = "environments/bash_interception" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "bcrypt"
 version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1519,6 +1527,15 @@ wheels = [
 ]
 
 [[package]]
+name = "grayscale-interception"
+version = "0.1.0"
+source = { editable = "environments/grayscale_interception" }
+dependencies = [
+    { name = "pillow" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "griffelib"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1858,6 +1875,14 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "interception"
+version = "0.1.0"
+source = { editable = "environments/interception" }
+dependencies = [
+    { name = "verifiers" },
 ]
 
 [[package]]
@@ -5126,17 +5151,21 @@ dev = [
 ]
 examples = [
     { name = "alphabet-sort" },
+    { name = "bash-interception" },
     { name = "code-golf" },
     { name = "color-codeword" },
     { name = "compact" },
     { name = "deepwiki" },
     { name = "glossary" },
+    { name = "grayscale-interception" },
     { name = "gsm8k" },
+    { name = "interception" },
     { name = "kuhn-poker" },
     { name = "openenv-wordle" },
     { name = "proposer-solver" },
     { name = "reverse-text" },
     { name = "scratchpad" },
+    { name = "web-search-interception" },
     { name = "wiki-search" },
     { name = "wordle" },
 ]
@@ -5250,6 +5279,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/27/0b/a54103cfd732bb703c7a749222011a0483ef3705948dae3b203158601119/watchfiles-1.2.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:094b9b70103d4e963499bdea001ee3c2697b144cd9ae6218a62c0f89ec9e31db", size = 396629, upload-time = "2026-05-18T04:32:03.268Z" },
     { url = "https://files.pythonhosted.org/packages/5e/2c/73f31a3b893886206c3f54d73e8ad8dee58cdb2f69ad2622e0a8a9e07f4e/watchfiles-1.2.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b0ef001f8c25ad0fa9529f914c1600647ecd0f542d11c19b7894768c67b6acb7", size = 457318, upload-time = "2026-05-18T04:31:01.932Z" },
     { url = "https://files.pythonhosted.org/packages/e9/f9/45d021e4a5cc7b9dd567f7cbb06d3b75f751a690063fb6cc7ec60f4e46b7/watchfiles-1.2.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a88fc94e647bc4eec523f1caa540258eb71d14278b9daf72fa1e2658a98df0f0", size = 457771, upload-time = "2026-05-18T04:30:56.331Z" },
+]
+
+[[package]]
+name = "web-search-interception"
+version = "0.1.0"
+source = { editable = "environments/web_search_interception" }
+dependencies = [
+    { name = "verifiers" },
 ]
 
 [[package]]

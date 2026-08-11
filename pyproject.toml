@@ -76,10 +76,23 @@ dev = [
 # from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
-    "gsm8k", "glossary", "deepwiki", "wiki-search", "code-golf",
-    "proposer-solver", "reverse-text", "color-codeword",
-    "wordle", "openenv-wordle", "alphabet-sort", "scratchpad",
+    "gsm8k",
+    "glossary",
+    "deepwiki",
+    "wiki-search",
+    "code-golf",
+    "proposer-solver",
+    "reverse-text",
+    "color-codeword",
+    "wordle",
+    "openenv-wordle",
+    "alphabet-sort",
+    "scratchpad",
     "kuhn-poker",
+    "interception",
+    "grayscale-interception",
+    "bash-interception",
+    "web-search-interception",
 ]
 
 [project.optional-dependencies]
@@ -164,6 +177,10 @@ color-codeword = { path = "environments/color_codeword", editable = true }
 alphabet-sort = { path = "environments/alphabet_sort", editable = true }
 scratchpad = { path = "environments/scratchpad", editable = true }
 kuhn-poker = { path = "environments/kuhn_poker", editable = true }
+interception = { path = "environments/interception", editable = true }
+grayscale-interception = { path = "environments/grayscale_interception", editable = true }
+bash-interception = { path = "environments/bash_interception", editable = true }
+web-search-interception = { path = "environments/web_search_interception", editable = true }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.
