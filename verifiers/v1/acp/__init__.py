@@ -19,6 +19,15 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+# Keep in sync with runner.py: sync responses are framed with this marker plus
+# the request nonce so a reattached host can re-align packet framing.
+RESYNC_MAGIC = b"\xff\x00vf-acp-resync\x00\xff"
+RECONNECT_ATTEMPTS = 4
+RECONNECT_BACKOFF_SECONDS = 2.0
+# The runner emits keepalives every 15s even while a prompt runs, so a healthy
+# stream is never silent for long. Longer silence means the stream (or runner)
+# is dead: surface it so the turn can reattach or fail instead of hanging.
+IDLE_TIMEOUT_SECONDS = 120.0
 
 __all__ = ["ACP"]
 
@@ -145,16 +154,30 @@ def _packet(value: dict) -> bytes:
 
 
 class _PacketReader:
-    def __init__(self, source: AsyncIterator[bytes]) -> None:
+    def __init__(
+        self,
+        source: AsyncIterator[bytes],
+        idle_timeout: float | None = None,
+    ) -> None:
         self._source = source.__aiter__()
         self._buffer = bytearray()
+        self._idle_timeout = idle_timeout
+
+    async def _next_chunk(self) -> None:
+        try:
+            chunk = await asyncio.wait_for(anext(self._source), self._idle_timeout)
+        except StopAsyncIteration as e:
+            raise EOFError("ACP process closed its stdout") from e
+        except TimeoutError as e:
+            raise EOFError(
+                f"ACP process stream was silent for {self._idle_timeout}s "
+                "(keepalives stopped)"
+            ) from e
+        self._buffer.extend(chunk)
 
     async def _readexactly(self, size: int) -> bytes:
         while len(self._buffer) < size:
-            try:
-                self._buffer.extend(await anext(self._source))
-            except StopAsyncIteration as e:
-                raise EOFError("ACP process closed its stdout") from e
+            await self._next_chunk()
         data = bytes(self._buffer[:size])
         del self._buffer[:size]
         return data
@@ -167,6 +190,23 @@ class _PacketReader:
             packet = json.loads((await self._readexactly(size)).decode())
             if packet.get("type") != "keepalive":
                 return packet
+
+    async def resync(self, nonce: str) -> dict:
+        """Discard bytes until this nonce's resync marker, then read the sync
+        response that follows it. Realigns framing after a stream reattach.
+        The runner only answers sync between requests, so this may legitimately
+        wait out the rest of an in-flight prompt; its keepalives keep the
+        stream from tripping the idle timeout meanwhile."""
+        marker = RESYNC_MAGIC + nonce.encode() + RESYNC_MAGIC
+        while True:
+            index = self._buffer.find(marker)
+            if index >= 0:
+                del self._buffer[: index + len(marker)]
+                return await self.read()
+            # Keep a tail in case the marker arrives split across chunks.
+            if len(self._buffer) > len(marker):
+                del self._buffer[: len(self._buffer) - len(marker)]
+            await self._next_chunk()
 
 
 class ACPHarnessSession(HarnessSession):
@@ -199,6 +239,7 @@ class ACPHarnessSession(HarnessSession):
         self._stderr_tail = bytearray()
         self._stderr_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._seq = 0
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -209,7 +250,7 @@ class ACPHarnessSession(HarnessSession):
         )
         process = await self.runtime.open_process([*program, "stream"], self.env)
         self._process = process
-        self._reader = _PacketReader(process.stdout)
+        self._reader = _PacketReader(process.stdout, idle_timeout=IDLE_TIMEOUT_SECONDS)
         self._stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
 
     async def _drain_stderr(self, stream: AsyncIterator[bytes]) -> None:
@@ -247,11 +288,20 @@ class ACPHarnessSession(HarnessSession):
                 await self._start()
             assert self._process is not None
             assert self._reader is not None
+            self._seq += 1
+            seq = self._seq
+            request = _packet({"operation": "prompt", "config": config, "seq": seq})
             try:
-                await self._process.write(
-                    _packet({"operation": "prompt", "config": config})
-                )
-                response = await self._reader.read()
+                try:
+                    await self._process.write(request)
+                    response = await self._read_response(seq)
+                except Exception as error:  # noqa: BLE001 - any stream fault
+                    # The process stream died mid-turn — on Prime this is the
+                    # gateway dropping the Start RPC ("process stream RPC
+                    # failed"), not the runner exiting. Reattach to the
+                    # still-running process, realign framing, and recover or
+                    # resend the turn. Re-raises `error` if unsupported.
+                    response = await self._recover_turn(request, seq, error)
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
@@ -261,6 +311,59 @@ class ACPHarnessSession(HarnessSession):
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             raise RuntimeError(detail)
         return ProgramResult(exit_code=0, stdout=response.get("reply", ""), stderr="")
+
+    async def _read_response(self, seq: int) -> dict:
+        assert self._reader is not None
+        while True:
+            response = await self._reader.read()
+            # Skip responses to earlier requests replayed after a reattach.
+            if response.get("seq") in (None, seq):
+                return response
+
+    async def _recover_turn(self, request: bytes, seq: int, error: Exception) -> dict:
+        """Reattach to the runner after a transport failure and finish the turn.
+
+        The sandbox keeps the runner alive when the host's process stream dies;
+        bytes written while detached are dropped. After reattaching, a sync
+        exchange realigns packet framing and reports the runner's last answered
+        seq: if it already answered this turn the cached response is used,
+        otherwise the request is resent (the runner dedupes by seq)."""
+        assert self._process is not None
+        for attempt in range(1, RECONNECT_ATTEMPTS + 1):
+            await asyncio.sleep(RECONNECT_BACKOFF_SECONDS * attempt)
+            if self._closed:
+                raise error
+            try:
+                if not await self._process.reattach():
+                    raise error  # runtime cannot reattach: original failure
+            except Exception as reattach_error:
+                if reattach_error is error:
+                    raise
+                continue  # process stream not reachable yet; retry
+            self._reader = _PacketReader(
+                self._process.stdout, idle_timeout=IDLE_TIMEOUT_SECONDS
+            )
+            if self._stderr_task is not None and not self._stderr_task.done():
+                self._stderr_task.cancel()
+            self._stderr_task = asyncio.create_task(
+                self._drain_stderr(self._process.stderr)
+            )
+            try:
+                nonce = secrets.token_hex(8)
+                await self._process.write(
+                    _packet({"operation": "sync", "nonce": nonce})
+                )
+                # The runner answers sync after finishing any in-flight prompt,
+                # which may take a while; its keepalives hold off the reader's
+                # idle timeout until then.
+                sync = await self._reader.resync(nonce)
+                if sync.get("last_seq") == seq and sync.get("last_response"):
+                    return sync["last_response"]
+                await self._process.write(request)
+                return await self._read_response(seq)
+            except Exception:  # noqa: BLE001, S112 - retry until attempts end
+                continue
+        raise error
 
     async def _stop(self, *, graceful: bool) -> None:
         process, self._process = self._process, None

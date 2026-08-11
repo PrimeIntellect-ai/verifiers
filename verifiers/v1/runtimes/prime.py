@@ -103,14 +103,35 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
 
 
 class PrimeProcess(RuntimeProcess):
-    def __init__(self, process, transport=None) -> None:
+    def __init__(self, process, transport=None, reattach=None) -> None:
         self._process = process
         self._transport = transport
+        self._reattach = reattach
         self.stdout: AsyncIterator[bytes] = process.stdout
         self.stderr: AsyncIterator[bytes] = process.stderr
 
     async def write(self, data: bytes) -> None:
         await self._process.write_stdin(data)
+
+    async def reattach(self) -> bool:
+        """Swap in a fresh Connect stream to the same remote process.
+
+        The gateway keeps a command session alive when its client stream dies;
+        Connect(pid) resumes live output (bytes emitted while detached are
+        dropped, and only the start event is replayed). The old handle's pump
+        already failed, so tear it down without signalling the process."""
+        if self._reattach is None:
+            return False
+        pid = self._process.pid
+        old = self._process
+        old._remote_exited = True  # aclose() must not signal the live process
+        with contextlib.suppress(BaseException):
+            await old.aclose()
+        process = await self._reattach(pid)
+        self._process = process
+        self.stdout = process.stdout
+        self.stderr = process.stderr
+        return True
 
     async def wait(self) -> int:
         return await self._process.wait()
@@ -291,12 +312,12 @@ class PrimeRuntime(Runtime):
                 "set runtime.prime.vm=true"
             )
         try:
-            process, transport = await self._open_process_on_own_transport(
+            process, transport, reattach = await self._open_process_on_own_transport(
                 shlex.join(argv), env
             )
         except Exception as e:
             raise SandboxError(f"prime live process failed to start: {e}") from e
-        return PrimeProcess(process, transport)
+        return PrimeProcess(process, transport, reattach)
 
     async def _open_process_on_own_transport(self, command: str, env: dict[str, str]):
         """Start a live process whose RPCs ride one dedicated HTTP connection.
@@ -333,13 +354,34 @@ class PrimeRuntime(Runtime):
 
         client = self._client
         sandbox_id = self.info.id
-        try:
-            # pyqwest >= 0.7 leaves system CA trust off for bare transports; a
-            # bare HTTPTransport() there fails TLS with "UnknownIssuer".
-            transport = HTTPTransport(tls_include_system_certs=True)
-        except TypeError:  # pyqwest 0.6.x trusts system CAs by default
-            transport = HTTPTransport()
-        http_client = HTTPClient(transport=transport)
+
+        def new_transport():
+            try:
+                # pyqwest >= 0.7 leaves system CA trust off for bare transports;
+                # a bare HTTPTransport() there fails TLS with "UnknownIssuer".
+                return HTTPTransport(tls_include_system_certs=True)
+            except TypeError:  # pyqwest 0.6.x trusts system CAs by default
+                return HTTPTransport()
+
+        class TransportBox:
+            """This process's dedicated connection, replaceable on reattach."""
+
+            def __init__(self) -> None:
+                self.transport = new_transport()
+                self.http_client = HTTPClient(transport=self.transport)
+
+            async def replace(self) -> None:
+                # A stream failure may have poisoned the whole connection;
+                # every later RPC must ride a fresh one.
+                old, self.transport = self.transport, new_transport()
+                self.http_client = HTTPClient(transport=self.transport)
+                with contextlib.suppress(Exception):
+                    await old.aclose()
+
+            async def aclose(self) -> None:
+                await self.transport.aclose()
+
+        box = TransportBox()
 
         async def authed_target() -> tuple[str, dict[str, str]]:
             auth = await client._auth_cache.get_or_refresh(sandbox_id)
@@ -355,7 +397,7 @@ class PrimeRuntime(Runtime):
             reauthed = False
             while True:
                 base_url, headers = await authed_target()
-                rpc_client = ConnectClient(base_url, http_client=http_client)
+                rpc_client = ConnectClient(base_url, http_client=box.http_client)
                 try:
                     await rpc_client.execute_unary(
                         request=request,
@@ -393,9 +435,38 @@ class PrimeRuntime(Runtime):
                 "signal",
             )
 
+        async def reattach(pid: int):
+            # Reconnect to the still-running command session after its Start
+            # stream died. Uses this process's dedicated transport; the Connect
+            # stream replays the start event and resumes live output.
+            from connectrpc.method import IdempotencyLevel, MethodInfo
+            from prime_sandboxes._proto.command_session import command_session_pb2
+
+            connect_method = MethodInfo(
+                name="Connect",
+                service_name="command_session.CommandSession",
+                input=command_session_pb2.ConnectRequest,
+                output=command_session_pb2.ConnectResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            )
+            await box.replace()
+            base_url, headers = await authed_target()
+            stream_client = ConnectClient(base_url, http_client=box.http_client)
+            stream = stream_client.execute_server_stream(
+                request=command_session_pb2.ConnectRequest(
+                    session=command_session_pb2.CommandSessionSelector(pid=pid)
+                ),
+                method=connect_method,
+                headers=headers,
+                timeout_ms=_LIVE_PROCESS_TIMEOUT_MS,
+            )
+            return await AsyncSandboxProcess._create(
+                stream_client, stream, write_stdin, send_signal
+            )
+
         try:
             base_url, headers = await authed_target()
-            stream_client = ConnectClient(base_url, http_client=http_client)
+            stream_client = ConnectClient(base_url, http_client=box.http_client)
             stream = stream_client.execute_server_stream(
                 request=build_command_session_start_request(
                     command, self.config.workdir, env, stdin=True
@@ -409,9 +480,9 @@ class PrimeRuntime(Runtime):
             )
         except BaseException:
             with contextlib.suppress(Exception):
-                await transport.aclose()
+                await box.aclose()
             raise
-        return process, transport
+        return process, box, reattach
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public

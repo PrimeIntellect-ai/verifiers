@@ -117,16 +117,19 @@ async def test_prime_live_processes_get_one_transport_each(monkeypatch) -> None:
 
     assert isinstance(first, PrimeProcess) and isinstance(second, PrimeProcess)
     assert first._transport is not second._transport
-    assert first._transport.kwargs == {"tls_include_system_certs": True}
+    assert first._transport.transport.kwargs == {"tls_include_system_certs": True}
 
     await first.write(b"ping")
     await second.write(b"pong")
-    assert _FakeConnectClient.unary_transports == [first._transport, second._transport]
+    assert _FakeConnectClient.unary_transports == [
+        first._transport.transport,
+        second._transport.transport,
+    ]
 
     await first.aclose()
     assert first._process.closed
-    assert first._transport.closed
-    assert not second._transport.closed
+    assert first._transport.transport.closed
+    assert not second._transport.transport.closed
 
 
 @pytest.mark.asyncio

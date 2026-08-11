@@ -38,6 +38,10 @@ from acp.schema import (
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 KEEPALIVE_INTERVAL_SECONDS = 15.0
 LATE_UPDATE_GRACE_SECONDS = 1.0
+# Bytes written while the host is detached from the process stream are dropped,
+# so a reattached host may be mid-frame. Sync responses carry this marker (plus
+# the request nonce) so the host can re-align the length-prefixed framing.
+RESYNC_MAGIC = b"\xff\x00vf-acp-resync\x00\xff"
 
 
 class VerifiersACPClient(Client):
@@ -404,11 +408,38 @@ async def serve_stream() -> None:
         lambda: protocol, sys.stdin.buffer
     )
     keepalive = asyncio.create_task(emit_keepalives(sys.stdout.buffer))
+    last_seq = 0
+    last_response: dict | None = None
     try:
         while request := await read_packet(reader):
             stop = False
+            operation = request.get("operation")
+            seq = request.get("seq")
+            if operation == "sync":
+                # The host reattached to our process stream after a transport
+                # failure: it may be mid-frame and does not know whether the
+                # last response reached it. Emit a raw marker so it can
+                # re-align framing, then report what we last answered.
+                sync = {
+                    "ok": True,
+                    "sync": True,
+                    "last_seq": last_seq,
+                    "last_response": last_response,
+                }
+                data = json.dumps(sync, ensure_ascii=False).encode()
+                nonce = str(request.get("nonce", "")).encode()
+                sys.stdout.buffer.write(
+                    RESYNC_MAGIC
+                    + nonce
+                    + RESYNC_MAGIC
+                    + len(data).to_bytes(8, "big")
+                    + data
+                )
+                sys.stdout.buffer.flush()
+                continue
+            if isinstance(seq, int) and seq <= last_seq:
+                continue  # duplicate of an already-answered request
             try:
-                operation = request.get("operation")
                 if operation == "prompt":
                     response = {
                         "ok": True,
@@ -427,6 +458,10 @@ async def serve_stream() -> None:
                     "ok": False,
                     "error": f"{type(error).__name__}: {error}",
                 }
+            if isinstance(seq, int):
+                last_seq = seq
+                response = {**response, "seq": seq}
+                last_response = response
             write_packet(sys.stdout.buffer, response)
             if stop:
                 break
