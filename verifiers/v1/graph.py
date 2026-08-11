@@ -375,6 +375,18 @@ class PendingTurn:
             self.trace.tools = tools
         return assistant_id
 
+    def commit_prompt(self, tools: list[Tool] | None = None) -> None:
+        """Record an input that terminated before model inference."""
+        parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
+        index = _head_index(self.trace)
+        for message in self.tail:
+            previous = parent
+            self.trace.nodes.append(MessageNode(parent=parent, message=message))
+            parent = len(self.trace.nodes) - 1
+            index[(previous, message_hash(message))] = parent
+        if tools:
+            self.trace.tools = tools
+
 
 def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
     """Resolve `prompt` against the trace graph without mutating it."""

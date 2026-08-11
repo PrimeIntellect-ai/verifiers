@@ -342,7 +342,9 @@ class TrainClient(Client):
             prompt = turn.prompt
             tools = parse_tools(body.get("tools"))
         else:
-            prompt, tools = dialect.parse_request(body)
+            request = dialect.parse_request(body)
+            prompt = request.messages
+            tools = request.tools
         from renderers.client import generate
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None

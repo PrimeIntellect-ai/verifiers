@@ -29,6 +29,7 @@ import time
 import traceback
 from collections.abc import AsyncIterator, Collection
 from contextlib import asynccontextmanager
+from tempfile import SpooledTemporaryFile
 from typing import Literal
 
 from aiohttp import web
@@ -50,6 +51,7 @@ from verifiers.v1.errors import (
     TaskError,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
+from verifiers.v1.interception.tool import ToolHookRequest
 from verifiers.v1.interception.tunnel import (
     PrimeTunnelConfig,
     Tunnel,
@@ -58,7 +60,7 @@ from verifiers.v1.interception.tunnel import (
 )
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Messages, Response, Tool, Usage
+from verifiers.v1.types import FinishReason, Request, Response, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,7 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
+STREAM_MEMORY_BUFFER = 4 * 1024**2
 # blake2b saturates ~1.7 GB/s, so a body up to this size hashes inline in well under a
 # millisecond; a larger one (bodies may reach `_MAX_REQUEST_BODY`) is hashed off the event
 # loop instead — see `_request_digest`.
@@ -221,6 +224,7 @@ class InterceptionServer(Interception):
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
+        app.router.add_post("/tool", self.handle_tool)
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
@@ -250,7 +254,7 @@ class InterceptionServer(Interception):
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (a `@stop` raising) so the rollout
+        """Stash a model-turn-adjacent failure (such as a hook raising) so the rollout
         re-raises it as the real cause, and report it to the harness as an HTTP error."""
         session.error = error
         logger.warning(
@@ -275,6 +279,28 @@ class InterceptionServer(Interception):
                 ",".join(capabilities),
             )
         return mediated, capabilities
+
+    async def handle_tool(self, request: web.Request) -> web.Response:
+        session = self.sessions.get(
+            request.headers.get("Authorization", "").removeprefix("Bearer ")
+        )
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        session.adopt(asyncio.current_task())
+        if session.released:
+            return web.json_response({"error": "rollout concluded"}, status=409)
+        if session.stopped:
+            return web.json_response(
+                {"action": "stop", "reason": session.trace.stop_condition}
+            )
+        try:
+            hook = ToolHookRequest.model_validate_json(await request.read())
+            return web.json_response(
+                await session.handle_tool(hook.phase, hook.message)
+            )
+        except RolloutError as error:
+            session.error = error
+            return web.json_response({"error": str(error)}, status=400)
 
     def record_call(
         self,
@@ -357,7 +383,6 @@ class InterceptionServer(Interception):
         request._read_bytes = None
         del raw
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
-        body, policy_paths = self.mediate_capabilities(session, dialect, body)
         streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
@@ -377,24 +402,21 @@ class InterceptionServer(Interception):
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
 
-        # A streamed response cannot be replayed as a JSON completion without
-        # buffering the full SSE body. Keep streaming outside the non-streaming
-        # coalescing cache, as it was before in-flight retries were introduced.
-        if streaming:
-            prompt, tools = dialect.parse_request(body)
-            return await self._stream(
-                request,
-                session,
-                dialect,
-                body,
-                prompt,
-                tools,
-                policy_paths,
+        try:
+            model_request = dialect.parse_request(body)
+        except ValueError as error:
+            return web.json_response(dialect.error_body(str(error)), status=400)
+        if session.released:
+            return web.json_response(
+                dialect.error_body("rollout concluded"), status=409
+            )
+        if session.stopped:
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
+                status=400,
             )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
-            # Await the first attempt instead of re-sampling. None means it produced no servable
-            # response (it errored/refused), so let the SDK retry afresh.
             logger.debug(
                 "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
             )
@@ -405,14 +427,84 @@ class InterceptionServer(Interception):
                 )
             return _completion_response(completion)
 
-        if (inflight := session.inflight.get(req_hash)) is not None:
-            return await coalesced(inflight)
-        # Claim the in-flight slot so a retry arriving mid-flight coalesces onto it (above)
-        # rather than starting a second inference. The get / create / assign run with no
-        # await between them, so two concurrent identical requests can never both become
-        # owner.
-        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
-        session.inflight[req_hash] = fut
+        fut: asyncio.Future[dict | None] | None = None
+        if not streaming:
+            if (inflight := session.inflight.get(req_hash)) is not None:
+                return await coalesced(inflight)
+            fut = asyncio.get_running_loop().create_future()
+            session.inflight[req_hash] = fut
+
+        def finish_inflight(completion: dict | None = None) -> None:
+            if fut is None:
+                return
+            if session.inflight.get(req_hash) is fut:
+                session.inflight.pop(req_hash, None)
+            if not fut.done():
+                fut.set_result(completion)
+
+        try:
+            refused = await session.refused()
+            if refused is not None:
+                finish_inflight()
+                return web.json_response(
+                    dialect.error_body(f"rollout stopped: {refused}"), status=400
+                )
+            original_request = model_request
+            model_request, request_rewrites, stopped = await session.rewrite_request(
+                model_request
+            )
+            if request_rewrites:
+                session.trace.request_rewrites.extend(request_rewrites)
+                if stopped is None:
+                    dialect.rewrite_request(body, original_request, model_request)
+        except RolloutError as error:
+            finish_inflight()
+            return self._fail(session, dialect, error)
+        except Exception as error:  # noqa: BLE001 - surface task hook failures
+            finish_inflight()
+            return self._fail(
+                session,
+                dialect,
+                TaskError(
+                    f"model boundary hook failed: {type(error).__name__}: {error}"
+                ),
+            )
+        except BaseException:
+            finish_inflight()
+            raise
+        if stopped is not None:
+            turn = graph.prepare_turn(session.trace, model_request.messages)
+            turn.commit_prompt(model_request.tools)
+            session.trace.stop(stopped)
+            finish_inflight()
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {stopped}"),
+                status=400,
+            )
+
+        try:
+            body, policy_paths = self.mediate_capabilities(session, dialect, body)
+            model_request = dialect.parse_request(body)
+            turn = graph.prepare_turn(session.trace, model_request.messages)
+        except ValueError as error:
+            finish_inflight()
+            return web.json_response(dialect.error_body(str(error)), status=400)
+        except RolloutError as error:
+            finish_inflight()
+            return self._fail(session, dialect, error)
+
+        inspect_response = bool(session.response_interceptors or session.response_stops)
+        if streaming:
+            return await self._stream(
+                request,
+                session,
+                dialect,
+                body,
+                model_request,
+                turn=turn,
+                inspect_response=inspect_response,
+                policy_paths=policy_paths,
+            )
 
         def serve(response: Response) -> web.Response:
             # Record the served turn and hand it to any coalesced retry, so a retried
@@ -421,42 +513,10 @@ class InterceptionServer(Interception):
             # completion) that the server serializes back to the program.
             session.last_request = req_hash
             session.last_response = response.raw
-            if not fut.done():
-                fut.set_result(response.raw)
+            finish_inflight(response.raw)
             return _completion_response(response.raw)
 
         try:
-            # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
-            # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
-            prompt: Messages
-            # `tools` is recorded onto the trace only when a turn commits (below / in `_stream`):
-            # the request is ground truth for what the model saw, but a refused or failed request
-            # was never seen at all.
-            prompt, tools = dialect.parse_request(body)
-            # The rollout may conclude (deadline, teardown) while this exchange was
-            # upstream: the trace is sealed, so drop the turn instead of mutating it.
-            if session.released:
-                return web.json_response(
-                    dialect.error_body("rollout concluded"), status=409
-                )
-            try:
-                refused = await session.refused()
-            except RolloutError as e:
-                return self._fail(session, dialect, e)
-            except Exception as e:  # noqa: BLE001 - surface any task hook failure
-                return self._fail(
-                    session,
-                    dialect,
-                    TaskError(f"@stop failed: {type(e).__name__}: {e}"),
-                )
-            if refused is not None:
-                # Refuse the model call to halt the harness (it sees an HTTP error;
-                # `HarnessSession.turn` treats a stopped rollout as the clean exit it is).
-                return web.json_response(
-                    dialect.error_body(f"rollout stopped: {refused}"),
-                    status=400,
-                )
-            turn = graph.prepare_turn(session.trace, prompt)
             session.error = None
             call_response: Response | None = None
             node: int | None = None
@@ -483,9 +543,40 @@ class InterceptionServer(Interception):
                         return web.json_response(
                             dialect.error_body("rollout concluded"), status=409
                         )
-                    # One node per new message; branches fall out of walking the
-                    # graph (see Trace.branches / verifiers.v1.graph).
-                    node = turn.commit(call_response, tools)
+                    response_rewrites = []
+                    stopped = None
+                    if session.response_interceptors or session.response_stops:
+                        (
+                            call_response,
+                            response_rewrites,
+                            stopped,
+                        ) = await session.rewrite_response(call_response)
+                        if response_rewrites:
+                            assert call_response.raw is not None
+                            dialect.rewrite_response(
+                                call_response.raw, call_response.message.content or ""
+                            )
+                            raw_response = call_response.raw
+                            call_response = dialect.parse_response(
+                                dialect.validate_response(raw_response)
+                            )
+                            call_response.raw = raw_response
+                    if session.stopped:
+                        return web.json_response(
+                            dialect.error_body(
+                                f"rollout stopped: {session.trace.stop_condition}"
+                            ),
+                            status=400,
+                        )
+                    node = turn.commit(call_response, model_request.tools)
+                    session.consume_prepared(turn.tail)
+                    session.trace.response_rewrites.extend(response_rewrites)
+                    if stopped is not None:
+                        session.trace.stop(stopped)
+                        return web.json_response(
+                            dialect.error_body(f"rollout stopped: {stopped}"),
+                            status=400,
+                        )
                 except OverlongPromptError as e:
                     # An overlong prompt is a budget limit, not a crash: end the rollout
                     # cleanly as a truncation — refuse the call to halt the harness (same
@@ -546,11 +637,7 @@ class InterceptionServer(Interception):
         finally:
             # Free the in-flight slot and unblock any coalesced retry; None signals "no servable
             # response" (an error/refuse return above), so the waiter surfaces a retryable error.
-            # Only clear our own entry — never one a later owner may have installed.
-            if session.inflight.get(req_hash) is fut:
-                session.inflight.pop(req_hash, None)
-            if not fut.done():
-                fut.set_result(None)
+            finish_inflight()
 
     async def _stream(
         self,
@@ -558,35 +645,20 @@ class InterceptionServer(Interception):
         session: RolloutSession,
         dialect: Dialect,
         body: dict,
-        prompt: Messages,
-        tools: list[Tool] | None = None,
+        model_request: Request,
+        *,
+        turn: graph.PendingTurn,
+        inspect_response: bool,
         policy_paths: list[str] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace (the only client that
         streams is the eval relay)."""
-        if session.released:  # concluded while this request queued — seal holds
-            return web.json_response(
-                dialect.error_body("rollout concluded"), status=409
-            )
-        try:
-            refused = await session.refused()
-        except RolloutError as e:
-            return self._fail(session, dialect, e)
-        except Exception as e:  # noqa: BLE001 - surface any task hook failure
-            return self._fail(
-                session, dialect, TaskError(f"@stop failed: {type(e).__name__}: {e}")
-            )
-        if refused is not None:
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {refused}"), status=400
-            )
         session.error = None
         reply = None
         response: Response | None = None
         node: int | None = None
         error: Exception | None = None
-        turn = graph.prepare_turn(session.trace, prompt)
         started = time.time()
         try:
             try:
@@ -619,6 +691,97 @@ class InterceptionServer(Interception):
                 error = e
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
+
+            if inspect_response:
+                buffered = SpooledTemporaryFile(  # noqa: SIM115 - closed before every exit
+                    max_size=STREAM_MEMORY_BUFFER
+                )
+                parser = dialect.stream_parser()
+                saw_terminal = False
+                try:
+                    async for chunk in reply.chunks:
+                        buffered.write(chunk)
+                        saw_terminal |= dialect.is_terminal_event(chunk)
+                        if parser.on_done is not None and is_sse_done_event(chunk):
+                            parser.on_done()
+                        parser.feed(chunk)
+                    if not saw_terminal:
+                        raise ProviderError(
+                            "upstream stream ended before its terminal event"
+                        )
+                    response = parser.finish()
+                    response_rewrites = []
+                    stopped = None
+                    if session.response_interceptors or session.response_stops:
+                        (
+                            response,
+                            response_rewrites,
+                            stopped,
+                        ) = await session.rewrite_response(response)
+                        if response_rewrites:
+                            assert response.raw is not None
+                            dialect.rewrite_response(
+                                response.raw, response.message.content or ""
+                            )
+                            raw_response = response.raw
+                            response = dialect.parse_response(
+                                dialect.validate_response(raw_response)
+                            )
+                            response.raw = raw_response
+                except RolloutError as e:
+                    buffered.close()
+                    error = e
+                    session.error = e
+                    return self._fail(session, dialect, e)
+                except Exception as e:  # noqa: BLE001 - malformed provider stream
+                    buffered.close()
+                    error = ProviderError(str(e))
+                    session.error = error
+                    return self._fail(session, dialect, error)
+                finally:
+                    await reply.close()
+
+                if session.released or session.stopped:
+                    buffered.close()
+                    return web.json_response(
+                        dialect.error_body(
+                            "rollout concluded"
+                            if session.released
+                            else f"rollout stopped: {session.trace.stop_condition}"
+                        ),
+                        status=409 if session.released else 400,
+                    )
+                node = turn.commit(response, model_request.tools)
+                session.consume_prepared(turn.tail)
+                session.trace.response_rewrites.extend(response_rewrites)
+                if stopped is not None:
+                    buffered.close()
+                    session.trace.stop(stopped)
+                    return web.json_response(
+                        dialect.error_body(f"rollout stopped: {stopped}"),
+                        status=400,
+                    )
+
+                resp = web.StreamResponse(
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+                )
+                resp.content_type = reply.content_type.split(";")[0].strip()
+                try:
+                    await resp.prepare(request)
+                    if response_rewrites:
+                        for event in dialect.stream_events(response.raw or {}):
+                            await resp.write(event)
+                    else:
+                        buffered.seek(0)
+                        while chunk := buffered.read(64 * 1024):
+                            await resp.write(chunk)
+                    await resp.write_eof()
+                except ConnectionResetError:
+                    pass
+                finally:
+                    buffered.close()
+                return resp
+
             resp = web.StreamResponse(
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
             )
@@ -695,9 +858,14 @@ class InterceptionServer(Interception):
                 if parser_error is not None:
                     raise parser_error
                 response = parser.finish()
-                if not session.released:  # concluded mid-stream — seal holds
-                    node = turn.commit(response, tools)
+                if not session.released and not session.stopped:
+                    node = turn.commit(response, model_request.tools)
+                    session.consume_prepared(turn.tail)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
+                elif session.stopped:
+                    with contextlib.suppress(ConnectionResetError):
+                        await resp.write_eof()
+                    return resp
             finally:
                 # Release the withheld events only now — after the commit — then close.
                 with contextlib.suppress(ConnectionResetError):

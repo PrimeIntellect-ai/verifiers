@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 from collections.abc import Callable, Iterable
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar, get_origin, get_type_hints, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -26,9 +26,16 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
     return methods
 
 
-def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
+def invoke(fn: Callable[..., Any], available: dict[str | type, Any]) -> Any:
     params = inspect.signature(fn).parameters
-    return fn(**{name: value for name, value in available.items() if name in params})
+    kwargs = {name: available[name] for name in params if name in available}
+    if any(isinstance(key, type) for key in available):
+        hints = get_type_hints(fn)
+        for name in params:
+            annotation = get_origin(hints.get(name)) or hints.get(name)
+            if name not in kwargs and annotation in available:
+                kwargs[name] = available[annotation]
+    return fn(**kwargs)
 
 
 async def invoke_all(
@@ -80,8 +87,18 @@ def stop(func: F, priority: int = 0) -> F: ...
 @overload
 def stop(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
-    """Mark a stop condition `(self, trace) -> bool`."""
+    """Stop when a typed `Request`, `Response`, or `Trace` predicate returns true."""
     decorator = mark("stop", stop_priority=priority)
+    return decorator if func is None else decorator(func)
+
+
+@overload
+def intercept(func: F, priority: int = 0) -> F: ...
+@overload
+def intercept(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Inspect a typed boundary; return its replacement or None to leave it unchanged."""
+    decorator = mark("intercept", intercept_priority=priority)
     return decorator if func is None else decorator(func)
 
 
