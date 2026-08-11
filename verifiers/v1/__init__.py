@@ -61,6 +61,16 @@ from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
 )
+from verifiers.v1.on_request import (
+    RequestHandler,
+    RequestResult,
+    RequestRewrite,
+)
+from verifiers.v1.on_response import (
+    ResponseHandler,
+    ResponseResult,
+    ResponseRewrite,
+)
 from verifiers.v1.runtimes import (
     DockerConfig,
     PrimeConfig,
@@ -74,6 +84,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.terminate import Terminate
 from verifiers.v1.trace import (
     TRACE_VERSION,
     AgentInfo,
@@ -121,7 +132,14 @@ from verifiers.v1.utils.artifacts import (
     collect,
     restore,
 )
-from verifiers.v1.utils.decorators import metric, reward, stop, tool
+from verifiers.v1.utils.decorators import (
+    metric,
+    on_request,
+    on_response,
+    reward,
+    stop,
+    tool,
+)
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
 )
@@ -219,10 +237,20 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "AgentSpan",
     "Error",
     # decorators
+    "on_request",
+    "on_response",
     "stop",
     "tool",
     "metric",
     "reward",
+    # request / response hooks
+    "RequestHandler",
+    "RequestResult",
+    "RequestRewrite",
+    "ResponseHandler",
+    "ResponseResult",
+    "ResponseRewrite",
+    "Terminate",
     # errors
     "RolloutError",
     "EnvError",

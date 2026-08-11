@@ -86,6 +86,26 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
+def on_request(func: F, priority: int = 0) -> F: ...
+@overload
+def on_request(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def on_request(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Inspect or rewrite data before it reaches the model."""
+    decorator = mark("on_request", on_request_priority=priority)
+    return decorator if func is None else decorator(func)
+
+
+@overload
+def on_response(func: F, priority: int = 0) -> F: ...
+@overload
+def on_response(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def on_response(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Inspect or rewrite data before it reaches the harness."""
+    decorator = mark("on_response", on_response_priority=priority)
+    return decorator if func is None else decorator(func)
+
+
+@overload
 def metric(func: F, priority: int = 0) -> F: ...
 @overload
 def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...

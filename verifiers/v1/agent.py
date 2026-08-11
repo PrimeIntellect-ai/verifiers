@@ -461,15 +461,11 @@ class Agent:
         interaction = Interaction(run, gate=self._gate)
         async with self._gate or nullcontext():
             opened = await run.open()
-            if not opened:
+            if not opened and (failure := run.failure) is not None:
                 trace = await run.close()
                 if trace.agent.runtime is not None:
                     trace.agent.runtime.borrowed = runtime is not None
-        if not opened:
-            failure = run.failure
-            if failure is None:  # `open()` returning False always captures one.
-                raise RuntimeError("rollout setup failed without a captured error")
-            raise failure
+                raise failure
         try:
             yield interaction
         except Exception as e:
