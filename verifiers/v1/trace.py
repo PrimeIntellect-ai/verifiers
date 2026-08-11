@@ -150,6 +150,15 @@ RunInfo = Annotated[EvalRunInfo | TrainRunInfo, Field(discriminator="type")]
 """The run a trace belongs to, discriminated on `type`."""
 
 
+class PolicyEvent(BaseModel):
+    """A framework policy decision applied to a model call before inference."""
+
+    code: str
+    """Stable machine-readable reason for the decision."""
+    paths: list[str]
+    """Value-free native request paths affected by the decision."""
+
+
 class ModelCall(BaseModel):
     """A model call, automatically recorded at intercept time."""
 
@@ -169,6 +178,8 @@ class ModelCall(BaseModel):
     """Wall-clock span from sending the request to the fully received response."""
     error: Error | None = None
     """The failure that ended this call, coupled to the exchange that caused it."""
+    policy: PolicyEvent | None = None
+    """Policy mediation applied to the request before this call."""
 
 
 def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall, int]]:
@@ -555,7 +566,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 # Keep full tracebacks for every other failure.
                 traceback=None
                 if isinstance(error, ProviderError)
-                else traceback.format_exc(),
+                else "".join(traceback.format_exception(error)),
             )
         )
         self.ok = False

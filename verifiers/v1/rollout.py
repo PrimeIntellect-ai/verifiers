@@ -10,8 +10,10 @@ from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.dialects import DIALECTS
 from verifiers.v1.errors import (
     HarnessError,
+    InterceptionError,
     RolloutError,
     TaskError,
     ToolsetError,
@@ -96,13 +98,15 @@ class Rollout:
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
-            network_restricted=(
-                isinstance(runtime_config, NetworkPolicyConfig)
-                and runtime_config.network_restricted
-            )
-            or (
-                isinstance(runtime_config, ModalConfig)
-                and not runtime_config.network_access
+            network_policy=(
+                runtime_config
+                if isinstance(runtime_config, NetworkPolicyConfig)
+                else NetworkPolicyConfig(
+                    allow=[]
+                    if isinstance(runtime_config, ModalConfig)
+                    and not runtime_config.network_access
+                    else ["*"]
+                )
             ),
             stops=task.hooks("stop"),
             limits=limits,
@@ -162,6 +166,18 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
+        if self._session.network_policy.network_restricted and any(
+            dialect.intrinsic_external_capability(self.ctx.model) == "model"
+            for dialect in DIALECTS
+        ):
+            self.trace.timing.boot.end = time.time()
+            self.fail(
+                InterceptionError(
+                    "provider-side capability 'model' cannot be disabled for "
+                    f"selected model {self.ctx.model!r}"
+                )
+            )
+            return False
         if self._owns_runtime:
             self.runtime = make_runtime(self.runtime_config, name=self.trace.id)
         elif self.runtime.stopped:

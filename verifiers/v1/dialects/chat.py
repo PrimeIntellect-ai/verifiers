@@ -10,17 +10,19 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any
+from typing import Any, cast
 
 from openai.types.chat import ChatCompletion
+from openai.types.chat.completion_create_params import CompletionCreateParams
 
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
-    capability_notice,
-    is_remote_url,
+    append_user_notice,
+    blocked_url,
     parse_sse_event,
 )
+from verifiers.v1.runtimes.base import NetworkPolicyConfig
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -49,9 +51,6 @@ class ModdedChatCompletion(ChatCompletion):
 
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
-# Provider-native tools execute outside the rollout's network policy, so unknown tool
-# types fail closed and only client-executed types are allowlisted here.
-_CLIENT_TOOL_TYPES = frozenset({"function", "custom"})
 
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
@@ -304,7 +303,7 @@ class ChatStreamParser(StreamParser):
         return response_from_wire(ModdedChatCompletion.model_validate(completion))
 
 
-class ChatDialect(Dialect[dict, ChatCompletion]):
+class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -326,98 +325,32 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
             "response_format",
             "tool_choice",
             "parallel_tool_calls",
+            "extra_body",
         }
     )
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
 
-    def external_capability(self, body: dict) -> str | None:
-        model = body.get("model")
-        if isinstance(model, str):
-            name = model.rsplit("/", 1)[-1]
+    def intrinsic_external_capability(self, model: str) -> str | None:
+        name = model.rsplit("/", 1)[-1]
+        return (
+            "model"
             if name.startswith(
                 (
                     "gpt-5-search-api",
                     "gpt-4o-search-preview",
                     "gpt-4o-mini-search-preview",
                 )
-            ):
-                return "model"
-        if body.get("web_search_options") is not None:
-            return "web_search_options"
-        audio = body.get("audio")
-        voice = audio.get("voice") if isinstance(audio, dict) else None
-        if isinstance(voice, dict) and voice.get("id"):
-            return "audio.voice.id"
-        choice = body.get("tool_choice")
-        if isinstance(choice, str):
-            if choice not in ("none", "auto", "required"):
-                return "tool_choice"
-        elif choice is not None:
-            if not isinstance(choice, dict):
-                return "tool_choice"
-            kind = choice.get("type", "function")
-            if kind == "allowed_tools":
-                allowed = choice.get("allowed_tools")
-                if not isinstance(allowed, dict):
-                    return "tool_choice.allowed_tools"
-                for index, tool in enumerate(allowed.get("tools") or []):
-                    if (
-                        not isinstance(tool, dict)
-                        or tool.get("type", "function") not in _CLIENT_TOOL_TYPES
-                    ):
-                        return f"tool_choice.allowed_tools.tools[{index}].type"
-            elif kind not in _CLIENT_TOOL_TYPES:
-                return "tool_choice.type"
-        for index, tool in enumerate(body.get("tools") or []):
-            if not isinstance(tool, dict):
-                return f"tools[{index}]"
-            if tool.get("type", "function") not in _CLIENT_TOOL_TYPES:
-                return f"tools[{index}].type"
-        for message_index, message in enumerate(body.get("messages") or []):
-            if not isinstance(message, dict):
-                continue
-            if isinstance(message.get("audio"), dict) and message["audio"].get("id"):
-                return f"messages[{message_index}].audio.id"
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            for part_index, part in enumerate(content):
-                if not isinstance(part, dict):
-                    continue
-                path = f"messages[{message_index}].content[{part_index}]"
-                kind = part.get("type")
-                if kind == "image_url":
-                    image = part.get("image_url") or {}
-                    url = image.get("url") if isinstance(image, dict) else image
-                    if is_remote_url(url):
-                        return f"{path}.image_url.url"
-                elif kind == "file":
-                    file = part.get("file")
-                    if isinstance(file, dict) and file.get("file_id"):
-                        return f"{path}.file.file_id"
-                if kind not in (
-                    "text",
-                    "refusal",
-                    "input_audio",
-                    "image_url",
-                    "file",
-                ):
-                    return f"{path}.type"
-        return None
+            )
+            else None
+        )
 
-    def mediate_external_capabilities(self, body: dict) -> tuple[dict, list[str]]:
-        mediated = dict(body)
-        if "messages" in mediated:
-            mediated["messages"] = [
-                dict(message) if isinstance(message, dict) else message
-                for message in mediated["messages"] or []
-            ]
+    def mediate_external_capabilities(
+        self, body: CompletionCreateParams, policy: NetworkPolicyConfig
+    ) -> tuple[CompletionCreateParams, list[str]]:
+        mediated = body
         capabilities: list[str] = []
-
-        if self.external_capability({"model": mediated.get("model")}) == "model":
-            capabilities.append("model")
 
         if mediated.pop("web_search_options", None) is not None:
             capabilities.append("web_search_options")
@@ -433,24 +366,6 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                     item for item in modalities if item != "audio"
                 ] or ["text"]
 
-        if capability := self.external_capability(
-            {"tool_choice": mediated.get("tool_choice")}
-        ):
-            capabilities.append(capability)
-            mediated.pop("tool_choice", None)
-
-        tools = []
-        for index, tool in enumerate(mediated.get("tools") or []):
-            if (
-                isinstance(tool, dict)
-                and tool.get("type", "function") in _CLIENT_TOOL_TYPES
-            ):
-                tools.append(tool)
-            else:
-                capabilities.append(f"tools[{index}].type")
-        if len(tools) != len(mediated.get("tools") or []):
-            mediated["tools"] = tools
-
         for message_index, message in enumerate(mediated.get("messages") or []):
             if not isinstance(message, dict):
                 continue
@@ -459,35 +374,36 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                 capabilities.append(path)
                 message.pop("audio")
                 if message.get("content") is None:
-                    message["content"] = capability_notice([path])
+                    message["content"] = ""
             content = message.get("content")
             if not isinstance(content, list):
                 continue
             safe_content = []
             for part_index, part in enumerate(content):
                 path = f"messages[{message_index}].content[{part_index}]"
-                capability = self.external_capability(
-                    {"messages": [{"role": message.get("role"), "content": [part]}]}
-                )
+                capability = None
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    image = part.get("image_url") or {}
+                    url = image.get("url") if isinstance(image, dict) else image
+                    if blocked_url(url if isinstance(url, str) else None, policy):
+                        capability = f"{path}.image_url.url"
+                elif isinstance(part, dict) and part.get("type") == "file":
+                    file = part.get("file")
+                    if isinstance(file, dict) and file.get("file_id"):
+                        capability = f"{path}.file.file_id"
                 if capability is None:
                     safe_content.append(part)
                 else:
-                    capability = capability.replace("messages[0].content[0]", path)
                     capabilities.append(capability)
-                    safe_content.append(
-                        {"type": "text", "text": capability_notice([capability])}
-                    )
-            message["content"] = safe_content
+            message["content"] = safe_content or ""
 
-        prompt_capabilities = [path for path in capabilities if path != "model"]
-        if prompt_capabilities:
-            mediated.setdefault("messages", []).insert(
-                0,
-                {"role": "system", "content": capability_notice(prompt_capabilities)},
-            )
+        if capabilities:
+            append_user_notice(mediated.setdefault("messages", []))
         return mediated, capabilities
 
-    def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
+    def parse_request(
+        self, body: CompletionCreateParams
+    ) -> tuple[Messages, list[Tool] | None]:
         messages: Messages = []
         tool_names: dict[str, str] = {}
         for raw in body.get("messages", []):
@@ -502,7 +418,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                     tool_names[call.id] = call.name
         return messages, parse_tools(body.get("tools"))
 
-    def parse_sampling(self, body: dict) -> Sampling:
+    def parse_sampling(self, body: CompletionCreateParams) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Canonicalize the max-tokens alias; when both ride the wire (an eval override
         # on top of a harness's `max_completion_tokens`), the override wins.
@@ -516,7 +432,12 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()
 
-    def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
+    def apply_overrides(
+        self, body: CompletionCreateParams, model: str, sampling: SamplingConfig
+    ) -> CompletionCreateParams:
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set (later keys win, so the eval's override the program's).
-        return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
+        return cast(
+            CompletionCreateParams,
+            {**body, "model": model, **sampling.model_dump(exclude_none=True)},
+        )

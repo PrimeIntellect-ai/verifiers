@@ -39,9 +39,11 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
-from verifiers.v1.dialects.base import is_sse_done_event
+from verifiers.v1.dialects.base import (
+    PROVIDER_CAPABILITY_POLICY_CODE,
+    is_sse_done_event,
+)
 from verifiers.v1.errors import (
-    InterceptionError,
     OverlongPromptError,
     ProviderError,
     RolloutError,
@@ -55,7 +57,7 @@ from verifiers.v1.interception.tunnel import (
     make_tunnel,
 )
 from verifiers.v1.session import RolloutSession
-from verifiers.v1.trace import Error, ModelCall, TimeSpan
+from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Messages, Response, Tool, Usage
 
 logger = logging.getLogger(__name__)
@@ -261,30 +263,20 @@ class InterceptionServer(Interception):
 
     def _mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
-    ) -> tuple[dict, web.Response | None]:
-        if not session.network_restricted:
-            return body, None
-        mediated, capabilities = dialect.mediate_external_capabilities(body)
+    ) -> tuple[dict, list[str]]:
+        if not session.network_policy.network_restricted:
+            return body, []
+        mediated, capabilities = dialect.mediate_external_capabilities(
+            body, session.network_policy
+        )
+        capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(
                 "interception removed provider capabilities: id=%s paths=%s",
                 session.trace.id,
                 ",".join(capabilities),
             )
-        capability = dialect.external_capability(mediated)
-        if capability is None:
-            return mediated, None
-
-        error = InterceptionError(
-            f"provider-side capability {capability!r} cannot be disabled for the selected model"
-        )
-        session.error = error
-        logger.warning(
-            "interception blocked intrinsic provider capability: id=%s path=%s",
-            session.trace.id,
-            capability,
-        )
-        return mediated, web.json_response(dialect.error_body(str(error)), status=400)
+        return mediated, capabilities
 
     def record_call(
         self,
@@ -297,6 +289,7 @@ class InterceptionServer(Interception):
         finish_reason: "FinishReason" = None,
         usage: "Usage | None" = None,
         error: BaseException | None = None,
+        policy_paths: list[str] | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -338,6 +331,12 @@ class InterceptionServer(Interception):
                     if isinstance(error, ProviderError)
                     else "".join(traceback.format_exception(error)),
                 ),
+                policy=PolicyEvent(
+                    code=PROVIDER_CAPABILITY_POLICY_CODE,
+                    paths=policy_paths,
+                )
+                if policy_paths
+                else None,
             )
         )
 
@@ -360,10 +359,7 @@ class InterceptionServer(Interception):
         request._read_bytes = None
         del raw
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
-        body, rejection = self._mediate_capabilities(session, dialect, body)
-        if rejection is not None:
-            return rejection
-        upstream_request = body
+        body, policy_paths = self._mediate_capabilities(session, dialect, body)
         streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
@@ -393,9 +389,9 @@ class InterceptionServer(Interception):
                 session,
                 dialect,
                 body,
-                upstream_request,
                 prompt,
                 tools,
+                policy_paths,
             )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
@@ -475,7 +471,6 @@ class InterceptionServer(Interception):
                     call_response = await session.client.get_response(
                         dialect,
                         body,
-                        session.ctx.model,
                         session.ctx.sampling,
                         headers=request.headers,
                         session_id=session.trace.id,
@@ -539,7 +534,7 @@ class InterceptionServer(Interception):
                 self.record_call(
                     session,
                     dialect,
-                    upstream_request,
+                    body,
                     started,
                     node=node,
                     finish_reason=call_response.finish_reason
@@ -547,6 +542,7 @@ class InterceptionServer(Interception):
                     else None,
                     usage=call_response.usage if call_response else None,
                     error=error,
+                    policy_paths=policy_paths,
                 )
             return serve(call_response)
         finally:
@@ -564,9 +560,9 @@ class InterceptionServer(Interception):
         session: RolloutSession,
         dialect: Dialect,
         body: dict,
-        upstream_request: dict,
         prompt: Messages,
         tools: list[Tool] | None = None,
+        policy_paths: list[str] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace (the only client that
@@ -599,8 +595,6 @@ class InterceptionServer(Interception):
                 reply = await session.client.relay(
                     dialect,
                     body,
-                    session.ctx.model,
-                    session.ctx.sampling,
                     headers=request.headers,
                     session_id=session.trace.id,
                 )
@@ -726,12 +720,13 @@ class InterceptionServer(Interception):
             self.record_call(
                 session,
                 dialect,
-                upstream_request,
+                body,
                 started,
                 node=node,
                 finish_reason=response.finish_reason if response is not None else None,
                 usage=response.usage if response is not None else None,
                 error=error,
+                policy_paths=policy_paths,
             )
 
     async def handle_aux(
@@ -746,9 +741,7 @@ class InterceptionServer(Interception):
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             body = await request.json()
-            body, rejection = self._mediate_capabilities(session, dialect, body)
-            if rejection is not None:
-                return rejection
+            body, _ = self._mediate_capabilities(session, dialect, body)
             result = await session.client.relay_aux(
                 dialect, route, body, headers=request.headers
             )

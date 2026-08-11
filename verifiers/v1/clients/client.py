@@ -33,14 +33,14 @@ class Client(ABC):
         self,
         dialect: Dialect,
         body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
+        sampling: SamplingConfig,
         session_id: str | None = None,
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
-        """Run one completion -> a vf `Response`. The eval client forwards the native JSON
-        and parses a copy via `dialect`; the train client renders `body` to token ids.
+        """Run one completion -> a vf `Response`. `body` is the final effective native
+        request after overrides and policy mediation: the eval client forwards it unchanged,
+        while the train client renders it to token ids using the resolved `sampling` config.
         `session_id` is the rollout's trace id (sent as `SESSION_ID_HEADER`); `turn` is the
         graph-resolved prompt prefix, used by train clients for renderer bridging."""
 
@@ -48,14 +48,11 @@ class Client(ABC):
         self,
         dialect: Dialect,
         body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
         session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
-        """Stream a (possibly SSE) response back, relaying the provider's bytes — the proxy's
-        path for a streaming request. Only the relay (eval) client supports it; the renderer
-        generates and cannot stream."""
+        """Stream a response for the final effective `body`, relaying the provider's bytes.
+        Only the relay (eval) client supports it; the renderer generates and cannot stream."""
         raise NotImplementedError(f"{type(self).__name__} does not support streaming")
 
     async def relay_aux(

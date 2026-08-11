@@ -7,19 +7,25 @@ trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded
 """
 
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import cast
 
 from anthropic.types import Message as AnthropicMessage
+from anthropic.types import MessageCreateParams
 from anthropic.types import Usage as AnthropicUsage
 
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
-    capability_notice,
-    is_remote_url,
+    append_user_notice,
+    blocked_url,
+    narrow_domains,
     parse_sse_event,
+    provider_allowed_domains,
 )
+from verifiers.v1.runtimes.base import NetworkPolicyConfig
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -47,66 +53,10 @@ STOP_REASONS = {
     "stop_sequence": "stop",
 }
 THINKING = ("thinking", "redacted_thinking")
-_CLIENT_TOOL_TYPES = frozenset(
-    {
-        "bash_20241022",
-        "bash_20250124",
-        "text_editor_20241022",
-        "text_editor_20250124",
-        "text_editor_20250429",
-        "text_editor_20250728",
-        "computer_20241022",
-        "computer_20250124",
-        "computer_20251124",
-        "memory_20250818",
-    }
-)
-_CONTENT_WRAPPERS = frozenset(
-    {
-        "code_execution_tool_result",
-        "bash_code_execution_tool_result",
-        "text_editor_code_execution_tool_result",
-        "web_search_tool_result",
-        "web_fetch_tool_result",
-        "tool_search_tool_result",
-        "mcp_tool_result",
-        "advisor_tool_result",
-        "code_execution_result",
-        "bash_code_execution_result",
-        "encrypted_code_execution_result",
-        "web_fetch_result",
-    }
-)
-_SAFE_CONTENT_TYPES = frozenset(
-    {
-        "text",
-        "image",
-        "document",
-        "thinking",
-        "redacted_thinking",
-        "tool_use",
-        "search_result",
-        "server_tool_use",
-        "mid_conv_system",
-        "compaction",
-        "fallback",
-        "mcp_tool_use",
-        "web_search_result",
-        "web_search_tool_result_error",
-        "web_fetch_tool_result_error",
-        "tool_search_tool_search_result",
-        "tool_search_tool_result_error",
-        "code_execution_tool_result_error",
-        "bash_code_execution_tool_result_error",
-        "text_editor_code_execution_tool_result_error",
-        "text_editor_code_execution_create_result",
-        "text_editor_code_execution_str_replace_result",
-        "text_editor_code_execution_view_result",
-        "advisor_result",
-        "advisor_redacted_result",
-        "advisor_tool_result_error",
-    }
-)
+_WEB_TOOL_TYPE = re.compile(r"(?:web_search|web_fetch)_\d{8}").fullmatch
+_HOSTED_TOOL_TYPE = re.compile(
+    r"code_execution_\d{8}|tool_search_tool_(?:bm25|regex)(?:_\d{8})?"
+).fullmatch
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -127,24 +77,10 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def _tool_capability(tools, path: str) -> str | None:
-    for index, tool in enumerate(tools or []):
-        item_path = f"{path}[{index}]"
-        if not isinstance(tool, dict):
-            return item_path
-        kind = tool.get("type")
-        if kind in (None, "custom") and "input_schema" in tool:
-            continue
-        if kind in _CLIENT_TOOL_TYPES:
-            continue
-        return f"{item_path}.type"
-    return None
-
-
-def _content_capability(value, path: str) -> str | None:
+def _content_capability(value, path: str, policy: NetworkPolicyConfig) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if capability := _content_capability(item, f"{path}[{index}]"):
+            if capability := _content_capability(item, f"{path}[{index}]", policy):
                 return capability
         return None
     if not isinstance(value, dict):
@@ -155,7 +91,10 @@ def _content_capability(value, path: str) -> str | None:
         if not isinstance(source, dict):
             return f"{path}.source"
         source_kind = source.get("type")
-        if source_kind == "url" and is_remote_url(source.get("url")):
+        url = source.get("url")
+        if source_kind == "url" and blocked_url(
+            url if isinstance(url, str) else None, policy
+        ):
             return f"{path}.source.url"
         if source_kind == "file":
             return (
@@ -164,7 +103,9 @@ def _content_capability(value, path: str) -> str | None:
                 else f"{path}.source.type"
             )
         if source_kind == "content":
-            return _content_capability(source.get("content"), f"{path}.source.content")
+            return _content_capability(
+                source.get("content"), f"{path}.source.content", policy
+            )
         if source_kind not in ("base64", "text", "url"):
             return f"{path}.source.type"
     if kind in (
@@ -173,11 +114,32 @@ def _content_capability(value, path: str) -> str | None:
         "bash_code_execution_output",
     ) and value.get("file_id"):
         return f"{path}.file_id"
-    if kind == "tool_result" or kind in _CONTENT_WRAPPERS:
-        return _content_capability(value.get("content"), f"{path}.content")
-    if kind in _SAFE_CONTENT_TYPES:
-        return None
-    return f"{path}.type"
+    if "content" in value:
+        return _content_capability(value.get("content"), f"{path}.content", policy)
+    return None
+
+
+def _mediate_content(value, path: str, policy: NetworkPolicyConfig):
+    if not isinstance(value, list):
+        capability = _content_capability(value, path, policy)
+        return ("" if capability else value), ([capability] if capability else [])
+    mediated = []
+    capabilities = []
+    for index, block in enumerate(value):
+        item_path = f"{path}[{index}]"
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            content, removed = _mediate_content(
+                block.get("content"), f"{item_path}.content", policy
+            )
+            if removed:
+                block["content"] = content or ""
+                capabilities.extend(removed)
+            mediated.append(block)
+        elif capability := _content_capability(block, item_path, policy):
+            capabilities.append(capability)
+        else:
+            mediated.append(block)
+    return mediated, capabilities
 
 
 def parse_messages(body: dict) -> Messages:
@@ -375,7 +337,7 @@ class ModdedAnthropicMessage(AnthropicMessage):
     usage: ModdedUsage  # type: ignore[assignment]
 
 
-class AnthropicDialect(Dialect[dict, AnthropicMessage]):
+class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -393,100 +355,69 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     upstream_path = "/v1/messages"
     response_type = ModdedAnthropicMessage
 
-    def external_capability(self, body: dict) -> str | None:
-        if body.get("container") is not None:
-            return "container"
-        if body.get("mcp_servers"):
-            return "mcp_servers"
-        if capability := _content_capability(body.get("system"), "system"):
-            return capability
-        for index, message in enumerate(body.get("messages") or []):
-            if not isinstance(message, dict):
-                continue
-            if capability := _content_capability(
-                message.get("content"), f"messages[{index}].content"
-            ):
-                return capability
-        return _tool_capability(body.get("tools"), "tools")
-
-    def mediate_external_capabilities(self, body: dict) -> tuple[dict, list[str]]:
-        mediated = dict(body)
-        if "messages" in mediated:
-            mediated["messages"] = [
-                dict(message) if isinstance(message, dict) else message
-                for message in mediated["messages"] or []
-            ]
+    def mediate_external_capabilities(
+        self, body: MessageCreateParams, policy: NetworkPolicyConfig
+    ) -> tuple[MessageCreateParams, list[str]]:
+        mediated = body
         capabilities: list[str] = []
 
         for key in ("container", "mcp_servers"):
             if mediated.pop(key, None):
                 capabilities.append(key)
 
-        system = mediated.get("system")
-        if isinstance(system, list):
-            safe_system = []
-            for index, block in enumerate(system):
-                path = f"system[{index}]"
-                if capability := _content_capability(block, path):
-                    capabilities.append(capability)
-                    safe_system.append(
-                        {"type": "text", "text": capability_notice([capability])}
-                    )
-                else:
-                    safe_system.append(block)
-            mediated["system"] = safe_system
-        elif capability := _content_capability(system, "system"):
-            capabilities.append(capability)
-            mediated["system"] = capability_notice([capability])
+        system, removed = _mediate_content(mediated.get("system"), "system", policy)
+        capabilities.extend(removed)
+        if removed:
+            if system:
+                mediated["system"] = system
+            else:
+                mediated.pop("system")
 
         for message_index, message in enumerate(mediated.get("messages") or []):
             if not isinstance(message, dict):
                 continue
-            content = message.get("content")
-            if isinstance(content, list):
-                safe_content = []
-                for block_index, block in enumerate(content):
-                    path = f"messages[{message_index}].content[{block_index}]"
-                    if capability := _content_capability(block, path):
-                        capabilities.append(capability)
-                        safe_content.append(
-                            {"type": "text", "text": capability_notice([capability])}
-                        )
-                    else:
-                        safe_content.append(block)
-                message["content"] = safe_content
-            elif capability := _content_capability(
-                content, f"messages[{message_index}].content"
-            ):
-                capabilities.append(capability)
-                message["content"] = [
-                    {"type": "text", "text": capability_notice([capability])}
-                ]
+            content, removed = _mediate_content(
+                message.get("content"), f"messages[{message_index}].content", policy
+            )
+            capabilities.extend(removed)
+            if removed:
+                message["content"] = content or ""
 
         tools = []
         for index, tool in enumerate(mediated.get("tools") or []):
-            capability = _tool_capability([tool], "tools")
-            if capability is None:
-                tools.append(tool)
-            else:
-                capabilities.append(
-                    capability.replace("tools[0]", f"tools[{index}]", 1)
+            kind = tool.get("type") if isinstance(tool, dict) else None
+            safe_tool = tool if isinstance(tool, dict) else None
+            if isinstance(kind, str) and _WEB_TOOL_TYPE(kind):
+                allowed_domains = provider_allowed_domains(policy)
+                requested = tool.get("allowed_domains")
+                if requested is not None and not (
+                    isinstance(requested, list)
+                    and all(isinstance(domain, str) for domain in requested)
+                ):
+                    allowed_domains = None
+                domains = (
+                    narrow_domains(allowed_domains, requested)
+                    if allowed_domains is not None
+                    else []
                 )
-        if len(tools) != len(mediated.get("tools") or []):
+                if domains and not tool.get("blocked_domains"):
+                    safe_tool = {**tool, "allowed_domains": domains}
+                else:
+                    safe_tool = None
+            elif isinstance(kind, str) and _HOSTED_TOOL_TYPE(kind):
+                safe_tool = None
+            if safe_tool is not None:
+                tools.append(safe_tool)
+                continue
+            capabilities.append(f"tools[{index}].type")
+        tool_count = len(mediated.get("tools") or [])
+        if "tools" in mediated:
             mediated["tools"] = tools
+        if len(tools) != tool_count:
             mediated.pop("tool_choice", None)
 
         if capabilities:
-            notice = capability_notice(capabilities)
-            system = mediated.get("system")
-            if isinstance(system, str):
-                mediated["system"] = f"{system}\n\n{notice}"
-            elif isinstance(system, list):
-                system.append({"type": "text", "text": notice})
-            else:
-                mediated["system"] = notice
-            if not mediated.get("messages"):
-                mediated["messages"] = [{"role": "user", "content": notice}]
+            append_user_notice(mediated.setdefault("messages", []))
         return mediated, capabilities
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
@@ -502,7 +433,9 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
-    def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
+    def parse_request(
+        self, body: MessageCreateParams
+    ) -> tuple[Messages, list[Tool] | None]:
         tools = [
             Tool(
                 name=t["name"],
@@ -520,7 +453,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
 
-    def parse_sampling(self, body: dict) -> Sampling:
+    def parse_sampling(self, body: MessageCreateParams) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `output_config.effort` (where `apply_overrides` puts the eval's
         # reasoning effort) onto the typed knob; keep any other output-config keys.
@@ -534,7 +467,9 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
                 settings.pop("output_config")
         return Sampling.model_validate(settings)
 
-    def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
+    def apply_overrides(
+        self, body: MessageCreateParams, model: str, sampling: SamplingConfig
+    ) -> MessageCreateParams:
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
@@ -556,4 +491,4 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             for k, v in body.items()
             if k not in ("temperature", "top_p") and k not in overrides
         }
-        return {**steered, **overrides}
+        return cast(MessageCreateParams, {**steered, **overrides})

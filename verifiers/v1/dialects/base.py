@@ -16,10 +16,12 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel
 from pydantic_core import from_json
 
+from verifiers.v1.runtimes.base import NetworkPolicyConfig
 from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
@@ -27,23 +29,85 @@ RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
+PROVIDER_CAPABILITY_POLICY_CODE = "provider_capability_unavailable"
+CAPABILITY_NOTICE = (
+    "Network protocol blocked fetching a resource. Continue without those capabilities; "
+    "use local tools or inline data already present in the conversation, and do not retry "
+    "the blocked provider-side operation."
+)
 
-def is_remote_url(value: object) -> bool:
-    """Whether a native URL field makes the provider resolve data outside the request."""
-    return (
-        isinstance(value, str) and bool(value) and not value.lower().startswith("data:")
+
+def blocked_url(value: str | None, policy: NetworkPolicyConfig) -> bool:
+    """Whether a provider-resolved URL falls outside the rollout's network policy."""
+    return bool(
+        value and not value.lower().startswith("data:") and not policy.permits(value)
     )
 
 
-def capability_notice(capabilities: list[str]) -> str:
-    """A value-free policy error that can safely be added to the model prompt."""
-    paths = ", ".join(dict.fromkeys(capabilities))
-    return (
-        f"Runtime network policy error: provider-side capability paths [{paths}] "
-        "are unavailable. Continue without those capabilities; use local tools or "
-        "inline data already present in the conversation, and do not retry the blocked "
-        "provider-side operation."
-    )
+def provider_allowed_domains(policy: NetworkPolicyConfig) -> list[str] | None:
+    """Translate a concrete host allowlist into provider web-tool domain filters."""
+    if policy.block or not policy.allow or "*" in policy.allow:
+        return None
+    domains: list[str] = []
+    for rule in policy.allow:
+        parsed = urlsplit(rule if "://" in rule else f"//{rule}")
+        domain = (parsed.hostname or "").lower().rstrip(".")
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if parsed.scheme or port is not None or not domain.startswith("*."):
+            return None
+        domain = domain.removeprefix("*.")
+        if "*" in domain:
+            return None
+        domains.append(domain)
+    return list(dict.fromkeys(domains))
+
+
+def narrow_domains(allowed: list[str], requested: list[str] | None) -> list[str]:
+    """Intersect two provider-style domain allowlists, keeping the narrower domains."""
+    if requested is None:
+        return allowed
+    narrowed = []
+    for policy_domain in allowed:
+        for requested_domain in requested:
+            policy_domain = policy_domain.lower().removeprefix("*.")
+            requested_domain = requested_domain.lower().removeprefix("*.")
+            if policy_domain == requested_domain or policy_domain.endswith(
+                f".{requested_domain}"
+            ):
+                narrowed.append(policy_domain)
+            elif requested_domain.endswith(f".{policy_domain}"):
+                narrowed.append(requested_domain)
+    return list(dict.fromkeys(narrowed))
+
+
+def append_user_notice(
+    messages: list,
+    *,
+    text_type: str = "text",
+    message_type: str | None = None,
+) -> None:
+    """Add policy feedback to the earliest user input, keeping repeated turns' prefixes stable."""
+    part = {"type": text_type, "text": CAPABILITY_NOTICE}
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            message["content"] = [*content, part]
+        elif isinstance(content, str):
+            message["content"] = (
+                f"{content}\n\n{CAPABILITY_NOTICE}" if content else CAPABILITY_NOTICE
+            )
+        else:
+            message["content"] = [part]
+        return
+    message = {"role": "user", "content": [part]}
+    if message_type is not None:
+        message["type"] = message_type
+    messages.append(message)
 
 
 def is_sse_done_event(raw: bytes) -> bool:
@@ -165,18 +229,18 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
-    @abstractmethod
-    def external_capability(self, body: ReqT) -> str | None:
-        """The first native request path that asks the provider to resolve an outside
-        resource or execute a hosted tool. Paths, never values, make rejection diagnostics
-        useful without echoing URLs, credentials, or other request content."""
+    def intrinsic_external_capability(self, model: str) -> str | None:
+        """A provider capability intrinsic to the selected model and impossible to remove."""
+        return None
 
     @abstractmethod
-    def mediate_external_capabilities(self, body: ReqT) -> tuple[ReqT, list[str]]:
-        """Remove provider-side capabilities from a native request and add a policy
-        error to its prompt so the model can continue without them. The returned paths
-        never contain request values. Capabilities intrinsic to the selected model cannot
-        be removed and stay in the returned body for the interception server to reject."""
+    def mediate_external_capabilities(
+        self, body: ReqT, policy: NetworkPolicyConfig
+    ) -> tuple[ReqT, list[str]]:
+        """Constrain provider-side capabilities to `policy`, removing the ones that cannot
+        be constrained and telling the model to continue without them. Returned paths never
+        contain request values. Intrinsic model capabilities stay in the body for the
+        interception server to reject."""
 
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:

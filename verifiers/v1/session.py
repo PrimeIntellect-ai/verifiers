@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from pydantic import TypeAdapter
 
 from verifiers.v1.clients import Client, ModelContext
+from verifiers.v1.runtimes.base import NetworkPolicyConfig
 from verifiers.v1.trace import Trace
 
 if TYPE_CHECKING:
@@ -65,9 +66,8 @@ class RolloutLimits:
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
-    network_restricted: bool
-    """Whether execution has any network restriction. Provider-side fetches cannot inherit
-    the sandbox's allowlist or redirect checks, so every restricted policy disables them."""
+    network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
+    """The resolved execution policy, including task-level restrictions."""
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     client: Client | None = None

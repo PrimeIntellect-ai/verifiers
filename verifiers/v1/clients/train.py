@@ -319,8 +319,7 @@ class TrainClient(Client):
         self,
         dialect: Dialect,
         body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
+        sampling: SamplingConfig,
         session_id: str | None = None,
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
@@ -353,7 +352,8 @@ class TrainClient(Client):
         prompt_ids: list[int] | None = None
         multi_modal_data = None
         prompt_attribution: RenderedTokens | None = None
-        raw_sampling = sampling_args.model_dump(exclude_none=True)
+        model = body["model"]
+        raw_sampling = sampling.model_dump(exclude_none=True)
         sampling_params: dict[str, Any] = dict(
             raw_sampling.pop("extra_body", None) or {}
         )

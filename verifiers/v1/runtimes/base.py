@@ -12,8 +12,10 @@ import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from typing import ClassVar, Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
@@ -46,6 +48,24 @@ _ENSURE_UV = (
 # hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
 # at the runtime's public URL.
 SERVICE_PORT = 8000
+
+
+def network_rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
+    """Match a network-policy host pattern or URL origin. Paths are ignored."""
+    value = rule.lower().rstrip("/")
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    pattern = (parsed.hostname or "").rstrip(".")
+    if not pattern or (parsed.scheme and parsed.scheme != scheme):
+        return False
+    rule_port = parsed.port
+    if parsed.scheme and rule_port is None:
+        rule_port = 443 if parsed.scheme == "https" else 80
+    if rule_port is not None and rule_port != port:
+        return False
+    host = host.lower().rstrip(".")
+    return fnmatchcase(host, pattern) or (
+        pattern.startswith("*.") and host == pattern[2:]
+    )
 
 
 @dataclass(frozen=True)
@@ -145,6 +165,40 @@ class NetworkPolicyConfig(BaseConfig):
     @property
     def network_restricted(self) -> bool:
         return "*" not in self.allow or bool(self.block)
+
+    def permits(self, url: str) -> bool:
+        """Whether this policy permits the destination named by an absolute URL."""
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        try:
+            port = parsed.port
+        except ValueError:
+            return False
+        if port is None:
+            port = {"http": 80, "https": 443}.get(parsed.scheme)
+        if port is None:
+            return False
+        if (
+            parsed.scheme == "https"
+            and port != 443
+            and not any(
+                rule == "*"
+                or urlsplit(rule.lower()).scheme == "https"
+                and network_rule_matches(rule, "https", parsed.hostname, port)
+                for rule in self.allow
+            )
+        ):
+            return False
+        if any(
+            network_rule_matches(rule, parsed.scheme, parsed.hostname, port)
+            for rule in self.block
+        ):
+            return False
+        return any(
+            network_rule_matches(rule, parsed.scheme, parsed.hostname, port)
+            for rule in self.allow
+        )
 
     def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
         values = self.model_dump()
