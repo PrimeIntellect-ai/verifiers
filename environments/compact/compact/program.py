@@ -67,9 +67,14 @@ SUMMARIZE = {
 client = AsyncOpenAI()
 
 
-async def chat(messages: list[dict], tools: list[dict]):
+async def chat(
+    messages: list[dict], tools: list[dict], tool_choice: dict | None = None
+):
     completion = await client.chat.completions.create(
-        model=os.environ["OPENAI_MODEL"], messages=messages, tools=tools or None
+        model=os.environ["OPENAI_MODEL"],
+        messages=messages,
+        tools=tools or None,
+        tool_choice=tool_choice or "auto" if tools else None,
     )
     return completion.choices[0].message
 
@@ -153,9 +158,13 @@ async def main() -> None:
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": result}
             )
-            # After a tool result, only `summarize` is advertised — saving notes is
-            # the only action left in the turn.
-            message = await chat(messages, [SUMMARIZE])
+            # After a tool result, `summarize` is forced via tool_choice — saving
+            # notes is the only action left in the turn.
+            message = await chat(
+                messages,
+                [SUMMARIZE],
+                {"type": "function", "function": {"name": "summarize"}},
+            )
             if not message.tool_calls:
                 print(message.content or "")  # finishing right after a result is fine
                 return
