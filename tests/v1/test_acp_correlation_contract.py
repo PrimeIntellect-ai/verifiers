@@ -240,7 +240,14 @@ async def test_opaque_error_metadata_remains_observable_and_error_authoritative(
             raise runner.RequestError({"details": "provider rejected request"})
 
     with pytest.raises(RuntimeError, match="provider rejected request"):
-        await runner.prompt(client, Connection(), None, "session", config(allow_empty_tool_reply=True), is_new=True)
+        await runner.prompt(
+            client,
+            Connection(),
+            None,
+            "session",
+            config(allow_empty_tool_reply=True),
+            is_new=True,
+        )
     namespace = "ai.primeintellect.prime-agent"
     assert client.acp_meta[namespace] == [error_meta]
     assert client.turn_acp_meta[namespace] == [error_meta]
