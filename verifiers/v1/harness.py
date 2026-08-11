@@ -4,6 +4,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
@@ -94,16 +95,33 @@ class Harness(ABC, Generic[ConfigT]):
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
 
-    async def install_skills(self, runtime: Runtime, dest: str) -> None:
-        """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
-        the program's fixed skill discovery location, which a supporting harness's
-        `setup` passes."""
-        for skill in self.config.skills:
+    def resolved_skills(self) -> list[Path]:
+        """Resolve configured skill folders and reject discovery-name collisions.
+
+        Harnesses stage skills under their basename, so two different source folders
+        named ``review`` would otherwise write into the same runtime directory. That
+        can leave a mixed skill tree and duplicate command-line skill arguments.
+        """
+        resolved: list[Path] = []
+        by_name: dict[str, Path] = {}
+        for configured in self.config.skills:
             # Resolve so `.`/`..` entries get their real folder name (and can't
-            # place files outside `dest`).
-            skill = skill.resolve()
+            # place files outside the destination).
+            skill = configured.resolve()
             if not skill.is_dir():
                 raise ValueError(f"skill {str(skill)!r} is not a folder")
+            if first := by_name.get(skill.name):
+                raise ValueError(
+                    f"duplicate skill folder name {skill.name!r}: "
+                    f"{str(first)!r} and {str(skill)!r}"
+                )
+            by_name[skill.name] = skill
+            resolved.append(skill)
+        return resolved
+
+    async def install_skills(self, runtime: Runtime, dest: str) -> None:
+        """Upload each unique configured skill folder into ``dest/<folder name>``."""
+        for skill in self.resolved_skills():
             executables = []
             for file in sorted(skill.rglob("*")):
                 if not file.is_file():
