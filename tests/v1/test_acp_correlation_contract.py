@@ -195,7 +195,9 @@ async def test_late_opaque_metadata_is_observable_but_not_trusted(monkeypatch):
             return types.SimpleNamespace(stop_reason="end_turn")
 
     assert (
-        await runner.prompt(client, Connection(), None, "session", config(), is_new=False)
+        await runner.prompt(
+            client, Connection(), None, "session", config(), is_new=False
+        )
         == "P2 reply"
     )
     namespace = "ai.primeintellect.prime-agent"
