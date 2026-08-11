@@ -6,17 +6,17 @@
 
 Unlike the bash harness (which appends to a growing message list), this sends a FRESH
 `[system, user]` every turn — the task on the first turn, then the model's own
-carried-over `notes` (the task is never shown again, so the notes are the durable memory).
+carried-over notes (the task is never shown again, so the notes are the durable memory).
 Because the prompt is rewritten rather than extended, every turn is its own branch (see
 verifiers.v1.branching). This mirrors context-tools' `context_rewrite=True`.
 
-Tools (the harness sets MCP_CONFIG, a standard `mcpServers` URL map) follow a strict
-one-call-per-turn protocol: the model may make at most ONE tool call, sees its result
-in-context, and must then reply without tools — reasoning plus updated <notes>. Only the
-notes flow into the next turn's prompt; the tool result never does, so anything worth
-keeping must be written into the notes. A disallowed tool call — more than one in a
-reply, or any call after the result — ends the rollout immediately with no answer, so
-the violation itself becomes training signal.
+Notes are saved through a harness-provided `summarize` tool — no tag parsing. Each turn
+the model either calls ONE task tool (MCP, from the harness's MCP_CONFIG), sees its
+result in-context, and must then save updated notes via `summarize`; or it calls
+`summarize` directly. A plain-text reply (no tool call) finishes the run and is printed
+as the answer. A disallowed call — more than one tool in a reply, or a task tool after a
+result — ends the rollout immediately with no answer, so the violation itself becomes
+training signal.
 
 It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the
 SDKs — the harness bootstraps `uv` in the runtime. Model calls go to the interception
@@ -26,21 +26,43 @@ server (OPENAI_BASE_URL/API_KEY); MCP servers are reached over streamable HTTP.
 import asyncio
 import json
 import os
-import re
 import sys
 from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
 
 SYSTEM = (
-    "You solve a task across several turns; your NOTES are your only lasting memory. The "
-    "first turn shows the task; after that you see only your notes. Each turn you may "
-    "call at most ONE tool; you will see its result immediately, and must then reply "
-    "WITHOUT calling tools — brief reasoning, then your COMPLETE updated notes in "
-    "<notes>...</notes>. Only the notes carry to the next turn (the tool result does "
-    "not), so copy what you need into them. Any disallowed tool call ends the run. When "
-    "you know the final answer, give it in <answer>...</answer>."
+    "You work in turns, and your context is wiped between turns: the next turn shows "
+    "only this system message plus the notes you last saved with the `summarize` tool. "
+    "The task is shown on the first turn only; tool results and your own replies do NOT "
+    "carry over — your saved notes are your entire memory, so write them complete and "
+    "self-contained. Each turn, either call ONE task tool (you will see its result "
+    "immediately, then you must save updated notes with `summarize`), or call "
+    "`summarize` directly. Calling more than one task tool in a turn ends the run as a "
+    "failure. When the task is complete, reply with plain text instead of calling a "
+    "tool; that ends the run."
 )
+
+SUMMARIZE = {
+    "type": "function",
+    "function": {
+        "name": "summarize",
+        "description": (
+            "Save your complete, self-contained notes — the only thing you will see "
+            "next turn."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "notes": {
+                    "type": "string",
+                    "description": "The full notes to carry into the next turn.",
+                }
+            },
+            "required": ["notes"],
+        },
+    },
+}
 
 # base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY.
 client = AsyncOpenAI()
@@ -51,11 +73,6 @@ async def chat(messages: list[dict], tools: list[dict]):
         model=os.environ["OPENAI_MODEL"], messages=messages, tools=tools or None
     )
     return completion.choices[0].message
-
-
-def extract(tag: str, text: str) -> str | None:
-    match = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
-    return match.group(1).strip() if match else None
 
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
@@ -109,6 +126,7 @@ async def main() -> None:
         tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
+        toolset = [*tools, SUMMARIZE]
         while True:  # each turn is a fresh prompt — a new branch
             # The rewrite: the task on the first turn, then only the carried-over notes.
             prompt = f"Task: {task}" if notes is None else f"Notes:\n{notes}"
@@ -116,32 +134,35 @@ async def main() -> None:
                 {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": prompt},
             ]
-            message = await chat(messages, tools)
-            notes = extract("notes", message.content or "") or notes
-            if message.tool_calls:
-                if len(message.tool_calls) > 1:
-                    return  # more than one call in a reply ends the rollout
-                call = message.tool_calls[0]
-                args = json.loads(call.function.arguments or "{}")
-                result = (
-                    await call_mcp(dispatch, call.function.name, args)
-                    if call.function.name in dispatch
-                    else f"error: unknown tool {call.function.name!r}"
-                )
-                messages.append(message)
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": result}
-                )
-                # The summary reply: tools stay advertised so a violation is a parsed
-                # tool call we can detect, not junk text in the notes.
-                message = await chat(messages, tools)
-                if message.tool_calls:
-                    return  # a call after the result ends the rollout
-                notes = extract("notes", message.content or "") or notes
-            answer = extract("answer", message.content or "")
-            if answer is not None:
-                print(answer)
+            message = await chat(messages, toolset)
+            if not message.tool_calls:
+                print(message.content or "")  # plain text finishes the run
                 return
+            if len(message.tool_calls) > 1:
+                return  # more than one call in a reply ends the rollout
+            call = message.tool_calls[0]
+            args = json.loads(call.function.arguments or "{}")
+            if call.function.name == "summarize":
+                notes = args.get("notes") or notes
+                continue
+            result = (
+                await call_mcp(dispatch, call.function.name, args)
+                if call.function.name in dispatch
+                else f"error: unknown tool {call.function.name!r}"
+            )
+            messages.append(message)
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": result}
+            )
+            message = await chat(messages, toolset)
+            if not message.tool_calls:
+                print(message.content or "")  # finishing right after a result is fine
+                return
+            call = message.tool_calls[0]
+            if len(message.tool_calls) > 1 or call.function.name != "summarize":
+                return  # after a tool result, only `summarize` is allowed
+            args = json.loads(call.function.arguments or "{}")
+            notes = args.get("notes") or notes
 
 
 if __name__ == "__main__":

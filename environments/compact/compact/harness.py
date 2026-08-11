@@ -4,9 +4,9 @@ It carries `notes` across compactions and sends a fresh `[system, user]` each on
 task on the first turn, then only the carried-over notes — so the prompt is rewritten
 rather than appended, and every compaction is its own branch (the deliberate stress test
 for branch detection). Within a compaction it may make at most one MCP tool call, sees
-the result, then must summarize into notes; a disallowed call ends the rollout. Its uv
-script (deps: openai, mcp) is prepared during setup, then launched as the harness
-program.
+the result, then must save notes via the harness's `summarize` tool; a disallowed call
+ends the rollout. Its uv script (deps: openai, mcp) is prepared during setup, then
+launched as the harness program.
 """
 
 import json
