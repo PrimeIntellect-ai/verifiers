@@ -8,17 +8,13 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.judge import Judges, check_judges, resolve_judges
 
 
-class FunctionConfig(BaseConfig):
-    """A function plugged in by import path."""
-
-    fn: str = ""
-    """Import path to the function: `pkg.module.function`, `pkg.module:function`,
-    or `path/to/file.py:function`. Empty keeps the task's decorated method with the
-    entry's name and only overrides its metadata (priority, weight)."""
-
-
-class DecoratedFunctionConfig(FunctionConfig):
+class DecoratedFunctionConfig(BaseConfig):
     """A plugged function standing in for a decorated task method."""
+
+    fn: str | None = None
+    """Import path to the function: `pkg.module.function`, `pkg.module:function`,
+    or `path/to/file.py:function`. Unset keeps the task's decorated method with the
+    entry's name and only overrides its metadata (priority, weight)."""
 
     priority: int | None = None
     """Execution order, like the decorator's — higher runs first, ties break by name.

@@ -27,7 +27,6 @@ from verifiers.v1.configs.serve import (
 )
 from verifiers.v1.configs.task import (
     DecoratedFunctionConfig,
-    FunctionConfig,
     RewardFunctionConfig,
     TaskConfig,
 )
@@ -244,7 +243,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Taskset",
     "TaskConfig",
     "TasksetConfig",
-    "FunctionConfig",
     "DecoratedFunctionConfig",
     "RewardFunctionConfig",
     "BaseConfig",
