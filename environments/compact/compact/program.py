@@ -37,8 +37,9 @@ SYSTEM = (
     "The task is shown on the first turn only; tool results and your own replies do NOT "
     "carry over — your saved notes are your entire memory, so write them complete and "
     "self-contained. Each turn, either call ONE task tool (you will see its result "
-    "immediately, then you must save updated notes with `summarize`), or call "
-    "`summarize` directly. Calling more than one task tool in a turn ends the run as a "
+    "immediately, then you must save updated notes with `summarize`), call `summarize` "
+    "directly, or reply with plain text and no tool call to finish the run and deliver "
+    "your final answer. Calling more than one task tool in a turn ends the run as a "
     "failure."
 )
 
