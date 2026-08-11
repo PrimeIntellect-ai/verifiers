@@ -2,57 +2,71 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp>=1.24.0,<2"]
 # ///
-"""The compacting harness's program: a context-REWRITE loop (so every turn branches).
+"""The compacting harness's program: a context-rewrite loop (every turn branches).
 
-Unlike the bash harness (which appends to a growing message list), this sends a FRESH
-`[system, user]` every turn — the task on the first turn, then the model's own
-carried-over `notes` (the task is never shown again, so the notes are the durable memory).
-Because the prompt is rewritten rather than extended, every turn is its own branch (see
-verifiers.v1.branching). This mirrors context-tools' `context_rewrite=True`.
-
-To make progress with tools (the harness sets MCP_CONFIG, a standard `mcpServers` URL
-map), the rewrite also carries the LAST tool call's output into the next turn's prompt —
-kept for exactly one turn, so the model can actually read a result and act on it before
-it's gone. Anything it needs longer it copies into <notes>; the raw output is dropped on
-the next rewrite. So tools work, and the trajectory still branches every turn.
-
-It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the
-SDKs — the harness bootstraps `uv` in the runtime. Model calls go to the interception
-server (OPENAI_BASE_URL/API_KEY); MCP servers are reached over streamable HTTP.
+Each turn sends a fresh `[system, user]` — the task on the first turn, then only the
+notes the model saved via the `summarize` tool. Per turn: at most one task tool call,
+its result shown in-context, then a forced `summarize`; a plain-text reply finishes the
+run and is printed as the answer; a disallowed call ends the rollout with no answer
+(training signal). Model calls go to the interception server (OPENAI_BASE_URL/API_KEY);
+MCP servers are reached over streamable HTTP.
 """
 
 import asyncio
 import json
 import os
-import re
 import sys
 from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
 
 SYSTEM = (
-    "You solve a task across several turns; your NOTES are your only lasting memory. The "
-    "first turn shows the task; after that you see only your notes — plus, the turn right "
-    "after you call a tool, that tool's output (shown ONCE, so copy what you need into your "
-    "notes before it's gone). Each turn, reply with brief reasoning, then your COMPLETE "
-    "updated notes in <notes>...</notes>, and either call a tool to gather more or give the "
-    "final answer in <answer>...</answer>."
+    "You work in turns, and your context is wiped between turns: the next turn shows "
+    "only this system message plus the notes you last saved with the `summarize` tool. "
+    "The task is shown on the first turn only; tool results and your own replies do NOT "
+    "carry over — your saved notes are your entire memory, so write them complete and "
+    "self-contained. Each turn, either call ONE task tool (you will see its result "
+    "immediately, then you must save updated notes with `summarize`), call `summarize` "
+    "directly, or reply with plain text and no tool call to finish the run and deliver "
+    "your final answer. Calling more than one task tool in a turn ends the run as a "
+    "failure."
 )
+
+SUMMARIZE = {
+    "type": "function",
+    "function": {
+        "name": "summarize",
+        "description": (
+            "Save your complete, self-contained notes — the only thing you will see "
+            "next turn."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "notes": {
+                    "type": "string",
+                    "description": "The full notes to carry into the next turn.",
+                }
+            },
+            "required": ["notes"],
+        },
+    },
+}
 
 # base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY.
 client = AsyncOpenAI()
 
 
-async def chat(messages: list[dict], tools: list[dict]):
+async def chat(
+    messages: list[dict], tools: list[dict], tool_choice: dict | None = None
+):
     completion = await client.chat.completions.create(
-        model=os.environ["OPENAI_MODEL"], messages=messages, tools=tools or None
+        model=os.environ["OPENAI_MODEL"],
+        messages=messages,
+        tools=tools or None,
+        tool_choice=tool_choice or "auto" if tools else None,
     )
     return completion.choices[0].message
-
-
-def extract(tag: str, text: str) -> str | None:
-    match = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
-    return match.group(1).strip() if match else None
 
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
@@ -102,40 +116,53 @@ async def main() -> None:
     task = sys.argv[1]
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
     notes: str | None = None  # the durable memory carried across turns
-    tool_output: str | None = None  # the last tool result, kept for exactly one turn
     async with AsyncExitStack() as stack:
         tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
+        toolset = [*tools, SUMMARIZE]
         while True:  # each turn is a fresh prompt — a new branch
-            # The rewrite: the task on the first turn, then only the carried-over notes;
-            # plus the last tool output, kept one turn so the model can actually use it.
-            parts = [f"Task: {task}" if notes is None else f"Notes:\n{notes}"]
-            if tool_output is not None:
-                parts.append(f"Latest tool output:\n{tool_output}")
+            # The rewrite: the task on the first turn, then only the carried-over notes.
+            prompt = f"Task: {task}" if notes is None else f"Notes:\n{notes}"
             messages = [
                 {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": "\n\n".join(parts)},
+                {"role": "user", "content": prompt},
             ]
-            message = await chat(messages, tools)
-            notes = extract("notes", message.content or "") or notes
-            answer = extract("answer", message.content or "")
-            if answer is not None:
-                print(answer)
+            message = await chat(messages, toolset)
+            if not message.tool_calls:
+                print(message.content or "")  # plain text finishes the run
                 return
-            # Carry only the latest tool output to the next turn (dropped after that).
-            tool_output = None
-            if message.tool_calls:
-                results = []
-                for call in message.tool_calls:
-                    args = json.loads(call.function.arguments or "{}")
-                    result = (
-                        await call_mcp(dispatch, call.function.name, args)
-                        if call.function.name in dispatch
-                        else f"error: unknown tool {call.function.name!r}"
-                    )
-                    results.append(f"{call.function.name}:\n{result}")
-                tool_output = "\n\n".join(results)
+            if len(message.tool_calls) > 1:
+                return  # more than one call in a reply ends the rollout
+            call = message.tool_calls[0]
+            args = json.loads(call.function.arguments or "{}")
+            if call.function.name == "summarize":
+                notes = args.get("notes") or notes
+                continue
+            result = (
+                await call_mcp(dispatch, call.function.name, args)
+                if call.function.name in dispatch
+                else f"error: unknown tool {call.function.name!r}"
+            )
+            messages.append(message)
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": result}
+            )
+            # After a tool result, `summarize` is forced via tool_choice — saving
+            # notes is the only action left in the turn.
+            message = await chat(
+                messages,
+                [SUMMARIZE],
+                {"type": "function", "function": {"name": "summarize"}},
+            )
+            if not message.tool_calls:
+                print(message.content or "")  # finishing right after a result is fine
+                return
+            call = message.tool_calls[0]
+            if len(message.tool_calls) > 1 or call.function.name != "summarize":
+                return  # a non-`summarize` call after the result ends the rollout
+            args = json.loads(call.function.arguments or "{}")
+            notes = args.get("notes") or notes
 
 
 if __name__ == "__main__":

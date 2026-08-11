@@ -1,11 +1,8 @@
-"""The compacting harness: runs a context-rewrite loop as a uv script.
+"""The compacting harness: a context-rewrite loop run as a uv script.
 
-It carries `notes` across compactions and sends a fresh `[system, user]` each one — the
-task on the first turn, then only the carried-over notes — so the prompt is rewritten
-rather than appended, and every compaction is its own branch (the deliberate stress test
-for branch detection). Within a compaction it can use MCP tools (gather, then summarize
-into notes). Its uv script (deps: openai, mcp) is prepared during setup, then launched as
-the harness program.
+Each compaction sends a fresh `[system, user]` — the task on the first turn, then only
+the model's saved notes — so every compaction is its own branch. See `program.py` for
+the turn protocol.
 """
 
 import json
