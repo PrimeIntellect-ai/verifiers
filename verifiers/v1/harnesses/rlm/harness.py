@@ -175,6 +175,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             [RLM_BIN, "--acp"],
             prompt,
             mcp_urls=mcp_urls,
+            trace=trace,
         )
 
     @metric

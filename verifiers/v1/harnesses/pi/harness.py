@@ -182,9 +182,8 @@ class PiHarness(Harness[PiHarnessConfig]):
         }
         skill_args = [
             arg
-            for skill in self.config.skills
-            # Resolve like `install_skills` so the path matches what it wrote.
-            for arg in ("--skill", f"{SKILLS_DIR}/{skill.resolve().name}")
+            for skill in self.resolved_skills()
+            for arg in ("--skill", f"{SKILLS_DIR}/{skill.name}")
         ]
         pi_args = [
             PI_BIN,
@@ -215,4 +214,5 @@ class PiHarness(Harness[PiHarnessConfig]):
             session_path=f"{agent_dir}/acp-session",
             # Pi can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
+            trace=trace,
         )

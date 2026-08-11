@@ -273,6 +273,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 command,
                 prompt,
                 allow_empty_tool_reply=True,
+                # Preserve ACP turn metadata for _meta-dependent consumers.
+                trace=trace,
             )
         except Exception as error:
             # ACP reports a daemon that never answers as an opaque 30s "create"
@@ -393,8 +395,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             args.append("--no-builtin-tools")
         if thinking is not None:
             args += ["--thinking", thinking]
-        for skill in self.config.skills:
-            args += ["--skill", f"{skills_dir}/{skill.resolve().name}"]
+        for skill in self.resolved_skills():
+            args += ["--skill", f"{skills_dir}/{skill.name}"]
         if self.config.autonomous:
             args.append("--autonomous")
             for gate in self.config.gates:
