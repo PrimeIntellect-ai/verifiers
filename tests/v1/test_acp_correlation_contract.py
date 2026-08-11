@@ -134,7 +134,12 @@ async def test_end_turn_tool_only_is_not_trusted_correlation(monkeypatch):
             return await completed_tool_only_turn(runner, client)
 
     reply = await runner.prompt(
-        client, Connection(), None, "session", config(allow_empty_tool_reply=True), is_new=True
+        client,
+        Connection(),
+        None,
+        "session",
+        config(allow_empty_tool_reply=True),
+        is_new=True,
     )
     assert reply == ""
     assert client.tool_calls == {"tool-1": "completed"}
