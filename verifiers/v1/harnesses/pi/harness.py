@@ -17,7 +17,6 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-PROVIDER = "intercept"
 KEY_VAR = "PI_INTERCEPT_KEY"
 HOME_VAR = "VF_PI_ORIGINAL_HOME"
 
@@ -143,23 +142,12 @@ class PiHarness(Harness[PiHarnessConfig]):
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         agent_dir = f".vf-pi-agent-{trace.id}"
-        reasoning = ctx.sampling.reasoning_effort not in (
-            None,
-            "none",
-        ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
+        provider, model = ctx.model.split("/", 1)
         models = {
             "providers": {
-                PROVIDER: {
+                provider: {
                     "baseUrl": endpoint,
-                    "api": "openai-completions",
                     "apiKey": f"${KEY_VAR}",
-                    "models": [
-                        {
-                            "id": ctx.model,
-                            "reasoning": reasoning,
-                            "input": ["text", "image"],
-                        }
-                    ],
                 }
             }
         }
@@ -202,9 +190,9 @@ class PiHarness(Harness[PiHarnessConfig]):
             PI_BIN,
             "--no-approve",
             "--provider",
-            PROVIDER,
+            provider,
             "--model",
-            ctx.model,
+            model,
             *mcp_args,
             *skill_args,
         ]

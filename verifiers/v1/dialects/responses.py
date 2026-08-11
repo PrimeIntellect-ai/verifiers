@@ -329,6 +329,20 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             and ("/" not in model or model.startswith("openai/"))
         )
         overrides: dict = {"model": model}
+        # OpenClaw masks dotted encrypted_content with an ellipsis when persisting sessions.
+        # The masked ciphertext is invalid, but Responses permits omitting it for stateless replay.
+        if isinstance(input_items := body.get("input"), list):
+            clean_input = [
+                {k: v for k, v in item.items() if k != "encrypted_content"}
+                if isinstance(item, dict)
+                and item.get("type") == "reasoning"
+                and isinstance(item.get("encrypted_content"), str)
+                and "…" in item["encrypted_content"]
+                else item
+                for item in input_items
+            ]
+            if clean_input != input_items:
+                overrides["input"] = clean_input
         if reasoning_model:
             # Preserve opaque reasoning state so it can be replayed on the next turn.
             include = list(body.get("include") or [])

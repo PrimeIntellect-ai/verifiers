@@ -37,6 +37,9 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         "te",
         "trailer",
         "upgrade",
+        # Some harness SDKs send provider-specific affinity fields. The eval replaces them with
+        # the rollout-wide X-Session-ID below so routing stays stable across harness dialects.
+        "session_id",
         # The eval owns the model and sampling settings, so it changes those JSON fields before
         # sending upstream. Hashes and signatures calculated from the intercepted body are stale.
         "content-digest",
