@@ -34,9 +34,17 @@ def load_runner_without_acp_dependency(monkeypatch: pytest.MonkeyPatch):
     acp.text_block = lambda text: text
     schema = types.ModuleType("acp.schema")
     for name in (
-        "AgentMessageChunk", "AllowedOutcome", "ClientCapabilities", "DeniedOutcome",
-        "HttpMcpServer", "PermissionOption", "RequestPermissionResponse",
-        "SessionInfoUpdate", "TextContentBlock", "ToolCall", "ToolCallUpdate",
+        "AgentMessageChunk",
+        "AllowedOutcome",
+        "ClientCapabilities",
+        "DeniedOutcome",
+        "HttpMcpServer",
+        "PermissionOption",
+        "RequestPermissionResponse",
+        "SessionInfoUpdate",
+        "TextContentBlock",
+        "ToolCall",
+        "ToolCallUpdate",
     ):
         setattr(schema, name, type(name, (), {}))
     monkeypatch.setitem(sys.modules, "acp", acp)
