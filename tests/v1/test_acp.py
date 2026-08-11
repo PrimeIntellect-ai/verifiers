@@ -315,3 +315,53 @@ async def test_prompt_starts_metadata_collection_at_the_prompt_boundary(monkeypa
 
     assert reply == "reply"
     assert client.turn_acp_meta == {"ns": [{"from_prompt": True}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "terminal_events"),
+    [
+        (
+            "success",
+            [("responseBoundary", "result"), ("terminalQuiescence", "result")],
+        ),
+        (
+            "error_terminal",
+            [("responseBoundary", "error"), ("terminalQuiescence", "error")],
+        ),
+        ("error_incomplete", [("responseBoundary", "error")]),
+        ("cancelled", []),
+        ("late_child", []),
+        (
+            "global_sequence_turn_two",
+            [("responseBoundary", "result"), ("terminalQuiescence", "result")],
+        ),
+    ],
+)
+async def test_canonical_cases_reach_runner_metadata_storage(
+    monkeypatch, case, terminal_events
+):
+    """Named fixture cases exercise the runner's real metadata update path.
+
+    The runner receives each transcript as ACP SessionInfoUpdate events, rather
+    than the test only inspecting the parsed fixture. This maps every named case
+    to the stored response-boundary/terminal evidence, including the incomplete
+    error's boundary-only state and the cases with no terminal evidence.
+    """
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    namespace = "ai.primeintellect.prime-agent"
+    transcript = canonical_cases()[case]
+
+    for event in transcript:
+        update = runner.SessionInfoUpdate()
+        update.field_meta = {namespace: event}
+        await client.session_update("session", update)
+
+    assert client.acp_meta.get(namespace, []) == transcript
+    assert client.turn_acp_meta.get(namespace, []) == transcript
+    assert [
+        (event["phase"], event["outcome"])
+        for event in client.turn_acp_meta.get(namespace, [])
+        if event.get("phase") in {"responseBoundary", "terminalQuiescence"}
+    ] == terminal_events
