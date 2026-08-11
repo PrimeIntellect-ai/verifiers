@@ -303,6 +303,15 @@ class Rollout:
                         }
                     )
                 if not self._session.stopped:
+                    session_kwargs = (
+                        {"tool_interception_url": f"{runtime.host_url(base_url)}/tool"}
+                        if self.harness.SUPPORTS_TOOL_INTERCEPTION
+                        and (
+                            self._session.request_interceptors
+                            or self._session.request_stops
+                        )
+                        else {}
+                    )
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
@@ -311,6 +320,7 @@ class Rollout:
                         self._secret,
                         self._urls,
                         harness_data,
+                        **session_kwargs,
                     )
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
