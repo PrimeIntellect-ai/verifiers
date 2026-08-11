@@ -1,7 +1,9 @@
 """ACP metadata accumulation preserves ordered, namespaced extension events."""
 
 import asyncio
+import hashlib
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -91,6 +93,85 @@ def test_acp_run_forwards_trace_to_the_recording_path() -> None:
     assert "trace=trace" in source, (
         "ACP.run accepts trace but never forwards it to _run"
     )
+
+
+CANONICAL_TRANSCRIPT = (
+    Path(__file__).parent / "fixtures" / "acp-correlation-transcripts.json"
+)
+CANONICAL_TRANSCRIPT_SHA256 = (
+    "cacde7827aadf186db2ce1af1ea6f3b6d109504fa94945633bd9c0d96106b882"
+)
+
+
+def canonical_cases() -> dict[str, list[dict]]:
+    raw = CANONICAL_TRANSCRIPT.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == CANONICAL_TRANSCRIPT_SHA256
+    document = json.loads(raw)
+    assert document["schema"] == "ai.primeintellect.prime-agent/v1"
+    return document["cases"]
+
+
+def test_canonical_p2_fixture_is_exact_bytes_and_all_cases() -> None:
+    cases = canonical_cases()
+    assert set(cases) == {
+        "success",
+        "error_terminal",
+        "error_incomplete",
+        "cancelled",
+        "late_child",
+        "global_sequence_turn_two",
+    }
+
+
+def test_canonical_cases_preserve_reviewed_named_transcripts() -> None:
+    cases = canonical_cases()
+
+    success = cases["success"]
+    assert [event["phase"] for event in success] == [
+        "event",
+        "responseBoundary",
+        "terminalQuiescence",
+    ]
+    assert success[-1]["outcome"] == "result"
+    assert success[-1]["quiescence"] == {
+        "outstandingSubagents": 0,
+        "remainingAutonomousContinuations": 0,
+    }
+
+    error_terminal = cases["error_terminal"]
+    assert [event["phase"] for event in error_terminal] == [
+        "responseBoundary",
+        "terminalQuiescence",
+    ]
+    assert [event["outcome"] for event in error_terminal] == ["error", "error"]
+
+    error_incomplete = cases["error_incomplete"]
+    assert error_incomplete == [
+        {
+            "promptTurnId": 1,
+            "eventSequence": 31,
+            "phase": "responseBoundary",
+            "outcome": "error",
+        }
+    ]
+
+    assert cases["cancelled"] == []
+    assert cases["late_child"] == [
+        {
+            "promptTurnId": 1,
+            "eventSequence": 41,
+            "phase": "event",
+            "child": {"id": "late", "status": "done"},
+        }
+    ]
+
+    global_sequence_turn_two = cases["global_sequence_turn_two"]
+    assert [event["promptTurnId"] for event in global_sequence_turn_two] == [2, 2]
+    assert [event["eventSequence"] for event in global_sequence_turn_two] == [51, 52]
+    assert [event["phase"] for event in global_sequence_turn_two] == [
+        "responseBoundary",
+        "terminalQuiescence",
+    ]
 
 
 def load_runner_without_acp_dependency(monkeypatch: pytest.MonkeyPatch):
@@ -234,3 +315,53 @@ async def test_prompt_starts_metadata_collection_at_the_prompt_boundary(monkeypa
 
     assert reply == "reply"
     assert client.turn_acp_meta == {"ns": [{"from_prompt": True}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "terminal_events"),
+    [
+        (
+            "success",
+            [("responseBoundary", "result"), ("terminalQuiescence", "result")],
+        ),
+        (
+            "error_terminal",
+            [("responseBoundary", "error"), ("terminalQuiescence", "error")],
+        ),
+        ("error_incomplete", [("responseBoundary", "error")]),
+        ("cancelled", []),
+        ("late_child", []),
+        (
+            "global_sequence_turn_two",
+            [("responseBoundary", "result"), ("terminalQuiescence", "result")],
+        ),
+    ],
+)
+async def test_canonical_cases_reach_runner_metadata_storage(
+    monkeypatch, case, terminal_events
+):
+    """Named fixture cases exercise the runner's real metadata update path.
+
+    The runner receives each transcript as ACP SessionInfoUpdate events, rather
+    than the test only inspecting the parsed fixture. This maps every named case
+    to the stored response-boundary/terminal evidence, including the incomplete
+    error's boundary-only state and the cases with no terminal evidence.
+    """
+    runner = load_runner_without_acp_dependency(monkeypatch)
+    client = runner.VerifiersACPClient()
+    namespace = "ai.primeintellect.prime-agent"
+    transcript = canonical_cases()[case]
+
+    for event in transcript:
+        update = runner.SessionInfoUpdate()
+        update.field_meta = {namespace: event}
+        await client.session_update("session", update)
+
+    assert client.acp_meta.get(namespace, []) == transcript
+    assert client.turn_acp_meta.get(namespace, []) == transcript
+    assert [
+        (event["phase"], event["outcome"])
+        for event in client.turn_acp_meta.get(namespace, [])
+        if event.get("phase") in {"responseBoundary", "terminalQuiescence"}
+    ] == terminal_events
