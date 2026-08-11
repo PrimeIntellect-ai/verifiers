@@ -57,13 +57,13 @@ _TERMINAL_MARKERS = tuple(
 )
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
-_WEB_TOOL_TYPE = re.compile(r"web_search(?:_\d{4}_\d{2}_\d{2})?").fullmatch
-_HOSTED_TOOL_TYPE = re.compile(
+WEB_TOOL_TYPE = re.compile(r"web_search(?:_\d{4}_\d{2}_\d{2})?").fullmatch
+HOSTED_TOOL_TYPE = re.compile(
     r"file_search|mcp|code_interpreter|programmatic_tool_calling|image_generation|"
     r"web_search_preview(?:_\d{4}_\d{2}_\d{2})?"
 ).fullmatch
-_TEXT_TOOL_OUTPUT_TYPES = frozenset({"function_call_output", "custom_tool_call_output"})
-_BLANK_PNG = (
+TEXT_TOOL_OUTPUT_TYPES = frozenset({"function_call_output", "custom_tool_call_output"})
+BLANK_PNG = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
     "AAAADUlEQVR42mNk+M/wHwAF/gL+Xw4AAAAASUVORK5CYII="
 )
@@ -118,7 +118,7 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def _mediate_tools(
+def mediate_tools(
     tools, path: str, policy: NetworkPolicyConfig
 ) -> tuple[list[dict], list[str]]:
     allowed_domains = provider_allowed_domains(policy)
@@ -130,7 +130,7 @@ def _mediate_tools(
             capabilities.append(item_path)
             continue
         kind = tool.get("type")
-        if isinstance(kind, str) and _WEB_TOOL_TYPE(kind):
+        if isinstance(kind, str) and WEB_TOOL_TYPE(kind):
             raw_filters = tool.get("filters")
             filters = dict(raw_filters) if isinstance(raw_filters, dict) else {}
             requested = filters.get("allowed_domains")
@@ -152,7 +152,7 @@ def _mediate_tools(
             capabilities.append(f"{item_path}.type")
             continue
         if kind == "namespace":
-            nested, removed = _mediate_tools(
+            nested, removed = mediate_tools(
                 tool.get("tools"), f"{item_path}.tools", policy
             )
             capabilities.extend(removed)
@@ -171,7 +171,7 @@ def _mediate_tools(
             mediated.append(tool)
             continue
         if isinstance(kind, str) and (
-            _HOSTED_TOOL_TYPE(kind) or kind in ("tool_search", "shell")
+            HOSTED_TOOL_TYPE(kind) or kind in ("tool_search", "shell")
         ):
             capabilities.append(f"{item_path}.type")
         else:
@@ -395,7 +395,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                     continue
                 kind = item.get("type")
                 if kind in ("additional_tools", "tool_search_output"):
-                    item["tools"], removed = _mediate_tools(
+                    item["tools"], removed = mediate_tools(
                         item.get("tools"), f"{item_path}.tools", policy
                     )
                     capabilities.extend(removed)
@@ -403,7 +403,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                         safe_input.append(item)
                     continue
                 content_field = None
-                if kind in _TEXT_TOOL_OUTPUT_TYPES:
+                if kind in TEXT_TOOL_OUTPUT_TYPES:
                     content_field = "output"
                 elif kind in (None, "message") and "content" in item:
                     content_field = "content"
@@ -425,7 +425,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
                     if kind == "computer_call_output":
                         item["output"] = {
                             "type": "computer_screenshot",
-                            "image_url": _BLANK_PNG,
+                            "image_url": BLANK_PNG,
                         }
                         safe_input.append(item)
             mediated["input"] = safe_input
@@ -433,9 +433,7 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
             capabilities.append(blocked)
             mediated["input"] = []
 
-        tools, tool_capabilities = _mediate_tools(
-            mediated.get("tools"), "tools", policy
-        )
+        tools, tool_capabilities = mediate_tools(mediated.get("tools"), "tools", policy)
         capabilities.extend(tool_capabilities)
         if "tools" in mediated:
             mediated["tools"] = tools
@@ -450,12 +448,12 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
             kind = choice.get("type")
             valid_choice = not (
                 isinstance(kind, str)
-                and (_HOSTED_TOOL_TYPE(kind) or _WEB_TOOL_TYPE(kind))
+                and (HOSTED_TOOL_TYPE(kind) or WEB_TOOL_TYPE(kind))
             )
             if kind in ("shell", "tool_search"):
                 valid_choice = any(tool.get("type") == kind for tool in tools)
             if kind == "allowed_tools":
-                choice_tools, choice_capabilities = _mediate_tools(
+                choice_tools, choice_capabilities = mediate_tools(
                     choice.get("tools"), "tool_choice.tools", policy
                 )
                 valid_choice = not choice_capabilities

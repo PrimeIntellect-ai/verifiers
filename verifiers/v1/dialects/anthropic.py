@@ -53,8 +53,8 @@ STOP_REASONS = {
     "stop_sequence": "stop",
 }
 THINKING = ("thinking", "redacted_thinking")
-_WEB_TOOL_TYPE = re.compile(r"(?:web_search|web_fetch)_\d{8}").fullmatch
-_HOSTED_TOOL_TYPE = re.compile(
+WEB_TOOL_TYPE = re.compile(r"(?:web_search|web_fetch)_\d{8}").fullmatch
+HOSTED_TOOL_TYPE = re.compile(
     r"code_execution_\d{8}|tool_search_tool_(?:bm25|regex)(?:_\d{8})?"
 ).fullmatch
 
@@ -389,7 +389,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         for index, tool in enumerate(mediated.get("tools") or []):
             kind = tool.get("type") if isinstance(tool, dict) else None
             safe_tool = tool if isinstance(tool, dict) else None
-            if isinstance(kind, str) and _WEB_TOOL_TYPE(kind):
+            if isinstance(kind, str) and WEB_TOOL_TYPE(kind):
                 allowed_domains = provider_allowed_domains(policy)
                 requested = tool.get("allowed_domains")
                 if requested is not None and not (
@@ -406,7 +406,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
                     safe_tool = {**tool, "allowed_domains": domains}
                 else:
                     safe_tool = None
-            elif isinstance(kind, str) and _HOSTED_TOOL_TYPE(kind):
+            elif isinstance(kind, str) and HOSTED_TOOL_TYPE(kind):
                 safe_tool = None
             if safe_tool is not None:
                 tools.append(safe_tool)

@@ -261,7 +261,7 @@ class InterceptionServer(Interception):
             status=getattr(error, "status_code", 502),
         )
 
-    def _mediate_capabilities(
+    def mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
     ) -> tuple[dict, list[str]]:
         if not session.network_policy.network_restricted:
@@ -359,7 +359,7 @@ class InterceptionServer(Interception):
         request._read_bytes = None
         del raw
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
-        body, policy_paths = self._mediate_capabilities(session, dialect, body)
+        body, policy_paths = self.mediate_capabilities(session, dialect, body)
         streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
@@ -741,7 +741,7 @@ class InterceptionServer(Interception):
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             body = await request.json()
-            body, _ = self._mediate_capabilities(session, dialect, body)
+            body = self.mediate_capabilities(session, dialect, body)[0]
             result = await session.client.relay_aux(
                 dialect, route, body, headers=request.headers
             )
