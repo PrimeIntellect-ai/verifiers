@@ -10,11 +10,13 @@ carried-over `notes` (the task is never shown again, so the notes are the durabl
 Because the prompt is rewritten rather than extended, every turn is its own branch (see
 verifiers.v1.branching). This mirrors context-tools' `context_rewrite=True`.
 
-To make progress with tools (the harness sets MCP_CONFIG, a standard `mcpServers` URL
-map), the rewrite also carries the LAST tool call's output into the next turn's prompt —
-kept for exactly one turn, so the model can actually read a result and act on it before
-it's gone. Anything it needs longer it copies into <notes>; the raw output is dropped on
-the next rewrite. So tools work, and the trajectory still branches every turn.
+Tools (the harness sets MCP_CONFIG, a standard `mcpServers` URL map) follow a strict
+one-call-per-turn protocol: the model may make at most ONE tool call, sees its result
+in-context, and must then reply without tools — reasoning plus updated <notes>. Only the
+notes flow into the next turn's prompt; the tool result never does, so anything worth
+keeping must be written into the notes. A disallowed tool call — more than one in a
+reply, or any call after the result — ends the rollout immediately with no answer, so
+the violation itself becomes training signal.
 
 It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the
 SDKs — the harness bootstraps `uv` in the runtime. Model calls go to the interception
@@ -32,11 +34,12 @@ from openai import AsyncOpenAI
 
 SYSTEM = (
     "You solve a task across several turns; your NOTES are your only lasting memory. The "
-    "first turn shows the task; after that you see only your notes — plus, the turn right "
-    "after you call a tool, that tool's output (shown ONCE, so copy what you need into your "
-    "notes before it's gone). Each turn, reply with brief reasoning, then your COMPLETE "
-    "updated notes in <notes>...</notes>, and either call a tool to gather more or give the "
-    "final answer in <answer>...</answer>."
+    "first turn shows the task; after that you see only your notes. Each turn you may "
+    "call at most ONE tool; you will see its result immediately, and must then reply "
+    "WITHOUT calling tools — brief reasoning, then your COMPLETE updated notes in "
+    "<notes>...</notes>. Only the notes carry to the next turn (the tool result does "
+    "not), so copy what you need into them. Any disallowed tool call ends the run. When "
+    "you know the final answer, give it in <answer>...</answer>."
 )
 
 # base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY.
@@ -102,40 +105,43 @@ async def main() -> None:
     task = sys.argv[1]
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
     notes: str | None = None  # the durable memory carried across turns
-    tool_output: str | None = None  # the last tool result, kept for exactly one turn
     async with AsyncExitStack() as stack:
         tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
         while True:  # each turn is a fresh prompt — a new branch
-            # The rewrite: the task on the first turn, then only the carried-over notes;
-            # plus the last tool output, kept one turn so the model can actually use it.
-            parts = [f"Task: {task}" if notes is None else f"Notes:\n{notes}"]
-            if tool_output is not None:
-                parts.append(f"Latest tool output:\n{tool_output}")
+            # The rewrite: the task on the first turn, then only the carried-over notes.
+            prompt = f"Task: {task}" if notes is None else f"Notes:\n{notes}"
             messages = [
                 {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": "\n\n".join(parts)},
+                {"role": "user", "content": prompt},
             ]
             message = await chat(messages, tools)
             notes = extract("notes", message.content or "") or notes
+            if message.tool_calls:
+                if len(message.tool_calls) > 1:
+                    return  # more than one call in a reply ends the rollout
+                call = message.tool_calls[0]
+                args = json.loads(call.function.arguments or "{}")
+                result = (
+                    await call_mcp(dispatch, call.function.name, args)
+                    if call.function.name in dispatch
+                    else f"error: unknown tool {call.function.name!r}"
+                )
+                messages.append(message)
+                messages.append(
+                    {"role": "tool", "tool_call_id": call.id, "content": result}
+                )
+                # The summary reply: tools stay advertised so a violation is a parsed
+                # tool call we can detect, not junk text in the notes.
+                message = await chat(messages, tools)
+                if message.tool_calls:
+                    return  # a call after the result ends the rollout
+                notes = extract("notes", message.content or "") or notes
             answer = extract("answer", message.content or "")
             if answer is not None:
                 print(answer)
                 return
-            # Carry only the latest tool output to the next turn (dropped after that).
-            tool_output = None
-            if message.tool_calls:
-                results = []
-                for call in message.tool_calls:
-                    args = json.loads(call.function.arguments or "{}")
-                    result = (
-                        await call_mcp(dispatch, call.function.name, args)
-                        if call.function.name in dispatch
-                        else f"error: unknown tool {call.function.name!r}"
-                    )
-                    results.append(f"{call.function.name}:\n{result}")
-                tool_output = "\n\n".join(results)
 
 
 if __name__ == "__main__":
