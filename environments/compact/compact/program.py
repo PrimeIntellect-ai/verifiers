@@ -39,8 +39,7 @@ SYSTEM = (
     "self-contained. Each turn, either call ONE task tool (you will see its result "
     "immediately, then you must save updated notes with `summarize`), or call "
     "`summarize` directly. Calling more than one task tool in a turn ends the run as a "
-    "failure. When the task is complete, reply with plain text instead of calling a "
-    "tool; that ends the run."
+    "failure."
 )
 
 SUMMARIZE = {
