@@ -1,7 +1,8 @@
-"""Kimi receives interception through an isolated provider and runs through native ACP."""
+"""Run Kimi Code's native ACP server against interception."""
 
 import logging
 import shlex
+from typing import Literal
 
 import tomli_w
 from pydantic import Field
@@ -40,6 +41,10 @@ env \
 class KimiCodeHarnessConfig(HarnessConfig):
     version: str = Field(default="0.34.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Kimi Code release to install, pinned for reproducibility."""
+    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
+        "chat_completions"
+    )
+    """Model API transport."""
 
 
 class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
@@ -77,25 +82,18 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         kimi_home = f"{KIMI_HOME}/{trace.id}"
-        # Anthropic preserves signed reasoning and tool identity across history replay.
+        provider_type = {
+            "chat_completions": "kimi",
+            "responses": "openai_responses",
+            "anthropic_messages": "anthropic",
+        }[self.config.transport]
+        base_url = (
+            endpoint.removesuffix("/v1")
+            if self.config.transport == "anthropic_messages"
+            else endpoint
+        )
         config: dict[str, object] = {
-            "default_model": "intercept",
             "extra_skill_dirs": [SKILLS_DIR] if self.config.skills else [],
-            "providers": {
-                "intercept": {
-                    "type": "anthropic",
-                    "api_key": secret,
-                    "base_url": endpoint.removesuffix("/v1"),
-                }
-            },
-            "models": {
-                "intercept": {
-                    "provider": "intercept",
-                    "model": ctx.model,
-                    "max_context_size": 262144,
-                    "capabilities": ["tool_use"],
-                }
-            },
         }
         if self.config.disabled_tools:
             config["permission"] = {
@@ -116,8 +114,10 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             env={
                 **self.config.resolved_env,
                 "KIMI_CODE_HOME": kimi_home,
-                # Kimi's env-model overlay cannot select the configured provider.
-                "KIMI_MODEL_NAME": "",
+                "KIMI_MODEL_NAME": ctx.model,
+                "KIMI_MODEL_API_KEY": secret,
+                "KIMI_MODEL_BASE_URL": base_url,
+                "KIMI_MODEL_PROVIDER_TYPE": provider_type,
                 "KIMI_DISABLE_TELEMETRY": "1",
                 "KIMI_CODE_NO_AUTO_UPDATE": "1",
             },
