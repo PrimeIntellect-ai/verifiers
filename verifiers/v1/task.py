@@ -233,8 +233,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     def hooks(self, attr: str) -> list[Callable[..., Any]]:
         """The task's `@vf.<attr>` methods merged with the config-plugged functions —
-        a plugged function replaces a decorated method with the same name — sorted by
-        descending priority then name."""
+        a plugged function replaces a decorated method with the same name (a `fn`-less
+        entry only overrides its metadata) — sorted by descending priority then name."""
         from verifiers.v1.utils.loaders import load_plugged_fn
 
         plugged = {
@@ -244,7 +244,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
         }[attr]
         merged = {fn.__name__: fn for fn in discover_decorated(self, attr)}
         merged |= {
-            name: load_plugged_fn(name, spec, attr) for name, spec in plugged.items()
+            name: load_plugged_fn(name, spec, attr, decorated=merged.get(name))
+            for name, spec in plugged.items()
         }
         fns = list(merged.values())
         fns.sort(key=lambda fn: (-getattr(fn, f"{attr}_priority", 0), fn.__name__))
