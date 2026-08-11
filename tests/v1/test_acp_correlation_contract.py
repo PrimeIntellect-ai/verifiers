@@ -184,7 +184,10 @@ async def test_late_opaque_metadata_is_observable_but_not_trusted(monkeypatch):
 
     class Connection:
         async def prompt(self, **kwargs):
-            await client.session_update("session", opaque_update(runner, prior_turn_meta))
+            await client.session_update(
+                "session",
+                opaque_update(runner, prior_turn_meta),
+            )
             chunk = runner.AgentMessageChunk()
             chunk.content = runner.TextContentBlock()
             chunk.content.text = "P2 reply"
