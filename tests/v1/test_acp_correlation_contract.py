@@ -5,7 +5,8 @@ The v1 adapter makes ``SessionInfoUpdate.field_meta`` observable through global
 intentionally evidence, not verification: an ACP ``end_turn``, arrival order,
 a late-update grace period, or opaque metadata that merely claims a turn ID
 cannot establish trusted terminal correlation. Verification remains a
-producer/consumer contract carrying producer-issued IDs.
+producer/consumer contract using the explicitly scoped producer evidence ABI
+below.
 """
 
 import asyncio
@@ -65,18 +66,36 @@ def opaque_update(runner, event: dict):
     return update
 
 
-def has_verified_producer_correlation(events: list[dict]) -> bool:
-    """Model the minimum consumer claim: producer-issued IDs must be present.
+# This is deliberately the complete, scoped producer ABI used by this
+# conformance file.  It does not invent a second producer-ID namespace:
+# ``promptTurnId`` and ``eventSequence`` identify an emitted producer record.
+# A candidate is trusted as structured producer evidence only when all four
+# fields are well-formed.  Whether two candidates establish a completed turn is
+# the stricter ``scoreable_terminal`` question below.
+VALID_PRODUCER_PHASE_OUTCOMES = frozenset(
+    {
+        ("responseBoundary", "result"),
+        ("responseBoundary", "error"),
+        ("terminalQuiescence", "result"),
+        ("terminalQuiescence", "error"),
+    }
+)
 
-    ACP's extension metadata is otherwise opaque to this adapter. In particular,
-    turn-looking fields and ordering are observations only, not an authenticated
-    producer/consumer correlation contract.
+
+def has_verified_producer_correlation(events: list[dict]) -> bool:
+    """Return whether every record satisfies the one producer evidence ABI.
+
+    ACP extension metadata remains opaque to the adapter: arrival order,
+    ``end_turn``, and partial or merely turn-looking claims cannot establish
+    trusted producer correlation.
     """
     return bool(events) and all(
-        isinstance(event.get("producerId"), str)
-        and event["producerId"]
-        and isinstance(event.get("producerEventId"), str)
-        and event["producerEventId"]
+        type(event.get("promptTurnId")) is int
+        and event["promptTurnId"] > 0
+        and type(event.get("eventSequence")) is int
+        and event["eventSequence"] > 0
+        and (event.get("phase"), event.get("outcome"))
+        in VALID_PRODUCER_PHASE_OUTCOMES
         for event in events
     )
 
@@ -198,7 +217,7 @@ async def test_opaque_error_metadata_remains_observable_and_error_authoritative(
 
 # Conformance/source-level fixtures intentionally model the producer ABI rather
 # than importing P2. They lock the scoreable terminal producer-pair contract
-# without claiming that the ACP adapter can verify those producer IDs.
+# without claiming that the ACP adapter can itself authenticate the producer.
 P2_TERMINAL_FIXTURE = {
     "response": {
         "promptTurnId": 7,
@@ -230,7 +249,11 @@ def scoreable_terminal(
     relabel the durable pair as cancelled. An ACP ``end_turn`` is deliberately
     absent because it is never causal evidence.
     """
-    if len(events) != 2 or (cancelled and not completion_cut_sealed):
+    if (
+        len(events) != 2
+        or (cancelled and not completion_cut_sealed)
+        or not has_verified_producer_correlation(events)
+    ):
         return False
     response, terminal = events
     counters = terminal.get("quiescence")
@@ -257,9 +280,26 @@ def scoreable_terminal(
     )
 
 
+def test_producer_abi_rejects_opaque_or_partial_claims():
+    """Only all four scoped ABI fields make an event trusted evidence."""
+    assert not has_verified_producer_correlation([{"opaque": "claim"}])
+    assert not has_verified_producer_correlation(
+        [{"promptTurnId": 7, "eventSequence": 41, "phase": "responseBoundary"}]
+    )
+    assert not has_verified_producer_correlation(
+        [{
+            "promptTurnId": 7,
+            "eventSequence": 41,
+            "phase": "opaqueBoundary",
+            "outcome": "result",
+        }]
+    )
+
+
 def test_p2_terminal_publish_fixture_requires_producer_pair_not_end_turn():
     """A completed terminal is a producer pair, never an ACP stop reason."""
     events = [P2_TERMINAL_FIXTURE["response"], P2_TERMINAL_FIXTURE["terminal"]]
+    assert has_verified_producer_correlation(events)
     assert scoreable_terminal(events, cancelled=False, completion_cut_sealed=True)
     # ``end_turn`` is intentionally not accepted by the helper and cannot make
     # a partial/uncorrelated transcript scoreable.
