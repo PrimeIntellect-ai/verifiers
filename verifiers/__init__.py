@@ -11,7 +11,7 @@ import pkgutil
 import sys
 from functools import cache
 from importlib import import_module
-from importlib.abc import Loader, MetaPathFinder
+from importlib.abc import InspectLoader, Loader, MetaPathFinder
 from importlib.machinery import ModuleSpec
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
@@ -110,14 +110,23 @@ class LegacyAliasFinder(MetaPathFinder, Loader):
                 if real_spec.submodule_search_locations is not None:
                     module.__path__ = real_spec.submodule_search_locations
 
+    def _inspect_loader(self, fullname: str) -> tuple[str, InspectLoader]:
+        legacy_name = self._legacy_name(fullname)
+        spec = find_spec(legacy_name)
+        if spec is None or not isinstance(spec.loader, InspectLoader):
+            raise ImportError(
+                f"no loadable source behind alias {fullname!r}", name=fullname
+            )
+        return legacy_name, spec.loader
+
     # runpy (`python -m verifiers.<v0 module>`) executes through the loader.
     def get_code(self, fullname):
-        legacy_name = self._legacy_name(fullname)
-        return find_spec(legacy_name).loader.get_code(legacy_name)
+        legacy_name, loader = self._inspect_loader(fullname)
+        return loader.get_code(legacy_name)
 
     def get_source(self, fullname):
-        legacy_name = self._legacy_name(fullname)
-        return find_spec(legacy_name).loader.get_source(legacy_name)
+        legacy_name, loader = self._inspect_loader(fullname)
+        return loader.get_source(legacy_name)
 
 
 if not any(isinstance(finder, LegacyAliasFinder) for finder in sys.meta_path):
