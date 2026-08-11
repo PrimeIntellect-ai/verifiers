@@ -161,4 +161,3 @@ if ! mv "$staging" "$root"; then
     exit 1
 fi
 rm -rf "${root}.prev"
-
