@@ -9,7 +9,6 @@ producer/consumer contract using the explicitly scoped producer evidence ABI
 below.
 """
 
-import asyncio
 import importlib.util
 import sys
 import types
