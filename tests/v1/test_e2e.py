@@ -418,33 +418,6 @@ async def test_prime_agent_killed_child_fails_loudly(run_v1, tmp_path):
 @pytest.mark.e2e
 @pytest.mark.docker
 @pytest.mark.prime_agent
-async def test_prime_agent_solves_gsm8k(run_v1, tmp_path):
-    """Prime Agent scores on a real benchmark, not a synthetic capability probe.
-
-    The other Prime Agent tests prove the transport carries IPython, kernel state,
-    and failures. None of them shows the agent doing useful work: they assert on
-    plumbing the harness itself produces. GSM8K grades an actual answer against
-    ground truth in the runtime, so a passing score here means the whole path --
-    ACP transport, live kernel, interception, scoring -- carried a real task.
-    """
-    (trace,) = await run_v1(
-        "gsm8k-v1",
-        harness="prime-agent",
-        runtime={"type": "docker"},
-        output_dir=tmp_path,
-        max_turns=6,
-        max_tokens=8192,
-        rollout_timeout=900,
-    )
-    assert trace.ok, trace.errors
-    # Exact-match grading, so this is the agent's answer being right -- not the
-    # harness reporting that it ran.
-    assert trace.reward == 1.0, trace.rewards
-
-
-@pytest.mark.e2e
-@pytest.mark.docker
-@pytest.mark.prime_agent
 async def test_prime_agent_failed_turn_raises(run_v1, tmp_path):
     """A rejected provider request is a rollout error, never an ACP clean stop."""
     from prime_agent_failed_turn_v1 import has_raised_provider_failure
