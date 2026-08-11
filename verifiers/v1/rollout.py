@@ -98,6 +98,7 @@ class Rollout:
             limits=limits,
             request_handlers=discover_decorated(task, "on_request"),
             response_handlers=discover_decorated(task, "on_response"),
+            supports_tool_rewrite=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -274,6 +275,15 @@ class Rollout:
                     )
                     self.trace.task.data = harness_data
                 if not self._session.terminated:
+                    session_kwargs = (
+                        {"tool_interception_url": f"{runtime.host_url(base_url)}/tool"}
+                        if self.harness.SUPPORTS_TOOL_INTERCEPTION
+                        and (
+                            self._session.request_handlers
+                            or self._session.response_handlers
+                        )
+                        else {}
+                    )
                     self._harness_session = await self.harness.session(
                         self.ctx,
                         self.trace,
@@ -282,6 +292,7 @@ class Rollout:
                         self._secret,
                         self._urls,
                         harness_data,
+                        **session_kwargs,
                     )
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)

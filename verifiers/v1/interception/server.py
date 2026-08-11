@@ -278,7 +278,7 @@ class InterceptionServer(Interception):
         try:
             hook = ToolHookRequest.model_validate_json(await request.read())
             return web.json_response(
-                await session.handle_tool(hook.phase, hook.message)
+                await session.handle_tool(hook.phase, hook.message, hook.can_rewrite)
             )
         except RolloutError as error:
             session.error = error
@@ -535,6 +535,7 @@ class InterceptionServer(Interception):
                             )
                             call_response.raw = raw_response
                     node = turn.commit(call_response, tools)
+                    session.consume_prepared_tool_results(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if termination is not None:
                         session.terminate(termination)
@@ -722,6 +723,7 @@ class InterceptionServer(Interception):
                         dialect.error_body("rollout concluded"), status=409
                     )
                 node = turn.commit(response, tools)
+                session.consume_prepared_tool_results(turn.tail)
                 session.trace.response_rewrites.extend(response_rewrites)
                 if termination is not None:
                     buffered.close()
@@ -831,6 +833,7 @@ class InterceptionServer(Interception):
                 response = parser.finish()
                 if not session.released:  # concluded mid-stream — seal holds
                     node = turn.commit(response, tools)
+                    session.consume_prepared_tool_results(turn.tail)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)
             finally:
                 # Release the withheld events only now — after the commit — then close.

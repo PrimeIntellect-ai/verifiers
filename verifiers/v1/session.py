@@ -116,7 +116,7 @@ class RolloutSession:
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
     pending_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
-    prepared_tool_results: dict[str, object] = field(default_factory=dict)
+    prepared_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
     prepared_users: Counter[str] = field(default_factory=Counter)
 
     @property
@@ -133,7 +133,7 @@ class RolloutSession:
         self.trace.stop(termination.reason)
 
     async def rewrite_request(
-        self, messages: Messages
+        self, messages: Messages, *, from_position: int | None = None
     ) -> tuple[Messages, list[RequestRewrite], Termination | None]:
         """Run request hooks sequentially over each new user or tool message."""
         if not self.request_handlers:
@@ -142,7 +142,12 @@ class RolloutSession:
         rewritten = list(messages)
         records: list[RequestRewrite] = []
         try:
-            for position in range(turn.tail_start, len(rewritten)):
+            start = (
+                turn.tail_start
+                if from_position is None
+                else max(turn.tail_start, from_position)
+            )
+            for position in range(start, len(rewritten)):
                 original = rewritten[position]
                 if not isinstance(original, (UserMessage, ToolMessage)):
                     continue
@@ -151,11 +156,10 @@ class RolloutSession:
                     if self.prepared_users[key]:
                         self.prepared_users[key] -= 1
                         continue
-                if isinstance(original, ToolMessage) and (
-                    self.prepared_tool_results.pop(original.tool_call_id, object())
-                    == original.content
-                ):
-                    continue
+                if isinstance(original, ToolMessage):
+                    prepared = self.prepared_tool_results.get(original.tool_call_id)
+                    if prepared is not None and prepared.content == original.content:
+                        continue
                 for handler in self.request_handlers:
                     view = turn.scoped_trace(rewritten, end=position + 1)
                     result = invoke(handler, {"request": view.messages, "trace": view})
@@ -204,6 +208,12 @@ class RolloutSession:
                 f"@on_request failed: {type(error).__name__}: {error}"
             ) from error
         return rewritten, records, None
+
+    def consume_prepared_tool_results(self, messages: Messages) -> None:
+        """Forget hook-prepared tool results after their model request commits."""
+        for message in messages:
+            if isinstance(message, ToolMessage):
+                self.prepared_tool_results.pop(message.tool_call_id, None)
 
     async def prepare_users(
         self, messages: Messages
@@ -299,7 +309,9 @@ class RolloutSession:
             ) from error
         return response, records, None
 
-    async def handle_tool(self, phase: str, message: ToolMessage) -> dict:
+    async def handle_tool(
+        self, phase: str, message: ToolMessage, can_rewrite: bool
+    ) -> dict:
         """Return the model-visible result before a supporting harness records it."""
         synthetic = self.pending_tool_results.pop(message.tool_call_id, None)
         if phase == "before" and synthetic is None:
@@ -319,18 +331,39 @@ class RolloutSession:
             raise TaskError(
                 f"tool call {message.tool_call_id!r} matched {len(branches)} branches"
             )
-        prompt = [*branches[0].messages, candidate]
-        rewritten, records, termination = await self.rewrite_request(prompt)
+        branch = branches[0]
+        assistant = branch.nodes[-1].message
+        assert isinstance(assistant, AssistantMessage)
+        # Keep earlier results in the hook's trace, but commit them only when the model
+        # request arrives and can supply their token attribution.
+        previous = [
+            self.prepared_tool_results[call.id]
+            for call in assistant.tool_calls or []
+            if call.id in self.prepared_tool_results
+        ]
+        prompt = [*branch.messages, *previous, candidate]
+        rewritten, records, termination = await self.rewrite_request(
+            prompt, from_position=len(prompt) - 1
+        )
         candidate = rewritten[-1]
         assert isinstance(candidate, ToolMessage)
         self.trace.request_rewrites.extend(records)
+        if termination is None and candidate != message and not can_rewrite:
+            termination = Termination(
+                reason="harness cannot replace this tool result",
+                handler=(records or self.trace.response_rewrites)[-1].handler,
+                boundary="request",
+            )
         if termination is not None:
             graph.prepare_turn(self.trace, [*prompt[:-1], candidate]).commit_prompt()
             self.terminate(termination)
             return {"action": "stop", "reason": termination.reason}
-        self.prepared_tool_results[candidate.tool_call_id] = candidate.content
+        self.prepared_tool_results[candidate.tool_call_id] = candidate
         if synthetic is not None or candidate != message:
-            return {"action": "rewrite", "message": candidate.model_dump()}
+            return {
+                "action": "rewrite",
+                "message": candidate.model_dump(exclude_none=True),
+            }
         return {"action": "allow"}
 
     @cached_property
