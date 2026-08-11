@@ -45,3 +45,11 @@ class Tunnel(ABC, Generic[ConfigT]):
         from a remote runtime. Entered only when a consumer is remote; torn down on exit.
         A setup failure raises `TunnelError`; an error raised while the URL is held (the
         caller's body) propagates unchanged."""
+
+    async def is_alive(self) -> bool:
+        """Whether the exposed URL is still expected to route. True by default — a custom
+        tunnel has no registration that can be revoked out from under it. `PrimeTunnel`
+        overrides this: the tunnel service can terminate a registration server-side (e.g.
+        reaping one whose frpc connection dropped too long), after which the URL 404s
+        forever. Pools poll this to retire servers whose tunnel has died."""
+        return True
