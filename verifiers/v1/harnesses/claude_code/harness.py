@@ -9,6 +9,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.interception.tool import configure_tool_hook, prepare_tool_hook
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -44,6 +45,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -76,6 +78,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             raise RuntimeError(f"Claude Agent ACP install failed: {detail}")
         await CLAUDE_ACP.setup(self, runtime)
 
+    async def setup_tool_interception(self, runtime: Runtime) -> None:
+        await prepare_tool_hook(runtime)
+
     async def session(
         self,
         ctx: ModelContext,
@@ -85,13 +90,20 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> HarnessSession:
         if not runtime.supports_live_processes:
             return await super().session(
-                ctx, trace, runtime, endpoint, secret, mcp_urls, data
+                ctx,
+                trace,
+                runtime,
+                endpoint,
+                secret,
+                mcp_urls,
+                data,
+                tool_interception_url,
             )
         system_prompt, prompt = self.resolve_prompt(data)
-        config_dir = self.config_dir(trace)
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         options: dict[str, object] = {
             "strictMcpConfig": True,
@@ -100,17 +112,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         session_meta: dict[str, object] = {"claudeCode": {"options": options}}
         if system_prompt:
             session_meta["systemPrompt"] = {"append": system_prompt}
-        env = {
-            **self.config.resolved_env,
-            "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
-            "ANTHROPIC_API_KEY": secret,
-            "ANTHROPIC_MODEL": ctx.model,
-            "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
-            "CLAUDE_CONFIG_DIR": config_dir,
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "DISABLE_AUTOUPDATER": "1",
-            "IS_SANDBOX": "1",
-        }
+        env = await self.build_env(
+            ctx, trace, runtime, endpoint, secret, tool_interception_url
+        )
         return CLAUDE_ACP.session(
             self,
             ctx,
@@ -135,6 +139,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         config_dir = self.config_dir(trace)
@@ -147,18 +152,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         session_meta: dict[str, object] = {"claudeCode": {"options": options}}
         if system_prompt:
             session_meta["systemPrompt"] = {"append": system_prompt}
-        env = {
-            **self.config.resolved_env,
-            # Claude appends /v1/messages; give it the interception root, not the model endpoint.
-            "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
-            "ANTHROPIC_API_KEY": secret,
-            "ANTHROPIC_MODEL": ctx.model,
-            "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
-            "CLAUDE_CONFIG_DIR": config_dir,
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "DISABLE_AUTOUPDATER": "1",
-            "IS_SANDBOX": "1",
-        }
+        env = await self.build_env(
+            ctx, trace, runtime, endpoint, secret, tool_interception_url
+        )
         return await CLAUDE_ACP.run(
             runtime,
             env,
@@ -168,6 +164,44 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             session_path=f"{config_dir}/acp-session",
             session_meta=session_meta,
         )
+
+    async def build_env(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        tool_interception_url: str | None,
+    ) -> dict[str, str]:
+        config_dir = self.config_dir(trace)
+        env = {
+            **self.config.resolved_env,
+            # Claude appends /v1/messages; give it the interception root, not the model endpoint.
+            "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
+            "ANTHROPIC_API_KEY": secret,
+            "ANTHROPIC_MODEL": ctx.model,
+            "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(
+                version=self.config.version, acp_version=ACP_VERSION
+            ),
+            "CLAUDE_CONFIG_DIR": config_dir,
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_AUTOUPDATER": "1",
+            "IS_SANDBOX": "1",
+        }
+        if tool_interception_url is None:
+            return env
+        env.update(
+            await configure_tool_hook(
+                runtime,
+                f"{config_dir}/settings.json",
+                tool_interception_url,
+                secret,
+                "claude",
+                ("PreToolUse", "PostToolUse", "PostToolUseFailure"),
+            )
+        )
+        return env
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         result = await runtime.run(["rm", "-rf", self.config_dir(trace)], {})

@@ -95,6 +95,9 @@ class Harness(ABC, Generic[ConfigT]):
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
 
+    async def setup_tool_interception(self, runtime: Runtime) -> None:
+        """Provision optional native hooks before execution-time egress is restricted."""
+
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Upload each `config.skills` folder into `runtime` at `dest/<folder name>` —
         the program's fixed skill discovery location, which a supporting harness's

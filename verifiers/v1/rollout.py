@@ -235,6 +235,11 @@ class Rollout:
                     state_base=base_url,
                 )
             )
+            tool_interception = self.harness.SUPPORTS_TOOL_INTERCEPTION and bool(
+                self._session.request_handlers or self._session.response_handlers
+            )
+            if tool_interception:
+                await self.harness.setup_tool_interception(runtime)
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
@@ -277,11 +282,7 @@ class Rollout:
                 if not self._session.terminated:
                     session_kwargs = (
                         {"tool_interception_url": f"{runtime.host_url(base_url)}/tool"}
-                        if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                        and (
-                            self._session.request_handlers
-                            or self._session.response_handlers
-                        )
+                        if tool_interception
                         else {}
                     )
                     self._harness_session = await self.harness.session(

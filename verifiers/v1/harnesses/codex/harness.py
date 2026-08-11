@@ -14,6 +14,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.interception.tool import configure_tool_hook, prepare_tool_hook
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -55,6 +56,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await self.install_skills(runtime, SKILLS_DIR)
@@ -91,6 +93,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
         await CODEX_ACP.setup(self, runtime)
 
+    async def setup_tool_interception(self, runtime: Runtime) -> None:
+        await prepare_tool_hook(runtime)
+
     async def session(
         self,
         ctx: ModelContext,
@@ -100,16 +105,32 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> HarnessSession:
         if not runtime.supports_live_processes:
             return await super().session(
-                ctx, trace, runtime, endpoint, secret, mcp_urls, data
+                ctx,
+                trace,
+                runtime,
+                endpoint,
+                secret,
+                mcp_urls,
+                data,
+                tool_interception_url,
             )
         if data.system_prompt is not None and not isinstance(data.prompt, str):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        env = await self.build_env(
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            tool_interception_url,
+        )
         return CODEX_ACP.session(
             self,
             ctx,
@@ -137,6 +158,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         if (
             data.system_prompt is not None
@@ -146,7 +168,15 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        env = await self.build_env(
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            tool_interception_url,
+        )
         return await CODEX_ACP.run(
             runtime,
             env,
@@ -178,6 +208,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        tool_interception_url: str | None = None,
     ) -> dict[str, str]:
         home = self.trace_home(trace)
         created = await runtime.run(["mkdir", "-p", home], {})
@@ -232,6 +263,16 @@ class CodexHarness(Harness[CodexHarnessConfig]):
                     dict.fromkeys(direct_mcp_namespaces)
                 )
             }
+        tool_env = await configure_tool_hook(
+            runtime,
+            f"{home}/hooks.json",
+            tool_interception_url,
+            secret,
+            "codex",
+            ("PreToolUse", "PostToolUse"),
+        )
+        if tool_env:
+            features["hooks"] = True
         config = {
             "model": ctx.model,
             "model_provider": PROVIDER,
@@ -246,7 +287,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             },
             "features": features,
         }
-        return {
+        if tool_env:
+            config["bypass_hook_trust"] = True
+        env = {
             **self.config.resolved_env,
             "CODEX_API_KEY": secret,
             KEY_VAR: secret,
@@ -258,3 +301,5 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "MODEL_PROVIDER": PROVIDER,
             "NO_BROWSER": "1",
         }
+        env.update(tool_env)
+        return env
