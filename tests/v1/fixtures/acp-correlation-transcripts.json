@@ -1,0 +1,86 @@
+{
+  "schema": "ai.primeintellect.prime-agent/v1",
+  "notes": "Exact JSON rendering of V3 acp_correlation_transcripts fixture; end_turn is deliberately absent because transport stop reasons are never causal.",
+  "cases": {
+    "success": [
+      {
+        "promptTurnId": 1,
+        "eventSequence": 11,
+        "phase": "event",
+        "kind": "progress"
+      },
+      {
+        "promptTurnId": 1,
+        "eventSequence": 12,
+        "phase": "responseBoundary",
+        "outcome": "result"
+      },
+      {
+        "promptTurnId": 1,
+        "eventSequence": 13,
+        "phase": "terminalQuiescence",
+        "outcome": "result",
+        "quiescence": {
+          "outstandingSubagents": 0,
+          "remainingAutonomousContinuations": 0
+        }
+      }
+    ],
+    "error_terminal": [
+      {
+        "promptTurnId": 1,
+        "eventSequence": 21,
+        "phase": "responseBoundary",
+        "outcome": "error"
+      },
+      {
+        "promptTurnId": 1,
+        "eventSequence": 22,
+        "phase": "terminalQuiescence",
+        "outcome": "error",
+        "quiescence": {
+          "outstandingSubagents": 0,
+          "remainingAutonomousContinuations": 0
+        }
+      }
+    ],
+    "error_incomplete": [
+      {
+        "promptTurnId": 1,
+        "eventSequence": 31,
+        "phase": "responseBoundary",
+        "outcome": "error"
+      }
+    ],
+    "cancelled": [],
+    "late_child": [
+      {
+        "promptTurnId": 1,
+        "eventSequence": 41,
+        "phase": "event",
+        "child": {
+          "id": "late",
+          "status": "done"
+        }
+      }
+    ],
+    "global_sequence_turn_two": [
+      {
+        "promptTurnId": 2,
+        "eventSequence": 51,
+        "phase": "responseBoundary",
+        "outcome": "result"
+      },
+      {
+        "promptTurnId": 2,
+        "eventSequence": 52,
+        "phase": "terminalQuiescence",
+        "outcome": "result",
+        "quiescence": {
+          "outstandingSubagents": 0,
+          "remainingAutonomousContinuations": 0
+        }
+      }
+    ]
+  }
+}
