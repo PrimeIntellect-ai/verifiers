@@ -341,6 +341,8 @@ class Rollout:
                 self.fail(e)
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
+            if self._session.terminated:
+                return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
@@ -407,7 +409,7 @@ class Rollout:
             finally:
                 if trace.timing.agent.start and not trace.timing.agent.end:
                     trace.timing.agent.end = time.time()
-            if not self._failed and self._opened:
+            if not self._failed and self._opened and trace.termination is None:
                 trace.timing.finalize.start = time.time()
                 async with boundary(TaskError, "task finalize"):
                     await asyncio.wait_for(

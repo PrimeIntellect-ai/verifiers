@@ -309,18 +309,28 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         by_agent = {t.agent.name: t for t in episode.traces}
-        solution, verdict = by_agent["solver"], by_agent["judge"]
-        verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
-        criteria = self.config.task.criteria()
-        scores = score_verdicts(verdicts, criteria, "the rubric's")
-        for criterion in criteria:
-            solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
+        solution = by_agent["solver"]
+        if solution.termination is not None:
+            return
+        verdict = by_agent["judge"]
+        if verdict.termination is not None:
+            reward = verdict.reward
+        else:
+            verdicts = RubricVerdicts.model_validate(
+                verdict.info.get("verdict")
+            ).verdicts
+            criteria = self.config.task.criteria()
+            scores = score_verdicts(verdicts, criteria, "the rubric's")
+            for criterion in criteria:
+                solution.record_metric(
+                    f"judge/{criterion.name}", scores[criterion.name]
+                )
+            total = sum(criterion.weight for criterion in criteria)
+            reward = sum(c.weight * scores[c.name] for c in criteria) / total
         if self.config.score.task_weight != 1.0:
-            for reward in solution.rewards.values():
-                if reward is not None:
-                    reward.weight *= self.config.score.task_weight
-        total = sum(criterion.weight for criterion in criteria)
-        reward = sum(c.weight * scores[c.name] for c in criteria) / total
+            for task_reward in solution.rewards.values():
+                if task_reward is not None:
+                    task_reward.weight *= self.config.score.task_weight
         solution.record_reward("judge", reward, weight=self.config.score.judge_weight)
 
 
@@ -330,6 +340,8 @@ class SharedAgenticJudgeEnv(AgenticJudgeEnv):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         async with agents.solver.provision(task) as box:
             solution = await agents.solver.run(task, runtime=box)
+            if solution.termination is not None:
+                return
             if not solution.ok:
                 raise RuntimeError(
                     "the solver's rollout failed, so the judge never ran"
@@ -343,6 +355,8 @@ class IsolatedAgenticJudgeEnv(AgenticJudgeEnv):
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         solution = await agents.solver.run(task)
+        if solution.termination is not None:
+            return
         if not solution.ok:
             raise RuntimeError("the solver's rollout failed, so the judge never ran")
         await agents.judge.run(

@@ -147,8 +147,15 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     ) -> None:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
+            # Terminal interception owns the final reward, so replay must not replace it.
+            if trace.termination is not None:
+                st.state, st.detail, st.end = (
+                    "skipped",
+                    "rollout terminated",
+                    time.time(),
+                )
             # Generation failures have no complete transcript to score.
-            if trace.stop_condition == "error":
+            elif trace.stop_condition == "error":
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"

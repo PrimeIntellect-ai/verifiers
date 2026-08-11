@@ -275,10 +275,23 @@ class Env(ABC, Generic[ConfigT]):
             episode.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode; ok stays False.
             return episode
+        terminal_rewards = {
+            trace.id: {
+                name: reward.model_copy() if reward is not None else None
+                for name, reward in trace.rewards.items()
+            }
+            for trace in episode.traces
+            if trace.termination is not None
+        }
         try:
-            async with asyncio.timeout(self.config.timeout.finalize):
-                async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
-                    await self.finalize(task, episode)
+            try:
+                async with asyncio.timeout(self.config.timeout.finalize):
+                    async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
+                        await self.finalize(task, episode)
+            finally:
+                for trace in episode.traces:
+                    if trace.id in terminal_rewards:
+                        trace.rewards = terminal_rewards[trace.id]
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
