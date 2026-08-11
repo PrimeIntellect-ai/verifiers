@@ -2,25 +2,14 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp>=1.24.0,<2"]
 # ///
-"""The compacting harness's program: a context-REWRITE loop (so every turn branches).
+"""The compacting harness's program: a context-rewrite loop (every turn branches).
 
-Unlike the bash harness (which appends to a growing message list), this sends a FRESH
-`[system, user]` every turn — the task on the first turn, then the model's own
-carried-over notes (the task is never shown again, so the notes are the durable memory).
-Because the prompt is rewritten rather than extended, every turn is its own branch (see
-verifiers.v1.branching). This mirrors context-tools' `context_rewrite=True`.
-
-Notes are saved through a harness-provided `summarize` tool — no tag parsing. Each turn
-the model either calls ONE task tool (MCP, from the harness's MCP_CONFIG), sees its
-result in-context, and must then save updated notes via `summarize`; or it calls
-`summarize` directly. A plain-text reply (no tool call) finishes the run and is printed
-as the answer. A disallowed call — more than one tool in a reply, or a task tool after a
-result — ends the rollout immediately with no answer, so the violation itself becomes
-training signal.
-
-It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the
-SDKs — the harness bootstraps `uv` in the runtime. Model calls go to the interception
-server (OPENAI_BASE_URL/API_KEY); MCP servers are reached over streamable HTTP.
+Each turn sends a fresh `[system, user]` — the task on the first turn, then only the
+notes the model saved via the `summarize` tool. Per turn: at most one task tool call,
+its result shown in-context, then a forced `summarize`; a plain-text reply finishes the
+run and is printed as the answer; a disallowed call ends the rollout with no answer
+(training signal). Model calls go to the interception server (OPENAI_BASE_URL/API_KEY);
+MCP servers are reached over streamable HTTP.
 """
 
 import asyncio
