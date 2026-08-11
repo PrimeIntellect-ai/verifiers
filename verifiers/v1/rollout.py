@@ -199,11 +199,16 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await invoke(self.task.setup, {"trace": self.trace, "runtime": runtime})
+            tool_interception = self.harness.SUPPORTS_TOOL_INTERCEPTION and bool(
+                self._session.request_handlers or self._session.response_handlers
+            )
             async with (
                 boundary(HarnessError, "harness setup"),
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
+                if tool_interception:
+                    await self.harness.setup_tool_interception(runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 toolsets = self.task.toolsets(self.task.config)
             # `base_url` is the interception server's reachable URL for this rollout.
@@ -235,11 +240,6 @@ class Rollout:
                     state_base=base_url,
                 )
             )
-            tool_interception = self.harness.SUPPORTS_TOOL_INTERCEPTION and bool(
-                self._session.request_handlers or self._session.response_handlers
-            )
-            if tool_interception:
-                await self.harness.setup_tool_interception(runtime)
             # Setup and service provisioning are complete. Apply the runtime's
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
