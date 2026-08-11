@@ -142,7 +142,9 @@ class PiHarness(Harness[PiHarnessConfig]):
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         agent_dir = f".vf-pi-agent-{trace.id}"
-        provider, model = ctx.model.split("/", 1)
+        provider, sep, model = ctx.model.partition("/")
+        if not sep:
+            provider, model = "openai", provider
         models = {
             "providers": {
                 provider: {

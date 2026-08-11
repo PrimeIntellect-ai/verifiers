@@ -117,7 +117,9 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        provider, _ = ctx.model.split("/", 1)
+        provider, sep, model = ctx.model.partition("/")
+        if not sep:
+            provider, model = "openai", provider
         directory = OPENCLAW_DIR.format(version=self.config.version)
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
@@ -129,7 +131,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                     "workspace": ".",
                     "skipBootstrap": True,
                     "sandbox": {"mode": "off"},
-                    "model": {"primary": ctx.model},
+                    "model": {"primary": ctx.model if sep else f"{provider}/{model}"},
                 }
             },
             "tools": {
