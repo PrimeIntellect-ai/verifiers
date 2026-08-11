@@ -80,6 +80,7 @@ from verifiers.v1.trace import (
     Branch,
     Error,
     EvalRunInfo,
+    InterceptRecord,
     ModelCall,
     PolicyEvent,
     Reward,
@@ -103,6 +104,7 @@ from verifiers.v1.types import (
     Message,
     MessageContent,
     Messages,
+    Request,
     Response,
     Sampling,
     SamplingConfig,
@@ -121,7 +123,13 @@ from verifiers.v1.utils.artifacts import (
     collect,
     restore,
 )
-from verifiers.v1.utils.decorators import metric, reward, stop, tool
+from verifiers.v1.utils.decorators import (
+    intercept,
+    metric,
+    reward,
+    stop,
+    tool,
+)
 from verifiers.v1.utils.git import (
     PATCH_CAP_BYTES as PATCH_CAP_BYTES,
 )
@@ -178,6 +186,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Message",
     "MessageContent",
     "Messages",
+    "Request",
     "Response",
     "Sampling",
     "SamplingConfig",
@@ -220,10 +229,13 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "AgentSpan",
     "Error",
     # decorators
+    "intercept",
     "stop",
     "tool",
     "metric",
     "reward",
+    # interception
+    "InterceptRecord",
     # errors
     "RolloutError",
     "EnvError",
