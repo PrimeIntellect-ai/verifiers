@@ -9,7 +9,7 @@ from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, RolloutError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
@@ -224,7 +224,15 @@ class ACPHarnessSession(HarnessSession):
 
     async def _raise_error(self, error: BaseException) -> None:
         if self.on_error is not None:
-            await self.on_error(error)
+            try:
+                await self.on_error(error)
+            except Exception:
+                # Diagnostics must never replace the rollout's authoritative
+                # attribution. Untyped errors may intentionally be enriched by
+                # the callback, but a typed error is already ready for capture.
+                if isinstance(error, RolloutError):
+                    raise error
+                raise
         raise error
 
     async def _run(self, messages: Messages | None) -> ProgramResult:

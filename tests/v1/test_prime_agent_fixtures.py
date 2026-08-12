@@ -350,10 +350,12 @@ class _CleanupRuntime:
         self,
         *,
         socket_exists: bool,
+        socket_exit_code: int | None = None,
         stop_exit_code: int = 0,
         rm_exit_code: int = 0,
     ):
         self.socket_exists = socket_exists
+        self.socket_exit_code = socket_exit_code
         self.stop_exit_code = stop_exit_code
         self.rm_exit_code = rm_exit_code
         self.calls: list[list[str]] = []
@@ -362,7 +364,13 @@ class _CleanupRuntime:
         self.calls.append(command)
         if command[:2] == ["test", "-S"]:
             return SimpleNamespace(
-                exit_code=0 if self.socket_exists else 1, stderr="", stdout=""
+                exit_code=(
+                    self.socket_exit_code
+                    if self.socket_exit_code is not None
+                    else (0 if self.socket_exists else 1)
+                ),
+                stderr="socket check denied",
+                stdout="",
             )
         if command[:2] == ["rm", "-rf"]:
             return SimpleNamespace(
@@ -455,3 +463,58 @@ async def test_prime_agent_stateful_turn_errors_include_daemon_log_and_keep_roll
 
     typed = SandboxError("sandbox unavailable")
     assert await callback(typed) is None
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_retains_state_when_socket_preflight_is_indeterminate():
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    runtime = _CleanupRuntime(socket_exists=False, socket_exit_code=2)
+    with pytest.raises(RuntimeError, match="checking the trace daemon socket failed"):
+        await harness.cleanup(SimpleNamespace(id="indeterminate-socket"), runtime)
+    assert not any(call[:2] == ["rm", "-rf"] for call in runtime.calls)
+
+
+@pytest.mark.asyncio
+async def test_stateful_turn_tail_failure_preserves_original_error(monkeypatch):
+    from verifiers.v1.acp import ACPHarnessSession
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    original = RuntimeError("ACP failed")
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+
+    async def failed_tail(*args, **kwargs):
+        raise RuntimeError("sandbox is gone")
+
+    monkeypatch.setattr(harness, "daemon_log_tail", failed_tail)
+    session = SimpleNamespace(
+        on_error=lambda error: harness._session_error(
+            SimpleNamespace(), SimpleNamespace(id="tail-failure"), error
+        )
+    )
+    with pytest.raises(RuntimeError) as raised:
+        await ACPHarnessSession._raise_error(session, original)
+    assert raised.value is original
+
+
+@pytest.mark.asyncio
+async def test_stateful_turn_callback_failure_preserves_typed_rollout_error():
+    from verifiers.v1.acp import ACPHarnessSession
+    from verifiers.v1.errors import SandboxError
+
+    original = SandboxError("sandbox unavailable")
+
+    async def failed_diagnostic(error):
+        raise RuntimeError("diagnostic failure")
+
+    session = SimpleNamespace(on_error=failed_diagnostic)
+    with pytest.raises(SandboxError) as raised:
+        await ACPHarnessSession._raise_error(session, original)
+    assert raised.value is original
