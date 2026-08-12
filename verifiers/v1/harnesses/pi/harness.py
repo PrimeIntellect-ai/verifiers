@@ -122,19 +122,23 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             if self.config.transport == "anthropic_messages"
             else endpoint
         )
+        model_config = {
+            "id": model,
+            "reasoning": reasoning,
+            "input": ["text", "image"],
+            **(
+                {"compat": {"sessionAffinityFormat": "openai-nosession"}}
+                if self.config.transport == "responses"
+                else {}
+            ),
+        }
         models = {
             "providers": {
                 provider: {
                     "baseUrl": base_url,
                     "api": api,
                     "apiKey": f"${KEY_VAR}",
-                    "models": [
-                        {
-                            "id": model,
-                            "reasoning": reasoning,
-                            "input": ["text", "image"],
-                        }
-                    ],
+                    "models": [model_config],
                 }
             }
         }

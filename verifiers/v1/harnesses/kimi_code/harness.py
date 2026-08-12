@@ -92,21 +92,26 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             if self.config.transport == "anthropic_messages"
             else endpoint
         )
-        config: dict[str, object] = {
+        config = {
             "extra_skill_dirs": [SKILLS_DIR] if self.config.skills else [],
-        }
-        if self.config.disabled_tools:
-            config["permission"] = {
-                "rules": [
-                    {
-                        "decision": "deny",
-                        "scope": "user",
-                        "pattern": tool,
-                        "reason": "Disabled by Verifiers harness configuration.",
+            **(
+                {
+                    "permission": {
+                        "rules": [
+                            {
+                                "decision": "deny",
+                                "scope": "user",
+                                "pattern": tool,
+                                "reason": "Disabled by Verifiers harness configuration.",
+                            }
+                            for tool in self.config.disabled_tools
+                        ]
                     }
-                    for tool in self.config.disabled_tools
-                ]
-            }
+                }
+                if self.config.disabled_tools
+                else {}
+            ),
+        }
         await runtime.write(f"{kimi_home}/config.toml", tomli_w.dumps(config).encode())
 
         system_prompt, prompt = self.resolve_prompt(data)

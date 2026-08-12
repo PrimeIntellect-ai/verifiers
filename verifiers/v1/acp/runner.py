@@ -149,10 +149,7 @@ def segment_messages(config: dict, is_new: bool) -> list[dict]:
         messages = messages[last_assistant + 1 :]
     if is_new and config["system_prompt"]:
         messages = [
-            {
-                "role": "system",
-                "content": config["system_prompt"],
-            },
+            {"role": "system", "content": config["system_prompt"]},
             *messages,
         ]
     return messages

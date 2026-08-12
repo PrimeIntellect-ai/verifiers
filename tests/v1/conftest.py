@@ -40,8 +40,9 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.loaders import load_environment
+from verifiers.v1.utils.loaders import harness_config_type, load_environment
 
 CI_MODEL = "openai/gpt-5.6-luna"
 
@@ -74,8 +75,9 @@ def tool_runtime(request) -> dict:
 # dependencies at rollout.
 # `compact` (an example harness) and `terminus-2` (drives the host tmux) are excluded from e2e.
 @pytest.fixture
-def harness(request) -> str:
-    return request.param
+def harness(request) -> HarnessConfig:
+    config = {"id": request.param} if isinstance(request.param, str) else request.param
+    return harness_config_type(config["id"]).model_validate(config)
 
 
 def pytest_configure(config) -> None:
@@ -119,7 +121,7 @@ def _eval_config(
     taskset: str,
     *,
     output_dir: Path,
-    harness: str | dict[str, object] | None = "null",
+    harness: str | HarnessConfig | None = "null",
     n: int = 1,
     num_tasks: int = 1,
     max_tokens: int = 2048,
@@ -144,7 +146,9 @@ def _eval_config(
     _configure_prime_runtimes(taskset_cfg)
     if harness:
         env_cfg.setdefault("agent", {})["harness"] = (
-            {"id": harness} if isinstance(harness, str) else dict(harness)
+            harness_config_type(harness)(id=harness)
+            if isinstance(harness, str)
+            else harness
         )
     if runtime:
         runtime_cfg = dict(runtime)

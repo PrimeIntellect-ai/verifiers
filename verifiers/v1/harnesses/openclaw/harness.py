@@ -145,11 +145,12 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        # Opt-in via sampling: OpenClaw redacts persisted encrypted reasoning, so resumed sessions 400 replaying it.
-        reasoning = ctx.sampling.reasoning_effort not in (None, "none")
+        provider, _, _ = ctx.model.partition("/")
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         config = {
+            # Provider replay state must remain byte-exact in this isolated rollout transcript.
+            "logging": {"redactSensitive": "off"},
             "gateway": {
                 "mode": "local",
                 "bind": "loopback",
@@ -164,7 +165,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                     "skipBootstrap": True,
                     "heartbeat": {"every": "0m"},
                     "sandbox": {"mode": "off"},
-                    "model": {"primary": f"anthropic/{ctx.model}"},
+                    "model": {"primary": ctx.model},
                 }
             },
             "tools": {
@@ -174,22 +175,10 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "deny": self.config.disabled_tools or [],
             },
             "models": {
-                "mode": "replace",
                 "providers": {
-                    "anthropic": {
+                    provider: {
                         "baseUrl": endpoint,
                         "apiKey": "${OPENCLAW_INTERCEPT_KEY}",
-                        "api": "anthropic-messages",
-                        "authHeader": True,
-                        "models": [
-                            {
-                                "id": ctx.model,
-                                "name": ctx.model,
-                                "maxTokens": ctx.sampling.max_tokens or 8192,
-                                "reasoning": reasoning,
-                                "input": ["text", "image"],
-                            }
-                        ],
                     }
                 },
             },
