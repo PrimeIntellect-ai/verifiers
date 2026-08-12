@@ -6,8 +6,6 @@ on:
       - main
     paths:
       - 'docs/**'
-  workflow_dispatch:
-
 jobs:
   trigger-docs-sync:
     runs-on: ubuntu-latest
