@@ -10,7 +10,9 @@ initializes a task instance. Rides on `trace.task.data` in `traces.jsonl`.
 from __future__ import annotations
 
 import copy
+import hashlib
 import inspect
+import json
 import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
@@ -38,6 +40,11 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+
+def task_key(data: Mapping) -> str:
+    """Content identity for task wire data, independent of field order."""
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 class TaskResources(BaseModel):
@@ -133,6 +140,12 @@ class Task(Generic[DataT, StateT, ConfigT]):
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else self.config_type()()
+
+    @property
+    def hash(self) -> str:
+        """Content hash of the task's wire data — the identity that matches saved
+        rollouts to tasks; recorded on the trace as `task.hash`."""
+        return task_key(self.data.model_dump(mode="json", exclude_none=True))
 
     def with_system_prompt(self, system_prompt: str) -> Self:
         clone = copy.copy(self)
