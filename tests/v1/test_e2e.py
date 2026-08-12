@@ -313,7 +313,7 @@ async def test_prime_agent_solves_gsm8k(run_v1, tmp_path):
     ACP transport, live kernel, interception, scoring -- carried a real task.
     """
     (trace,) = await run_v1(
-        "gsm8k-v1",
+        "gsm8k",
         harness="prime-agent",
         runtime={"type": "docker"},
         output_dir=tmp_path,
