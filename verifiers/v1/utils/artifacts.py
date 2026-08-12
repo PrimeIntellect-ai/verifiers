@@ -54,6 +54,7 @@ async def collect(
         a.model_copy(update={"source": str(workdir / a.source)})
         for a in artifacts or []
     ]
+    _reject_duplicate_sources(artifacts or [], declared)
     convention = PurePosixPath(ARTIFACTS_DIR)
     declared_paths = [PurePosixPath(artifact.source) for artifact in declared]
     if convention in declared_paths:
@@ -129,6 +130,32 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
             f"tar -xf {shlex.quote(path)} -C / && rm -f {shlex.quote(path)}",
             f"restore artifact {root!r}",
         )
+
+
+def _reject_duplicate_sources(
+    requested: list[Artifact], resolved: list[Artifact]
+) -> None:
+    """Refuse two declarations that resolve to the same path, before anything is tarred.
+
+    `collect` keys its result by resolved source, so a duplicate archives the same tree
+    twice — charging the byte budget for both — and then lets the later entry overwrite
+    the earlier one. With differing `exclude` patterns the archive that survives depends
+    on declaration order, which makes grading order-dependent. Rejecting here keeps the
+    budget equal to what is actually returned.
+
+    Resolution is lexical, so `..` segments are left intact: collapsing them is only
+    sound without symlinks. Two sources differing only by a `..` are not caught here.
+    """
+    first_seen: dict[str, str] = {}
+    for original, entry in zip(requested, resolved, strict=True):
+        if (earlier := first_seen.get(entry.source)) is not None:
+            raise ValueError(
+                f"duplicate artifact source {entry.source!r}, declared as "
+                f"{earlier!r} and {original.source!r}. A path can only be collected "
+                "once — merge them into a single declaration, combining their "
+                "`exclude` patterns."
+            )
+        first_seen[entry.source] = original.source
 
 
 async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
