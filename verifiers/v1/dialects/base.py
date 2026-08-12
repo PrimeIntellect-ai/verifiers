@@ -16,12 +16,10 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel
 from pydantic_core import from_json
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
@@ -37,50 +35,9 @@ CAPABILITY_NOTICE = (
 )
 
 
-def blocked_url(value: str | None, policy: NetworkPolicyConfig) -> bool:
-    """Whether a provider-resolved URL falls outside the rollout's network policy."""
-    return bool(
-        value and not value.lower().startswith("data:") and not policy.permits(value)
-    )
-
-
-def provider_allowed_domains(policy: NetworkPolicyConfig) -> list[str] | None:
-    """Translate a concrete host allowlist into provider web-tool domain filters."""
-    if policy.block or not policy.allow or "*" in policy.allow:
-        return None
-    domains: list[str] = []
-    for rule in policy.allow:
-        parsed = urlsplit(rule if "://" in rule else f"//{rule}")
-        domain = (parsed.hostname or "").lower().rstrip(".")
-        try:
-            port = parsed.port
-        except ValueError:
-            return None
-        if parsed.scheme or port is not None or not domain.startswith("*."):
-            return None
-        domain = domain.removeprefix("*.")
-        if "*" in domain:
-            return None
-        domains.append(domain)
-    return list(dict.fromkeys(domains))
-
-
-def narrow_domains(allowed: list[str], requested: list[str] | None) -> list[str]:
-    """Intersect two provider-style domain allowlists, keeping the narrower domains."""
-    if requested is None:
-        return allowed
-    narrowed = []
-    for policy_domain in allowed:
-        for requested_domain in requested:
-            policy_domain = policy_domain.lower().removeprefix("*.")
-            requested_domain = requested_domain.lower().removeprefix("*.")
-            if policy_domain == requested_domain or policy_domain.endswith(
-                f".{requested_domain}"
-            ):
-                narrowed.append(policy_domain)
-            elif requested_domain.endswith(f".{policy_domain}"):
-                narrowed.append(requested_domain)
-    return list(dict.fromkeys(narrowed))
+def blocked_url(value: str) -> bool:
+    """Whether a provider-resolved resource is not inline data."""
+    return not value.lower().startswith("data:")
 
 
 def append_user_notice(
@@ -229,18 +186,10 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
-    def intrinsic_external_capability(self, model: str) -> str | None:
-        """A provider capability intrinsic to the selected model and impossible to remove."""
-        return None
-
     @abstractmethod
-    def mediate_external_capabilities(
-        self, body: ReqT, policy: NetworkPolicyConfig
-    ) -> tuple[ReqT, list[str]]:
-        """Constrain provider-side capabilities to `policy`, removing the ones that cannot
-        be constrained and telling the model to continue without them. Returned paths never
-        contain request values. Intrinsic model capabilities stay in the body for the
-        interception server to reject."""
+    def mediate_external_capabilities(self, body: ReqT) -> tuple[ReqT, list[str]]:
+        """Remove provider-side capabilities during restricted execution and tell the model
+        to continue without them. Returned paths never contain request values."""
 
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
@@ -269,5 +218,5 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     @abstractmethod
     def apply_overrides(self, body: ReqT, model: str, sampling: SamplingConfig) -> ReqT:
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
-        the only field mutation the proxy makes to the native JSON object. Model overlays;
-        sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
+        model overlays; sampling is authoritative (the program's sampling keys are dropped, the
+        eval's applied). Capability mediation may subsequently remove restricted fields."""

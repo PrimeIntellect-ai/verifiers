@@ -266,9 +266,7 @@ class InterceptionServer(Interception):
     ) -> tuple[dict, list[str]]:
         if not session.network_policy.network_restricted:
             return body, []
-        mediated, capabilities = dialect.mediate_external_capabilities(
-            body, session.network_policy
-        )
+        mediated, capabilities = dialect.mediate_external_capabilities(body)
         capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(
@@ -707,6 +705,21 @@ class InterceptionServer(Interception):
                         await resp.write(event)
                     await resp.write_eof()
             return resp
+        except OverlongPromptError as e:
+            # A streamed terminal provider failure is discovered only after its response body
+            # was relayed. Context exhaustion remains a clean truncation like earlier failures.
+            error = e
+            session.trace.stop("context_length")
+            logger.debug("prompt too long: id=%s", session.trace.id)
+            return resp
+        except RolloutError as e:
+            # A streamed terminal provider failure is discovered only after the
+            # response body has been relayed. Keep it off the graph and preserve
+            # the typed cause for the rollout if the native SDK does not retry it.
+            if node is None:
+                error = e
+                session.error = e
+            raise
         except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit
             # error, a cancellation) ends a real exchange; couple it to the record unless
@@ -741,6 +754,7 @@ class InterceptionServer(Interception):
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             body = await request.json()
+            body["model"] = session.ctx.model
             body = self.mediate_capabilities(session, dialect, body)[0]
             result = await session.client.relay_aux(
                 dialect, route, body, headers=request.headers

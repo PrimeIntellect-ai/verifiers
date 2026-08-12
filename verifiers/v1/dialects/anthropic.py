@@ -16,15 +16,12 @@ from anthropic.types import Message as AnthropicMessage
 from anthropic.types import MessageCreateParams
 from anthropic.types import Usage as AnthropicUsage
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
     append_user_notice,
     blocked_url,
-    narrow_domains,
     parse_sse_event,
-    provider_allowed_domains,
 )
 from verifiers.v1.types import (
     AssistantMessage,
@@ -53,10 +50,54 @@ STOP_REASONS = {
     "stop_sequence": "stop",
 }
 THINKING = ("thinking", "redacted_thinking")
-WEB_TOOL_TYPE = re.compile(r"(?:web_search|web_fetch)_\d{8}").fullmatch
-HOSTED_TOOL_TYPE = re.compile(
-    r"code_execution_\d{8}|tool_search_tool_(?:bm25|regex)(?:_\d{8})?"
-).fullmatch
+# These versioned tool families return calls to the harness; every other typed tool may execute
+# at the provider. Anchoring the pattern keeps new versions client-side without treating an
+# arbitrary dated provider tool as safe.
+_CLIENT_TOOL_TYPE = re.compile(r"(?:bash|text_editor|computer|memory)_\d{8}").fullmatch
+_CONTENT_WRAPPERS = (
+    "tool_result",
+    "code_execution_tool_result",
+    "bash_code_execution_tool_result",
+    "text_editor_code_execution_tool_result",
+    "web_search_tool_result",
+    "web_fetch_tool_result",
+    "tool_search_tool_result",
+    "mcp_tool_result",
+    "advisor_tool_result",
+    "code_execution_result",
+    "bash_code_execution_result",
+    "encrypted_code_execution_result",
+    "web_fetch_result",
+)
+_SAFE_CONTENT_TYPES = (
+    "text",
+    "image",
+    "document",
+    "tool_reference",
+    "thinking",
+    "redacted_thinking",
+    "tool_use",
+    "search_result",
+    "server_tool_use",
+    "mid_conv_system",
+    "compaction",
+    "fallback",
+    "mcp_tool_use",
+    "web_search_result",
+    "web_search_tool_result_error",
+    "web_fetch_tool_result_error",
+    "tool_search_tool_search_result",
+    "tool_search_tool_result_error",
+    "code_execution_tool_result_error",
+    "bash_code_execution_tool_result_error",
+    "text_editor_code_execution_tool_result_error",
+    "text_editor_code_execution_create_result",
+    "text_editor_code_execution_str_replace_result",
+    "text_editor_code_execution_view_result",
+    "advisor_result",
+    "advisor_redacted_result",
+    "advisor_tool_result_error",
+)
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -77,16 +118,21 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str | None:
+def blocked_content_path(value, path: str) -> str | None:
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if blocked := blocked_content_path(item, f"{path}[{index}]", policy):
+            if blocked := blocked_content_path(item, f"{path}[{index}]"):
                 return blocked
         return None
     if not isinstance(value, dict):
         return None
 
     kind = value.get("type")
+    caller = value.get("caller")
+    if caller is not None and not (
+        isinstance(caller, dict) and caller.get("type") == "direct"
+    ):
+        return f"{path}.caller.type"
     if kind in ("image", "document"):
         source_path = f"{path}.source"
         source = value.get("source") or {}
@@ -94,12 +140,10 @@ def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str |
             return source_path
         source_kind = source.get("type")
         if source_kind == "content":
-            return blocked_content_path(
-                source.get("content"), f"{source_path}.content", policy
-            )
+            return blocked_content_path(source.get("content"), f"{source_path}.content")
         if source_kind == "url":
             url = source.get("url")
-            if blocked_url(url if isinstance(url, str) else None, policy):
+            if not isinstance(url, str) or blocked_url(url):
                 return f"{source_path}.url"
         if source_kind == "file":
             return (
@@ -116,28 +160,31 @@ def blocked_content_path(value, path: str, policy: NetworkPolicyConfig) -> str |
         "bash_code_execution_output",
     ) and value.get("file_id"):
         return f"{path}.file_id"
-    if "content" in value:
-        return blocked_content_path(value["content"], f"{path}.content", policy)
-    return None
+    if kind in _CONTENT_WRAPPERS:
+        return blocked_content_path(value.get("content"), f"{path}.content")
+    return None if kind in _SAFE_CONTENT_TYPES else f"{path}.type"
 
 
-def mediate_content(value, path: str, policy: NetworkPolicyConfig):
+def mediate_content(value, path: str):
     if not isinstance(value, list):
-        blocked = blocked_content_path(value, path, policy)
+        blocked = blocked_content_path(value, path)
         return ("", [blocked]) if blocked else (value, [])
 
     mediated = []
     capabilities = []
     for index, block in enumerate(value):
         item_path = f"{path}[{index}]"
-        if isinstance(block, dict) and block.get("type") == "tool_result":
+        if isinstance(block, dict) and block.get("type") in _CONTENT_WRAPPERS:
+            if blocked := blocked_content_path({**block, "content": []}, item_path):
+                capabilities.append(blocked)
+                continue
             content, removed = mediate_content(
-                block.get("content"), f"{item_path}.content", policy
+                block.get("content"), f"{item_path}.content"
             )
             if removed:
                 block["content"] = content or ""
                 capabilities.extend(removed)
-        elif blocked := blocked_content_path(block, item_path, policy):
+        elif blocked := blocked_content_path(block, item_path):
             capabilities.append(blocked)
             continue
         mediated.append(block)
@@ -358,7 +405,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     response_type = ModdedAnthropicMessage
 
     def mediate_external_capabilities(
-        self, body: MessageCreateParams, policy: NetworkPolicyConfig
+        self, body: MessageCreateParams
     ) -> tuple[MessageCreateParams, list[str]]:
         mediated = body
         capabilities: list[str] = []
@@ -367,7 +414,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             if mediated.pop(key, None):
                 capabilities.append(key)
 
-        system, removed = mediate_content(mediated.get("system"), "system", policy)
+        system, removed = mediate_content(mediated.get("system"), "system")
         capabilities.extend(removed)
         if removed:
             if system:
@@ -379,43 +426,46 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             if not isinstance(message, dict):
                 continue
             content, removed = mediate_content(
-                message.get("content"), f"messages[{message_index}].content", policy
+                message.get("content"), f"messages[{message_index}].content"
             )
             capabilities.extend(removed)
             if removed:
                 message["content"] = content or ""
 
+        raw_tools = mediated.get("tools")
+        tool_items = raw_tools if isinstance(raw_tools, list) else []
+        if raw_tools is not None and not isinstance(raw_tools, list):
+            capabilities.append("tools")
         tools = []
-        for index, tool in enumerate(mediated.get("tools") or []):
+        for index, tool in enumerate(tool_items):
             kind = tool.get("type") if isinstance(tool, dict) else None
-            safe_tool = tool if isinstance(tool, dict) else None
-            if isinstance(kind, str) and WEB_TOOL_TYPE(kind):
-                allowed_domains = provider_allowed_domains(policy)
-                requested = tool.get("allowed_domains")
-                if requested is not None and not (
-                    isinstance(requested, list)
-                    and all(isinstance(domain, str) for domain in requested)
-                ):
-                    allowed_domains = None
-                domains = (
-                    narrow_domains(allowed_domains, requested)
-                    if allowed_domains is not None
-                    else []
-                )
-                if domains and not tool.get("blocked_domains"):
-                    safe_tool = {**tool, "allowed_domains": domains}
-                else:
-                    safe_tool = None
-            elif isinstance(kind, str) and HOSTED_TOOL_TYPE(kind):
-                safe_tool = None
-            if safe_tool is not None:
-                tools.append(safe_tool)
+            if isinstance(tool, dict) and (
+                (isinstance(kind, str) and _CLIENT_TOOL_TYPE(kind))
+                or (kind in (None, "custom") and "input_schema" in tool)
+            ):
+                tools.append(tool)
                 continue
             capabilities.append(f"tools[{index}].type")
-        tool_count = len(mediated.get("tools") or [])
         if "tools" in mediated:
             mediated["tools"] = tools
-        if len(tools) != tool_count:
+
+        choice = mediated.get("tool_choice")
+        valid_choice = choice is None
+        if isinstance(choice, dict):
+            kind = choice.get("type")
+            valid_choice = (
+                kind == "none"
+                or bool(tools)
+                and (
+                    kind in ("auto", "any")
+                    or kind == "tool"
+                    and any(tool.get("name") == choice.get("name") for tool in tools)
+                )
+            )
+        if not valid_choice:
+            capabilities.append(
+                "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
+            )
             mediated.pop("tool_choice", None)
 
         if capabilities:

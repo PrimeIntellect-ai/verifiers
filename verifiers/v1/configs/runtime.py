@@ -11,13 +11,13 @@ from pydantic_config import BaseConfig
 def network_rule_matches(rule: str, scheme: str, host: str, port: int) -> bool:
     """Match a network-policy host pattern or URL origin. Paths are ignored."""
     value = rule.lower().rstrip("/")
-    parsed = urlsplit(value if "://" in value else f"//{value}")
-    pattern = (parsed.hostname or "").rstrip(".")
-    if not pattern or (parsed.scheme and parsed.scheme != scheme):
-        return False
     try:
+        parsed = urlsplit(value if "://" in value else f"//{value}")
         rule_port = parsed.port
     except ValueError:
+        return False
+    pattern = (parsed.hostname or "").rstrip(".")
+    if not pattern or (parsed.scheme and parsed.scheme != scheme):
         return False
     if parsed.scheme and rule_port is None:
         rule_port = 443 if parsed.scheme == "https" else 80
@@ -54,52 +54,13 @@ class NetworkPolicyConfig(BaseConfig):
     def network_restricted(self) -> bool:
         return "*" not in self.allow or bool(self.block)
 
-    def permits(self, url: str) -> bool:
-        """Whether this policy permits the destination named by an absolute URL."""
-        parsed = urlsplit(url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            return False
-        try:
-            port = parsed.port
-        except ValueError:
-            return False
-        if port is None:
-            port = {"http": 80, "https": 443}.get(parsed.scheme)
-        if port is None:
-            return False
-        if (
-            parsed.scheme == "https"
-            and port != 443
-            and not any(
-                rule == "*"
-                or urlsplit(rule.lower()).scheme == "https"
-                and network_rule_matches(rule, "https", parsed.hostname, port)
-                for rule in self.allow
-            )
-        ):
-            return False
-        if any(
-            network_rule_matches(rule, parsed.scheme, parsed.hostname, port)
-            for rule in self.block
-        ):
-            return False
-        return any(
-            network_rule_matches(rule, parsed.scheme, parsed.hostname, port)
-            for rule in self.allow
-        )
-
     def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
         values = self.model_dump()
-        if not allow or not self.allow or "*" in block:
-            # Framework-only access is absorbing; composition cannot widen either side.
-            return type(self).model_validate({**values, "allow": [], "block": ["*"]})
-        if "*" not in allow:
-            allow = (
-                allow
-                if "*" in self.allow
-                else list(dict.fromkeys([*allow, *self.allow]))
-            )
-        else:
+        if "*" in allow:
             allow = self.allow
+        elif "*" not in self.allow:
+            # Rules are opaque: guessing overlap between different globs could widen the policy.
+            runtime_allow = set(self.allow)
+            allow = [rule for rule in allow if rule in runtime_allow]
         block = list(dict.fromkeys([*block, *self.block]))
         return type(self).model_validate({**values, "allow": allow, "block": block})

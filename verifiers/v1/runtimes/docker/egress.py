@@ -44,7 +44,7 @@ class NetworkPolicy:
             and not any(
                 rule == "*"
                 or (
-                    urlsplit(rule.lower()).scheme == scheme
+                    rule.lower().startswith(f"{scheme}://")
                     and network_rule_matches(rule, scheme, host, port)
                 )
                 for rule in [*self.routes, *self.allow]
@@ -180,7 +180,7 @@ class EgressProxy:
                 scheme = (
                     "http"
                     if any(
-                        urlsplit(route.lower()).scheme == "http"
+                        route.lower().startswith("http://")
                         and network_rule_matches(route, "http", host, port)
                         for route in self.policy.routes
                     )
