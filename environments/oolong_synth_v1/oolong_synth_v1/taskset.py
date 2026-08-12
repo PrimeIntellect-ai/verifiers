@@ -53,7 +53,9 @@ def attempt_answer_parse(answer: str) -> str:
     """Extract the candidate answer from the agent's output."""
     if ":" not in answer:
         return answer
-    candidate = answer.split(":")[-1].strip().replace("*", "").replace("[", "").replace("]", "")
+    candidate = (
+        answer.split(":")[-1].strip().replace("*", "").replace("[", "").replace("]", "")
+    )
     for phrase in ("more common", "less common", "same frequency"):
         if phrase in candidate:
             return phrase
@@ -64,7 +66,9 @@ def parse_gold(answer_raw: str):
     """Parse the dataset's serialized gold answer (a list literal, or a wrapped date)."""
     if "datetime" not in answer_raw:
         return ast.literal_eval(answer_raw)[0]
-    return datetime.datetime.strptime(answer_raw, "[datetime.date(%Y, %m, %d)]").replace(tzinfo=datetime.UTC)
+    return datetime.datetime.strptime(
+        answer_raw, "[datetime.date(%Y, %m, %d)]"
+    ).replace(tzinfo=datetime.UTC)
 
 
 def score(answer_raw: str, answer_type: str, output: str) -> float:
@@ -143,7 +147,11 @@ class OolongSynthTaskset(vf.Taskset[OolongSynthTask, OolongSynthConfig]):
         from datasets import load_dataset
 
         cfg = self.config
-        context_column = "context_window_text_with_labels" if cfg.with_labels else "context_window_text"
+        context_column = (
+            "context_window_text_with_labels"
+            if cfg.with_labels
+            else "context_window_text"
+        )
         rows = load_dataset("oolongbench/oolong-synth", split=cfg.split, streaming=True)
         tasks: list[OolongSynthTask] = []
         for i, row in enumerate(rows):
