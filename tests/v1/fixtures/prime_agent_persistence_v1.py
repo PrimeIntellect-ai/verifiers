@@ -81,9 +81,7 @@ class PrimeAgentPersistenceEnv(vf.SingleAgentEnv):
                 f"{hashlib.sha256(trace.id.encode()).hexdigest()[:32]}"
             )
             present = await runtime.run(["test", "-e", state], {})
-            trace.info["prime_agent_state_present_during_run"] = (
-                present.exit_code == 0
-            )
+            trace.info["prime_agent_state_present_during_run"] = present.exit_code == 0
 
 
 class PrimeAgentPersistenceTaskset(
