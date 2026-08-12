@@ -223,6 +223,8 @@ class ACPHarnessSession(HarnessSession):
         return self._stderr_tail.decode(errors="replace").strip()
 
     async def _raise_error(self, error: BaseException) -> None:
+        if not isinstance(error, Exception):
+            raise error
         if self.on_error is not None:
             try:
                 await self.on_error(error)

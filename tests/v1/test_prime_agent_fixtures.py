@@ -1,5 +1,6 @@
 """Deterministic guard tests for the Prime Agent live capability fixtures."""
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -518,3 +519,23 @@ async def test_stateful_turn_callback_failure_preserves_typed_rollout_error():
     with pytest.raises(SandboxError) as raised:
         await ACPHarnessSession._raise_error(session, original)
     assert raised.value is original
+
+
+@pytest.mark.asyncio
+async def test_stateful_turn_cancellation_skips_error_diagnostics():
+    from verifiers.v1.acp import ACPHarnessSession
+
+    original = asyncio.CancelledError()
+    callback_invoked = False
+
+    async def failed_diagnostic(error):
+        nonlocal callback_invoked
+        callback_invoked = True
+        raise RuntimeError("diagnostic failure")
+
+    session = SimpleNamespace(on_error=failed_diagnostic)
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await ACPHarnessSession._raise_error(session, original)
+    assert raised.value is original
+    assert type(raised.value) is asyncio.CancelledError
+    assert not callback_invoked
