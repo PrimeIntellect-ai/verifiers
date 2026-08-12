@@ -52,36 +52,38 @@ class PrimeAgentPersistenceTask(vf.Task):
 class PrimeAgentPersistenceEnv(vf.SingleAgentEnv):
     async def run(self, task, agents):
         # Keep the runtime alive after the rollout so cleanup is directly observable.
-        async with agents.agent.provision(task) as runtime:
-            async with agents.agent.interaction(task, runtime=runtime) as interaction:
-                first = await interaction.turn(
-                    "Use IPython to execute exactly this cell:\n\n"
-                    f"{FIRST_CELL}\n\n"
-                    "Then reply with exactly READY. Do not include the printed value."
-                )
-                segments = [first]
-                if not first.terminated:
-                    segments.append(
-                        await interaction.turn(
-                            "Use IPython to execute exactly this cell without defining, "
-                            f"assigning, or reconstructing anything:\n\n{SECOND_CELL}\n\n"
-                            "Then reply with exactly the printed value."
-                        )
+        async with (
+            agents.agent.provision(task) as runtime,
+            agents.agent.interaction(task, runtime=runtime) as interaction,
+        ):
+            first = await interaction.turn(
+                "Use IPython to execute exactly this cell:\n\n"
+                f"{FIRST_CELL}\n\n"
+                "Then reply with exactly READY. Do not include the printed value."
+            )
+            segments = [first]
+            if not first.terminated:
+                segments.append(
+                    await interaction.turn(
+                        "Use IPython to execute exactly this cell without defining, "
+                        f"assigning, or reconstructing anything:\n\n{SECOND_CELL}\n\n"
+                        "Then reply with exactly the printed value."
                     )
-                trace = interaction.trace
-                trace.info["prime_agent_segments"] = [
-                    _segment_info(segment) for segment in segments
-                ]
-                # Record state before the interaction's close path runs: the
-                # live session still owns the daemon and its IPython kernel here.
-                state = (
-                    "/tmp/vf-prime-agent-state/"
-                    f"{hashlib.sha256(trace.id.encode()).hexdigest()[:32]}"
                 )
-                present = await runtime.run(["test", "-e", state], {})
-                trace.info["prime_agent_state_present_during_run"] = (
-                    present.exit_code == 0
-                )
+            trace = interaction.trace
+            trace.info["prime_agent_segments"] = [
+                _segment_info(segment) for segment in segments
+            ]
+            # Record state before the interaction's close path runs: the
+            # live session still owns the daemon and its IPython kernel here.
+            state = (
+                "/tmp/vf-prime-agent-state/"
+                f"{hashlib.sha256(trace.id.encode()).hexdigest()[:32]}"
+            )
+            present = await runtime.run(["test", "-e", state], {})
+            trace.info["prime_agent_state_present_during_run"] = (
+                present.exit_code == 0
+            )
 
 
 class PrimeAgentPersistenceTaskset(

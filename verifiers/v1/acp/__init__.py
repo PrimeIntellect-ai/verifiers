@@ -266,7 +266,7 @@ class ACPHarnessSession(HarnessSession):
                     _packet({"operation": "prompt", "config": config})
                 )
                 response = await self._reader.read()
-            except BaseException as error:
+            except BaseException as error:  # noqa: BLE001 - shield cleanup, then re-raise
                 await run_shielded(self._stop(graceful=False))
                 await self._raise_error(error)
         if not response.get("ok"):
