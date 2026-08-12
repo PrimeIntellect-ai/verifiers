@@ -1,0 +1,37 @@
+# Oolong synth at the 256K context bucket, one Luna rollout (n=1).
+# The taskset exports only OolongSynthTaskset, so this resolves to SingleAgentEnv.
+#
+# Dry-load only (no sandbox/model is launched):
+#   uv run eval @ configs/oolong_synth_v1_luna_n1.toml --dry-run
+model = "Luna"
+num_tasks = 1
+num_rollouts = 1
+max_concurrent = 1
+push = false
+rich = false
+
+[env.taskset]
+id = "oolong-synth-v1"
+context_len = 262144
+
+[env.agent]
+# Explicit agent caps for a long-context, file-scanning task.
+max_turns = 64
+max_input_tokens = 300000
+max_output_tokens = 8192
+max_total_tokens = 400000
+
+[env.agent.harness]
+id = "prime_agent"
+# Execution is intentionally blocked until these release-artifact placeholders are replaced.
+tarball_url = "https://REPLACE-WITH-APPROVED-PRIME-AGENT-ARTIFACT.invalid/prime-agent.tgz"
+tarball_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[env.agent.runtime]
+type = "prime"
+vm = true
+# VM runtime capacity caps; tune only with an approved run plan.
+cpu = 4
+memory = 16
+disk = 32
+idle_timeout = 7200

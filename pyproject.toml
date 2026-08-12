@@ -79,7 +79,7 @@ examples = [
     "gsm8k", "glossary", "deepwiki", "wiki-search", "code-golf",
     "proposer-solver", "reverse-text", "color-codeword",
     "wordle", "openenv-wordle", "alphabet-sort", "scratchpad",
-    "kuhn-poker",
+    "kuhn-poker", "oolong-synth-v1",
 ]
 
 [project.optional-dependencies]
@@ -164,6 +164,7 @@ color-codeword = { path = "environments/color_codeword", editable = true }
 alphabet-sort = { path = "environments/alphabet_sort", editable = true }
 scratchpad = { path = "environments/scratchpad", editable = true }
 kuhn-poker = { path = "environments/kuhn_poker", editable = true }
+oolong-synth-v1 = { path = "environments/oolong_synth_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.

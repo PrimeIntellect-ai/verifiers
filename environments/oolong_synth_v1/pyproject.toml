@@ -1,0 +1,17 @@
+[project]
+name = "oolong-synth-v1"
+version = "0.1.0"
+description = "Oolong synthetic long-context questions solved by an agent in a sandbox (deterministic Oolong scoring)."
+requires-python = ">=3.11"
+dependencies = ["datasets", "python-dateutil"]
+# The local editable package uses the root checkout's verifiers.v1 API; declaring
+# published `verifiers>=0.2.0` would make this checkout depend on itself at an
+# incompatible dynamically-derived development version.
+tags = ["long-context", "multi-turn", "sandbox", "agentic", "v1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["oolong_synth_v1"]

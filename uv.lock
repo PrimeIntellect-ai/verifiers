@@ -2897,6 +2897,21 @@ wheels = [
 ]
 
 [[package]]
+name = "oolong-synth-v1"
+version = "0.1.0"
+source = { editable = "environments/oolong_synth_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "python-dateutil" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "python-dateutil" },
+]
+
+[[package]]
 name = "openai"
 version = "2.45.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5173,6 +5188,7 @@ examples = [
     { name = "glossary" },
     { name = "gsm8k" },
     { name = "kuhn-poker" },
+    { name = "oolong-synth-v1" },
     { name = "openenv-wordle" },
     { name = "proposer-solver" },
     { name = "reverse-text" },
@@ -5247,6 +5263,7 @@ examples = [
     { name = "glossary", editable = "environments/glossary" },
     { name = "gsm8k", editable = "environments/gsm8k" },
     { name = "kuhn-poker", editable = "environments/kuhn_poker" },
+    { name = "oolong-synth-v1", editable = "environments/oolong_synth_v1" },
     { name = "openenv-wordle", editable = "environments/openenv_wordle" },
     { name = "proposer-solver", editable = "environments/proposer_solver" },
     { name = "reverse-text", editable = "environments/reverse_text" },
