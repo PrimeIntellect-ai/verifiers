@@ -8,7 +8,6 @@ import secrets
 import shlex
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from pydantic import Field
 
@@ -19,6 +18,7 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import DockerRuntime, ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,9 @@ async def _gateway_start_lock(runtime: Runtime) -> AsyncIterator[None]:
         yield
         return
     # Unrestricted Docker containers share the host network across server workers.
-    with Path("/tmp/vf-openclaw-gateway.lock").open("a") as lock:  # noqa: ASYNC230
+    lock_path = CACHE_DIR / "openclaw-gateway.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as lock:
         while True:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

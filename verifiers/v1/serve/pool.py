@@ -37,6 +37,7 @@ import zmq.asyncio
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import HealthResponse
+from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +106,12 @@ class EnvServerPool:
         self.address = self.frontend.getsockopt_string(zmq.LAST_ENDPOINT)
 
     def _worker_path(self, i: int) -> str:
-        return f"/tmp/vf-pool-{self.session}-{i}"
+        # Under the user cache, not /tmp: /tmp is shared across users on a cluster.
+        return str(CACHE_DIR / "ipc" / f"pool-{self.session}-{i}")
 
     def _spawn_worker(self) -> None:
         i = len(self.workers)  # upscale-only, so the next index is the current count
+        os.makedirs(CACHE_DIR / "ipc", exist_ok=True)
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(

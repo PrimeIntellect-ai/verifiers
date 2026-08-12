@@ -17,6 +17,7 @@ from verifiers.v1.runtimes.base import (
     Runtime,
     RuntimeProcess,
 )
+from verifiers.v1.utils.paths import CACHE_DIR
 
 _BACKGROUND_STOP_TIMEOUT = 5
 
@@ -75,6 +76,10 @@ class SubprocessProcess(RuntimeProcess):
 
 
 class SubprocessRuntime(Runtime):
+    # Host paths live under the user cache, not /tmp: fixed /tmp names collide
+    # across users on a shared machine.
+    scripts_dir: ClassVar[str] = str(CACHE_DIR / "scripts")
+
     # Share prepared script environments across the worker's per-rollout runtimes.
     _interpreters: ClassVar[dict[str, str]] = {}
     _locks: ClassVar[dict[str, asyncio.Lock]] = {}
@@ -89,8 +94,8 @@ class SubprocessRuntime(Runtime):
         self._background: list[asyncio.subprocess.Process] = []
 
     async def start(self) -> None:
-        self.workdir = Path("/tmp") / self.name
-        self.workdir.mkdir()
+        self.workdir = CACHE_DIR / "workdirs" / self.name
+        self.workdir.mkdir(parents=True)
         self.info.id = str(self.workdir)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:

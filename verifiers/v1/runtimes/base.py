@@ -176,6 +176,12 @@ class Runtime(ABC):
     subprocess and Docker (directly or through Docker's policy proxy); remote runtimes
     override to False and use a host `Tunnel` inward plus `expose` outward."""
 
+    scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
+    """In-runtime directory caching prepared uv scripts, keyed by content digest.
+    Containers and sandboxes own their /tmp; runtimes that share the host filesystem
+    override with a user-scoped path — a fixed /tmp name collides across users on a
+    shared machine."""
+
     info: BaseRuntimeInfo
 
     @property
@@ -277,7 +283,7 @@ class Runtime(ABC):
         """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
-        path = f"/tmp/vf-scripts/{digest}.py"
+        path = f"{self.scripts_dir}/{digest}.py"
         if digest not in self._uv_interpreters:
             async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
                 if digest not in self._uv_interpreters:
