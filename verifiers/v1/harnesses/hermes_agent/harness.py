@@ -51,9 +51,15 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         home = f"/tmp/vf-hermes/{trace.id}"
         # Keep interception routing separate from vendor names that Hermes may resolve
         # to built-in cloud providers instead of the configured endpoint.
-        model: dict[str, object] = {"provider": "openai", "default": ctx.model}
-        if ctx.sampling.max_tokens is not None:
-            model["max_tokens"] = ctx.sampling.max_tokens
+        model = {
+            "provider": "openai",
+            "default": ctx.model,
+            **(
+                {"max_tokens": ctx.sampling.max_tokens}
+                if ctx.sampling.max_tokens is not None
+                else {}
+            ),
+        }
         provider = {
             "api": endpoint,
             "api_key": secret,

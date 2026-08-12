@@ -86,13 +86,15 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         system_prompt, prompt = self.resolve_prompt(data)
         config_dir = self.config_dir(trace)
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
-        options: dict[str, object] = {
-            "strictMcpConfig": True,
-            "disallowedTools": self.config.disabled_tools or [],
+        session_meta = {
+            "claudeCode": {
+                "options": {
+                    "strictMcpConfig": True,
+                    "disallowedTools": self.config.disabled_tools or [],
+                }
+            },
+            **({"systemPrompt": {"append": system_prompt}} if system_prompt else {}),
         }
-        session_meta: dict[str, object] = {"claudeCode": {"options": options}}
-        if system_prompt:
-            session_meta["systemPrompt"] = {"append": system_prompt}
         env = {
             **self.config.resolved_env,
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),

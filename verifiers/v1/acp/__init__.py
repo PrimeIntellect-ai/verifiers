@@ -8,7 +8,7 @@ from abc import abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeAlias, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -27,6 +27,10 @@ MAX_PACKET_BYTES = 128 * 1024 * 1024
 __all__ = ["ACP", "ACPConfig", "ACPHarness"]
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
+JsonValue: TypeAlias = (
+    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+)
+JsonObject: TypeAlias = dict[str, JsonValue]
 
 
 @dataclass
@@ -39,7 +43,7 @@ class ACPConfig:
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
     session_path: str | None = None
-    session_meta: dict | None = None
+    session_meta: JsonObject | None = None
     allow_empty_tool_reply: bool = False
 
 
@@ -66,7 +70,7 @@ class ACP:
         command: list[str],
         prompt: str | Messages | None,
         system_prompt: str | None = None,
-        session_meta: dict | None = None,
+        session_meta: JsonObject | None = None,
         allow_empty_tool_reply: bool = False,
     ) -> "ACPHarnessSession":
         """Create a live ACP-backed handle owned by one rollout."""
@@ -98,7 +102,7 @@ class ACP:
         mcp_urls: dict[str, str] | None = None,
         system_prompt: str | None = None,
         session_path: str | None = None,
-        session_meta: dict | None = None,
+        session_meta: JsonObject | None = None,
         allow_empty_tool_reply: bool = False,
     ) -> ProgramResult:
         """Run one ACP segment without retaining its process."""
@@ -217,7 +221,7 @@ class ACPHarness(Harness[ConfigT]):
         )
 
 
-def _packet(value: dict) -> bytes:
+def _packet(value: JsonObject) -> bytes:
     data = json.dumps(value, ensure_ascii=False).encode()
     if len(data) > MAX_PACKET_BYTES:
         raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
@@ -250,7 +254,7 @@ class _PacketReader:
         del self._buffer[:size]
         return data
 
-    async def read(self) -> dict:
+    async def read(self) -> JsonObject:
         size = int.from_bytes(await self._readexactly(8), "big")
         if size > MAX_PACKET_BYTES:
             raise ValueError(f"ACP session packet is too large: {size} bytes")
@@ -274,7 +278,7 @@ class ACPHarnessSession(HarnessSession):
         command: list[str],
         prompt: str | Messages | None,
         system_prompt: str | None,
-        session_meta: dict | None,
+        session_meta: JsonObject | None,
         allow_empty_tool_reply: bool,
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
