@@ -40,7 +40,7 @@ async def _gateway_start_lock(runtime: Runtime) -> AsyncIterator[None]:
         yield
         return
     # Unrestricted Docker containers share the host network across server workers.
-    lock_path = CACHE_DIR / "openclaw-gateway.lock"
+    lock_path = CACHE_DIR / "harnesses" / "openclaw" / "gateway.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a") as lock:
         while True:
