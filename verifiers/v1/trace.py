@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal
 
 import numpy as np
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from renderers.base import MultiModalData
 from typing_extensions import TypeVar
 
@@ -20,7 +20,7 @@ from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import DataT, WireTaskData
+from verifiers.v1.task import DataT, WireTaskData, task_key
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -121,8 +121,20 @@ class TraceTask(BaseModel, Generic[DataT]):
     """The Task class name (`type(task).__name__`)."""
     data: DataT
     """The (immutable) row being solved."""
-    hash: str | None = None
+    hash: str
     """Content hash of `data` (`Task.hash`) — the task's identity across runs."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _backfill_hash(cls, values: Any) -> Any:
+        """Traces predating `hash` recompute it from their wire data."""
+        if isinstance(values, dict) and not values.get("hash"):
+            data = values.get("data")
+            if isinstance(data, BaseModel):
+                data = data.model_dump(mode="json", exclude_none=True)
+            if isinstance(data, Mapping):
+                values = {**values, "hash": task_key(data)}
+        return values
 
 
 class Reward(BaseModel):
