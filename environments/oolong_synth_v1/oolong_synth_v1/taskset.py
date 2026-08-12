@@ -11,7 +11,7 @@ Dataset: `oolongbench/oolong-synth`.
 """
 
 import ast
-from datetime import datetime, timezone
+import datetime
 from typing import Literal
 
 import verifiers.v1 as vf
@@ -50,7 +50,7 @@ def parse_gold(answer_raw: str):
     """Parse the dataset's serialized gold answer (a list literal, or a wrapped date)."""
     if "datetime" not in answer_raw:
         return ast.literal_eval(answer_raw)[0]
-    return datetime.strptime(answer_raw, "[datetime.date(%Y, %m, %d)]").replace(tzinfo=timezone.utc)
+    return datetime.datetime.strptime(answer_raw, "[datetime.date(%Y, %m, %d)]").replace(tzinfo=datetime.UTC)
 
 
 def score(answer_raw: str, answer_type: str, output: str) -> float:
