@@ -256,7 +256,11 @@ class ACPHarnessSession(HarnessSession):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
-            raise RuntimeError(detail)
+            # A failed prompt surfaces as the segment's exit status, never a raise:
+            # `_check_result` forgives it when the rollout already stopped (a
+            # limit or @stop refused the model call, and the agent surfaced that
+            # refusal as a prompt error) and raises the HarnessError otherwise.
+            return ProgramResult(exit_code=1, stdout="", stderr=detail)
         return ProgramResult(exit_code=0, stdout=response.get("reply", ""), stderr="")
 
     async def _stop(self, *, graceful: bool) -> None:
