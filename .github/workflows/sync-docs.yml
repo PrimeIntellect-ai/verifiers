@@ -2,10 +2,10 @@ name: Sync Docs to Public Docs
 
 on:
   push:
-    tags:
-      # Sync docs on stable releases only, not on every commit to main.
-      - 'v*'
-      - '!v*dev*'
+    branches:
+      - main
+    paths:
+      - 'docs/**'
   workflow_dispatch:
 
 jobs:
@@ -19,4 +19,3 @@ jobs:
           repository: PrimeIntellect-ai/public-docs
           event-type: docs-updated
           client-payload: '{"repo": "verifiers", "ref": "${{ github.sha }}"}'
-
