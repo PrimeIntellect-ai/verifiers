@@ -90,8 +90,6 @@ class EnvServerPool:
         self.multiplex = multiplex
         self.elastic = elastic
         self.log_setup = log_setup
-        # A private (0700) directory keeps the socket paths short — Unix socket
-        # paths cap at ~107 bytes, so they cannot live under a home-based dir.
         self._ipc_dir = tempfile.mkdtemp(prefix="vf-pool-")
         self.workers: list[dict] = []
         self._mpctx = mp.get_context("spawn")
