@@ -11,7 +11,7 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SystemMessage, TextContentPart, UserMessage
 
-POOL_DIR = "/tmp/vf-pool-{version}"
+POOL_DIR = ".vf-pool/bin-{version}"
 SETTINGS_PATH = ".poolside/settings.local.yaml"
 INSTALL = r"""
 set -e
@@ -42,11 +42,14 @@ class PoolHarness(Harness[PoolHarnessConfig]):
         script = INSTALL.replace("{version}", self.config.version).replace(
             "{dir}", directory
         )
-        ensure = shlex.quote(f"[ -x {binary} ] || ({script})")
-        # Cache the pinned binary across local rollouts; Linux has flock, macOS has lockf.
+        ensure = shlex.quote(f"[ -x {shlex.quote(binary)} ] || ({script})")
+        # Cache the pinned binary only inside this rollout workspace. Pool is
+        # launched with model-approved tools, so a shared /tmp cache would let one
+        # rollout tamper with the executable trusted by later rollouts.
+        lock = shlex.quote(f"{directory}/install.lock")
         guarded = (
-            f"mkdir -p {directory} && "
-            f'"$(command -v flock || command -v lockf)" {directory}/install.lock '
+            f"mkdir -p {shlex.quote(directory)} && "
+            f'"$(command -v flock || command -v lockf)" {lock} '
             f"bash -o pipefail -c {ensure}"
         )
         result = await runtime.run(["sh", "-c", guarded], self.config.resolved_env)
