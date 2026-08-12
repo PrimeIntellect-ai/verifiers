@@ -3,7 +3,7 @@
 #
 # Dry-load only (no sandbox/model is launched):
 #   uv run eval @ configs/oolong_synth_v1_luna_n1.toml --dry-run
-model = "Luna"
+model = "openai/gpt-5.6-luna"
 num_tasks = 1
 num_rollouts = 1
 max_concurrent = 1
@@ -12,26 +12,26 @@ rich = false
 
 [env.taskset]
 id = "oolong-synth-v1"
-context_len = 262144
+context_len = 1024
 
 [env.agent]
 # Explicit agent caps for a long-context, file-scanning task.
-max_turns = 64
-max_input_tokens = 300000
-max_output_tokens = 8192
-max_total_tokens = 400000
+max_turns = 4
+max_input_tokens = 16384
+max_output_tokens = 2048
+max_total_tokens = 20000
 
 [env.agent.harness]
 id = "prime_agent"
-# Execution is intentionally blocked until these release-artifact placeholders are replaced.
-tarball_url = "https://REPLACE-WITH-APPROVED-PRIME-AGENT-ARTIFACT.invalid/prime-agent.tgz"
-tarball_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+version = "0.7.1"
+tarball_url = "https://t-1-1916d097074a4b51.tunnel.pinfra.io/prime-agent-0.7.1.tgz"
+tarball_sha256 = "d601e0dd88103cddfe93b7a1da286a1869259b2fb2b7430c0ce5472eaec93cf9"
 
 [env.agent.runtime]
 type = "prime"
 vm = true
 # VM runtime capacity caps; tune only with an approved run plan.
-cpu = 4
-memory = 16
-disk = 32
-idle_timeout = 7200
+cpu = 2
+memory = 4
+disk = 8
+idle_timeout = 1200
