@@ -20,8 +20,13 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
+
+# Digest-keyed cache of prepared PEP 723 scripts. Every runtime's `write` creates parent
+# directories, so the path also works inside containers and sandboxes.
+SCRIPTS_DIR = str(CACHE_DIR / "runtimes" / "scripts")
 
 # Ensure the latest `uv` is available for our PEP 723 scripts: prefer pip on Python images,
 # then fall back to the standalone installer (curl/wget), installing curl + CA certs when a
@@ -277,7 +282,7 @@ class Runtime(ABC):
         """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
-        path = f"/tmp/vf-scripts/{digest}.py"
+        path = f"{SCRIPTS_DIR}/{digest}.py"
         if digest not in self._uv_interpreters:
             async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
                 if digest not in self._uv_interpreters:
