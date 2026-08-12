@@ -26,7 +26,7 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.cli.resume import distribute, split_resume, task_key
+from verifiers.v1.cli.resume import distribute, split_resume
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
@@ -247,7 +247,7 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
     valid, exc = False, None
     try:
         trace = Trace(
-            task=TraceTask(type=type(task).__name__, data=task.data),
+            task=TraceTask(type=type(task).__name__, data=task.data, hash=task.hash),
             state=state_cls(type(task))(),
             # No agent runs here — the info only records the runtime policy.
             agent=vf.AgentInfo(
@@ -288,7 +288,7 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
     valid, exc = False, None
     try:
         trace = Trace(
-            task=TraceTask(type=type(task).__name__, data=task.data),
+            task=TraceTask(type=type(task).__name__, data=task.data, hash=task.hash),
             state=state_cls(type(task))(),
             # No agent runs here — the info only records the runtime policy.
             agent=vf.AgentInfo(
@@ -380,9 +380,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     mode = validation_mode(config)
     checks = "gold+setup" if mode == "all" else mode
     out = output_path(config)
-    selected_keys = [
-        task_key(task.data.model_dump(mode="json", exclude_none=True)) for task in tasks
-    ]
+    selected_keys = [task.hash for task in tasks]
     if config.resume is None:
         save_run(config, out, len(tasks))
         rows: list[ResultRow] = []

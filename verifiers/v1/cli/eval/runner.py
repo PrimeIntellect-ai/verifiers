@@ -12,7 +12,7 @@ from verifiers.v1.cli.output import (
     output_path,
     save_config,
 )
-from verifiers.v1.cli.resume import distribute, task_key
+from verifiers.v1.cli.resume import distribute
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
@@ -45,9 +45,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
     # Kept on-disk rollouts rejoin the run as finished episodes; only owed ones re-run.
     finished: list[Episode] = []
     if config.resume is not None:
-        keys = [
-            task_key(t.data.model_dump(mode="json", exclude_none=True)) for t in tasks
-        ]
+        keys = [task.hash for task in tasks]
         finished, owed = resume.load(out, keys, config.num_rollouts, env.complete)
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
@@ -163,7 +161,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         # A run dispatches — and resumes — tasks by content: the client owns them,
-        # and `task_key` is their identity.
+        # and `task.hash` is their identity.
         plan = [
             ({"task_data": task.data.model_dump(mode="json")}, config.num_rollouts)
             for task in tasks
@@ -171,10 +169,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
         out = output_path(config)
         finished: list[Episode] = []
         if config.resume is not None:
-            keys = [
-                task_key(t.data.model_dump(mode="json", exclude_none=True))
-                for t in tasks
-            ]
+            keys = [task.hash for task in tasks]
             finished, owed = resume.load(out, keys, config.num_rollouts)
             counts = distribute(keys, owed, config.num_rollouts)
             if not owed:  # already complete - report it and exit successfully

@@ -83,6 +83,7 @@ class Rollout:
             task=TraceTask(
                 type=type(task).__name__,
                 data=task.data,
+                hash=task.hash,
             ),
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
