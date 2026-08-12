@@ -343,3 +343,115 @@ async def test_daemon_log_tail_never_masks_the_original_failure():
     harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
     trace = SimpleNamespace(id="trace-for-log-tail")
     assert await harness.daemon_log_tail(_DeadRuntime(), trace) == ""
+
+
+class _CleanupRuntime:
+    def __init__(
+        self,
+        *,
+        socket_exists: bool,
+        stop_exit_code: int = 0,
+        rm_exit_code: int = 0,
+    ):
+        self.socket_exists = socket_exists
+        self.stop_exit_code = stop_exit_code
+        self.rm_exit_code = rm_exit_code
+        self.calls: list[list[str]] = []
+
+    async def run(self, command, environment):
+        self.calls.append(command)
+        if command[:2] == ["test", "-S"]:
+            return SimpleNamespace(
+                exit_code=0 if self.socket_exists else 1, stderr="", stdout=""
+            )
+        if command[:2] == ["rm", "-rf"]:
+            return SimpleNamespace(
+                exit_code=self.rm_exit_code, stderr="rm denied", stdout=""
+            )
+        return SimpleNamespace(
+            exit_code=self.stop_exit_code, stderr="stop denied", stdout=""
+        )
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_skips_missing_socket_and_remains_idempotent():
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    trace = SimpleNamespace(id="no-daemon")
+    runtime = _CleanupRuntime(socket_exists=False)
+
+    await harness.cleanup(trace, runtime)
+    await harness.cleanup(trace, runtime)
+
+    assert [call[:2] for call in runtime.calls] == [
+        ["test", "-S"],
+        ["rm", "-rf"],
+        ["test", "-S"],
+        ["rm", "-rf"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_retains_state_when_stop_or_rm_fails():
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    trace = SimpleNamespace(id="cleanup-errors")
+    stop_failed = _CleanupRuntime(socket_exists=True, stop_exit_code=1)
+    with pytest.raises(RuntimeError, match="stopping the trace daemon failed"):
+        await harness.cleanup(trace, stop_failed)
+    assert not any(call[:2] == ["rm", "-rf"] for call in stop_failed.calls)
+
+    rm_failed = _CleanupRuntime(socket_exists=False, rm_exit_code=1)
+    with pytest.raises(RuntimeError, match="state cleanup failed"):
+        await harness.cleanup(trace, rm_failed)
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_stateful_turn_errors_include_daemon_log_and_keep_rollout_type(
+    monkeypatch,
+):
+    from verifiers.v1.errors import SandboxError
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    trace = SimpleNamespace(id="stateful-turn")
+
+    async def prepare(*args, **kwargs):
+        return ["prime-agent"]
+
+    async def tail(*args, **kwargs):
+        return "daemon tail"
+
+    def session(*args, **kwargs):
+        return kwargs["on_error"]
+
+    monkeypatch.setattr(harness, "_prepare", prepare)
+    monkeypatch.setattr(harness, "daemon_log_tail", tail)
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.prime_agent.harness.PRIME_AGENT_ACP.session", session
+    )
+    callback = await harness.session(
+        SimpleNamespace(model="model", sampling=SimpleNamespace(max_tokens=None)),
+        trace,
+        SimpleNamespace(supports_live_processes=True),
+        "endpoint",
+        "secret",
+        {},
+        SimpleNamespace(prompt="hello", system_prompt=None),
+    )
+    with pytest.raises(RuntimeError, match="prime-agent daemon log:\\ndaemon tail"):
+        await callback(RuntimeError("ACP failed"))
+
+    typed = SandboxError("sandbox unavailable")
+    assert await callback(typed) is None

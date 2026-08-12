@@ -250,7 +250,16 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             env=self._run_env(trace, secret),
             command=command,
             prompt=prompt,
+            on_error=lambda error: self._session_error(runtime, trace, error),
         )
+
+    async def _session_error(
+        self, runtime: Runtime, trace: Trace, error: BaseException
+    ) -> None:
+        """Attach Prime Agent daemon output to untyped live ACP turn failures."""
+        tail = await self.daemon_log_tail(runtime, trace)
+        if tail and not isinstance(error, RolloutError):
+            raise RuntimeError(f"{error}\n\nprime-agent daemon log:\n{tail}") from error
 
     async def launch(
         self,
@@ -445,36 +454,45 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         root = self.trace_root(trace)
         socket = f"{root}/daemon.sock"
         try:
-            # Stop this trace's daemon before deleting its state: a live worker
-            # would keep writing into a removed directory. `daemon` is in the
-            # CLI's REMOVED_COMMAND_NAMES, so the subcommand is plain `stop`.
-            stopped = await runtime.run(
-                [
-                    "sh",
-                    "-c",
-                    # Prepend the bundled Node inside the shell rather than passing
-                    # PATH in env: `docker exec --env PATH=...` REPLACES the image
-                    # PATH, and resolved_env usually has no PATH to fall back on.
-                    (
-                        f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
-                        f"exec {shlex.quote(self.prime_agent_bin())} stop "
-                        f"--daemon-socket {shlex.quote(socket)}"
-                    ),
-                ],
-                self._run_env(trace, ""),
-            )
-            if stopped.exit_code != 0:
-                # Keep the state directory: a failed stop may leave a live
-                # worker writing to it. Do not turn that failure into silent
-                # data loss by deleting the directory.
-                raise RuntimeError(
-                    "prime-agent: stopping the trace daemon failed "
-                    f"(exit {stopped.exit_code}): {stopped.stderr.strip()[-300:]}"
+            # Cleanup is also called after a failed launch, before a daemon ever
+            # creates its socket. Skip stop in that normal idempotent case, but
+            # retain state whenever an existing daemon cannot be stopped.
+            exists = await runtime.run(["test", "-S", socket], {})
+            if exists.exit_code == 0:
+                # Stop this trace's daemon before deleting its state: a live worker
+                # would keep writing into a removed directory. `daemon` is in the
+                # CLI's REMOVED_COMMAND_NAMES, so the subcommand is plain `stop`.
+                stopped = await runtime.run(
+                    [
+                        "sh",
+                        "-c",
+                        # Prepend the bundled Node inside the shell rather than passing
+                        # PATH in env: `docker exec --env PATH=...` REPLACES the image
+                        # PATH, and resolved_env usually has no PATH to fall back on.
+                        (
+                            f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
+                            f"exec {shlex.quote(self.prime_agent_bin())} stop "
+                            f"--daemon-socket {shlex.quote(socket)}"
+                        ),
+                    ],
+                    self._run_env(trace, ""),
                 )
+                if stopped.exit_code != 0:
+                    # Keep the state directory: a failed stop may leave a live
+                    # worker writing to it. Do not turn that failure into silent
+                    # data loss by deleting the directory.
+                    raise RuntimeError(
+                        "prime-agent: stopping the trace daemon failed "
+                        f"(exit {stopped.exit_code}): {stopped.stderr.strip()[-300:]}"
+                    )
         except Exception:
             logger.exception("prime-agent: daemon cleanup failed; retaining %s", root)
             raise
-        else:
-            # Remove only this trace's state and its per-trace socket directory;
-            # never remove the shared install. TMPDIR is created only in _prepare.
-            await runtime.run(["rm", "-rf", root, self.tmp_dir(trace)], {})
+        # Remove only this trace's state and its per-trace socket directory;
+        # never remove the shared install. TMPDIR is created only in _prepare.
+        removed = await runtime.run(["rm", "-rf", root, self.tmp_dir(trace)], {})
+        if removed.exit_code != 0:
+            raise RuntimeError(
+                "prime-agent: state cleanup failed "
+                f"(exit {removed.exit_code}): {removed.stderr.strip()[-300:]}"
+            )
