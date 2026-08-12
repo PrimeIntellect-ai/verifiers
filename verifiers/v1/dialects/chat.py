@@ -15,6 +15,7 @@ from typing import Any, cast
 from openai.types.chat import ChatCompletion
 from openai.types.chat.completion_create_params import CompletionCreateParams
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
@@ -22,7 +23,6 @@ from verifiers.v1.dialects.base import (
     blocked_url,
     parse_sse_event,
 )
-from verifiers.v1.runtimes.base import NetworkPolicyConfig
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,

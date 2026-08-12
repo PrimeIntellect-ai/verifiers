@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from pydantic import TypeAdapter
 
 from verifiers.v1.clients import Client, ModelContext
-from verifiers.v1.runtimes.base import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.trace import Trace
 
 if TYPE_CHECKING:

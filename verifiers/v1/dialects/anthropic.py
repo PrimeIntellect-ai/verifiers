@@ -16,6 +16,7 @@ from anthropic.types import Message as AnthropicMessage
 from anthropic.types import MessageCreateParams
 from anthropic.types import Usage as AnthropicUsage
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
@@ -25,7 +26,6 @@ from verifiers.v1.dialects.base import (
     parse_sse_event,
     provider_allowed_domains,
 )
-from verifiers.v1.runtimes.base import NetworkPolicyConfig
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,

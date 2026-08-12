@@ -18,6 +18,7 @@ from openai.types.responses import (
 from openai.types.responses.response_create_params import ResponseCreateParams
 from pydantic import BaseModel, ConfigDict
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     StreamParser,
@@ -27,7 +28,6 @@ from verifiers.v1.dialects.base import (
     narrow_domains,
     provider_allowed_domains,
 )
-from verifiers.v1.runtimes.base import NetworkPolicyConfig
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,

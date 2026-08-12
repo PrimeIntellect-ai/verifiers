@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import DIALECTS
 from verifiers.v1.errors import (
     HarnessError,
@@ -24,7 +25,6 @@ from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     ModalConfig,
-    NetworkPolicyConfig,
     Runtime,
     RuntimeConfig,
     make_runtime,

@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import h11
 
-from verifiers.v1.runtimes.base import network_rule_matches
+from verifiers.v1.configs.runtime import network_rule_matches
 
 HOST_ALIAS = "vf.host.internal"
 _HEADER_TIMEOUT = 10

@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel
 from pydantic_core import from_json
 
-from verifiers.v1.runtimes.base import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
