@@ -11,11 +11,10 @@ Dataset: `oolongbench/oolong-synth`.
 """
 
 import ast
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 import verifiers.v1 as vf
-
 from oolong_synth_v1.judge import OolongJudge, OolongJudgeConfig
 
 WORKDIR = "/workspace"
@@ -51,7 +50,7 @@ def parse_gold(answer_raw: str):
     """Parse the dataset's serialized gold answer (a list literal, or a wrapped date)."""
     if "datetime" not in answer_raw:
         return ast.literal_eval(answer_raw)[0]
-    return datetime.strptime(answer_raw, "[datetime.date(%Y, %m, %d)]")
+    return datetime.strptime(answer_raw, "[datetime.date(%Y, %m, %d)]").replace(tzinfo=timezone.utc)
 
 
 def score(answer_raw: str, answer_type: str, output: str) -> float:
@@ -65,15 +64,15 @@ def score(answer_raw: str, answer_type: str, output: str) -> float:
     elif answer_type == "ANSWER_TYPE.NUMERIC":
         try:
             return float(0.75 ** abs(int(gold) - int(trimmed_output)))
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            return 0.0
     elif answer_type == "ANSWER_TYPE.DATE":
         try:
             import dateutil.parser
 
             return 1.0 if dateutil.parser.parse(str(trimmed_output)) == gold else 0.0
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            return 0.0
     return 0.0
 
 
