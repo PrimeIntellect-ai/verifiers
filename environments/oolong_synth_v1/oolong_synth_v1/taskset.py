@@ -23,7 +23,21 @@ ANSWER_PATH = f"{WORKDIR}/answer.txt"
 
 # Valid oolong-synth context lengths (tokens). The two smallest are the most tractable; the real
 # long-context regime is the larger buckets.
-ContextLen = Literal[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 4194304]
+ContextLen = Literal[
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144,
+    524288,
+    1048576,
+    2097152,
+    4194304,
+]
 
 # Answer types the scorer gives partial credit for; every other type is exact-match (`""`).
 AnswerType = Literal["", "ANSWER_TYPE.NUMERIC", "ANSWER_TYPE.DATE"]
