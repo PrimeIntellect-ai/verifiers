@@ -16,6 +16,7 @@ from openai.types.responses import (
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
+from verifiers.v1.errors import model_error
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -136,6 +137,23 @@ def response_from_wire(response: OpenAIResponse) -> Response:
     """An OpenAI Responses object -> a vf `Response` (its `output` items folded into one
     assistant message)."""
     data = response.model_dump()
+    status = data.get("status")
+    if status not in (None, "completed", "incomplete"):
+        error = data.get("error") or {}
+        code = error.get("code") if isinstance(error, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        detail = ": ".join(str(value) for value in (status, code, message) if value)
+        status_code = (
+            429
+            if code in ("rate_limit_exceeded", "rate_limit_error")
+            else 400
+            if code in ("context_length_exceeded", "invalid_prompt")
+            else 502
+        )
+        raise model_error(
+            f"upstream Responses request did not complete: {detail}",
+            status_code=status_code,
+        )
     content = ""
     reasoning: list[str] = []
     calls: list[ToolCall] = []

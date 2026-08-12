@@ -679,6 +679,14 @@ class InterceptionServer(Interception):
                         await resp.write(event)
                     await resp.write_eof()
             return resp
+        except RolloutError as e:
+            # A streamed terminal provider failure is discovered only after the
+            # response body has been relayed. Keep it off the graph and preserve
+            # the typed cause for the rollout if the native SDK does not retry it.
+            if node is None:
+                error = e
+                session.error = e
+            raise
         except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit
             # error, a cancellation) ends a real exchange; couple it to the record unless
