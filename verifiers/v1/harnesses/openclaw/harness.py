@@ -159,6 +159,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                     "token": "${OPENCLAW_GATEWAY_TOKEN}",
                 },
             },
+            "messages": {"queue": {"mode": "interrupt"}},
             "agents": {
                 "defaults": {
                     "workspace": ".",
