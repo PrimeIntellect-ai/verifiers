@@ -77,6 +77,7 @@ class SubprocessProcess(RuntimeProcess):
 
 class SubprocessRuntime(Runtime):
     # Share prepared script environments across the worker's per-rollout runtimes.
+    scripts_dir: ClassVar[str] = str(CACHE_DIR / "runtimes" / "scripts")
     _interpreters: ClassVar[dict[str, str]] = {}
     _locks: ClassVar[dict[str, asyncio.Lock]] = {}
 

@@ -90,7 +90,7 @@ class EnvServerPool:
         self.multiplex = multiplex
         self.elastic = elastic
         self.log_setup = log_setup
-        self._ipc_dir = tempfile.mkdtemp(prefix="vf-pool-")
+        self._ipc_dir = tempfile.mkdtemp(prefix="vf-pool-", dir="/tmp")
         self.workers: list[dict] = []
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
