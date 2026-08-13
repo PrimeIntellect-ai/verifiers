@@ -29,7 +29,7 @@ Validate the config by using `uv run eval @ config.toml --dry-run`. To run the e
 
 Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0.5`. CLI arguments overwrite toml arguments when both are present.
 
-The output from evaluations are written into `outputs/<env>--<model>--<harness>/<uuid>/` by default, where `<env>` is the taskset, prefixed by the paired env id when `--env.id` sets one (use `output_dir` to overwrite the folder). The folder contains the used `config.toml`, all the episodes in `traces.jsonl`, as well as logs of the run and workers in `eval.log`.
+Evaluation output is written to `outputs/<env>--<agents>--<harness>/<uuid>/` by default. `<env>` is the taskset, prefixed by the paired env id when `--env.id` sets one. For one role, `<agents>` is its effective model. For multiple roles, it is every `role=model` pair in declaration order, joined with `+`. A role's effective model is its `env.<role>.model` override, or the run-level `model` fallback. The path is a readable label; `config.toml` and `traces.jsonl` are the authoritative provenance. Use `output_dir` to set an exact folder. The folder also contains logs of the run and workers in `eval.log`.
 
 ## Common config values
 

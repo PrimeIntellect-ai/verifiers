@@ -162,11 +162,16 @@ prime eval run my-task-v1 \
 Default output:
 
 ```text
-outputs/<env>--<model>--<harness>/<uuid>/
+outputs/<env>--<agents>--<harness>/<uuid>/
 ├── config.toml
 ├── traces.jsonl
 └── eval.log
 ```
+
+For one role, `<agents>` is its effective model. For multiple roles, it is every
+`role=model` pair in declaration order, joined with `+`. A role-specific model overrides
+the run-level fallback. Treat the folder name as a readable label; use `config.toml` and
+`traces.jsonl` for authoritative provenance.
 
 Set an exact path with `-o`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
 

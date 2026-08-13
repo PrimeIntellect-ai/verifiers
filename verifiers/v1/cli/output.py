@@ -11,9 +11,12 @@ before the episode atom (one bare trace per line) are still readable:
 """
 
 import asyncio
+import hashlib
 import json
+import re
 from functools import cache
 from pathlib import Path
+from urllib.parse import quote
 
 import tomli_w
 from pydantic import BaseModel, TypeAdapter
@@ -30,13 +33,46 @@ TRACES_FILE = "traces.jsonl"
 CONFIG_FILE = "config.toml"
 """Filename a run's resolved config is written to (re-runnable via `@ config.toml`)."""
 
+_MAX_OUTPUT_COMPONENT_BYTES = 200
+_OUTPUT_COMPONENT_DIGEST_LENGTH = 16
+
 # Compiling an adapter is the expensive part; run output reuses only a few model classes.
 type_adapter = cache(TypeAdapter)
 
 
+def _path_label(value: str) -> str:
+    """Make a role or model readable inside one path component."""
+    return quote(value.replace("/", "--"), safe="-._~")
+
+
+def _agent_label(config: EvalConfig) -> str:
+    """Describe effective models without repeating the role for a single-agent run."""
+    models = config.env.agent_models(config.model)
+    if len(models) <= 1:
+        return _path_label(next(iter(models.values()), config.model))
+    return "+".join(
+        f"{_path_label(role)}={_path_label(model)}" for role, model in models.items()
+    )
+
+
+def _bounded_output_component(component: str) -> str:
+    """Cap a readable output component and add a digest of its complete value."""
+    encoded = component.encode()
+    if len(encoded) <= _MAX_OUTPUT_COMPONENT_BYTES:
+        return component
+
+    digest = hashlib.sha256(encoded).hexdigest()[:_OUTPUT_COMPONENT_DIGEST_LENGTH]
+    suffix = f"--{digest}"
+    prefix_bytes = encoded[: _MAX_OUTPUT_COMPONENT_BYTES - len(suffix)]
+    prefix = prefix_bytes.decode(errors="ignore")
+    # Do not truncate a percent-encoded byte between its '%' and hex digits.
+    prefix = re.sub(r"%(?:[0-9A-Fa-f])?$", "", prefix)
+    return f"{prefix}{suffix}"
+
+
 def output_path(config: EvalConfig) -> Path:
-    """Where this run writes: `outputs/<env>--<model>--<harness>/<uuid>` (or the explicit
-    `--output-dir`). The per-run `uuid` leaf means runs never overwrite each other."""
+    """Where this run writes: `outputs/<env>--<agents>--<harness>/<uuid>` (or the
+    explicit `--output-dir`). The per-run `uuid` leaf prevents overwrites."""
     if config.output_dir is not None:
         return config.output_dir
     taskset = config.env.taskset
@@ -49,7 +85,9 @@ def output_path(config: EvalConfig) -> Path:
     harness = "+".join(
         dict.fromkeys(h.name for h in config.env.agent_harnesses().values())
     )
-    name = f"{env}--{config.model.replace('/', '--')}--{harness or 'default'}"
+    name = _bounded_output_component(
+        f"{env}--{_agent_label(config)}--{harness or 'default'}"
+    )
     return Path("outputs") / name / config.uuid
 
 

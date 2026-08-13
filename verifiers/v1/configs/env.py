@@ -76,6 +76,14 @@ class EnvConfig(BaseConfig):
             for name, cfg in _declared_agent_configs(self).items()
         }
 
+    def agent_models(self, run_model: str) -> dict[str, str]:
+        """Each declared role's effective model (pin, else the run model), in
+        declaration order — known without constructing the env."""
+        return {
+            name: cfg.model if cfg.model is not None else run_model
+            for name, cfg in _declared_agent_configs(self).items()
+        }
+
     @model_validator(mode="before")
     @classmethod
     def _refuse_env_level_harness(cls, data):

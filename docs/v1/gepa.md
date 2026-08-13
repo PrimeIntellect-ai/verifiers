@@ -35,7 +35,9 @@ Validate the config by using `uv run gepa @ config.toml --dry-run`. To run GEPA,
 
 ## Output
 
-Results go under `outputs/<env>--<model>--<harness>/<uuid>/`, matching `eval`.
+Results go under `outputs/<env>--<agents>--<harness>/<uuid>/`, matching `eval`. For
+one role, `<agents>` is its effective model. For multiple roles, it contains every
+`role=model` pair in declaration order.
 The best system prompt is printed when the run finishes and written to `best_system_prompt.txt` in that folder.
 
 Hand it back to eval or training via the config-layer taskset system prompt:
