@@ -47,8 +47,6 @@ class ACPConfig:
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
 
-    SUPPORTS_RESUME = True
-
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
             ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
@@ -168,8 +166,6 @@ class ACPHarnessSession(HarnessSession):
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
         self.config = config
-        self.prompt = config.prompt
-        self.system_prompt = config.system_prompt
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
         self._stderr_tail = bytearray()
@@ -198,25 +194,26 @@ class ACPHarnessSession(HarnessSession):
         return self._stderr_tail.decode(errors="replace").strip()
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
-        prompt = self.prompt if messages is None else messages
+        prompt = self.config.prompt if messages is None else messages
         if prompt is None:
             raise ValueError("ACP requires a prompt")
         if not isinstance(prompt, str) and (
             not prompt or any(message.role != "user" for message in prompt)
         ):
             raise ValueError("an ACP turn must contain user messages only")
-        wire_messages = (
-            [{"role": "user", "content": prompt}]
+        user_contents = (
+            [prompt]
             if isinstance(prompt, str)
             else [
-                message.model_dump(mode="json", exclude_none=True) for message in prompt
+                message.model_dump(mode="json", include={"content"})["content"]
+                for message in prompt
             ]
         )
         config = {
             "command": self.config.command,
-            "messages": wire_messages,
+            "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
-            "system_prompt": self.system_prompt or "",
+            "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "allow_empty_tool_reply": self.config.allow_empty_tool_reply,
         }

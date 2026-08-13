@@ -149,7 +149,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
         config = {
-            # Provider replay state must remain byte-exact in this isolated rollout transcript.
+            # Provider state must remain byte-exact within this isolated rollout.
             "logging": {"redactSensitive": "off"},
             "gateway": {
                 "mode": "local",
