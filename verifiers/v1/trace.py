@@ -146,7 +146,7 @@ class EvalRunInfo(BaseModel):
 
     id: str
     name: str | None = None
-    """Human-readable run name, consumer-stamped (e.g. the trainer's run directory name)."""
+    """Human-readable run name, consumer-stamped."""
     step: int | None = None
 
 
@@ -155,7 +155,7 @@ class TrainRunInfo(BaseModel):
 
     id: str
     name: str | None = None
-    """Human-readable run name, consumer-stamped (e.g. the trainer's run directory name)."""
+    """Human-readable run name, consumer-stamped."""
     step: int | None = None
 
 

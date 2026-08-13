@@ -87,7 +87,6 @@ __all__ = [
     "PrimeConfig",
     "PrimeRuntime",
     "PrimeRuntimeInfo",
-    "set_base_sandbox_labels",
     "ProgramResult",
     "Runtime",
     "RuntimeConfig",
@@ -99,4 +98,5 @@ __all__ = [
     "make_runtime",
     "provision_runtime",
     "runtime_is_local",
+    "set_base_sandbox_labels",
 ]

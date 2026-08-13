@@ -39,7 +39,7 @@ MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
 
-_base_labels: list[str] = []
+BASE_LABELS: list[str] = []
 
 
 def set_base_sandbox_labels(labels: list[str]) -> None:
@@ -47,8 +47,8 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
     runtime's ``PrimeConfig.labels``. Call it in the process that creates the sandboxes
     (env-server workers set it via their setup hook) — e.g. a trainer stamps its run
     name so every sandbox of a run is findable on the platform."""
-    global _base_labels
-    _base_labels = list(labels)
+    global BASE_LABELS
+    BASE_LABELS = list(labels)
 
 
 class PrimeConfig(NetworkPolicyConfig):
@@ -187,9 +187,7 @@ class PrimeRuntime(Runtime):
                 sandbox = await self._client.create(
                     CreateSandboxRequest(
                         name=self.name,
-                        labels=list(
-                            dict.fromkeys([*_base_labels, *self.config.labels])
-                        ),
+                        labels=list(dict.fromkeys([*BASE_LABELS, *self.config.labels])),
                         docker_image=self.config.image,
                         vm=self.config.vm,
                         guaranteed=self.config.guaranteed,
