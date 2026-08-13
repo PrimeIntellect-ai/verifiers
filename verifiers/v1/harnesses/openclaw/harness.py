@@ -326,6 +326,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
             session_path=f"{state_dir}/acp-session",
             # OpenClaw can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
+            trace=trace,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
