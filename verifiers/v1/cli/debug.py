@@ -193,7 +193,7 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
 
 async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     trace = Trace(
-        task=TraceTask(type=type(task).__name__, data=task.data),
+        task=TraceTask(type=type(task).__name__, data=task.data, hash=task.hash),
         state=state_cls(type(task))(),
         # No agent plays here (no model, no harness): the seat records the
         # runtime policy, and the provisioned box lands on it below (id, resolved

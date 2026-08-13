@@ -1,14 +1,6 @@
 """Resume primitives shared by eval-like CLIs."""
 
-import hashlib
-import json
-from collections.abc import Mapping
 from pathlib import Path
-
-
-def task_key(data: Mapping) -> str:
-    """Content identity for task wire data, independent of field order."""
-    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 def distribute(

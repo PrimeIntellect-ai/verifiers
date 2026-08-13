@@ -121,6 +121,8 @@ class TraceTask(BaseModel, Generic[DataT]):
     """The Task class name (`type(task).__name__`)."""
     data: DataT
     """The (immutable) row being solved."""
+    hash: str | None = None
+    """Content hash of `data` (`Task.hash`) — the task's identity across runs."""
 
 
 class Reward(BaseModel):

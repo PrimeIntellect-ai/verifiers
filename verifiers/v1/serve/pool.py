@@ -26,8 +26,8 @@ import logging
 import multiprocessing as mp
 import os
 import signal
+import tempfile
 import threading
-import uuid
 from collections.abc import Callable
 
 import msgpack
@@ -90,7 +90,7 @@ class EnvServerPool:
         self.multiplex = multiplex
         self.elastic = elastic
         self.log_setup = log_setup
-        self.session = uuid.uuid4().hex[:12]
+        self._ipc_dir = tempfile.mkdtemp(prefix="vf-pool-", dir="/tmp")
         self.workers: list[dict] = []
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
@@ -105,7 +105,7 @@ class EnvServerPool:
         self.address = self.frontend.getsockopt_string(zmq.LAST_ENDPOINT)
 
     def _worker_path(self, i: int) -> str:
-        return f"/tmp/vf-pool-{self.session}-{i}"
+        return f"{self._ipc_dir}/{i}"
 
     def _spawn_worker(self) -> None:
         i = len(self.workers)  # upscale-only, so the next index is the current count
@@ -241,6 +241,8 @@ class EnvServerPool:
                 w["dealer"].close()
             with contextlib.suppress(OSError):
                 os.unlink(self._worker_path(w["index"]))
+        with contextlib.suppress(OSError):
+            os.rmdir(self._ipc_dir)
         self.frontend.close()
         self.ctx.term()
         logger.info("EnvServerPool down")

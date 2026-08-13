@@ -8,25 +8,24 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.judge import Judges, check_judges, resolve_judges
 
 
-class FunctionConfig(BaseConfig):
-    """A function plugged in by import path."""
-
-    fn: str
-    """Import path to the function: `pkg.module.function`, `pkg.module:function`,
-    or `path/to/file.py:function`."""
-
-
-class DecoratedFunctionConfig(FunctionConfig):
+class DecoratedFunctionConfig(BaseConfig):
     """A plugged function standing in for a decorated task method."""
 
-    priority: int = 0
-    """Execution order, like the decorator's — higher runs first, ties break by name."""
+    fn: str | None = None
+    """Import path to the function: `pkg.module.function`, `pkg.module:function`,
+    or `path/to/file.py:function`. Unset keeps the task's decorated method with the
+    entry's name and only overrides its metadata (priority, weight)."""
+
+    priority: int | None = None
+    """Execution order, like the decorator's — higher runs first, ties break by name.
+    Unset keeps the replaced method's priority (0 for a fresh function)."""
 
 
 class RewardFunctionConfig(DecoratedFunctionConfig):
     """A plugged function standing in for a `@vf.reward` task method."""
 
-    weight: FiniteFloat = 1.0
+    weight: FiniteFloat | None = None
+    """Unset keeps the replaced method's weight (1.0 for a fresh function)."""
 
 
 class TaskConfig(BaseConfig):

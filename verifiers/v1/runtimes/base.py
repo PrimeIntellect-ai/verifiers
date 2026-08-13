@@ -134,6 +134,10 @@ class Runtime(ABC):
     subprocess and Docker (directly or through Docker's policy proxy); remote runtimes
     override to False and use a host `Tunnel` inward plus `expose` outward."""
 
+    scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
+    """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
+    the host subprocess runtime overrides this with its per-user cache."""
+
     info: BaseRuntimeInfo
 
     @property
@@ -235,7 +239,7 @@ class Runtime(ABC):
         """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
-        path = f"/tmp/vf-scripts/{digest}.py"
+        path = f"{self.scripts_dir}/{digest}.py"
         if digest not in self._uv_interpreters:
             async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
                 if digest not in self._uv_interpreters:

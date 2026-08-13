@@ -2,7 +2,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.acp import ACP
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
 from verifiers.v1.clients import (
     BaseClientConfig,
@@ -27,7 +27,6 @@ from verifiers.v1.configs.serve import (
 )
 from verifiers.v1.configs.task import (
     DecoratedFunctionConfig,
-    FunctionConfig,
     RewardFunctionConfig,
     TaskConfig,
 )
@@ -246,14 +245,14 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Taskset",
     "TaskConfig",
     "TasksetConfig",
-    "FunctionConfig",
     "DecoratedFunctionConfig",
     "RewardFunctionConfig",
     "BaseConfig",
     "Harness",
     "HarnessSession",
     "HarnessConfig",
-    "ACP",
+    "ACPConfig",
+    "ACPHarness",
     "ModelContext",
     "Runtime",
     "RuntimeProcess",

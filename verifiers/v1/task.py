@@ -10,7 +10,9 @@ initializes a task instance. Rides on `trace.task.data` in `traces.jsonl`.
 from __future__ import annotations
 
 import copy
+import hashlib
 import inspect
+import json
 import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
@@ -38,6 +40,11 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+
+def task_key(data: Mapping) -> str:
+    """Content identity for task wire data, independent of field order."""
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
 class TaskResources(BaseModel):
@@ -134,6 +141,12 @@ class Task(Generic[DataT, StateT, ConfigT]):
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else self.config_type()()
+
+    @property
+    def hash(self) -> str:
+        """Content hash of the task's wire data — the identity that matches saved
+        rollouts to tasks; recorded on the trace as `task.hash`."""
+        return task_key(self.data.model_dump(mode="json", exclude_none=True))
 
     def with_system_prompt(self, system_prompt: str) -> Self:
         clone = copy.copy(self)
@@ -234,8 +247,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     def hooks(self, attr: str) -> list[Callable[..., Any]]:
         """The task's `@vf.<attr>` methods merged with the config-plugged functions —
-        a plugged function replaces a decorated method with the same name — sorted by
-        descending priority then name."""
+        a plugged function replaces a decorated method with the same name (a `fn`-less
+        entry only overrides its metadata) — sorted by descending priority then name."""
         from verifiers.v1.utils.loaders import load_plugged_fn
 
         plugged = {
@@ -245,7 +258,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
         }[attr]
         merged = {fn.__name__: fn for fn in discover_decorated(self, attr)}
         merged |= {
-            name: load_plugged_fn(name, spec, attr) for name, spec in plugged.items()
+            name: load_plugged_fn(name, spec, attr, decorated=merged.get(name))
+            for name, spec in plugged.items()
         }
         fns = list(merged.values())
         fns.sort(key=lambda fn: (-getattr(fn, f"{attr}_priority", 0), fn.__name__))

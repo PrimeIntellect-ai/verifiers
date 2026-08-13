@@ -37,6 +37,8 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         "te",
         "trailer",
         "upgrade",
+        # Provider affinity must not compete with the rollout-wide session header below.
+        "session_id",
         # The eval owns the model and sampling settings, so it changes those JSON fields before
         # sending upstream. Hashes and signatures calculated from the intercepted body are stale.
         "content-digest",

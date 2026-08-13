@@ -227,7 +227,9 @@ class ChatStreamParser(StreamParser):
     tool_calls: dict[int, dict] = dataclass_field(default_factory=dict)
     tool_arguments: dict[int, list[str]] = dataclass_field(default_factory=dict)
     reasoning_details: list[dict] = dataclass_field(default_factory=list)
-    reasoning_detail_parts: dict[int, list[str]] = dataclass_field(default_factory=dict)
+    reasoning_detail_parts: dict[int, tuple[str, list[str]]] = dataclass_field(
+        default_factory=dict
+    )
     finish_reason: str | None = None
     usage: dict | None = None
     head: dict | None = None
@@ -249,15 +251,29 @@ class ChatStreamParser(StreamParser):
                     self.message_parts[key].append(delta[key])
             for detail in delta.get("reasoning_details") or []:
                 previous = self.reasoning_details[-1] if self.reasoning_details else {}
-                if detail.get("type") == previous.get("type") == "reasoning.text":
+                detail_type = detail.get("type")
+                content_field = {
+                    "reasoning.summary": "summary",
+                    "reasoning.text": "text",
+                }.get(detail_type)
+                if (
+                    content_field
+                    and detail_type == previous.get("type")
+                    and all(
+                        previous.get(field_name) is None
+                        or detail.get(field_name) is None
+                        or previous[field_name] == detail[field_name]
+                        for field_name in ("id", "index", "format")
+                    )
+                ):
                     self.reasoning_detail_parts.setdefault(
                         len(self.reasoning_details) - 1,
-                        [previous.get("text") or ""],
-                    ).append(detail.get("text") or "")
-                    for field_name in ("signature", "format"):
-                        previous[field_name] = previous.get(field_name) or detail.get(
-                            field_name
-                        )
+                        (content_field, [previous.get(content_field) or ""]),
+                    )[1].append(detail.get(content_field) or "")
+                    for field_name in ("id", "index", "signature", "format"):
+                        value = previous.get(field_name) or detail.get(field_name)
+                        if value is not None:
+                            previous[field_name] = value
                 else:
                     self.reasoning_details.append(detail)
             for tool_call in delta.get("tool_calls") or []:
@@ -278,8 +294,8 @@ class ChatStreamParser(StreamParser):
         for key, parts in self.message_parts.items():
             if parts:
                 self.message[key] = "".join(parts)
-        for index, parts in self.reasoning_detail_parts.items():
-            self.reasoning_details[index]["text"] = "".join(parts)
+        for index, (content_field, parts) in self.reasoning_detail_parts.items():
+            self.reasoning_details[index][content_field] = "".join(parts)
         for index, parts in self.tool_arguments.items():
             self.tool_calls[index]["function"]["arguments"] = "".join(parts)
         if self.tool_calls:

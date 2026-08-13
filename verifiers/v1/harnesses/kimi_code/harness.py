@@ -1,16 +1,16 @@
-"""Kimi receives interception through `KIMI_MODEL_*` and runs through native ACP."""
+"""Run Kimi Code's native ACP server against interception."""
 
-import json
 import logging
 import shlex
+from typing import Literal
 
+import tomli_w
 from pydantic import Field
 
-from verifiers.v1.acp import ACP
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -18,11 +18,7 @@ logger = logging.getLogger(__name__)
 
 BINARY = "/tmp/vf-kimi-code/bin/kimi"
 KIMI_HOME = ".vf-kimi-code"
-ACP_COMMAND = [
-    "sh",
-    "-c",
-    f'KIMI_CODE_HOME="$PWD/$KIMI_CODE_HOME" exec {BINARY} acp',
-]
+ACP_COMMAND = [BINARY, "acp"]
 SKILLS_DIR = f"{KIMI_HOME}/skills"
 
 INSTALL = r"""
@@ -41,18 +37,19 @@ env \
     bash "$installer"
 """
 
-KIMI_ACP = ACP()
-
 
 class KimiCodeHarnessConfig(HarnessConfig):
     version: str = Field(default="0.34.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Kimi Code release to install, pinned for reproducibility."""
+    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
+        "chat_completions"
+    )
+    """Model API transport."""
 
 
-class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
+class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -71,9 +68,9 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             raise RuntimeError(
                 f"Kimi Code install failed: {install.stderr.strip()[-500:]}"
             )
-        await KIMI_ACP.setup(self, runtime)
+        await super().setup(runtime)
 
-    async def launch(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -82,54 +79,53 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(data)
+    ) -> ACPConfig:
         kimi_home = f"{KIMI_HOME}/{trace.id}"
-        if self.config.skills:
-            skill_home = f"{kimi_home}/skills"
-            for command in (
-                ["rm", "-rf", skill_home],
-                ["mkdir", "-p", kimi_home],
-                ["cp", "-R", SKILLS_DIR, skill_home],
-            ):
-                copied = await runtime.run(command, {})
-                if copied.exit_code != 0:
-                    raise RuntimeError(
-                        f"failed to stage Kimi skills: {copied.stderr.strip()[-500:]}"
-                    )
-        env = {
-            **self.config.resolved_env,
-            "KIMI_CODE_HOME": kimi_home,
-            "KIMI_MODEL_NAME": ctx.model,
-            "KIMI_MODEL_API_KEY": secret,
-            "KIMI_MODEL_PROVIDER_TYPE": "openai",
-            "KIMI_MODEL_BASE_URL": endpoint,
-            "KIMI_MODEL_CAPABILITIES": "tool_use",
-            "KIMI_DISABLE_TELEMETRY": "1",
-            "KIMI_CODE_NO_AUTO_UPDATE": "1",
-        }
-        # Values are Kimi permission patterns such as `Bash` or `Bash(rm -rf*)`.
-        # https://moonshotai.github.io/kimi-code/en/configuration/config-files#permission
-        permission_rules = "\n".join(
-            "\n".join(
-                (
-                    "[[permission.rules]]",
-                    'decision = "deny"',
-                    'scope = "user"',
-                    f"pattern = {json.dumps(tool)}",
-                    'reason = "Disabled by Verifiers harness configuration."',
-                )
-            )
-            for tool in self.config.disabled_tools or []
+        provider_type = {
+            "chat_completions": "openai",
+            "responses": "openai_responses",
+            "anthropic_messages": "anthropic",
+        }[self.config.transport]
+        base_url = (
+            endpoint.removesuffix("/v1")
+            if self.config.transport == "anthropic_messages"
+            else endpoint
         )
-        if permission_rules:
-            await runtime.write(f"{kimi_home}/config.toml", permission_rules.encode())
-        return await KIMI_ACP.run(
-            runtime,
-            env,
-            ACP_COMMAND,
-            prompt,
-            mcp_urls=mcp_urls,
+        config = {
+            "extra_skill_dirs": [SKILLS_DIR] if self.config.skills else [],
+            **(
+                {
+                    "permission": {
+                        "rules": [
+                            {
+                                "decision": "deny",
+                                "scope": "user",
+                                "pattern": tool,
+                                "reason": "Disabled by Verifiers harness configuration.",
+                            }
+                            for tool in self.config.disabled_tools
+                        ]
+                    }
+                }
+                if self.config.disabled_tools
+                else {}
+            ),
+        }
+        await runtime.write(f"{kimi_home}/config.toml", tomli_w.dumps(config).encode())
+
+        system_prompt, prompt = self.resolve_prompt(data)
+        return ACPConfig(
+            env={
+                **self.config.resolved_env,
+                "KIMI_CODE_HOME": kimi_home,
+                "KIMI_MODEL_NAME": ctx.model,
+                "KIMI_MODEL_API_KEY": secret,
+                "KIMI_MODEL_BASE_URL": base_url,
+                "KIMI_MODEL_PROVIDER_TYPE": provider_type,
+                "KIMI_DISABLE_TELEMETRY": "1",
+                "KIMI_CODE_NO_AUTO_UPDATE": "1",
+            },
+            command=ACP_COMMAND,
+            prompt=prompt,
             system_prompt=system_prompt,
-            session_path=f"{kimi_home}/acp-session",
         )
