@@ -22,12 +22,18 @@ def test_bare_trace_round_trip():
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=3, prompt="hello")),
+        task=vf.TraceTask(
+            type="Task",
+            data=vf.TaskData(idx=3, prompt="hello"),
+            key="dataset/example-3",
+            hash="content-digest",
+        ),
     )
     rt = vf.Trace.model_validate(tr.model_dump())
     assert rt.id == tr.id
     assert rt.task.type == "Task"
     assert rt.task.data.idx == 3 and rt.task.data.prompt == "hello"
+    assert rt.task.key == "dataset/example-3" and rt.task.hash == "content-digest"
     assert rt.num_turns == 0 and rt.num_branches == 0
     assert rt.reward == 0.0 and rt.errors == []
 
