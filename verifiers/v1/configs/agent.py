@@ -6,7 +6,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig
+from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 from verifiers.v1.types import SamplingConfig
 
 
@@ -26,7 +26,7 @@ class TimeoutConfig(BaseConfig):
 class AgentConfig(BaseConfig):
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
-    runtime: RuntimeConfig = SubprocessConfig()
+    runtime: RuntimeConfig = PrimeConfig()
     """Runtime for the harness program — the policy each run provisions its box
     from; tool servers choose their placement separately."""
 

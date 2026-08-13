@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic_config import cli
 
 from verifiers.v1.configs.cli.init import InitConfig
+from verifiers.v1.utils.prime_config import ensure_prime_auth
 
 USAGE = (
     "usage: uv run init <name> [--path ./environments] [-T/--add-tool] "
@@ -257,6 +258,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.argv = [sys.argv[0], "--help"]
         cli(InitConfig)
         return
+    ensure_prime_auth()
 
     sys.argv = [sys.argv[0], *argv]
     config = cli(InitConfig)

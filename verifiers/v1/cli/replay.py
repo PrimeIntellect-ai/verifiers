@@ -35,6 +35,7 @@ from verifiers.v1.task import Task, WireTaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.prime_config import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.argv = [sys.argv[0], "--help"]
         cli(ReplayConfig)  # full, typed pydantic-config option help
         return
+    ensure_prime_auth()
     source = Path(argv.pop(0))
     config_path = source / CONFIG_FILE
     if not config_path.exists():

@@ -21,6 +21,7 @@ from verifiers.v1.cli.resume import split_resume
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.prime_config import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(EvalConfig, argv)
             )  # full option help, narrowed to the given ids
         return
+    ensure_prime_auth()
     resume_dir, rest = split_resume(argv, "eval")
     # re-run a previous run's missing/errored rollouts, in place
     if resume_dir is not None:

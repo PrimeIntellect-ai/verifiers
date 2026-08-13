@@ -46,7 +46,7 @@ class PrimeConfig(NetworkPolicyConfig):
     ~10 minutes) and caches the result, so later sandboxes on the same ref start in
     seconds."""
     workdir: str = "/app"
-    vm: bool = False
+    vm: bool = True
     """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
     guaranteed: bool = False
     """Request guaranteed (vs best-effort) capacity."""

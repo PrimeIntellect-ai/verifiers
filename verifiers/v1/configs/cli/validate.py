@@ -7,7 +7,7 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
+from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
 
 class CheckTimeoutConfig(BaseConfig):
@@ -23,7 +23,7 @@ class ValidateConfig(BaseConfig):
     """Auto-generated run id — the default output directory leaf. Excluded from the
     saved config so re-running it starts a fresh run."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    runtime: RuntimeConfig = DockerConfig()
+    runtime: RuntimeConfig = PrimeConfig()
     """Where each task's validation hooks run."""
     timeout: CheckTimeoutConfig = CheckTimeoutConfig()
     only_setup: bool = False

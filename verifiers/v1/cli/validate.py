@@ -37,6 +37,7 @@ from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.prime_config import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
@@ -476,6 +477,7 @@ def main(argv: list[str] | None = None) -> None:
         with plugin_errors():
             cli(_narrow(argv))  # full option help, narrowed to the given taskset
         return
+    ensure_prime_auth()
     resume_dir, rest = split_resume(argv, "validate")
     if resume_dir is not None:
         if rest:

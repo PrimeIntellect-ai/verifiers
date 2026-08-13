@@ -25,6 +25,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.gepa import GEPAConfig, run_gepa
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.prime_config import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> None:
                 narrow_config(GEPAConfig, argv)
             )  # full option help, narrowed to the given ids
         return
+    ensure_prime_auth()
     typed_axis = any(a.startswith(("--env.", "--taskset.", "--harness.")) for a in argv)
     if (
         not extract_id(argv, "env.taskset")
