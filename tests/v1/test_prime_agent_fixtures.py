@@ -332,7 +332,9 @@ def _cleanup_result(exit_code=0, stderr="", *, timed_out=False):
 @pytest.mark.asyncio
 async def test_prime_agent_cleanup_checks_both_deletion_results(prime_agent_cleanup):
     harness, trace = prime_agent_cleanup
-    runtime = _CleanupRuntime([_cleanup_result(1), _cleanup_result(), _cleanup_result()])
+    runtime = _CleanupRuntime(
+        [_cleanup_result(1), _cleanup_result(), _cleanup_result()]
+    )
 
     await harness.cleanup(trace, runtime)
 
@@ -436,7 +438,9 @@ async def test_prime_agent_cleanup_stop_failure_prevents_deletion(prime_agent_cl
     from verifiers.v1.errors import SandboxError
 
     harness, trace = prime_agent_cleanup
-    runtime = _CleanupRuntime([_cleanup_result(0), _cleanup_result(exit_code=1, stderr="still live")])
+    runtime = _CleanupRuntime(
+        [_cleanup_result(0), _cleanup_result(exit_code=1, stderr="still live")]
+    )
 
     with pytest.raises(SandboxError, match="daemon stop"):
         await harness.cleanup(trace, runtime)
