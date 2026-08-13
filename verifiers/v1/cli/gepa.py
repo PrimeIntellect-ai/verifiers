@@ -14,7 +14,7 @@ import sys
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.output import output_path, write_config
+from verifiers.v1.cli.output import TRACES_FILE, output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -72,6 +72,15 @@ def main(argv: list[str] | None = None) -> None:
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return
+
+    # A named run directory is never silently reused: a second run writing into it
+    # would overwrite its results.
+    traces_file = output_path(config) / TRACES_FILE
+    if traces_file.exists() and traces_file.stat().st_size > 0:
+        raise SystemExit(
+            f"run directory {output_path(config)} already contains results - "
+            "pick another --run.name or delete it"
+        )
 
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out run still
     # runs the runner's `serving()` teardown (interception / tool-server runtimes); further

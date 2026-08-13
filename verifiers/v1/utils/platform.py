@@ -234,7 +234,7 @@ def push_traces(
     num_examples = len({t.task.data.idx for t in traces})
     metadata = {
         "framework": "verifiers",
-        "run_id": config.uuid,
+        "run_id": config.run.id,
         "model": config.model,
         "num_examples": num_examples,
         "rollouts_per_example": config.num_rollouts,
@@ -284,7 +284,7 @@ def push_traces(
             eval_id = post(
                 "/evaluations/",
                 {
-                    "name": f"{env_name}--{config.model}--{config.uuid[:8]}",
+                    "name": config.run.name,
                     "environments": [{"id": env_id}],
                     "model_name": config.model,
                     "dataset": env_name,

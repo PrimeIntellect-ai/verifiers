@@ -73,7 +73,7 @@ async def run_eval(env: Env, config: EvalConfig) -> list[Episode]:
 
     async def on_complete(episode: Episode) -> None:
         for trace in episode.traces:
-            trace.record_run(EvalRunInfo(id=config.uuid))
+            trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
 
     # Serving resources (shared tool servers, interception) come up once for the
@@ -206,7 +206,7 @@ async def run_eval_server(config: EvalConfig) -> list[Episode]:
                     **payload,
                 )
             for trace in episode.traces:
-                trace.record_run(EvalRunInfo(id=config.uuid))
+                trace.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
             await append_episode(out, episode, write_lock)
             return [episode]
 

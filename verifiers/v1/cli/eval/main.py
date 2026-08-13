@@ -9,7 +9,7 @@ from pydantic_config import cli
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.resume import load_resume_config
 from verifiers.v1.cli.eval.runner import run_eval
-from verifiers.v1.cli.output import output_path, write_config
+from verifiers.v1.cli.output import TRACES_FILE, output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -76,6 +76,18 @@ def main(argv: list[str] | None = None) -> None:
             setup_logging("DEBUG" if config.verbose else "INFO")
             logger.info("wrote config to %s", write_config(config, output_path(config)))
             return
+    # A named run directory is reused only by `--resume`: a second run writing into it
+    # would overwrite its results.
+    traces_file = output_path(config) / TRACES_FILE
+    if (
+        config.resume is None
+        and traces_file.exists()
+        and traces_file.stat().st_size > 0
+    ):
+        raise SystemExit(
+            f"run directory {output_path(config)} already contains results - resume it with "
+            f"`uv run eval --resume {output_path(config)}`, pick another --run.name, or delete it"
+        )
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process run
     # slots, so it's in-process only (`server + rich` is rejected at config validation).

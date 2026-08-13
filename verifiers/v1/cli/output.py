@@ -22,7 +22,6 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode, WireEpisode
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.install import env_name
 
 TRACES_FILE = "traces.jsonl"
 """Filename a run's rollout episodes are written to (one JSON episode per line)."""
@@ -35,22 +34,10 @@ type_adapter = cache(TypeAdapter)
 
 
 def output_path(config: EvalConfig) -> Path:
-    """Where this run writes: `outputs/<env>--<model>--<harness>/<uuid>` (or the explicit
-    `--output-dir`). The per-run `uuid` leaf means runs never overwrite each other."""
-    if config.output_dir is not None:
-        return config.output_dir
-    taskset = config.env.taskset
-    env = taskset.name if taskset.id else "no-taskset"
-    if taskset.id and config.env.id:
-        # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
-        # not share a parent dir with a plain `gsm8k` one.
-        env = f"{env_name(config.env.id)}+{env}"
-    # Every seat's resolved harness, distinct, in role order.
-    harness = "+".join(
-        dict.fromkeys(h.name for h in config.env.agent_harnesses().values())
-    )
-    name = f"{env}--{config.model.replace('/', '--')}--{harness or 'default'}"
-    return Path("outputs") / name / config.uuid
+    """Where this run writes: `output_dir / run.name` — the same grouping convention as
+    training. The run name is auto-generated (`<env>--<model>--<harness>`) unless set."""
+    assert config.run.name is not None
+    return config.output_dir / config.run.name
 
 
 def write_config(config: BaseModel, results_dir: Path) -> Path:

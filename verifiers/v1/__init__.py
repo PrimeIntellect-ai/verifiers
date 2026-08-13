@@ -69,7 +69,6 @@ from verifiers.v1.runtimes import (
     RuntimeInfo,
     RuntimeProcess,
     SubprocessConfig,
-    set_base_sandbox_labels,
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
@@ -275,7 +274,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SubprocessConfig",
     "DockerConfig",
     "PrimeConfig",
-    "set_base_sandbox_labels",
     "Env",
     "SingleAgentEnv",
     "EnvConfig",
