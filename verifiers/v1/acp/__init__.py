@@ -201,8 +201,10 @@ class ACPHarnessSession(HarnessSession):
         prompt = self.prompt if messages is None else messages
         if prompt is None:
             raise ValueError("ACP requires a prompt")
-        if not isinstance(prompt, str) and (
-            not prompt or any(message.role != "user" for message in prompt)
+        if (
+            messages is not None
+            and not isinstance(prompt, str)
+            and (not prompt or any(message.role != "user" for message in prompt))
         ):
             raise ValueError("an ACP turn must contain user messages only")
         wire_messages = (
