@@ -3,6 +3,7 @@
 import json
 import logging
 import shlex
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -10,7 +11,12 @@ from pydantic import Field
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import (
+    NODE_BIN_DIR,
+    ensure_node,
+    node_patch_id,
+    prepare_node_patch,
+)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -28,20 +34,20 @@ ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
+SESSION_IMPORT_PATCH = Path(__file__).with_name("session_import.patch").read_bytes()
+SESSION_IMPORT_PATCH_ID = node_patch_id(SESSION_IMPORT_PATCH)
 
 INSTALL = r"""
 set -e
 packages=/var/tmp/vf-pi/mcp
 export PATH="/var/tmp/vf-node/bin:$PATH"
 
-versions="$VF_PI_VERSION:$VF_PI_MCP_VERSION:$VF_PI_ACP_VERSION"
-if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
-    npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
-        "@earendil-works/pi-coding-agent@$VF_PI_VERSION" \
-        "pi-mcp-adapter@$VF_PI_MCP_VERSION" \
-        "pi-acp@$VF_PI_ACP_VERSION" >/dev/null
-    printf %s "$versions" > "$packages/.versions"
-fi
+rm -rf "$packages/node_modules/pi-acp"
+npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
+    "@earendil-works/pi-coding-agent@$VF_PI_VERSION" \
+    "pi-mcp-adapter@$VF_PI_MCP_VERSION" \
+    "pi-acp@$VF_PI_ACP_VERSION" >/dev/null
+$VF_PI_ACP_PATCH
 """
 
 
@@ -69,6 +75,16 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             self.config.version,
             ACP_VERSION,
         )
+        ready = (
+            f"{PI_DIR}/.ready-{self.config.version}-{MCP_VERSION}-{ACP_VERSION}-"
+            f"{SESSION_IMPORT_PATCH_ID}"
+        )
+        patch = await prepare_node_patch(
+            runtime,
+            PI_DIR,
+            f"{PACKAGES_DIR}/node_modules/pi-acp/dist/index.js",
+            SESSION_IMPORT_PATCH,
+        )
         lock = f"{PI_DIR}/install.lock"
         guarded = (
             f"mkdir -p {PI_DIR} && "
@@ -78,7 +94,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             f'[ "$(readlink {lock})" != "$owner" ] || rm -f {lock}; fi; '
             f"sleep 0.1; done; "
             f'trap \'[ "$(readlink {lock})" != "$$" ] || rm -f {lock}\' EXIT; '
-            f"sh -c {shlex.quote(INSTALL)}"
+            f"[ -f {ready} ] || (sh -c {shlex.quote(INSTALL)} && touch {ready})"
         )
         install = await runtime.run(
             ["sh", "-c", guarded],
@@ -86,6 +102,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 "VF_PI_VERSION": self.config.version,
                 "VF_PI_MCP_VERSION": MCP_VERSION,
                 "VF_PI_ACP_VERSION": ACP_VERSION,
+                "VF_PI_ACP_PATCH": patch,
             },
         )
         if install.exit_code != 0:
@@ -166,6 +183,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             "PI_CODING_AGENT_DIR": agent_dir,
             "PI_OFFLINE": "1",
             "PI_TELEMETRY": "0",
+            "PI_ACP_CODING_AGENT_MODULE": f"{PACKAGES_DIR}/node_modules/@earendil-works/pi-coding-agent/dist/index.js",
         }
         skill_args = [
             arg

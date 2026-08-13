@@ -1,0 +1,203 @@
+--- tools/node/lib/node_modules/openclaw/dist/acp-cli-BXc5GttU.js
++++ tools/node/lib/node_modules/openclaw/dist/acp-cli-BXc5GttU.js
+@@ -22,2 +22,6 @@
+-import { i as getRuntimeConfig } from "./io-By0s-a_s.js";
++import { i as getRuntimeConfig } from "./io-By0s-a_s.js";
++import { t as resolveModel } from "./model-wpoKGSDF.js";
++import { p as deleteSessionEntryLifecycle } from "./session-accessor-D7yi6P1i.js";
++import { resolveStorePath, upsertSessionEntry } from "./plugin-sdk/session-store-runtime.js";
++import { resolveSessionTranscriptLegacyFileTarget, withSessionTranscriptWriteLock } from "./plugin-sdk/session-transcript-runtime.js";
+-import { i as omitEnvKeysCaseInsensitive, n as listKnownProviderAuthEnvVarNames } from "./provider-env-vars-BDpb07cq.js";
++import { i as omitEnvKeysCaseInsensitive, n as listKnownProviderAuthEnvVarNames } from "./provider-env-vars-BDpb07cq.js";
+@@ -1851,2 +1855,164 @@
+-const ACP_GATEWAY_DISCONNECT_GRACE_MS = 5e3;
++const ACP_GATEWAY_DISCONNECT_GRACE_MS = 5e3;
++const SESSION_IMPORT_KEY = "verifiers.dev/sessionImport";
++const SESSION_IMPORT_VERSION = 1;
++function importTextContent(content) {
++	if (typeof content === "string") return content;
++	if (content.some((part) => part.type !== "text")) throw new Error("OpenClaw session import supports text content only.");
++	return content.map((part) => ({
++		type: "text",
++		text: part.text
++	}));
++}
++function prepareSessionImport(meta) {
++	if (!meta || typeof meta !== "object" || !(SESSION_IMPORT_KEY in meta)) return null;
++	const extension = meta[SESSION_IMPORT_KEY];
++	if (!extension || typeof extension !== "object" || extension.version !== SESSION_IMPORT_VERSION || !Array.isArray(extension.messages)) throw new Error(`${SESSION_IMPORT_KEY} requires version 1 and messages.`);
++	const config = getRuntimeConfig();
++	const primary = config.agents?.defaults?.model?.primary;
++	if (typeof primary !== "string" || !primary.includes("/")) throw new Error("OpenClaw session import requires a configured primary model.");
++	const separator = primary.indexOf("/");
++	const resolved = resolveModel(primary.slice(0, separator), primary.slice(separator + 1), void 0, config);
++	if (!resolved.model) throw new Error(resolved.error ?? `Unknown model: ${primary}`);
++	const model = resolved.model;
++	const timestamp = Date.now();
++	const messages = [];
++	const pendingTools = /* @__PURE__ */ new Map();
++	let expectedRole = "user";
++	for (const [index, raw] of extension.messages.entries()) {
++		if (raw.role !== expectedRole) throw new Error(`OpenClaw session import expected ${expectedRole} at message ${index}.`);
++		if (raw.role === "user") {
++			messages.push({
++				role: "user",
++				content: importTextContent(raw.content),
++				timestamp: timestamp + index
++			});
++			expectedRole = "assistant";
++			continue;
++		}
++		if (raw.role === "tool") {
++			const tool = pendingTools.get(raw.tool_call_id);
++			if (!tool || raw.name != null && raw.name !== tool.name) throw new Error(`OpenClaw session import has no matching tool call for ${String(raw.tool_call_id)}.`);
++			const content = importTextContent(raw.content);
++			messages.push({
++				role: "toolResult",
++				toolCallId: raw.tool_call_id,
++				toolName: tool.name,
++				content: typeof content === "string" ? [{
++					type: "text",
++					text: content
++				}] : content,
++				isError: false,
++				timestamp: timestamp + index
++			});
++			pendingTools.delete(raw.tool_call_id);
++			if (pendingTools.size === 0) expectedRole = "assistant";
++			continue;
++		}
++		if (raw.reasoning_content != null || raw.provider_state?.length) throw new Error("OpenClaw session import does not yet support assistant reasoning state.");
++		const blocks = [];
++		if (raw.content != null) blocks.push({
++			type: "text",
++			text: raw.content
++		});
++		for (const call of raw.tool_calls ?? []) {
++			if (pendingTools.has(call.id)) throw new Error(`OpenClaw session import has duplicate tool call ${call.id}.`);
++			if (!/^[a-zA-Z0-9_-]{1,64}$/.test(call.id)) throw new Error(`OpenClaw session import cannot preserve tool call ID ${call.id}.`);
++			let args;
++			try {
++				args = JSON.parse(call.arguments);
++			} catch {
++				throw new Error(`OpenClaw session import tool call ${call.id} has invalid JSON arguments.`);
++			}
++			if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error(`OpenClaw session import tool call ${call.id} arguments must be an object.`);
++			if (model.api !== "anthropic-messages" && JSON.stringify(args) !== call.arguments) throw new Error(`OpenClaw session import tool call ${call.id} requires canonical JSON arguments.`);
++			blocks.push({
++				type: "toolCall",
++				id: call.id,
++				name: call.name,
++				arguments: args
++			});
++			pendingTools.set(call.id, call);
++		}
++		if (blocks.length === 0) throw new Error("OpenClaw session import assistant messages cannot be empty.");
++		messages.push({
++			role: "assistant",
++			content: blocks,
++			api: model.api,
++			provider: model.provider,
++			model: model.id,
++			usage: {
++				input: 0,
++				output: 0,
++				cacheRead: 0,
++				cacheWrite: 0,
++				totalTokens: 0,
++				cost: {
++					input: 0,
++					output: 0,
++					cacheRead: 0,
++					cacheWrite: 0,
++					total: 0
++				}
++			},
++			stopReason: pendingTools.size ? "toolUse" : "stop",
++			timestamp: timestamp + index
++		});
++		expectedRole = pendingTools.size ? "tool" : "user";
++	}
++	if (pendingTools.size) throw new Error("OpenClaw session import ends with pending tool calls.");
++	return { config, messages, model };
++}
++async function writeSessionImport(sessionImport, session) {
++	const now = Date.now();
++	const agentId = "main";
++	const storePath = resolveStorePath(void 0, { agentId });
++	let sessionFile;
++	try {
++		await upsertSessionEntry({
++			agentId,
++			sessionKey: session.sessionKey,
++			storePath,
++			entry: {
++				sessionId: session.sessionId,
++				updatedAt: now,
++				sessionStartedAt: now,
++				modelProvider: sessionImport.model.provider,
++				model: sessionImport.model.id
++			}
++		});
++		sessionFile = (await resolveSessionTranscriptLegacyFileTarget({
++			agentId,
++			sessionId: session.sessionId,
++			sessionKey: session.sessionKey,
++			storePath
++		})).sessionFile;
++		await withSessionTranscriptWriteLock({
++			config: sessionImport.config,
++			sessionFile,
++			sessionId: session.sessionId,
++			sessionKey: session.sessionKey,
++			storePath
++		}, async ({ appendMessage }) => {
++			for (const message of sessionImport.messages) await appendMessage({
++				message,
++				cwd: session.cwd
++			});
++		});
++	} catch (error) {
++		const cleanup = deleteSessionEntryLifecycle({
++			agentId,
++			archiveTranscript: false,
++			expectedSessionId: session.sessionId,
++			storePath,
++			target: {
++				canonicalKey: session.sessionKey,
++				storeKeys: [session.sessionKey]
++			}
++		});
++		const transcriptCleanup = sessionFile ? fs$1.rm(sessionFile, { force: true }) : Promise.resolve();
++		const cleanupFailures = (await Promise.allSettled([cleanup, transcriptCleanup])).filter((result) => result.status === "rejected").map((result) => result.reason);
++		if (cleanupFailures.length) throw new AggregateError([error, ...cleanupFailures], "OpenClaw session import failed and cleanup was incomplete.");
++		throw error;
++	}
++}
+-function normalizedChatSendAckStatus(status) {
++function normalizedChatSendAckStatus(status) {
+@@ -1995,2 +2161,5 @@
+-			agentCapabilities: {
++			agentCapabilities: {
++				_meta: {
++					[SESSION_IMPORT_KEY]: { version: SESSION_IMPORT_VERSION }
++				},
+-				loadSession: true,
++				loadSession: true,
+@@ -2017,2 +2186,3 @@
+-		this.assertSupportedSessionSetup(params.mcpServers);
++		this.assertSupportedSessionSetup(params.mcpServers);
++		const sessionImport = prepareSessionImport(params["_meta"]);
+-		this.enforceSessionCreateRateLimit("newSession");
++		this.enforceSessionCreateRateLimit("newSession");
+@@ -2033,2 +2203,8 @@
+-		});
++		});
++		try {
++			if (sessionImport) await writeSessionImport(sessionImport, session);
++		} catch (error) {
++			this.sessionStore.deleteSession(sessionId);
++			throw error;
++		}
+-		this.log(`newSession: ${session.sessionId} -> ${session.sessionKey}`);
++		this.log(`newSession: ${session.sessionId} -> ${session.sessionKey}`);

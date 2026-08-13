@@ -36,6 +36,7 @@ from acp.schema import (
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
 LATE_UPDATE_GRACE_SECONDS = 1.0
+SESSION_IMPORT = "verifiers.dev/sessionImport"
 
 
 class VerifiersACPClient(Client):
@@ -213,10 +214,29 @@ class ACPSession:
                 client_capabilities=ClientCapabilities(),
             )
             self.capabilities = initialized.agent_capabilities
+            session_import = config["session_import"]
+            if SESSION_IMPORT in config["session_meta"]:
+                raise RuntimeError(f"{SESSION_IMPORT} is reserved by ACP")
+            if session_import:
+                metadata = self.capabilities.field_meta if self.capabilities else None
+                extension = (metadata or {}).get(SESSION_IMPORT)
+                version = (
+                    extension.get("version") if isinstance(extension, dict) else None
+                )
+                if type(version) is not int or version != 1:
+                    raise RuntimeError(
+                        "ACP agent does not support exact VF session import"
+                    )
+            session_meta = dict(config["session_meta"])
+            if session_import:
+                session_meta[SESSION_IMPORT] = {
+                    "version": 1,
+                    "messages": session_import,
+                }
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
                 mcp_servers=mcp_servers(config),
-                **config["session_meta"],
+                **session_meta,
             )
         except BaseException:
             with suppress(BaseException):
@@ -229,6 +249,8 @@ class ACPSession:
     async def run(self, config: dict) -> str:
         if self.connection is None:
             await self.start(config)
+        elif config["session_import"]:
+            raise RuntimeError("ACP session history can only be imported at creation")
         assert self.session_id is not None
         reply = await prompt(
             self.client,

@@ -2,6 +2,7 @@
 
 import logging
 import shlex
+from pathlib import Path
 from typing import Literal
 
 import tomli_w
@@ -18,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 BINARY = "/tmp/vf-kimi-code/bin/kimi"
 KIMI_HOME = ".vf-kimi-code"
-ACP_COMMAND = [BINARY, "acp"]
 SKILLS_DIR = f"{KIMI_HOME}/skills"
+PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 INSTALL = r"""
 set -e
@@ -124,8 +125,12 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
                 "KIMI_MODEL_PROVIDER_TYPE": provider_type,
                 "KIMI_DISABLE_TELEMETRY": "1",
                 "KIMI_CODE_NO_AUTO_UPDATE": "1",
+                "KIMI_ACP_BINARY": BINARY,
             },
-            command=ACP_COMMAND,
+            command=await runtime.prepare_uv_script(
+                PROGRAM_SOURCE,
+                {**self.config.resolved_env, "KIMI_ACP_BINARY": BINARY},
+            ),
             prompt=prompt,
             system_prompt=system_prompt,
         )

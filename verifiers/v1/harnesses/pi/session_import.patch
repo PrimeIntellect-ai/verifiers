@@ -1,0 +1,227 @@
+--- dist/index.js
++++ dist/index.js
+@@ -1780,4 +1780,152 @@
+-var MODEL_CONFIG_ID = "model";
++var MODEL_CONFIG_ID = "model";
+-var THOUGHT_LEVEL_CONFIG_ID = "thought_level";
++var THOUGHT_LEVEL_CONFIG_ID = "thought_level";
++var SESSION_IMPORT = "verifiers.dev/sessionImport";
++function importContent(content, allowString) {
++  if (typeof content === "string") {
++    return allowString ? content : [{ type: "text", text: content }];
++  }
++  return content.map((part) => {
++    const item = part;
++    if (item.type === "text") {
++      return { type: "text", text: item.text };
++    }
++    const image = item.image_url;
++    const match = item.type === "image_url" && typeof image?.url === "string" ? /^data:([^;,]+);base64,(.*)$/s.exec(image.url) : null;
++    if (!match) {
++      throw RequestError3.invalidParams("Pi can import inline base64 images only");
++    }
++    return { type: "image", mimeType: match[1], data: match[2] };
++  });
++}
++function sessionImport(params) {
++  const metadata = params?._meta;
++  if (!metadata || typeof metadata !== "object" || !(SESSION_IMPORT in metadata)) return null;
++  const value = metadata[SESSION_IMPORT];
++  if (!value || typeof value !== "object" || value.version !== 1 || !Array.isArray(value.messages)) {
++    throw RequestError3.invalidParams(`${SESSION_IMPORT} requires version 1 and messages`);
++  }
++  const imported = [];
++  const pendingTools = /* @__PURE__ */ new Map();
++  const toolIds = /* @__PURE__ */ new Set();
++  for (const raw of value.messages) {
++    if (raw.role === "system") {
++      throw RequestError3.invalidParams("Pi cannot import historical system messages");
++    }
++    if (raw.role === "user") {
++      if (pendingTools.size) {
++        throw RequestError3.invalidParams("imported user message interrupts pending tool calls");
++      }
++      imported.push({ role: "user", content: importContent(raw.content, true) });
++      continue;
++    }
++    if (raw.role === "assistant") {
++      if (pendingTools.size) {
++        throw RequestError3.invalidParams("imported assistant message interrupts pending tool calls");
++      }
++      if (raw.provider_state?.length) {
++        throw RequestError3.invalidParams("Pi cannot exactly import opaque VF provider state");
++      }
++      if (raw.reasoning_content != null) {
++        throw RequestError3.invalidParams("Pi cannot exactly import VF reasoning without provider state");
++      }
++      const content = [];
++      if (raw.content !== null && raw.content !== void 0) {
++        content.push({ type: "text", text: raw.content });
++      }
++      for (const call of raw.tool_calls ?? []) {
++        let args;
++        try {
++          args = JSON.parse(call.arguments);
++        } catch {
++          throw RequestError3.invalidParams(`tool call ${call.id} has invalid JSON arguments`);
++        }
++        if (!args || typeof args !== "object" || Array.isArray(args)) {
++          throw RequestError3.invalidParams(`tool call ${call.id} arguments must be an object`);
++        }
++        if (toolIds.has(call.id)) {
++          throw RequestError3.invalidParams(`duplicate imported tool call id: ${call.id}`);
++        }
++        content.push({ type: "toolCall", id: call.id, name: call.name, arguments: args });
++        pendingTools.set(call.id, call.name);
++        toolIds.add(call.id);
++      }
++      if (content.length === 0) {
++        throw RequestError3.invalidParams("imported assistant messages cannot be empty");
++      }
++      imported.push({ role: "assistant", content });
++      continue;
++    }
++    if (raw.role === "tool") {
++      const expectedName = pendingTools.get(raw.tool_call_id);
++      if (!expectedName) {
++        throw RequestError3.invalidParams(`imported tool result ${raw.tool_call_id} has no pending call`);
++      }
++      if (raw.name !== void 0 && raw.name !== expectedName) {
++        throw RequestError3.invalidParams(`imported tool result ${raw.tool_call_id} has the wrong name`);
++      }
++      imported.push({
++        role: "toolResult",
++        toolCallId: raw.tool_call_id,
++        toolName: expectedName,
++        content: importContent(raw.content, false),
++        isError: false
++      });
++      pendingTools.delete(raw.tool_call_id);
++      continue;
++    }
++    throw RequestError3.invalidParams(`unsupported imported message role: ${String(raw.role)}`);
++  }
++  if (pendingTools.size) {
++    throw RequestError3.invalidParams("session import ends with pending tool calls");
++  }
++  return imported;
++}
++async function writeSessionImport(session, cwd, state, messages) {
++  const sessionFile = typeof state?.sessionFile === "string" ? state.sessionFile : null;
++  const model = state?.model;
++  if (!sessionFile || !model || typeof model.api !== "string" || typeof model.provider !== "string" || typeof model.id !== "string") {
++    throw new Error("Pi did not expose a persistent session and active model");
++  }
++  const codingAgent = process.env.PI_ACP_CODING_AGENT_MODULE;
++  if (!codingAgent) throw new Error("PI_ACP_CODING_AGENT_MODULE is required for session import");
++  const { SessionManager: PiSessionManager } = await import(codingAgent);
++  const importedSession = PiSessionManager.create(cwd, void 0, { id: session.sessionId });
++  const importedFile = importedSession.getSessionFile();
++  if (!importedFile || existsSync4(importedFile)) {
++    throw new Error("Pi did not provide a fresh session file for import");
++  }
++  try {
++    for (const imported of messages) {
++      const message = imported.role === "assistant" ? {
++        ...imported,
++        api: model.api,
++        provider: model.provider,
++        model: model.id,
++        usage: {
++          input: 0,
++          output: 0,
++          cacheRead: 0,
++          cacheWrite: 0,
++          totalTokens: 0,
++          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
++        },
++        stopReason: imported.content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
++        timestamp: Date.now()
++      } : { ...imported, timestamp: Date.now() };
++      importedSession.appendMessage(message);
++    }
++    if (!existsSync4(importedFile)) throw new Error("Pi did not persist the imported session");
++    await session.proc.switchSession(importedFile);
++    return importedFile;
++  } catch (e) {
++    if (existsSync4(importedFile)) {
++      try {
++        unlinkSync(importedFile);
++      } catch {
++      }
++    }
++    throw e;
++  }
++}
+-function builtinAvailableCommands() {
++function builtinAvailableCommands() {
+-  return [
++  return [
+@@ -1934,4 +2082,5 @@
+-      agentCapabilities: {
++      agentCapabilities: {
+-        loadSession: true,
++        loadSession: true,
++        _meta: { [SESSION_IMPORT]: { version: 1 } },
+-        mcpCapabilities: { http: false, sse: false },
++        mcpCapabilities: { http: false, sse: false },
+-        promptCapabilities: {
++        promptCapabilities: {
+@@ -1953,4 +2102,5 @@
+-      throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
++      throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
+-    }
++    }
++    const imported = sessionImport(params);
+-    this.lastSessionCwd = params.cwd;
++    this.lastSessionCwd = params.cwd;
+-    const fileCommands = loadSlashCommands(params.cwd);
++    const fileCommands = loadSlashCommands(params.cwd);
+@@ -2004,4 +2154,31 @@
+-        "Configure an API key or log in with an OAuth provider."
++        "Configure an API key or log in with an OAuth provider."
+-      );
++      );
++    }
++    if (imported) {
++      const originalSessionFile = typeof state?.sessionFile === "string" && state.sessionFile.trim() ? state.sessionFile : null;
++      const originalSessionFileExisted = originalSessionFile ? existsSync4(originalSessionFile) : false;
++      let importedFile = null;
++      try {
++        importedFile = await writeSessionImport(session, params.cwd, state, imported);
++        state.sessionFile = importedFile;
++        this.store.upsert({
++          sessionId: session.sessionId,
++          cwd: params.cwd,
++          sessionFile: state.sessionFile
++        });
++      } catch (e) {
++        this.sessions.close(session.sessionId);
++        this.store.delete(session.sessionId);
++        for (const sessionFile of /* @__PURE__ */ new Set([originalSessionFileExisted ? null : originalSessionFile, importedFile])) {
++          if (sessionFile && existsSync4(sessionFile)) {
++            try {
++              unlinkSync(sessionFile);
++            } catch {
++            }
++          }
++        }
++        if (e instanceof RequestError3) throw e;
++        throw RequestError3.internalError({}, String(e?.message ?? e));
++      }
+-    }
++    }
+-    const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
++    const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
+@@ -2016,6 +2193,5 @@
+-      updateNotice
++      updateNotice
+-    });
++    });
+-    if (preludeText)
+-      session.setStartupInfo(preludeText);
++    if (preludeText) session.setStartupInfo(preludeText);
+-    this.sessions.closeAllExcept?.(session.sessionId);
++    this.sessions.closeAllExcept?.(session.sessionId);
+-    const response = {
++    const response = {

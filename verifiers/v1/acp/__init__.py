@@ -16,11 +16,12 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Messages, SystemMessage
 from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+SESSION_IMPORT = "verifiers.dev/sessionImport"
 
 __all__ = ["ACPConfig", "ACPHarness"]
 
@@ -166,6 +167,23 @@ class ACPHarnessSession(HarnessSession):
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
         self.config = config
+        history: Messages = []
+        if isinstance(config.prompt, list):
+            if not config.prompt or config.prompt[-1].role != "user":
+                raise ValueError(
+                    "an imported ACP conversation must end with a user turn"
+                )
+            history, config.prompt = config.prompt[:-1], config.prompt[-1:]
+        if history and config.system_prompt:
+            # ACP prompts have no system role. Import it before history so adapters
+            # can preserve the task instruction natively or reject it explicitly.
+            history.insert(0, SystemMessage(content=config.system_prompt))
+            config.system_prompt = None
+        self.session_import = [
+            message.model_dump(mode="json", exclude_none=True) for message in history
+        ]
+        if config.session_meta and SESSION_IMPORT in config.session_meta:
+            raise ValueError(f"{SESSION_IMPORT} is reserved by ACP")
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
         self._stderr_tail = bytearray()
@@ -222,6 +240,9 @@ class ACPHarnessSession(HarnessSession):
                 raise HarnessError(
                     f"harness {self.harness.config.id!r} session is already closed"
                 )
+            config["session_import"] = (
+                self.session_import if self._process is None else []
+            )
             if self._process is None:
                 await self._start()
             assert self._process is not None

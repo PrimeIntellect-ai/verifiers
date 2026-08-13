@@ -10,9 +10,9 @@ import pytest
 mark = pytest.mark
 
 
-def pair(a: str, b: str, id: str, *extra_marks):
+def pair(a: str, b: str, id: str, *values):
     marks = [getattr(mark, a.replace("-", "_")), getattr(mark, b.replace("-", "_"))]
-    return pytest.param(a, b, marks=[*marks, *extra_marks], id=id)
+    return pytest.param(a, b, *values, marks=marks, id=id)
 
 
 # harness x harness runtime: every harness once, both local runtimes hit (subprocess
@@ -64,28 +64,50 @@ USER_RUNTIMES = [
 # ACP-backed harnesses: each must preserve an exchange across interaction segments and
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
-ACP_RESUME_PLACEMENTS = [
-    pair("codex", "docker", "codex-acp-in-docker"),
-    pair("claude-code", "docker", "claude-code-acp-in-docker"),
-    pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
-    pair("rlm", "docker", "rlm-acp-in-docker"),
+ACP_PLACEMENTS = [
+    pair("codex", "docker", "codex-acp-in-docker", False),
+    pair("claude-code", "docker", "claude-code-acp-in-docker", False),
+    pair("hermes-agent", "docker", "hermes-agent-acp-in-docker", False),
+    pair("rlm", "docker", "rlm-acp-in-docker", False),
     pytest.param(
         {"id": "kimi-code", "transport": "responses"},
         "docker",
+        False,
         marks=[mark.kimi_code, mark.docker],
         id="kimi-code-responses-acp-in-docker",
     ),
     pytest.param(
         {"id": "pi", "transport": "responses"},
         "docker",
+        False,
         marks=[mark.pi, mark.docker],
         id="pi-responses-acp-in-docker",
     ),
-    pair("pool", "docker", "pool-acp-in-docker"),
-    pair("openclaw", "docker", "openclaw-acp-in-docker"),
-    pair("pool", "prime", "pool-acp-in-prime"),
-    pair("rlm", "prime", "rlm-acp-in-prime-vm"),
+    pair("pool", "docker", "pool-acp-in-docker", False),
+    pair("openclaw", "docker", "openclaw-acp-in-docker", False),
+    pair("pool", "prime", "pool-acp-in-prime", False),
+    pair("rlm", "prime", "rlm-acp-in-prime-vm", False),
+    pair("codex", "docker", "codex-import-in-docker", True),
+    pair("claude-code", "docker", "claude-code-import-in-docker", True),
+    pair("hermes-agent", "docker", "hermes-agent-import-in-docker", True),
+    pair("rlm", "docker", "rlm-import-in-docker", True),
+    pytest.param(
+        {"id": "kimi-code", "transport": "responses"},
+        "docker",
+        True,
+        marks=[mark.kimi_code, mark.docker],
+        id="kimi-code-responses-import-in-docker",
+    ),
+    pytest.param(
+        {"id": "pi", "transport": "responses"},
+        "docker",
+        True,
+        marks=[mark.pi, mark.docker],
+        id="pi-responses-import-in-docker",
+    ),
+    pair("openclaw", "docker", "openclaw-import-in-docker", True),
 ]
+# Pool 1.0.15 has no exact history-import extension, so only its live rows are present.
 
 # harness runtime x tool placement: every axis value once plus the two-container case
 # (harness and tool in separate docker boxes) and a prime-colocated row (a tool in its
@@ -232,10 +254,12 @@ async def test_interaction(live_ctx):
 
 @pytest.mark.e2e
 @pytest.mark.parametrize(
-    "harness,harness_runtime", ACP_RESUME_PLACEMENTS, indirect=True
+    "harness,harness_runtime,seeded",
+    ACP_PLACEMENTS,
+    indirect=["harness", "harness_runtime"],
 )
-async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
-    """Each ACP harness preserves context and MCP access across two segments."""
+async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, seeded, tmp_path):
+    """ACP keeps one session and imports supplied history before the first turn."""
     (trace,) = await run_v1(
         "echo-acp-resume-v1",
         harness=harness,
@@ -247,6 +271,7 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
         max_turns=8,
         max_tokens=8192,
         rollout_timeout=600,
+        taskset_overrides={"task": {"seeded": seeded}},
     )
     assert trace.ok, trace.errors
     assert trace.stop_condition == "user_closed"

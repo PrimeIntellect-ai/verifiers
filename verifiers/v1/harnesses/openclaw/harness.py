@@ -5,12 +5,12 @@ import json
 import logging
 import secrets
 import shlex
-
-from pydantic import Field
+from pathlib import Path
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.harnesses.node import ensure_node, node_patch_id, prepare_node_patch
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -18,12 +18,21 @@ from verifiers.v1.trace import Trace
 logger = logging.getLogger(__name__)
 
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
-OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
+OPENCLAW_VERSION = "2026.7.1-2"
+OPENCLAW_DIR = f"/var/tmp/vf-openclaw-{OPENCLAW_VERSION}"
 OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
+OPENCLAW_ACP = (
+    f"{OPENCLAW_DIR}/tools/node/lib/node_modules/openclaw/dist/acp-cli-BXc5GttU.js"
+)
+SESSION_IMPORT_PATCH = Path(__file__).with_name("session_import.patch").read_bytes()
+SESSION_IMPORT_PATCH_ID = node_patch_id(SESSION_IMPORT_PATCH)
 INSTALL = r"""
 set -e
+rm -rf {dir}
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
 curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh | bash -s -- --prefix {dir} --version {version} --no-onboard
+{patch}
+touch {ready}
 """
 
 OPENCLAW_COMMAND = [
@@ -82,8 +91,6 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: str = Field(default="2026.7.1-2", pattern=r"^[A-Za-z0-9._+-]+$")
-    """OpenClaw release to install, pinned for reproducibility."""
     use_bundled_skill: bool = True
     """Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills."""
 
@@ -94,6 +101,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
+        await ensure_node(runtime)
         if not hasattr(self, "_staged_skills_dir"):
             self._staged_skills_dir = (
                 f".vf-openclaw/staged-skills-{secrets.token_hex(8)}"
@@ -115,18 +123,26 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                         )
                     await self.install_skills(runtime, self._staged_skills_dir)
                     await runtime.write(ready_path, b"")
-        directory = OPENCLAW_DIR.format(version=self.config.version)
-        binary = OPENCLAW_BIN.format(version=self.config.version)
-        script = INSTALL.replace("{version}", self.config.version).replace(
-            "{dir}", directory
+        ready = f"{OPENCLAW_DIR}/.ready-{SESSION_IMPORT_PATCH_ID}"
+        patch_dir = f"{OPENCLAW_DIR}-patch-{SESSION_IMPORT_PATCH_ID}"
+        patch = await prepare_node_patch(
+            runtime,
+            patch_dir,
+            OPENCLAW_ACP,
+            SESSION_IMPORT_PATCH,
         )
-        ensure = shlex.quote(f"[ -x {binary} ] || ({script})")
+        script = (
+            INSTALL.replace("{version}", OPENCLAW_VERSION)
+            .replace("{dir}", OPENCLAW_DIR)
+            .replace("{patch}", patch)
+            .replace("{ready}", ready)
+        )
+        ensure = shlex.quote(f"[ -f {ready} ] && [ -x {OPENCLAW_BIN} ] || ({script})")
         guarded = (
-            f"mkdir -p {directory} && "
-            f'"$(command -v flock || command -v lockf)" {directory}/install.lock '
+            f'"$(command -v flock || command -v lockf)" {OPENCLAW_DIR}.install.lock '
             f"bash -o pipefail -c {ensure}"
         )
-        logger.info("openclaw: ensuring OpenClaw %s is installed", self.config.version)
+        logger.info("openclaw: ensuring OpenClaw %s is installed", OPENCLAW_VERSION)
         result = await runtime.run(["sh", "-c", guarded], self.config.resolved_env)
         if result.exit_code != 0:
             detail = (result.stderr or result.stdout).strip()[-500:]
@@ -219,7 +235,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             "OPENCLAW_HIDE_BANNER": "1",
             "OPENCLAW_SUPPRESS_NOTES": "1",
             "NO_COLOR": "1",
-            "VF_OPENCLAW_BIN": OPENCLAW_BIN.format(version=self.config.version),
+            "VF_OPENCLAW_BIN": OPENCLAW_BIN,
         }
         # OpenClaw rejects ACP per-session MCP declarations; the isolated Gateway
         # config owns the equivalent task-scoped server definitions.

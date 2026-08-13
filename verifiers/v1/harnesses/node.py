@@ -1,10 +1,25 @@
+import json
 import shlex
+from hashlib import sha256
 
 from verifiers.v1.runtimes import Runtime
 
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
 NODE_VERSION = "22.19.0"
+PATCH_SOURCE = r"""
+const fs = require("fs");
+const [target] = process.argv.slice(2);
+let source = fs.readFileSync(target, "utf8");
+for (const [before, after] of __REPLACEMENTS__) {
+    const start = source.indexOf(before);
+    if (start < 0 || source.indexOf(before, start + 1) >= 0) {
+        throw new Error(`patch source mismatch: ${target}`);
+    }
+    source = source.slice(0, start) + after + source.slice(start + before.length);
+}
+fs.writeFileSync(target, source);
+"""
 
 INSTALL = r"""
 set -e
@@ -52,3 +67,45 @@ async def ensure_node(runtime: Runtime) -> None:
     result = await runtime.run(["sh", "-c", guarded], {"VF_NODE_VERSION": NODE_VERSION})
     if result.exit_code != 0:
         raise RuntimeError(f"Node.js install failed: {result.stderr.strip()[-500:]}")
+
+
+def node_patch_id(patch: bytes) -> str:
+    return sha256(patch).hexdigest()[:12]
+
+
+def _patch_replacements(patch: bytes) -> list[tuple[str, str]]:
+    replacements = []
+    before: list[str] | None = None
+    after: list[str] | None = None
+    for line in patch.decode().splitlines(keepends=True):
+        if line.startswith("@@"):
+            if before is not None and after is not None:
+                replacements.append(("".join(before), "".join(after)))
+            before, after = [], []
+        elif before is not None and after is not None:
+            if line.startswith("\\"):
+                continue
+            if line[:1] in (" ", "-"):
+                before.append(line[1:])
+            if line[:1] in (" ", "+"):
+                after.append(line[1:])
+    if before is not None and after is not None:
+        replacements.append(("".join(before), "".join(after)))
+    if not replacements:
+        raise ValueError("Node package patch contains no hunks")
+    return replacements
+
+
+async def prepare_node_patch(
+    runtime: Runtime, directory: str, target: str, patch: bytes
+) -> str:
+    """Upload a source-checked Node patch command and return its shell prefix."""
+    revision = sha256(patch).hexdigest()
+    script = f"{directory}/apply-patch-{revision}.js"
+    await runtime.write(
+        script,
+        PATCH_SOURCE.replace(
+            "__REPLACEMENTS__", json.dumps(_patch_replacements(patch))
+        ).encode(),
+    )
+    return " ".join(map(shlex.quote, (f"{NODE_BIN_DIR}/node", script, target)))

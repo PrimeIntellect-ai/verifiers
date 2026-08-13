@@ -1,13 +1,19 @@
 """Run Claude Code through the Claude Agent SDK ACP adapter."""
 
 import shlex
+from pathlib import Path
 
 from pydantic import Field
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import (
+    NODE_BIN_DIR,
+    ensure_node,
+    node_patch_id,
+    prepare_node_patch,
+)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -19,14 +25,18 @@ CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
 CLAUDE_CONFIG_ROOT = ".vf-claude"
 SKILLS_DIR = ".claude/skills"
+SESSION_IMPORT_PATCH = Path(__file__).with_name("session_import.patch").read_bytes()
+SESSION_IMPORT_PATCH_ID = node_patch_id(SESSION_IMPORT_PATCH)
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
+rm -rf {packages}/node_modules/@agentclientprotocol/claude-agent-acp
 npm install --prefix {packages} --no-audit --no-fund \
     --omit=dev \
     "@anthropic-ai/claude-code@$VF_CLAUDE_CODE_VERSION" \
     "@agentclientprotocol/claude-agent-acp@$VF_CLAUDE_ACP_VERSION" >/dev/null
+{patch}
 touch {ready}
 """
 
@@ -49,8 +59,18 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         packages = PACKAGES_DIR.format(**versions)
         claude_bin = CLAUDE_BIN.format(**versions)
         acp_bin = ACP_BIN.format(**versions)
-        ready = f"{directory}/.ready"
-        script = ACP_INSTALL.replace("{packages}", packages).replace("{ready}", ready)
+        ready = f"{directory}/.ready-{SESSION_IMPORT_PATCH_ID}"
+        patch = await prepare_node_patch(
+            runtime,
+            directory,
+            f"{packages}/node_modules/@agentclientprotocol/claude-agent-acp/dist/acp-agent.js",
+            SESSION_IMPORT_PATCH,
+        )
+        script = (
+            ACP_INSTALL.replace("{packages}", packages)
+            .replace("{patch}", patch)
+            .replace("{ready}", ready)
+        )
         ensure = shlex.quote(
             f"[ -f {ready} ] && [ -x {claude_bin} ] && [ -x {acp_bin} ] || ({script})"
         )

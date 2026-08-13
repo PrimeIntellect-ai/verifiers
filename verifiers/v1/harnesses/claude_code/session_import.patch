@@ -1,0 +1,194 @@
+--- node_modules/@agentclientprotocol/claude-agent-acp/dist/acp-agent.js
++++ node_modules/@agentclientprotocol/claude-agent-acp/dist/acp-agent.js
+@@ -55,4 +55,123 @@
+- *  `InitializeResponse._meta.steering.supported`. */
++ *  `InitializeResponse._meta.steering.supported`. */
+-const STEER_METHOD = "_session/steering";
++const STEER_METHOD = "_session/steering";
++const SESSION_IMPORT_KEY = "verifiers.dev/sessionImport";
++const SESSION_IMPORT_VERSION = 1;
++function contentBlocks(content) {
++    if (typeof content === "string")
++        return [{ type: "text", text: content }];
++    return content.map((part) => part.type === "text"
++        ? { type: "text", text: part.text }
++        : { type: "image", source: { type: "url", url: part.image_url.url } });
++}
++function textContent(content) {
++    if (typeof content === "string")
++        return content;
++    if (content.some((part) => part.type !== "text")) {
++        throw RequestError.invalidParams(undefined, "system session history cannot contain images");
++    }
++    return content.map((part) => part.text).join("\n");
++}
++function parseSessionImport(meta, sessionId, cwd) {
++    if (!meta || typeof meta !== "object" || !(SESSION_IMPORT_KEY in meta))
++        return null;
++    const value = meta[SESSION_IMPORT_KEY];
++    const { version, messages } = value;
++    if (version !== SESSION_IMPORT_VERSION || !Array.isArray(messages)) {
++        throw RequestError.invalidParams(undefined, `${SESSION_IMPORT_KEY} requires version 1 and messages`);
++    }
++    const entries = [];
++    const system = [];
++    let parentUuid = null;
++    const add = (type, message) => {
++        const uuid = randomUUID();
++        entries.push({
++            type,
++            uuid,
++            parentUuid,
++            isSidechain: false,
++            userType: "external",
++            cwd,
++            sessionId,
++            timestamp: new Date().toISOString(),
++            message,
++        });
++        parentUuid = uuid;
++    };
++    for (const raw of messages) {
++        if (raw.role === "system") {
++            if (entries.length) {
++                throw RequestError.invalidParams(undefined, "system session history must precede conversation messages");
++            }
++            system.push(textContent(raw.content));
++        }
++        else if (raw.role === "user") {
++            add("user", { role: "user", content: contentBlocks(raw.content) });
++        }
++        else if (raw.role === "tool") {
++            add("user", {
++                role: "user",
++                content: [{
++                        type: "tool_result",
++                        tool_use_id: raw.tool_call_id,
++                        content: contentBlocks(raw.content),
++                    }],
++            });
++        }
++        else if (raw.role === "assistant") {
++            const blocks = [];
++            if (raw.provider_state?.length) {
++                if (raw.provider_state.some((block) => !["thinking", "redacted_thinking"].includes(String(block["type"])))) {
++                    throw RequestError.invalidParams(undefined, "assistant provider_state is not Anthropic history");
++                }
++                const reasoning = raw.provider_state.filter((block) => block.type === "thinking").map((block) => block.thinking ?? "").join("");
++                if ((raw.reasoning_content ?? "") !== reasoning) {
++                    throw RequestError.invalidParams(undefined, "assistant provider_state does not match its typed message");
++                }
++                blocks.push(...raw.provider_state);
++            }
++            else if (raw.reasoning_content != null) {
++                throw RequestError.invalidParams(undefined, "Anthropic reasoning history requires signed provider_state");
++            }
++            blocks.push(...contentBlocks(raw.content));
++            for (const call of raw.tool_calls ?? []) {
++                let input;
++                try {
++                    input = JSON.parse(call.arguments);
++                }
++                catch {
++                    throw RequestError.invalidParams(undefined, `tool call ${call.id} has invalid JSON arguments`);
++                }
++                blocks.push({ type: "tool_use", id: call.id, name: call.name, input });
++            }
++            if (!blocks.length) {
++                throw RequestError.invalidParams(undefined, "assistant session history cannot be empty");
++            }
++            add("assistant", {
++                id: `msg_${randomUUID().replaceAll("-", "")}`,
++                type: "message",
++                role: "assistant",
++                model: process.env.ANTHROPIC_MODEL ?? "unknown",
++                content: blocks,
++                stop_reason: raw.tool_calls?.length ? "tool_use" : "end_turn",
++                stop_sequence: null,
++                usage: { input_tokens: 0, output_tokens: 0 },
++            });
++        }
++        else {
++            throw RequestError.invalidParams(undefined, `unsupported session history role: ${String(raw.role)}`);
++        }
++    }
++    const store = {
++        async append() { },
++        async load(key) {
++            return key.sessionId === sessionId ? entries : null;
++        },
++    };
++    return {
++        entries,
++        store,
++        ...(system.length ? { systemPrompt: system.join("\n\n") } : {}),
++    };
++}
+-/** How urgently the SDK delivers a steered message relative to the running
++/** How urgently the SDK delivers a steered message relative to the running
+- *  turn — an internal Claude implementation detail, not part of the wire
++ *  turn — an internal Claude implementation detail, not part of the wire
+@@ -695,4 +814,5 @@
+-                        promptQueueing: true,
++                        promptQueueing: true,
+-                    },
++                    },
++                    [SESSION_IMPORT_KEY]: { version: SESSION_IMPORT_VERSION },
+-                },
++                },
+-                promptCapabilities: {
++                promptCapabilities: {
+@@ -4216,4 +4336,5 @@
+-            sessionId = randomUUID();
++            sessionId = randomUUID();
+-        }
++        }
++        const sessionImport = parseSessionImport(params._meta, sessionId, params.cwd);
+-        const input = new Pushable();
++        const input = new Pushable();
+-        const settingsManager = new SettingsManager(params.cwd, {
++        const settingsManager = new SettingsManager(params.cwd, {
+@@ -4265,4 +4386,18 @@
+-            }
++            }
+-        }
++        }
++        if (sessionImport?.systemPrompt) {
++            if (typeof systemPrompt === "string") {
++                systemPrompt += `\n\n${sessionImport.systemPrompt}`;
++            }
++            else if (Array.isArray(systemPrompt)) {
++                systemPrompt = [...systemPrompt, sessionImport.systemPrompt];
++            }
++            else if (systemPrompt) {
++                systemPrompt = {
++                    ...systemPrompt,
++                    append: [systemPrompt.append, sessionImport.systemPrompt].filter(Boolean).join("\n\n"),
++                };
++            }
++        }
+-        const permissionMode = resolvePermissionMode(settingsManager.getSettings().permissions?.defaultMode, this.logger);
++        const permissionMode = resolvePermissionMode(settingsManager.getSettings().permissions?.defaultMode, this.logger);
+-        // Extract options from _meta if provided
++        // Extract options from _meta if provided
+@@ -4433,4 +4568,5 @@
+-            },
++            },
+-            ...creationOpts,
++            ...creationOpts,
++            ...(sessionImport && { resume: sessionId, sessionStore: sessionImport.store }),
+-            abortController,
++            abortController,
+-        };
++        };
+@@ -4444,5 +4580,5 @@
+-            ...acpAdditionalDirectories,
++            ...acpAdditionalDirectories,
+-        ];
++        ];
+-        if (creationOpts?.resume === undefined || creationOpts?.forkSession) {
++        if ((!creationOpts?.resume && !sessionImport) || creationOpts?.forkSession) {
+-            // Set our own session id if not resuming an existing session.
++            // Set our own session id if not resuming an existing session.
+-            options.sessionId = sessionId;
++            options.sessionId = sessionId;

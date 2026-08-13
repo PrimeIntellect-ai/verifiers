@@ -6,13 +6,19 @@ import logging
 import re
 import shlex
 from collections import Counter
+from pathlib import Path
 
 from pydantic import Field
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import (
+    NODE_BIN_DIR,
+    ensure_node,
+    node_patch_id,
+    prepare_node_patch,
+)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -25,14 +31,18 @@ ACP_VERSION = "1.1.10"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 SKILLS_DIR = ".agents/skills"
+SESSION_IMPORT_PATCH = Path(__file__).with_name("session_import.patch").read_bytes()
+SESSION_IMPORT_PATCH_ID = node_patch_id(SESSION_IMPORT_PATCH)
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
+rm -rf {packages}/node_modules/@agentclientprotocol/codex-acp
 npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
     "@openai/codex@$VF_CODEX_VERSION" >/dev/null
+{patch}
 touch {ready}
 """
 
@@ -62,8 +72,18 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         packages = PACKAGES_DIR.format(**versions)
         codex_bin = CODEX_BIN.format(**versions)
         acp_bin = ACP_BIN.format(**versions)
-        ready = f"{directory}/.ready"
-        script = INSTALL.replace("{packages}", packages).replace("{ready}", ready)
+        ready = f"{directory}/.ready-{SESSION_IMPORT_PATCH_ID}"
+        patch = await prepare_node_patch(
+            runtime,
+            directory,
+            f"{packages}/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
+            SESSION_IMPORT_PATCH,
+        )
+        script = (
+            INSTALL.replace("{packages}", packages)
+            .replace("{patch}", patch)
+            .replace("{ready}", ready)
+        )
         ensure = shlex.quote(
             f"[ -f {ready} ] && [ -x {codex_bin} ] && [ -x {acp_bin} ] || ({script})"
         )

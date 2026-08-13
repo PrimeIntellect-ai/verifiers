@@ -1,0 +1,153 @@
+--- node_modules/@agentclientprotocol/codex-acp/dist/index.js
++++ node_modules/@agentclientprotocol/codex-acp/dist/index.js
+@@ -26268,2 +26268,82 @@
+-// src/CodexAcpClient.ts
++// src/CodexAcpClient.ts
++var SESSION_IMPORT_KEY = "verifiers.dev/sessionImport";
++var SESSION_IMPORT_VERSION = 1;
++function contentItems(content, output) {
++  if (typeof content === "string") {
++    return [{ type: output ? "output_text" : "input_text", text: content }];
++  }
++  return (content ?? []).map((part) => {
++    if (part.type === "text") {
++      return { type: output ? "output_text" : "input_text", text: part.text };
++    }
++    if (output) {
++      throw RequestError.invalidParams(void 0, "assistant session history cannot contain images");
++    }
++    return { type: "input_image", image_url: part.image_url.url };
++  });
++}
++function sessionImportItems(meta3) {
++  if (!meta3 || typeof meta3 !== "object" || !(SESSION_IMPORT_KEY in meta3)) {
++    return [];
++  }
++  const value = meta3[SESSION_IMPORT_KEY];
++  const { version: version2, messages } = value;
++  if (version2 !== SESSION_IMPORT_VERSION || !Array.isArray(messages)) {
++    throw RequestError.invalidParams(void 0, `${SESSION_IMPORT_KEY} requires version 1 and messages`);
++  }
++  const items = [];
++  for (const message of messages) {
++    if (message.role === "system" || message.role === "user") {
++      items.push({ type: "message", role: message.role, content: contentItems(message.content, false) });
++    } else if (message.role === "tool") {
++      if (typeof message.tool_call_id !== "string") {
++        throw RequestError.invalidParams(void 0, "tool session history requires tool_call_id");
++      }
++      items.push({
++        type: "function_call_output",
++        call_id: message.tool_call_id,
++        output: typeof message.content === "string" ? message.content : contentItems(message.content, false)
++      });
++    } else if (message.role === "assistant") {
++      if (message.provider_state?.length) {
++        if (message.provider_state.some((item) => item.type === "message" && item.role !== "assistant")) {
++          throw RequestError.invalidParams(void 0, "assistant provider_state is not Responses history");
++        }
++        const content = message.provider_state.filter((item) => item.type === "message").map((item) => typeof item.content === "string" ? item.content : (item.content ?? []).filter((part) => ["input_text", "output_text"].includes(part.type)).map((part) => part.text ?? "").join("")).join("");
++        const reasoning = message.provider_state.filter((item) => item.type === "reasoning").flatMap((item) => [...item.summary ?? [], ...item.content ?? []]).map((part) => part.text ?? "").filter(Boolean).join("\n");
++        const calls = message.provider_state.filter((item) => ["function_call", "custom_tool_call"].includes(item.type)).map((item) => ({ id: item.call_id, name: item.name, arguments: item.arguments ?? item.input ?? "" }));
++        const typedCalls = message.tool_calls ?? [];
++        if ((message.content ?? "") !== content || (message.reasoning_content ?? "") !== reasoning || calls.length !== typedCalls.length || calls.some((call, index) => call.id !== typedCalls[index]?.id || call.name !== typedCalls[index]?.name || call.arguments !== typedCalls[index]?.arguments)) {
++          throw RequestError.invalidParams(void 0, "assistant provider_state does not match its typed message");
++        }
++        items.push(...message.provider_state);
++        continue;
++      }
++      if (message.reasoning_content != null) {
++        throw RequestError.invalidParams(
++          void 0,
++          "exact Responses reasoning history requires provider_state"
++        );
++      }
++      const itemCount = items.length;
++      if (message.content != null) {
++        items.push({ type: "message", role: "assistant", content: contentItems(message.content, true) });
++      }
++      for (const call of message.tool_calls ?? []) {
++        items.push({
++          type: "function_call",
++          call_id: call.id,
++          name: call.name,
++          arguments: call.arguments
++        });
++      }
++      if (items.length === itemCount) {
++        throw RequestError.invalidParams(void 0, "assistant session history cannot be empty");
++      }
++    } else {
++      throw RequestError.invalidParams(void 0, `unsupported session history role: ${String(message.role)}`);
++    }
++  }
++  return items;
++}
+-var CUSTOM_GATEWAY_PROVIDER_ID = "custom-gateway";
++var CUSTOM_GATEWAY_PROVIDER_ID = "custom-gateway";
+@@ -26580,2 +26660,3 @@
+-  async newSession(request) {
++  async newSession(request) {
++    const importedItems = sessionImportItems(request._meta);
+-    const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
++    const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
+@@ -26587,16 +26668,27 @@
+-    });
++    });
+-    const codexModels = await this.fetchAvailableModels();
+-    if (codexModels.length === 0) {
+-      throw new Error("Codex did not return any models");
++    try {
++      if (importedItems.length) {
++        await this.codexClient.threadInjectItems({ threadId: response.thread.id, items: importedItems });
++      }
++      const codexModels = await this.fetchAvailableModels();
++      if (codexModels.length === 0) {
++        throw new Error("Codex did not return any models");
++      }
++      const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
++      return {
++        sessionId: response.thread.id,
++        currentModelId,
++        models: codexModels,
++        collaborationMode: this.getCollaborationMode(response.thread.id),
++        modelProvider: response.modelProvider,
++        currentServiceTier: response.serviceTier ?? null,
++        additionalDirectories
++      };
++    } catch (error51) {
++      if (importedItems.length) {
++        await this.codexClient.threadArchive({ threadId: response.thread.id }).catch(() => {
++        });
++      }
++      throw error51;
+-    }
++    }
+-    const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
+-    return {
+-      sessionId: response.thread.id,
+-      currentModelId,
+-      models: codexModels,
+-      collaborationMode: this.getCollaborationMode(response.thread.id),
+-      modelProvider: response.modelProvider,
+-      currentServiceTier: response.serviceTier ?? null,
+-      additionalDirectories
+-    };
+-  }
++  }
+@@ -28773,2 +28865,5 @@
+-      agentCapabilities: {
++      agentCapabilities: {
++        _meta: {
++          "verifiers.dev/sessionImport": { version: 1 }
++        },
+-        auth: {
++        auth: {
+@@ -30967,2 +31062,5 @@
+-  }
++  }
++  async threadInjectItems(params) {
++    return await this.sendRequest({ method: "thread/inject_items", params });
++  }
+-  getThreadSettings(threadId) {
++  getThreadSettings(threadId) {

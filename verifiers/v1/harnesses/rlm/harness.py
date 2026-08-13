@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import shlex
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, PositiveInt, model_validator
@@ -25,6 +26,7 @@ RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = ".vf-rlm"
+ACP_SOURCE = (Path(__file__).resolve().parent / "acp.py").read_text()
 
 
 class RLMHarnessConfig(HarnessConfig):
@@ -136,9 +138,18 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
+        acp_path = f"{RLM_STATE_DIR}/{trace.id}/acp.py"
+        await runtime.write(acp_path, ACP_SOURCE.encode())
         return ACPConfig(
             env=self._env(ctx, trace, endpoint, secret, data, system_prompt),
-            command=[RLM_BIN, "--acp"],
+            command=[
+                "sh",
+                "-c",
+                'read -r interpreter < "$1"; exec "${interpreter#\\#!}" "$2"',
+                "vf-rlm-acp",
+                RLM_BIN,
+                acp_path,
+            ],
             prompt=prompt,
         )
 
