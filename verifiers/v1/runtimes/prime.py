@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import logging
 import math
-import os
 import shlex
 import tempfile
 from collections.abc import AsyncIterator
@@ -40,12 +39,16 @@ MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
 
-def base_labels() -> list[str]:
-    """Sandbox labels injected by the launching process via comma-separated
-    ``VF_SANDBOX_LABELS`` (e.g. a trainer stamps its run name so every sandbox of a
-    run is findable on the platform). Config labels extend these."""
-    raw = os.environ.get("VF_SANDBOX_LABELS", "")
-    return [label for label in (part.strip() for part in raw.split(",")) if label]
+_base_labels: list[str] = []
+
+
+def set_base_sandbox_labels(labels: list[str]) -> None:
+    """Set process-wide base labels attached to every Prime sandbox, extended by each
+    runtime's ``PrimeConfig.labels``. Call it in the process that creates the sandboxes
+    (env-server workers set it via their setup hook) — e.g. a trainer stamps its run
+    name so every sandbox of a run is findable on the platform."""
+    global _base_labels
+    _base_labels = list(labels)
 
 
 class PrimeConfig(NetworkPolicyConfig):
@@ -63,7 +66,7 @@ class PrimeConfig(NetworkPolicyConfig):
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = Field(default_factory=list)
-    """Labels attached to the sandbox, extending any base labels from ``VF_SANDBOX_LABELS``."""
+    """Labels attached to the sandbox, extending any process-wide base labels (see ``set_base_sandbox_labels``)."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = 1.0
     """CPU cores."""
@@ -185,7 +188,7 @@ class PrimeRuntime(Runtime):
                     CreateSandboxRequest(
                         name=self.name,
                         labels=list(
-                            dict.fromkeys([*base_labels(), *self.config.labels])
+                            dict.fromkeys([*_base_labels, *self.config.labels])
                         ),
                         docker_image=self.config.image,
                         vm=self.config.vm,
