@@ -119,7 +119,8 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        # Opt-in via sampling: OpenClaw redacts persisted encrypted reasoning, so resumed sessions 400 replaying it.
+        # Keep the evaluated model opaque behind a private provider. Native provider names
+        # can merge with OpenClaw's built-in catalog and route around interception.
         reasoning = ctx.sampling.reasoning_effort not in (None, "none")
         directory = OPENCLAW_DIR.format(version=self.config.version)
         state_dir = f".vf-openclaw/{trace.id}"
@@ -142,6 +143,8 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 "deny": self.config.disabled_tools or [],
             },
             "models": {
+                # Do not merge with built-in providers: a matching provider can bypass
+                # this rollout's endpoint and capability token.
                 "mode": "replace",
                 "providers": {
                     "intercept": {

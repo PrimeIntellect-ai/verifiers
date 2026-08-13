@@ -12,7 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import RolloutError
+from verifiers.v1.errors import RolloutError, SandboxError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -31,6 +31,8 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 # Prime Agent reads its agent directory from its packaged config name.
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
+# Temporary artifact blocker: retain the verified 0.7.0 default until an approved
+# replacement artifact supplies its exact version, URL, and SHA-256 together.
 DEFAULT_VERSION = "0.7.0"
 DEFAULT_TARBALL_SHA256 = (
     "88b6578518c72cd51a825bc80f28e0fef9a64c67de4a7d6fd7afd7ca1b34da0b"
@@ -283,8 +285,7 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 command,
                 prompt,
                 allow_empty_tool_reply=True,
-                # Without this the non-live fallback records no ACP metadata at all,
-                # so any _meta-dependent reward would score a working agent as failed.
+                # Preserve ACP turn metadata for _meta-dependent consumers.
                 trace=trace,
             )
         except Exception as error:
@@ -406,8 +407,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             args.append("--no-builtin-tools")
         if thinking is not None:
             args += ["--thinking", thinking]
-        for skill in self.config.skills:
-            args += ["--skill", f"{skills_dir}/{skill.resolve().name}"]
+        for skill in self.resolved_skills():
+            args += ["--skill", f"{skills_dir}/{skill.name}"]
         if self.config.autonomous:
             args.append("--autonomous")
             for gate in self.config.gates:
@@ -458,53 +459,135 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self.trace_root(trace)
+        tmp_dir = self.tmp_dir(trace)
         socket = f"{root}/daemon.sock"
+        cleanup_paths = f"state root {root}; per-trace tmp {tmp_dir}"
+
+        def infrastructure_error(
+            operation: str, path: str | None, reason: str, removed: list[str]
+        ) -> SandboxError:
+            confirmed = ", ".join(removed) if removed else "none"
+            target = f" {path}" if path else ""
+            return SandboxError(
+                f"prime-agent cleanup infrastructure error during {operation}{target}: "
+                f"{reason}. Retry paths: {cleanup_paths}. "
+                f"Confirmed removed this attempt: {confirmed}."
+            )
+
+        async def checked_run(
+            command: list[str],
+            operation: str,
+            path: str | None,
+            removed: list[str],
+        ):
+            try:
+                result = await runtime.run(command, {})
+            except TimeoutError as error:
+                raise infrastructure_error(
+                    operation, path, "timed out", removed
+                ) from error
+            except Exception as error:
+                raise infrastructure_error(
+                    operation, path, f"runtime failed: {error}", removed
+                ) from error
+            if result is None:
+                raise infrastructure_error(
+                    operation, path, "runtime returned no authoritative result", removed
+                )
+            if getattr(result, "timed_out", False):
+                raise infrastructure_error(operation, path, "timed out", removed)
+            exit_code = getattr(result, "exit_code", None)
+            if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+                raise infrastructure_error(
+                    operation,
+                    path,
+                    "runtime returned no authoritative exit status",
+                    removed,
+                )
+            return result, exit_code
+
+        async def remove(path: str, label: str, removed: list[str]) -> None:
+            result, exit_code = await checked_run(
+                ["rm", "-rf", path], f"removal of {label}", path, removed
+            )
+            if exit_code != 0:
+                stderr = str(getattr(result, "stderr", "")).strip()[-300:]
+                raise infrastructure_error(
+                    f"removal of {label}", path, f"exit {exit_code}: {stderr}", removed
+                )
+            removed.append(path)
+
         try:
-            # Cleanup is also called after a failed launch, before a daemon ever
-            # creates its socket. Exit 1 from `test -S` is the one normal,
-            # idempotent absence case; an execution error is indeterminate, so
-            # retain state rather than risk deleting a live daemon's directory.
-            exists = await runtime.run(["test", "-S", socket], {})
-            if exists.exit_code not in (0, 1):
-                raise RuntimeError(
-                    "prime-agent: checking the trace daemon socket failed "
-                    f"(exit {exists.exit_code}): {exists.stderr.strip()[-300:]}"
+            # Cleanup also follows failed launch, before a socket necessarily exists.
+            # Absence is idempotent; an indeterminate probe retains all state.
+            exists, exists_exit_code = await checked_run(
+                ["test", "-S", socket], "daemon socket check", socket, []
+            )
+            if exists_exit_code not in (0, 1):
+                stderr = str(getattr(exists, "stderr", "")).strip()[-300:]
+                raise infrastructure_error(
+                    "daemon socket check",
+                    socket,
+                    f"exit {exists_exit_code}: {stderr}",
+                    [],
                 )
-            if exists.exit_code == 0:
-                # Stop this trace's daemon before deleting its state: a live worker
-                # would keep writing into a removed directory. `daemon` is in the
-                # CLI's REMOVED_COMMAND_NAMES, so the subcommand is plain `stop`.
-                stopped = await runtime.run(
-                    [
-                        "sh",
-                        "-c",
-                        # Prepend the bundled Node inside the shell rather than passing
-                        # PATH in env: `docker exec --env PATH=...` REPLACES the image
-                        # PATH, and resolved_env usually has no PATH to fall back on.
-                        (
-                            f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
-                            f"exec {shlex.quote(self.prime_agent_bin())} stop "
-                            f"--daemon-socket {shlex.quote(socket)}"
-                        ),
-                    ],
-                    self._run_env(trace, ""),
-                )
-                if stopped.exit_code != 0:
-                    # Keep the state directory: a failed stop may leave a live
-                    # worker writing to it. Do not turn that failure into silent
-                    # data loss by deleting the directory.
-                    raise RuntimeError(
-                        "prime-agent: stopping the trace daemon failed "
-                        f"(exit {stopped.exit_code}): {stopped.stderr.strip()[-300:]}"
+
+            if exists_exit_code == 0:
+                try:
+                    stopped = await runtime.run(
+                        [
+                            "sh",
+                            "-c",
+                            # Prepend bundled Node inside the shell; passing PATH in
+                            # env would replace the image PATH.
+                            (
+                                f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
+                                f"exec {shlex.quote(self.prime_agent_bin())} stop "
+                                f"--daemon-socket {shlex.quote(socket)}"
+                            ),
+                        ],
+                        self._run_env(trace, ""),
                     )
-            # Remove only this trace's state and its per-trace socket directory;
-            # never remove the shared install. TMPDIR is created only in _prepare.
-            removed = await runtime.run(["rm", "-rf", root, self.tmp_dir(trace)], {})
-            if removed.exit_code != 0:
-                raise RuntimeError(
-                    "prime-agent: state cleanup failed "
-                    f"(exit {removed.exit_code}): {removed.stderr.strip()[-300:]}"
-                )
+                except TimeoutError as error:
+                    raise infrastructure_error(
+                        "daemon stop", None, "timed out", []
+                    ) from error
+                except Exception as error:
+                    raise infrastructure_error(
+                        "daemon stop", None, f"runtime failed: {error}", []
+                    ) from error
+                if stopped is None:
+                    raise infrastructure_error(
+                        "daemon stop",
+                        None,
+                        "runtime returned no authoritative result",
+                        [],
+                    )
+                if getattr(stopped, "timed_out", False):
+                    raise infrastructure_error("daemon stop", None, "timed out", [])
+                stop_exit_code = getattr(stopped, "exit_code", None)
+                if isinstance(stop_exit_code, bool) or not isinstance(
+                    stop_exit_code, int
+                ):
+                    raise infrastructure_error(
+                        "daemon stop",
+                        None,
+                        "runtime returned no authoritative exit status",
+                        [],
+                    )
+                if stop_exit_code != 0:
+                    stderr = str(getattr(stopped, "stderr", "")).strip()[-300:]
+                    raise infrastructure_error(
+                        "daemon stop", None, f"exit {stop_exit_code}: {stderr}", []
+                    )
+
+            # Delete independently addressable paths one at a time, so a failure
+            # records exactly what was removed and leaves an idempotent retry plan.
+            removed: list[str] = []
+            await remove(tmp_dir, "per-trace tmp", removed)
+            await remove(root, "state root", removed)
         except Exception:
-            logger.exception("prime-agent: daemon cleanup failed; retaining %s", root)
+            logger.exception(
+                "prime-agent: cleanup failed; retry paths are %s", cleanup_paths
+            )
             raise

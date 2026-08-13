@@ -17,6 +17,7 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
+# An isolated provider keeps Pi's native catalog from selecting a non-intercepted endpoint.
 PROVIDER = "intercept"
 KEY_VAR = "PI_INTERCEPT_KEY"
 HOME_VAR = "VF_PI_ORIGINAL_HOME"
@@ -194,9 +195,8 @@ class PiHarness(Harness[PiHarnessConfig]):
         }
         skill_args = [
             arg
-            for skill in self.config.skills
-            # Resolve like `install_skills` so the path matches what it wrote.
-            for arg in ("--skill", f"{SKILLS_DIR}/{skill.resolve().name}")
+            for skill in self.resolved_skills()
+            for arg in ("--skill", f"{SKILLS_DIR}/{skill.name}")
         ]
         pi_args = [
             PI_BIN,
