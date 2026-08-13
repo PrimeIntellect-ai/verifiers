@@ -509,18 +509,15 @@ class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
             capabilities.append("tool_choice")
             mediated.pop("tool_choice")
 
-        if capabilities:
-            input_items = mediated.get("input")
-            if not isinstance(input_items, list):
-                input_items = (
-                    []
-                    if input_items is None
-                    else [{"role": "user", "content": input_items}]
-                )
-            append_user_notice(
-                input_items, text_type="input_text", message_type="message"
+        input_items = mediated.get("input")
+        if not isinstance(input_items, list):
+            input_items = (
+                []
+                if input_items is None
+                else [{"role": "user", "content": input_items}]
             )
-            mediated["input"] = input_items
+        append_user_notice(input_items, text_type="input_text", message_type="message")
+        mediated["input"] = input_items
         return mediated, capabilities
 
     def is_terminal_event(self, chunk: bytes) -> bool:

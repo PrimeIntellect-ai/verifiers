@@ -46,7 +46,7 @@ def append_user_notice(
     text_type: str = "text",
     message_type: str | None = None,
 ) -> None:
-    """Add policy feedback to the earliest user input, keeping repeated turns' prefixes stable."""
+    """Add stable restricted-network context to the earliest user input."""
     part = {"type": text_type, "text": CAPABILITY_NOTICE}
     for message in messages:
         if not isinstance(message, dict) or message.get("role") != "user":
@@ -188,8 +188,9 @@ class Dialect(ABC, Generic[ReqT, RespT]):
 
     @abstractmethod
     def mediate_external_capabilities(self, body: ReqT) -> tuple[ReqT, list[str]]:
-        """Remove provider-side capabilities during restricted execution and tell the model
-        to continue without them. Returned paths never contain request values."""
+        """Remove provider-side capabilities during restricted execution. Implementations add
+        the same policy context on every call because the agent does not retain injected request
+        content. Returned paths never contain request values."""
 
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:

@@ -477,8 +477,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             )
             mediated.pop("tool_choice", None)
 
-        if capabilities:
-            append_user_notice(mediated.setdefault("messages", []))
+        append_user_notice(mediated.setdefault("messages", []))
         return mediated, capabilities
 
     def auth_headers(self, api_key: str) -> dict[str, str]:

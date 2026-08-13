@@ -470,8 +470,7 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
                     capabilities.append(capability)
             message["content"] = safe_content or ""
 
-        if capabilities:
-            append_user_notice(mediated.setdefault("messages", []))
+        append_user_notice(mediated.setdefault("messages", []))
         return mediated, capabilities
 
     def parse_request(
