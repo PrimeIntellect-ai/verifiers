@@ -257,7 +257,7 @@ class PrimeRuntime(Runtime):
                 timeout=MAX_LIFETIME,
                 working_dir=self.config.workdir,
                 env=env,
-                poll_interval=1,
+                poll_interval=3,
             )
         except (
             Exception
