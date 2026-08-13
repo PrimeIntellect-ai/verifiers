@@ -252,7 +252,19 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             env=self._run_env(trace, secret),
             command=command,
             prompt=prompt,
+            on_error=lambda error: self._session_error(runtime, trace, error),
         )
+
+    async def _session_error(
+        self, runtime: Runtime, trace: Trace, error: BaseException
+    ) -> None:
+        """Attach Prime Agent daemon output to untyped live ACP turn failures."""
+        try:
+            tail = await self.daemon_log_tail(runtime, trace)
+        except Exception:  # noqa: BLE001 - diagnostics must not mask the failure
+            return
+        if tail and not isinstance(error, RolloutError):
+            raise RuntimeError(f"{error}\n\nprime-agent daemon log:\n{tail}") from error
 
     async def launch(
         self,
@@ -454,9 +466,6 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
         def infrastructure_error(
             operation: str, path: str | None, reason: str, removed: list[str]
         ) -> SandboxError:
-            # `rm -rf` may have removed some children before a remote runtime loses
-            # its result. Never claim that either whole path survived; name both
-            # deterministic paths so a retry can issue the idempotent removals.
             confirmed = ", ".join(removed) if removed else "none"
             target = f" {path}" if path else ""
             return SandboxError(
@@ -465,100 +474,105 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                 f"Confirmed removed this attempt: {confirmed}."
             )
 
-        async def remove(path: str, label: str, removed: list[str]) -> None:
+        async def checked_run(
+            command: list[str],
+            operation: str,
+            path: str | None,
+            removed: list[str],
+        ):
             try:
-                result = await runtime.run(["rm", "-rf", path], {})
+                result = await runtime.run(command, {})
             except TimeoutError as error:
-                raise infrastructure_error(
-                    f"removal of {label}", path, "timed out", removed
-                ) from error
+                raise infrastructure_error(operation, path, "timed out", removed) from error
             except Exception as error:
                 raise infrastructure_error(
-                    f"removal of {label}", path, f"runtime failed: {error}", removed
+                    operation, path, f"runtime failed: {error}", removed
                 ) from error
             if result is None:
                 raise infrastructure_error(
-                    f"removal of {label}",
-                    path,
-                    "runtime returned no authoritative result",
-                    removed,
+                    operation, path, "runtime returned no authoritative result", removed
                 )
             if getattr(result, "timed_out", False):
-                raise infrastructure_error(
-                    f"removal of {label}", path, "timed out", removed
-                )
+                raise infrastructure_error(operation, path, "timed out", removed)
             exit_code = getattr(result, "exit_code", None)
             if isinstance(exit_code, bool) or not isinstance(exit_code, int):
                 raise infrastructure_error(
-                    f"removal of {label}",
-                    path,
-                    "runtime returned no authoritative exit status",
-                    removed,
+                    operation, path, "runtime returned no authoritative exit status", removed
                 )
+            return result, exit_code
+
+        async def remove(path: str, label: str, removed: list[str]) -> None:
+            result, exit_code = await checked_run(
+                ["rm", "-rf", path], f"removal of {label}", path, removed
+            )
             if exit_code != 0:
                 stderr = str(getattr(result, "stderr", "")).strip()[-300:]
                 raise infrastructure_error(
-                    f"removal of {label}",
-                    path,
-                    f"exit {exit_code}: {stderr}",
-                    removed,
+                    f"removal of {label}", path, f"exit {exit_code}: {stderr}", removed
                 )
             removed.append(path)
 
         try:
-            # Stop this trace's daemon before deleting its state: a live worker
-            # would keep writing into a removed directory. `daemon` is in the
-            # CLI's REMOVED_COMMAND_NAMES, so the subcommand is plain `stop`.
-            try:
-                stopped = await runtime.run(
-                    [
-                        "sh",
-                        "-c",
-                        # Prepend the bundled Node inside the shell rather than passing
-                        # PATH in env: `docker exec --env PATH=...` REPLACES the image
-                        # PATH, and resolved_env usually has no PATH to fall back on.
-                        (
-                            f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
-                            f"exec {shlex.quote(self.prime_agent_bin())} stop "
-                            f"--daemon-socket {shlex.quote(socket)}"
-                        ),
-                    ],
-                    self._run_env(trace, ""),
-                )
-            except TimeoutError as error:
+            # Cleanup also follows failed launch, before a socket necessarily exists.
+            # Absence is idempotent; an indeterminate probe retains all state.
+            exists, exists_exit_code = await checked_run(
+                ["test", "-S", socket], "daemon socket check", socket, []
+            )
+            if exists_exit_code not in (0, 1):
+                stderr = str(getattr(exists, "stderr", "")).strip()[-300:]
                 raise infrastructure_error(
-                    "daemon stop", None, "timed out", []
-                ) from error
-            except Exception as error:
-                raise infrastructure_error(
-                    "daemon stop", None, f"runtime failed: {error}", []
-                ) from error
-            if stopped is None:
-                raise infrastructure_error(
-                    "daemon stop", None, "runtime returned no authoritative result", []
-                )
-            if getattr(stopped, "timed_out", False):
-                raise infrastructure_error("daemon stop", None, "timed out", [])
-            stop_exit_code = getattr(stopped, "exit_code", None)
-            if isinstance(stop_exit_code, bool) or not isinstance(stop_exit_code, int):
-                raise infrastructure_error(
-                    "daemon stop",
-                    None,
-                    "runtime returned no authoritative exit status",
+                    "daemon socket check",
+                    socket,
+                    f"exit {exists_exit_code}: {stderr}",
                     [],
                 )
-            if stop_exit_code != 0:
-                # Keep both directories: a failed stop may leave a live worker
-                # writing to them. Do not turn that failure into silent data loss.
-                stderr = str(getattr(stopped, "stderr", "")).strip()[-300:]
-                raise infrastructure_error(
-                    "daemon stop", None, f"exit {stop_exit_code}: {stderr}", []
-                )
 
-            # Delete the independently addressable temporary socket directory
-            # first, then the state root. Each result is checked before the next
-            # command, so a partial cleanup names exactly what is confirmed gone
-            # and what retry must remove; `rm -rf` makes that retry idempotent.
+            if exists_exit_code == 0:
+                try:
+                    stopped = await runtime.run(
+                        [
+                            "sh",
+                            "-c",
+                            # Prepend bundled Node inside the shell; passing PATH in
+                            # env would replace the image PATH.
+                            (
+                                f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
+                                f"exec {shlex.quote(self.prime_agent_bin())} stop "
+                                f"--daemon-socket {shlex.quote(socket)}"
+                            ),
+                        ],
+                        self._run_env(trace, ""),
+                    )
+                except TimeoutError as error:
+                    raise infrastructure_error(
+                        "daemon stop", None, "timed out", []
+                    ) from error
+                except Exception as error:
+                    raise infrastructure_error(
+                        "daemon stop", None, f"runtime failed: {error}", []
+                    ) from error
+                if stopped is None:
+                    raise infrastructure_error(
+                        "daemon stop", None, "runtime returned no authoritative result", []
+                    )
+                if getattr(stopped, "timed_out", False):
+                    raise infrastructure_error("daemon stop", None, "timed out", [])
+                stop_exit_code = getattr(stopped, "exit_code", None)
+                if isinstance(stop_exit_code, bool) or not isinstance(stop_exit_code, int):
+                    raise infrastructure_error(
+                        "daemon stop",
+                        None,
+                        "runtime returned no authoritative exit status",
+                        [],
+                    )
+                if stop_exit_code != 0:
+                    stderr = str(getattr(stopped, "stderr", "")).strip()[-300:]
+                    raise infrastructure_error(
+                        "daemon stop", None, f"exit {stop_exit_code}: {stderr}", []
+                    )
+
+            # Delete independently addressable paths one at a time, so a failure
+            # records exactly what was removed and leaves an idempotent retry plan.
             removed: list[str] = []
             await remove(tmp_dir, "per-trace tmp", removed)
             await remove(root, "state root", removed)
