@@ -49,18 +49,17 @@ def _context(model: str) -> ModelContext:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("model", "provider", "primary"),
+    "model",
     [
-        ("gpt-5.6-luna", "openai", "openai/gpt-5.6-luna"),
-        (
-            "openrouter/meta-llama/llama-3.3-70b",
-            "openrouter",
-            "openrouter/meta-llama/llama-3.3-70b",
-        ),
+        "gpt-5.6-luna",
+        "openai/gpt-5.6-luna",
+        "internal/glm-5.2-fast",
+        "custom/non-catalog-model-v1",
+        "openrouter/meta-llama/llama-3.3-70b",
     ],
 )
-async def test_openclaw_launch_normalizes_bare_model_ids(
-    monkeypatch: pytest.MonkeyPatch, model: str, provider: str, primary: str
+async def test_openclaw_launch_isolates_every_model_id(
+    monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     import verifiers.v1.harnesses.openclaw.harness as openclaw
 
@@ -77,26 +76,39 @@ async def test_openclaw_launch_normalizes_bare_model_ids(
     )
 
     config = json.loads(runtime.writes[".vf-openclaw/trace/openclaw.json"])
-    assert config["agents"]["defaults"]["model"]["primary"] == primary
+    assert config["agents"]["defaults"]["model"]["primary"] == f"intercept/{model}"
+    assert config["models"]["mode"] == "replace"
     assert config["models"]["providers"] == {
-        provider: {"baseUrl": "http://intercept", "apiKey": "${OPENCLAW_INTERCEPT_KEY}"}
+        "intercept": {
+            "baseUrl": "http://intercept",
+            "apiKey": "${OPENCLAW_INTERCEPT_KEY}",
+            "api": "openai-responses",
+            "authHeader": True,
+            "models": [
+                {
+                    "id": model,
+                    "name": model,
+                    "reasoning": False,
+                    "input": ["text", "image"],
+                }
+            ],
+        }
     }
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("model", "provider", "remainder"),
+    "model",
     [
-        ("gpt-5.6-luna", "openai", "gpt-5.6-luna"),
-        (
-            "openrouter/meta-llama/llama-3.3-70b",
-            "openrouter",
-            "meta-llama/llama-3.3-70b",
-        ),
+        "gpt-5.6-luna",
+        "openai/gpt-5.6-luna",
+        "internal/glm-5.2-fast",
+        "custom/non-catalog-model-v1",
+        "openrouter/meta-llama/llama-3.3-70b",
     ],
 )
-async def test_pi_launch_normalizes_bare_model_ids(
-    monkeypatch: pytest.MonkeyPatch, model: str, provider: str, remainder: str
+async def test_pi_launch_isolates_every_model_id(
+    monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     import verifiers.v1.harnesses.pi.harness as pi
 
@@ -114,7 +126,20 @@ async def test_pi_launch_normalizes_bare_model_ids(
 
     models = json.loads(runtime.writes[".vf-pi-agent-trace/models.json"])
     assert models["providers"] == {
-        provider: {"baseUrl": "http://intercept", "apiKey": "$PI_INTERCEPT_KEY"}
+        "intercept": {
+            "baseUrl": "http://intercept",
+            "api": "openai-completions",
+            "apiKey": "$PI_INTERCEPT_KEY",
+            "models": [
+                {
+                    "id": model,
+                    "reasoning": model.rsplit("/", 1)[-1].startswith(
+                        ("gpt-5", "o1", "o3", "o4")
+                    ),
+                    "input": ["text", "image"],
+                }
+            ],
+        }
     }
     wrapper = runtime.writes[".vf-pi-agent-trace/pi"].decode()
-    assert f"--provider {provider} --model {remainder}" in wrapper
+    assert f"--provider intercept --model {model}" in wrapper

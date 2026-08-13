@@ -117,9 +117,9 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        provider, sep, model = ctx.model.partition("/")
-        if not sep:
-            provider, model = "openai", provider
+        # Keep the evaluated model opaque behind a private provider. Native provider names
+        # can merge with OpenClaw's built-in catalog and route around interception.
+        reasoning = ctx.sampling.reasoning_effort not in (None, "none")
         directory = OPENCLAW_DIR.format(version=self.config.version)
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
@@ -131,7 +131,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                     "workspace": ".",
                     "skipBootstrap": True,
                     "sandbox": {"mode": "off"},
-                    "model": {"primary": ctx.model if sep else f"{provider}/{model}"},
+                    "model": {"primary": f"intercept/{ctx.model}"},
                 }
             },
             "tools": {
@@ -141,10 +141,23 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 "deny": self.config.disabled_tools or [],
             },
             "models": {
+                # Do not merge with built-in providers: a matching provider can bypass
+                # this rollout's endpoint and capability token.
+                "mode": "replace",
                 "providers": {
-                    provider: {
+                    "intercept": {
                         "baseUrl": endpoint,
                         "apiKey": "${OPENCLAW_INTERCEPT_KEY}",
+                        "api": "openai-responses",
+                        "authHeader": True,
+                        "models": [
+                            {
+                                "id": ctx.model,
+                                "name": ctx.model,
+                                "reasoning": reasoning,
+                                "input": ["text", "image"],
+                            }
+                        ],
                     }
                 },
             },
