@@ -31,6 +31,7 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ class PrimeRuntime(Runtime):
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
+        ensure_prime_auth()
         super().__init__(name)
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
