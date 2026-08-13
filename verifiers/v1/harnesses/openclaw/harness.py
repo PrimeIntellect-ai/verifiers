@@ -91,7 +91,6 @@ class OpenClawHarnessConfig(HarnessConfig):
 class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -132,7 +131,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         if result.exit_code != 0:
             detail = (result.stderr or result.stdout).strip()[-500:]
             raise RuntimeError(f"OpenClaw install failed: {detail}")
-        await self.acp.setup(self, runtime)
+        await super().setup(runtime)
 
     async def prepare_acp(
         self,
@@ -221,7 +220,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             prompt=prompt,
             mcp_urls={},
             system_prompt=system_prompt,
-            session_path=f"{state_dir}/acp-session",
             # OpenClaw can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
         )

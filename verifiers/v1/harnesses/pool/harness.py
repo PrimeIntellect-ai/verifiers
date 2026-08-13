@@ -5,11 +5,10 @@ import shlex
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACP
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -27,18 +26,15 @@ mv "{dir}/pool-$os-$arch" "{dir}/pool"
 chmod +x "{dir}/pool"
 """
 
-POOL_ACP = ACP()
-
 
 class PoolHarnessConfig(HarnessConfig):
     version: str = Field(default="1.0.15", pattern=r"^[A-Za-z0-9._+-]+$")
     """Pool release to install, pinned for reproducibility."""
 
 
-class PoolHarness(Harness[PoolHarnessConfig]):
+class PoolHarness(ACPHarness[PoolHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -59,9 +55,9 @@ class PoolHarness(Harness[PoolHarnessConfig]):
         if result.exit_code != 0:
             detail = (result.stderr or result.stdout).strip()[-500:]
             raise RuntimeError(f"Pool install failed: {detail}")
-        await POOL_ACP.setup(self, runtime)
+        await super().setup(runtime)
 
-    async def launch(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -70,7 +66,7 @@ class PoolHarness(Harness[PoolHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> ProgramResult:
+    ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         env = {
             **self.config.resolved_env,
@@ -94,13 +90,10 @@ class PoolHarness(Harness[PoolHarnessConfig]):
                 f"--sandbox disabled --settings {settings}"
             ),
         ]
-        return await POOL_ACP.run(
-            runtime,
-            env,
-            command,
-            prompt,
-            trace=trace,
+        return ACPConfig(
+            env=env,
+            command=command,
+            prompt=prompt,
             mcp_urls=mcp_urls,
             system_prompt=system_prompt,
-            session_path=f"{pool_home}/acp-session",
         )

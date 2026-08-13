@@ -25,7 +25,6 @@ class HermesAgentHarnessConfig(HarnessConfig):
 class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -33,7 +32,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             PROGRAM_SOURCE.replace("{version}", self.config.version),
             self.config.resolved_env,
         )
-        await self.acp.setup(self, runtime)
+        await super().setup(runtime)
 
     async def prepare_acp(
         self,
@@ -94,7 +93,6 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             ),
             prompt=prompt,
             system_prompt=system_prompt,
-            session_path=f"{home}/acp-session",
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

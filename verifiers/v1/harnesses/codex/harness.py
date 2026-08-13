@@ -47,7 +47,6 @@ class CodexHarnessConfig(HarnessConfig):
 class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -83,7 +82,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         )
         if install.exit_code != 0:
             raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
-        await self.acp.setup(self, runtime)
+        await super().setup(runtime)
 
     async def prepare_acp(
         self,
@@ -110,7 +109,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
-            session_path=f"{self.trace_home(trace)}/acp-session",
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

@@ -64,7 +64,6 @@ class RLMHarnessConfig(HarnessConfig):
 class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -88,7 +87,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
-        await self.acp.setup(self, runtime)
+        await super().setup(runtime)
 
     def summarize_threshold(self, task_idx: int | None) -> str:
         """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index —

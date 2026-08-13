@@ -50,7 +50,6 @@ class KimiCodeHarnessConfig(HarnessConfig):
 class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -69,7 +68,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             raise RuntimeError(
                 f"Kimi Code install failed: {install.stderr.strip()[-500:]}"
             )
-        await self.acp.setup(self, runtime)
+        await super().setup(runtime)
 
     async def prepare_acp(
         self,
@@ -129,5 +128,4 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             command=ACP_COMMAND,
             prompt=prompt,
             system_prompt=system_prompt,
-            session_path=f"{KIMI_HOME}/{trace.id}/acp-session",
         )

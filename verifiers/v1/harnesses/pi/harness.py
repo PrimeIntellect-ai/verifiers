@@ -57,7 +57,6 @@ class PiHarnessConfig(HarnessConfig):
 class PiHarness(ACPHarness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
@@ -91,7 +90,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         )
         if install.exit_code != 0:
             raise RuntimeError(f"pi install failed: {install.stderr.strip()[-500:]}")
-        await self.acp.setup(self, runtime)
+        await super().setup(runtime)
 
     async def prepare_acp(
         self,
@@ -201,7 +200,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             prompt=prompt,
             # Pi's extension owns the task-scoped MCP configuration.
             mcp_urls={},
-            session_path=f"{agent_dir}/acp-session",
             # Pi can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
         )

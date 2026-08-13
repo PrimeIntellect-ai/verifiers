@@ -39,7 +39,6 @@ class ClaudeCodeHarnessConfig(HarnessConfig):
 class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -71,7 +70,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         if acp_result.exit_code != 0:
             detail = (acp_result.stderr or acp_result.stdout).strip()[-500:]
             raise RuntimeError(f"Claude Agent ACP install failed: {detail}")
-        await self.acp.setup(self, runtime)
+        await super().setup(runtime)
 
     async def prepare_acp(
         self,
@@ -110,7 +109,6 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             env=env,
             command=[f"{NODE_BIN_DIR}/node", ACP_BIN.format(**versions)],
             prompt=prompt or "",
-            session_path=f"{config_dir}/acp-session",
             session_meta=session_meta,
         )
 
