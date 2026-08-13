@@ -88,21 +88,13 @@ class VerifiersACPClient(Client):
         return RequestPermissionResponse(outcome=outcome)
 
 
-def content_blocks(messages: list[dict], supports_images: bool) -> list:
-    """Render ordered VF messages as one ACP user prompt.
-
-    ACP prompt blocks have no message roles, so a multi-message user turn keeps its
-    order and roles as visible labels.
-    """
+def user_content_blocks(contents: list, supports_images: bool) -> list:
+    """Render one user turn's ordered VF contents as ACP prompt blocks."""
     blocks = []
-    transcript = len(messages) != 1 or messages[0].get("role") != "user"
-    for message in messages:
-        if transcript:
-            separator = "\n\n" if blocks else ""
-            role = message.get("role", "message")
-            label = "(system)" if role == "system" else f"[{role}]"
-            blocks.append(text_block(f"{separator}{label}\n"))
-        content = message.get("content") or ""
+    for index, content in enumerate(contents):
+        if index:
+            blocks.append(text_block("\n\n"))
+        content = content or ""
         parts = (
             [{"type": "text", "text": content}] if isinstance(content, str) else content
         )
@@ -122,13 +114,6 @@ def content_blocks(messages: list[dict], supports_images: bool) -> list:
             ):
                 raise ValueError("ACP image prompts require base64 data:image URLs")
             blocks.append(image_block(data, media_type))
-        metadata = {
-            key: value
-            for key, value in message.items()
-            if key not in ("role", "content") and value
-        }
-        if metadata:
-            blocks.append(text_block("\n" + json.dumps(metadata, ensure_ascii=False)))
     return blocks
 
 
@@ -150,13 +135,10 @@ async def prompt(
 ) -> str:
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
-    messages = config["messages"]
+    blocks = []
     if is_new and config["system_prompt"]:
-        messages = [
-            {"role": "system", "content": config["system_prompt"]},
-            *messages,
-        ]
-    blocks = content_blocks(messages, supports_images)
+        blocks.append(text_block(f"(system)\n{config['system_prompt']}\n\n[user]\n"))
+    blocks.extend(user_content_blocks(config["user_contents"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
     client.reset()

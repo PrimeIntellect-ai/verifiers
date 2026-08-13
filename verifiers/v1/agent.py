@@ -332,16 +332,20 @@ class Agent:
         return None
 
     def _check_resume_support(self) -> None:
-        # Multi-turn capability is a derived fact, not a flag: an exchange advances
-        # by resuming the harness onto the conversation, so the harness needs either
-        # the default relaunch (a Messages prompt) or its own native continuation.
+        # Multi-turn capability is derived: a harness needs transcript replay, a
+        # native resume implementation, or a rollout-scoped session implementation.
         harness = self.harness
-        if type(harness).resume is Harness.resume and not harness.SUPPORTS_RESUME:
+        if (
+            type(harness).session is Harness.session
+            and type(harness).resume is Harness.resume
+            and not harness.SUPPORTS_RESUME
+        ):
             raise ValueError(
                 f"Harness {harness.config.id!r} cannot host a user: resuming an "
                 "exchange takes transcript-backed resume (SUPPORTS_RESUME) for the "
-                "default relaunch-on-the-conversation, or a native resume() "
-                "override. Use a harness that has one (e.g. bash or null)."
+                "default relaunch-on-the-conversation, a native resume() override, "
+                "or a rollout-scoped session() override. Use a harness that has "
+                "one (e.g. bash or null)."
             )
 
     async def run(
