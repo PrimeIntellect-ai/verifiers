@@ -18,7 +18,7 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
-from verifiers.v1.utils.prime_config import load_prime_config
+from verifiers.v1.utils.prime import load_prime_config
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
 

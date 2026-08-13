@@ -35,7 +35,7 @@ from verifiers.v1.task import Task, WireTaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
-from verifiers.v1.utils.prime_config import ensure_prime_auth
+from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
