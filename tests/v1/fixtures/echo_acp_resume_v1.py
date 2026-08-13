@@ -1,9 +1,8 @@
-"""Two-segment ACP continuation with a multi-message delta and resumed MCP call."""
+"""Two-segment ACP continuation with an MCP call after resume."""
 
 import verifiers.v1 as vf
 
 CODEWORD = "violet-cascade-731"
-SECOND_CODEWORD = "amber-harbor-284"
 TOOL_STAMP = "resume-ok-9d2"
 
 
@@ -43,10 +42,8 @@ class ACPResumeTask(vf.Task[vf.TaskData, vf.State, ACPResumeTaskConfig]):
         return float(
             bool(first["last_reply"].strip())
             and _key(CODEWORD) in _key(second["last_reply"])
-            and _key(SECOND_CODEWORD) in _key(second["last_reply"])
             and _key(TOOL_STAMP) in _key(second["last_reply"])
             and _key(CODEWORD) in _key(resumed_tool_output)
-            and _key(SECOND_CODEWORD) in _key(resumed_tool_output)
             and _key(TOOL_STAMP) in _key(resumed_tool_output)
             and "tool" in second["roles"]
         )
@@ -62,23 +59,8 @@ class ACPResumeEnv(vf.SingleAgentEnv):
             if not first.terminated:
                 segments.append(
                     await interaction.turn(
-                        [
-                            vf.UserMessage(
-                                content=(
-                                    "The second codeword for this turn is "
-                                    f"{SECOND_CODEWORD}."
-                                )
-                            ),
-                            vf.AssistantMessage(content="Acknowledged."),
-                            vf.UserMessage(
-                                content=(
-                                    "Call `resume_recall` with both codewords: first the "
-                                    "one from the previous turn, then the second codeword "
-                                    "introduced earlier in this turn, joined by `/`. Reply "
-                                    "with exactly the tool result."
-                                )
-                            ),
-                        ]
+                        "Call `resume_recall` with the codeword from my previous "
+                        "message, then reply with exactly the tool result."
                     )
                 )
             interaction.trace.info["acp_segments"] = [

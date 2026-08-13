@@ -135,11 +135,9 @@ def mcp_servers(config: dict) -> list[HttpMcpServer]:
     ]
 
 
-def segment_messages(
-    config: dict, *, is_new: bool, replayed_transcript: bool
-) -> list[dict]:
+def segment_messages(config: dict, is_new: bool) -> list[dict]:
     messages = config["messages"]
-    if replayed_transcript:
+    if not is_new:
         last_assistant = max(
             (
                 index
@@ -165,18 +163,10 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
-    replayed_transcript: bool,
 ) -> str:
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
-    blocks = content_blocks(
-        segment_messages(
-            config,
-            is_new=is_new,
-            replayed_transcript=replayed_transcript,
-        ),
-        supports_images,
-    )
+    blocks = content_blocks(segment_messages(config, is_new), supports_images)
     if not blocks:
         raise ValueError("ACP prompt has no content")
     client.reset()
@@ -271,7 +261,6 @@ async def run_once(config: dict) -> str:
             session_id,
             config,
             is_new=is_new,
-            replayed_transcript=not is_new,
         )
         if session_path and is_new:
             session_path.parent.mkdir(parents=True, exist_ok=True)
@@ -350,9 +339,6 @@ class LiveACPSession:
             self.session_id,
             config,
             is_new=self.is_new,
-            # HarnessSession.turn() already passes only this interaction's new
-            # messages; unlike run_once resume, this is not a replayed transcript.
-            replayed_transcript=False,
         )
         self.is_new = False
         return reply
