@@ -1,24 +1,19 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
 import asyncio
-import fcntl
 import json
 import logging
 import secrets
 import shlex
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACP
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import DockerRuntime, ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -31,28 +26,59 @@ command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl
 curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh | bash -s -- --prefix {dir} --version {version} --no-onboard
 """
 
-OPENCLAW_ACP = ACP()
-
-
-@asynccontextmanager
-async def _gateway_start_lock(runtime: Runtime) -> AsyncIterator[None]:
-    if not isinstance(runtime, DockerRuntime) or runtime.network_restricted:
-        yield
-        return
-    # Unrestricted Docker containers share the host network across server workers.
-    lock_path = CACHE_DIR / "harnesses" / "openclaw" / "gateway.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a") as lock:
-        while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                await asyncio.sleep(0.1)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+OPENCLAW_COMMAND = [
+    "sh",
+    "-c",
+    r"""
+set -eu
+exec 3<&0
+gateway_pid=
+acp_pid=
+cleanup() {
+    trap - EXIT HUP INT TERM
+    [ -z "$acp_pid" ] || kill -TERM -"$acp_pid" 2>/dev/null || true
+    [ -z "$gateway_pid" ] || kill -TERM -"$gateway_pid" 2>/dev/null || true
+    [ -z "$acp_pid$gateway_pid" ] || sleep 1
+    [ -z "$acp_pid" ] || kill -KILL -"$acp_pid" 2>/dev/null || true
+    [ -z "$gateway_pid" ] || kill -KILL -"$gateway_pid" 2>/dev/null || true
+    [ -z "$acp_pid" ] || wait "$acp_pid" 2>/dev/null || true
+    [ -z "$gateway_pid" ] || wait "$gateway_pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 143' HUP INT TERM
+root=${VF_OPENCLAW_BIN%/bin/openclaw}
+gateway_attempt=0
+while [ "$gateway_attempt" -lt 5 ]; do
+    port=$("$root/tools/node/bin/node" -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
+    export OPENCLAW_GATEWAY_PORT="$port"
+    # OpenClaw respawns Node; separate groups let the trap reap both process trees.
+    setsid "$VF_OPENCLAW_BIN" gateway run </dev/null >"$OPENCLAW_STATE_DIR/gateway.log" &
+    gateway_pid=$!
+    attempt=0
+    while ! curl -fsS "http://127.0.0.1:$port/readyz" >/dev/null 2>&1; do
+        if ! kill -0 "$gateway_pid" 2>/dev/null; then
+            wait "$gateway_pid" 2>/dev/null || true
+            gateway_pid=
+            break
+        fi
+        attempt=$((attempt + 1))
+        [ "$attempt" -lt 120 ] || { tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2; exit 1; }
+        sleep 1
+    done
+    [ -n "$gateway_pid" ] && break
+    # The probe releases its socket before Gateway binds, so retry early exits
+    # when concurrent host-network rollouts select the same port.
+    gateway_attempt=$((gateway_attempt + 1))
+done
+if [ -z "$gateway_pid" ]; then
+    tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2
+    exit 1
+fi
+setsid "$VF_OPENCLAW_BIN" acp --verbose --session "agent:main:acp-bridge:$OPENCLAW_GATEWAY_TOKEN" --no-prefix-cwd <&3 >&1 &
+acp_pid=$!
+wait "$acp_pid"
+""",
+]
 
 
 class OpenClawHarnessConfig(HarnessConfig):
@@ -62,10 +88,9 @@ class OpenClawHarnessConfig(HarnessConfig):
     """Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills."""
 
 
-class OpenClawHarness(Harness[OpenClawHarnessConfig]):
+class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
@@ -106,9 +131,9 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         if result.exit_code != 0:
             detail = (result.stderr or result.stdout).strip()[-500:]
             raise RuntimeError(f"OpenClaw install failed: {detail}")
-        await OPENCLAW_ACP.setup(self, runtime)
+        await super().setup(runtime)
 
-    async def launch(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -117,22 +142,31 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> ProgramResult:
+    ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        # Opt-in via sampling: OpenClaw redacts persisted encrypted reasoning, so resumed sessions 400 replaying it.
-        reasoning = ctx.sampling.reasoning_effort not in (None, "none")
-        directory = OPENCLAW_DIR.format(version=self.config.version)
+        provider, _, _ = ctx.model.partition("/")
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
         config = {
-            "gateway": {"mode": "local"},
+            # Provider state must remain byte-exact within this isolated rollout.
+            "logging": {"redactSensitive": "off"},
+            "gateway": {
+                "mode": "local",
+                "bind": "loopback",
+                "auth": {
+                    "mode": "token",
+                    "token": "${OPENCLAW_GATEWAY_TOKEN}",
+                },
+            },
+            "messages": {"queue": {"mode": "interrupt"}},
             "agents": {
                 "defaults": {
                     "workspace": ".",
                     "skipBootstrap": True,
+                    "heartbeat": {"every": "0m"},
                     "sandbox": {"mode": "off"},
-                    "model": {"primary": f"intercept/{ctx.model}"},
+                    "model": {"primary": ctx.model},
                 }
             },
             "tools": {
@@ -142,21 +176,10 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 "deny": self.config.disabled_tools or [],
             },
             "models": {
-                "mode": "replace",
                 "providers": {
-                    "intercept": {
+                    provider: {
                         "baseUrl": endpoint,
                         "apiKey": "${OPENCLAW_INTERCEPT_KEY}",
-                        "api": "openai-responses",
-                        "authHeader": True,
-                        "models": [
-                            {
-                                "id": ctx.model,
-                                "name": ctx.model,
-                                "reasoning": reasoning,
-                                "input": ["text", "image"],
-                            }
-                        ],
                     }
                 },
             },
@@ -172,182 +195,47 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 }
             },
         }
-        created = await runtime.run(["mkdir", "-p", state_dir], {})
-        if created.exit_code != 0:
-            raise RuntimeError(
-                f"OpenClaw state directory failed: {created.stderr.strip()[-500:]}"
-            )
         if self.config.skills:
-            exists = await runtime.run(["test", "-d", skills_dir], {})
-            if exists.exit_code != 0:
-                copied = await runtime.run(
-                    ["cp", "-R", self._staged_skills_dir, skills_dir], {}
-                )
-                if copied.exit_code != 0:
-                    raise RuntimeError(
-                        f"failed to stage OpenClaw skills: {copied.stderr.strip()[-500:]}"
-                    )
             config["skills"] = {"load": {"extraDirs": [skills_dir]}}
         if not self.config.use_bundled_skill:
             # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
             config.setdefault("skills", {})["allowBundled"] = ["__none__"]
         await runtime.write(config_path, json.dumps(config).encode())
+        if self.config.skills:
+            copied = await runtime.run(
+                ["cp", "-R", self._staged_skills_dir, skills_dir], {}
+            )
+            if copied.exit_code != 0:
+                raise RuntimeError(
+                    f"failed to isolate OpenClaw skills: {copied.stderr.strip()[-500:]}"
+                )
 
-        binary = OPENCLAW_BIN.format(version=self.config.version)
-        node = f"{directory}/tools/node/bin/node"
-        allocate_port = shlex.join(
-            [
-                node,
-                "-e",
-                (
-                    'const net=require("node:net");const server=net.createServer();'
-                    'server.listen(0,"127.0.0.1",()=>{'
-                    "process.stdout.write(String(server.address().port));server.close();});"
-                ),
-            ]
-        )
-        log_path = f"{state_dir}/gateway.log"
-        pid_path = f"{state_dir}/gateway.pid"
         env = {
             **self.config.resolved_env,
             "OPENCLAW_CONFIG_PATH": config_path,
             "OPENCLAW_STATE_DIR": state_dir,
+            "OPENCLAW_GATEWAY_TOKEN": trace.id,
             "OPENCLAW_INTERCEPT_KEY": secret,
             "OPENCLAW_HIDE_BANNER": "1",
             "OPENCLAW_SUPPRESS_NOTES": "1",
             "NO_COLOR": "1",
+            "VF_OPENCLAW_BIN": OPENCLAW_BIN.format(version=self.config.version),
         }
-        async with _gateway_start_lock(runtime):
-            allocated = await runtime.run(["sh", "-c", allocate_port], {})
-            if allocated.exit_code != 0:
-                raise RuntimeError(
-                    f"OpenClaw port allocation failed: {allocated.stderr.strip()[-500:]}"
-                )
-            gateway_port = allocated.stdout.strip()
-            port_probe = shlex.join(
-                [
-                    node,
-                    "-e",
-                    (
-                        'const net=require("node:net");'
-                        f'const socket=net.connect({{host:"127.0.0.1",port:{gateway_port}}});'
-                        'socket.on("connect",()=>socket.end());'
-                        'socket.on("error",()=>process.exit(1));'
-                    ),
-                ]
-            )
-            await runtime.run_background(
-                [
-                    "sh",
-                    "-c",
-                    (
-                        f"echo $$ >{shlex.quote(pid_path)}; "
-                        f"exec {shlex.quote(binary)} gateway run "
-                        f"--port {shlex.quote(gateway_port)} --bind loopback "
-                        f"--auth token --token {shlex.quote(trace.id)} "
-                        "--allow-unconfigured"
-                    ),
-                ],
-                env,
-                log_path,
-            )
-            bound = await runtime.run(
-                [
-                    "sh",
-                    "-c",
-                    (
-                        "attempt=0; "
-                        f"until [ -s {shlex.quote(pid_path)} ] && "
-                        f'kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null && '
-                        f"{port_probe} >/dev/null 2>&1; do "
-                        f"if [ -s {shlex.quote(pid_path)} ] && "
-                        f'! kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null; then '
-                        f"tail -100 {shlex.quote(log_path)} >&2; exit 1; fi; "
-                        "attempt=$((attempt + 1)); "
-                        f'[ "$attempt" -lt 1200 ] || {{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; '
-                        "sleep 0.1; done"
-                    ),
-                ],
-                {},
-            )
-            if bound.exit_code != 0:
-                detail = (bound.stderr or bound.stdout).strip()[-2000:]
-                raise RuntimeError(f"OpenClaw gateway failed to bind: {detail}")
-        readiness = await runtime.run(
-            [
-                "sh",
-                "-c",
-                (
-                    "attempt=0; "
-                    f"until [ -s {shlex.quote(pid_path)} ] && "
-                    f'kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null && '
-                    f'curl -fsS "http://127.0.0.1:{gateway_port}/healthz" '
-                    ">/dev/null 2>&1; do "
-                    f"if [ -s {shlex.quote(pid_path)} ] && "
-                    f'! kill -0 "$(cat {shlex.quote(pid_path)})" 2>/dev/null; then '
-                    f"tail -100 {shlex.quote(log_path)} >&2; exit 1; fi; "
-                    "attempt=$((attempt + 1)); "
-                    f'[ "$attempt" -lt 120 ] || {{ tail -100 {shlex.quote(log_path)} >&2; exit 1; }}; '
-                    "sleep 1; done"
-                ),
-            ],
-            {},
-        )
-        if readiness.exit_code != 0:
-            detail = (readiness.stderr or readiness.stdout).strip()[-2000:]
-            raise RuntimeError(f"OpenClaw gateway failed to start: {detail}")
-        command = [
-            "sh",
-            "-c",
-            (
-                "set -eu; "
-                f"gateway_pid=$(cat {shlex.quote(pid_path)}); "
-                f'trap \'kill "$gateway_pid" 2>/dev/null || true; '
-                'attempt=0; while kill -0 "$gateway_pid" 2>/dev/null && '
-                ' [ "$attempt" -lt 50 ]; do attempt=$((attempt + 1)); sleep 0.1; done; '
-                'kill -9 "$gateway_pid" 2>/dev/null || true; '
-                'while kill -0 "$gateway_pid" 2>/dev/null; do sleep 0.1; done; '
-                f"rm -f {shlex.quote(pid_path)}' EXIT; "
-                f'{shlex.quote(binary)} acp --url "ws://127.0.0.1:{gateway_port}" '
-                f"--token {shlex.quote(trace.id)} "
-                f"--session {shlex.quote(f'agent:main:acp-bridge:{trace.id}')} "
-                "--no-prefix-cwd"
-            ),
-        ]
         # OpenClaw rejects ACP per-session MCP declarations; the isolated Gateway
-        # config above owns the equivalent task-scoped server definitions.
-        return await OPENCLAW_ACP.run(
-            runtime,
-            env,
-            command,
-            prompt,
+        # config owns the equivalent task-scoped server definitions.
+        return ACPConfig(
+            env=env,
+            command=OPENCLAW_COMMAND,
+            prompt=prompt,
             mcp_urls={},
             system_prompt=system_prompt,
-            session_path=f"{state_dir}/acp-session",
             # OpenClaw can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         state_dir = f".vf-openclaw/{trace.id}"
-        pid_path = f"{state_dir}/gateway.pid"
-        result = await runtime.run(
-            [
-                "sh",
-                "-c",
-                (
-                    f"if [ -s {shlex.quote(pid_path)} ]; then "
-                    f"gateway_pid=$(cat {shlex.quote(pid_path)}); "
-                    'kill "$gateway_pid" 2>/dev/null || true; '
-                    'attempt=0; while kill -0 "$gateway_pid" 2>/dev/null && '
-                    ' [ "$attempt" -lt 50 ]; do attempt=$((attempt + 1)); sleep 0.1; done; '
-                    'kill -9 "$gateway_pid" 2>/dev/null || true; '
-                    'while kill -0 "$gateway_pid" 2>/dev/null; do sleep 0.1; done; fi; '
-                    f"rm -rf {shlex.quote(state_dir)}"
-                ),
-            ],
-            {},
-        )
+        result = await runtime.run(["rm", "-rf", state_dir], {})
         if result.exit_code != 0:
             raise RuntimeError(
                 f"failed to clean up OpenClaw state: {result.stderr.strip()[-500:]}"

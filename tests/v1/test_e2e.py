@@ -23,7 +23,12 @@ CHAT_PLACEMENTS = [
     pair("null", "subprocess", "null-harness-in-subprocess"),
     pair("bash", "docker", "bash-harness-in-docker"),
     pair("rlm", "docker", "rlm-harness-in-docker"),
-    pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
+    pytest.param(
+        {"id": "kimi-code", "transport": "responses"},
+        "docker",
+        marks=[mark.kimi_code, mark.docker],
+        id="kimi-code-responses-harness-in-docker",
+    ),
     pair("bash", "prime", "bash-harness-in-prime"),
     pair("bash", "modal", "bash-harness-in-modal"),
 ]
@@ -34,7 +39,12 @@ CHAT_PLACEMENTS = [
 AGENTIC_PLACEMENTS = [
     pair("bash", "subprocess", "bash-harness-in-subprocess"),
     pair("rlm", "docker", "rlm-harness-in-docker"),
-    pair("kimi-code", "docker", "kimi-code-harness-in-docker"),
+    pytest.param(
+        {"id": "kimi-code", "transport": "responses"},
+        "docker",
+        marks=[mark.kimi_code, mark.docker],
+        id="kimi-code-responses-harness-in-docker",
+    ),
     pair("codex", "docker", "codex-harness-in-docker"),
     pair("claude-code", "docker", "claude-code-harness-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-harness-in-docker"),
@@ -59,8 +69,18 @@ ACP_RESUME_PLACEMENTS = [
     pair("claude-code", "docker", "claude-code-acp-in-docker"),
     pair("hermes-agent", "docker", "hermes-agent-acp-in-docker"),
     pair("rlm", "docker", "rlm-acp-in-docker"),
-    pair("kimi-code", "docker", "kimi-code-acp-in-docker"),
-    pair("pi", "docker", "pi-acp-in-docker"),
+    pytest.param(
+        {"id": "kimi-code", "transport": "responses"},
+        "docker",
+        marks=[mark.kimi_code, mark.docker],
+        id="kimi-code-responses-acp-in-docker",
+    ),
+    pytest.param(
+        {"id": "pi", "transport": "responses"},
+        "docker",
+        marks=[mark.pi, mark.docker],
+        id="pi-responses-acp-in-docker",
+    ),
     pair("pool", "docker", "pool-acp-in-docker"),
     pair("openclaw", "docker", "openclaw-acp-in-docker"),
     pair("pool", "prime", "pool-acp-in-prime"),
@@ -235,11 +255,14 @@ async def test_acp_resume_with_tool(run_v1, harness, harness_runtime, tmp_path):
     assert len(segments) == 2
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
+    # Kimi Code is broken upstream: its Responses adapter drops message `phase` on replay.
+    if harness.id != "kimi-code":
+        assert trace.num_branches == 1
     # Native MCP tools need not appear in the intercepted model request that
     # populates trace.tools; the ACP transcript is the source of truth for use.
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
-    if harness == "rlm":
+    if harness.id == "rlm":
         assert "turns_since_last_compaction" in trace.metrics
 
 

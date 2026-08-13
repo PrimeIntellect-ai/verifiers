@@ -1,24 +1,18 @@
 """Run Hermes Agent against interception through its native ACP server."""
 
 import json
-import logging
 from pathlib import Path
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACP
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
-SKILLS_DIR = ".vf-hermes-skills"
-HERMES_ACP = ACP()
-PROVIDER = "intercept"
-logger = logging.getLogger(__name__)
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
@@ -28,22 +22,19 @@ class HermesAgentHarnessConfig(HarnessConfig):
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
 
 
-class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
+class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     SUPPORTS_SKILLS = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await self.install_skills(runtime, SKILLS_DIR)
-        logger.info(
-            "hermes-agent: ensuring Hermes Agent %s is installed", self.config.version
+        await runtime.prepare_uv_script(
+            PROGRAM_SOURCE.replace("{version}", self.config.version),
+            self.config.resolved_env,
         )
-        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
-        await runtime.prepare_uv_script(source, self.config.resolved_env)
-        await HERMES_ACP.setup(self, runtime)
+        await super().setup(runtime)
 
-    async def launch(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -52,89 +43,61 @@ class HermesAgentHarness(Harness[HermesAgentHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> ProgramResult:
+    ) -> ACPConfig:
         if self.config.disabled_tools:
             raise ValueError("Hermes Agent ACP does not support disabling tools")
 
-        system_prompt, prompt = self.resolve_prompt(data)
-        home = self._home(trace)
-        model: dict[str, object] = {
-            "provider": PROVIDER,
+        home = f"/tmp/vf-hermes/{trace.id}"
+        # Keep interception routing separate from vendor names that Hermes may resolve
+        # to built-in cloud providers instead of the configured endpoint.
+        model = {
+            "provider": "openai",
             "default": ctx.model,
-            "base_url": endpoint,
-            "api_mode": "chat_completions",
+            **(
+                {"max_tokens": ctx.sampling.max_tokens}
+                if ctx.sampling.max_tokens is not None
+                else {}
+            ),
         }
-        if ctx.sampling.max_tokens is not None:
-            model["max_tokens"] = ctx.sampling.max_tokens
-        await runtime.write(
-            f"{home}/config.yaml",
-            json.dumps(
-                {
-                    "model": model,
-                    # The ACP client already approves tool requests. Avoid routing Hermes'
-                    # redundant smart-approval model calls through interception as turns.
-                    "approvals": {"mode": "off"},
-                    "providers": {
-                        PROVIDER: {
-                            "api": endpoint,
-                            "api_key": secret,
-                            "transport": "chat_completions",
-                            "discover_models": False,
-                            "models": [ctx.model],
-                        }
-                    },
-                }
-            ).encode(),
-        )
+        provider = {
+            "api": endpoint,
+            "api_key": secret,
+            "discover_models": False,
+        }
+        if ctx.client.type == "eval":
+            provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
+        config = {
+            "model": model,
+            # The ACP client already approves tool requests. Avoid routing Hermes'
+            # redundant smart-approval model calls through interception as turns.
+            "approvals": {"mode": "off"},
+            # Session titles are UI metadata, not part of the agent conversation.
+            "auxiliary": {"title_generation": {"enabled": False}},
+            "providers": {"openai": provider},
+        }
+        await runtime.write(f"{home}/config.yaml", json.dumps(config).encode())
         if not self.config.use_bundled_skill:
-            await runtime.write(
-                f"{home}/.no-bundled-skills",
-                b"Verifiers supplies evaluation skills explicitly.\n",
-            )
-
-        if self.config.skills:
-            skill_home = f"{home}/skills"
-            for command in (
-                ["rm", "-rf", skill_home],
-                ["cp", "-R", SKILLS_DIR, skill_home],
-            ):
-                copied = await runtime.run(command, {})
-                if copied.exit_code != 0:
-                    raise RuntimeError(
-                        f"failed to stage Hermes skills: {copied.stderr.strip()[-500:]}"
-                    )
+            await runtime.write(f"{home}/.no-bundled-skills", b"")
+        await self.install_skills(runtime, f"{home}/skills")
 
         env = {
             **self.config.resolved_env,
             "HERMES_HOME": home,
-            "HERMES_ACP_SKIP_CONFIGURED_MCP": "1",
+            "HERMES_INFERENCE_MODEL": ctx.model,
         }
-        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
-        command = await runtime.prepare_uv_script(source, env)
-        calls_before = len(trace.calls)
-        result = await HERMES_ACP.run(
-            runtime,
-            env,
-            command,
-            prompt,
-            mcp_urls=mcp_urls,
+        system_prompt, prompt = self.resolve_prompt(data)
+        return ACPConfig(
+            env=env,
+            command=await runtime.prepare_uv_script(
+                PROGRAM_SOURCE.replace("{version}", self.config.version), env
+            ),
+            prompt=prompt,
             system_prompt=system_prompt,
-            session_path=f"{home}/acp-session",
         )
-        if not any(call.node is not None for call in trace.calls[calls_before:]):
-            detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"
-            raise RuntimeError(
-                "Hermes Agent completed without committing a model turn: " + detail
-            )
-        return result
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        result = await runtime.run(["rm", "-rf", self._home(trace)], {})
-        if result.exit_code != 0:
+        result = await runtime.run(["rm", "-rf", f"/tmp/vf-hermes/{trace.id}"], {})
+        if result.exit_code:
             raise RuntimeError(
                 f"failed to clean up Hermes home: {result.stderr.strip()[-500:]}"
             )
-
-    @staticmethod
-    def _home(trace: Trace) -> str:
-        return f"/tmp/vf-hermes/{trace.id}"

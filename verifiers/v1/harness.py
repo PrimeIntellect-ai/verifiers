@@ -212,8 +212,8 @@ class Harness(ABC, Generic[ConfigT]):
         trace's current branch plus `messages`) as a Messages prompt: correct for any
         stateless chat program, including the very first segment of an exchange the
         user opens (an empty branch). A harness with its own session state overrides
-        this with a native continuation (codex: `codex exec resume`) instead of
-        replaying a conversation it already owns."""
+        this or returns a specialized session handle with a native continuation
+        instead of replaying a conversation it already owns."""
         if not self.SUPPORTS_RESUME:
             raise HarnessError(
                 f"harness {self.config.id!r} cannot continue an exchange: it neither "

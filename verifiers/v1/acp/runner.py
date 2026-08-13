@@ -11,7 +11,6 @@ import signal
 import sys
 import traceback
 from contextlib import AsyncExitStack, suppress
-from pathlib import Path
 from typing import Any
 
 from acp import (
@@ -89,16 +88,13 @@ class VerifiersACPClient(Client):
         return RequestPermissionResponse(outcome=outcome)
 
 
-def content_blocks(messages: list[dict], supports_images: bool) -> list:
+def user_content_blocks(contents: list, supports_images: bool) -> list:
+    """Render one user turn's ordered VF contents as ACP prompt blocks."""
     blocks = []
-    transcript = len(messages) != 1 or messages[0].get("role") != "user"
-    for message in messages:
-        if transcript:
-            separator = "\n\n" if blocks else ""
-            blocks.append(
-                text_block(f"{separator}[{message.get('role', 'message')}]\n")
-            )
-        content = message.get("content") or ""
+    for index, content in enumerate(contents):
+        if index:
+            blocks.append(text_block("\n\n"))
+        content = content or ""
         parts = (
             [{"type": "text", "text": content}] if isinstance(content, str) else content
         )
@@ -118,13 +114,6 @@ def content_blocks(messages: list[dict], supports_images: bool) -> list:
             ):
                 raise ValueError("ACP image prompts require base64 data:image URLs")
             blocks.append(image_block(data, media_type))
-        metadata = {
-            key: value
-            for key, value in message.items()
-            if key not in ("role", "content") and value
-        }
-        if metadata:
-            blocks.append(text_block("\n" + json.dumps(metadata, ensure_ascii=False)))
     return blocks
 
 
@@ -133,26 +122,6 @@ def mcp_servers(config: dict) -> list[HttpMcpServer]:
         HttpMcpServer(type="http", name=name, url=url, headers=[])
         for name, url in config["mcp_urls"].items()
     ]
-
-
-def segment_messages(config: dict, is_new: bool) -> list[dict]:
-    messages = config["messages"]
-    if not is_new:
-        last_assistant = max(
-            (
-                index
-                for index, message in enumerate(messages)
-                if message.get("role") == "assistant"
-            ),
-            default=-1,
-        )
-        messages = messages[last_assistant + 1 :]
-    if is_new and config["system_prompt"]:
-        messages = [
-            {"role": "system", "content": config["system_prompt"]},
-            *messages,
-        ]
-    return messages
 
 
 async def prompt(
@@ -166,7 +135,10 @@ async def prompt(
 ) -> str:
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
-    blocks = content_blocks(segment_messages(config, is_new), supports_images)
+    blocks = []
+    if is_new and config["system_prompt"]:
+        blocks.append(text_block(f"(system)\n{config['system_prompt']}\n\n[user]\n"))
+    blocks.extend(user_content_blocks(config["user_contents"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
     client.reset()
@@ -209,66 +181,7 @@ async def prompt(
     return client.visible_reply
 
 
-async def run_once(config: dict) -> str:
-    client = VerifiersACPClient()
-    command = config["command"]
-    async with spawn_agent_process(
-        client,
-        command[0],
-        *command[1:],
-        env=os.environ.copy(),
-        transport_kwargs={"stderr": None},
-    ) as agent_process:
-        connection = agent_process[0]
-        initialized = await connection.initialize(
-            protocol_version=PROTOCOL_VERSION,
-            client_capabilities=ClientCapabilities(),
-        )
-        capabilities = initialized.agent_capabilities
-        session_path = Path(config["session_path"]) if config["session_path"] else None
-        session_meta = config["session_meta"]
-        is_new = session_path is None or not session_path.exists()
-        servers = mcp_servers(config)
-        if is_new:
-            session = await connection.new_session(
-                cwd=os.getcwd(), mcp_servers=servers, **session_meta
-            )
-            session_id = session.session_id
-        else:
-            session_id = session_path.read_text().strip()
-            session_capabilities = capabilities and capabilities.session_capabilities
-            if session_capabilities and session_capabilities.resume is not None:
-                await connection.resume_session(
-                    cwd=os.getcwd(),
-                    session_id=session_id,
-                    mcp_servers=servers,
-                    **session_meta,
-                )
-            elif capabilities and capabilities.load_session:
-                await connection.load_session(
-                    cwd=os.getcwd(),
-                    session_id=session_id,
-                    mcp_servers=servers,
-                    **session_meta,
-                )
-            else:
-                raise RuntimeError("ACP agent does not support resuming sessions")
-
-        reply = await prompt(
-            client,
-            connection,
-            capabilities,
-            session_id,
-            config,
-            is_new=is_new,
-        )
-        if session_path and is_new:
-            session_path.parent.mkdir(parents=True, exist_ok=True)
-            session_path.write_text(session_id)
-        return reply
-
-
-class LiveACPSession:
+class ACPSession:
     """One live ACP process, connection, and session shared by several turns."""
 
     def __init__(self) -> None:
@@ -280,10 +193,6 @@ class LiveACPSession:
         self.connection: Any = None
         self.capabilities: Any = None
         self.session_id: str | None = None
-        self.command: list[str] | None = None
-        self.server_urls: dict[str, str] | None = None
-        self.system_prompt: str | None = None
-        self.session_meta: dict | None = None
         self.is_new = True
 
     async def start(self, config: dict) -> None:
@@ -315,22 +224,11 @@ class LiveACPSession:
             self._reset()
             raise
         self.session_id = session.session_id
-        self.command = command
-        self.server_urls = config["mcp_urls"]
-        self.system_prompt = config["system_prompt"]
-        self.session_meta = config["session_meta"]
         self.is_new = True
 
     async def run(self, config: dict) -> str:
         if self.connection is None:
             await self.start(config)
-        elif (
-            config["command"] != self.command
-            or config["mcp_urls"] != self.server_urls
-            or config["system_prompt"] != self.system_prompt
-            or config["session_meta"] != self.session_meta
-        ):
-            raise RuntimeError("ACP session configuration changed")
         assert self.session_id is not None
         reply = await prompt(
             self.client,
@@ -383,8 +281,7 @@ def write_packet(stream: Any, value: dict) -> None:
 
 
 async def serve_stream() -> None:
-    session = LiveACPSession()
-    closed = False
+    session = ACPSession()
     reader = asyncio.StreamReader()
     protocol = asyncio.StreamReaderProtocol(reader)
     await asyncio.get_running_loop().connect_read_pipe(
@@ -402,7 +299,6 @@ async def serve_stream() -> None:
                     }
                 elif operation == "shutdown":
                     await session.close()
-                    closed = True
                     stop = True
                     response = {"ok": True}
                 else:
@@ -417,32 +313,18 @@ async def serve_stream() -> None:
             if stop:
                 break
     finally:
-        if not closed:
-            await session.close()
-
-
-def read_config(path_value: str) -> dict:
-    path = Path(path_value)
-    config = json.loads(path.read_text())
-    path.unlink()
-    return config
+        await session.close()
 
 
 async def main() -> None:
-    operation = sys.argv[1]
-    if operation == "once":
-        sys.stdout.write(await run_once(read_config(sys.argv[2])))
-    elif operation == "stream":
-        task = asyncio.current_task()
-        loop = asyncio.get_running_loop()
-        if task is not None:
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                with suppress(NotImplementedError):
-                    loop.add_signal_handler(sig, task.cancel)
-        with suppress(asyncio.CancelledError):
-            await serve_stream()
-    else:
-        raise ValueError(f"unknown ACP runner operation: {operation!r}")
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    if task is not None:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            with suppress(NotImplementedError):
+                loop.add_signal_handler(sig, task.cancel)
+    with suppress(asyncio.CancelledError):
+        await serve_stream()
 
 
 if __name__ == "__main__":

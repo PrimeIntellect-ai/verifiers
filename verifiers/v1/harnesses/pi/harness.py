@@ -3,23 +3,21 @@
 import json
 import logging
 import shlex
+from typing import Literal
 
 from pydantic import Field
 
-from verifiers.v1.acp import ACP
+from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-PROVIDER = "intercept"
 KEY_VAR = "PI_INTERCEPT_KEY"
-HOME_VAR = "VF_PI_ORIGINAL_HOME"
 
 PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
@@ -29,16 +27,7 @@ MCP_VERSION = "2.20.1"
 ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
-ACP_COMMAND = [
-    "sh",
-    "-c",
-    (
-        f'export {HOME_VAR}="$HOME"; '
-        'PI_CODING_AGENT_DIR="$PWD/$PI_CODING_AGENT_DIR"; '
-        'export PI_CODING_AGENT_DIR HOME="$PI_CODING_AGENT_DIR"; '
-        f'export PATH="{NODE_BIN_DIR}:$PATH"; exec {ACP_BIN}'
-    ),
-]
+ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 
 INSTALL = r"""
 set -e
@@ -55,47 +44,19 @@ if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
 fi
 """
 
-# Isolate pi-mcp-adapter discovery while it registers, then restore the task home.
-MCP_WRAPPER = f"""
-export default async function isolatedMcp(pi) {{
-  const agentDir = process.env.PI_CODING_AGENT_DIR;
-  const cwd = process.cwd();
-  process.chdir(agentDir);
-  process.env.HOME = agentDir;
-  try {{
-    const {{ default: mcpAdapter }} = await import("{MCP_ADAPTER}");
-    const isolatedPi = {{
-      ...pi,
-      on(event, handler) {{
-        pi.on(
-          event,
-          event === "session_start"
-            ? (event, ctx) => handler(event, {{ ...ctx, cwd: agentDir }})
-            : handler,
-        );
-      }},
-    }};
-    mcpAdapter(isolatedPi);
-  }} finally {{
-    process.chdir(cwd);
-    process.env.HOME = process.env.{HOME_VAR};
-    delete process.env.{HOME_VAR};
-  }}
-}}
-""".strip()
-
-PI_ACP = ACP()
-
 
 class PiHarnessConfig(HarnessConfig):
     version: str = Field(default="0.84.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Pi release to install, pinned for reproducibility."""
+    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
+        "chat_completions"
+    )
+    """Model API transport."""
 
 
-class PiHarness(Harness[PiHarnessConfig]):
+class PiHarness(ACPHarness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
-    SUPPORTS_RESUME = True
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
@@ -129,9 +90,9 @@ class PiHarness(Harness[PiHarnessConfig]):
         )
         if install.exit_code != 0:
             raise RuntimeError(f"pi install failed: {install.stderr.strip()[-500:]}")
-        await PI_ACP.setup(self, runtime)
+        await super().setup(runtime)
 
-    async def launch(
+    async def prepare_acp(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -140,33 +101,49 @@ class PiHarness(Harness[PiHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
-    ) -> ProgramResult:
+    ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         agent_dir = f".vf-pi-agent-{trace.id}"
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
         ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
+        provider, separator, model = ctx.model.partition("/")
+        if not separator:
+            provider, model = "openai", ctx.model
+        api = {
+            "chat_completions": "openai-completions",
+            "responses": "openai-responses",
+            "anthropic_messages": "anthropic-messages",
+        }[self.config.transport]
+        base_url = (
+            endpoint.removesuffix("/v1")
+            if self.config.transport == "anthropic_messages"
+            else endpoint
+        )
+        model_config = {
+            "id": model,
+            "reasoning": reasoning,
+            "input": ["text", "image"],
+            **(
+                {"compat": {"sessionAffinityFormat": "openai-nosession"}}
+                if self.config.transport == "responses"
+                else {}
+            ),
+        }
         models = {
             "providers": {
-                PROVIDER: {
-                    "baseUrl": endpoint,
-                    "api": "openai-completions",
+                provider: {
+                    "baseUrl": base_url,
+                    "api": api,
                     "apiKey": f"${KEY_VAR}",
-                    "models": [
-                        {
-                            "id": ctx.model,
-                            "reasoning": reasoning,
-                            "input": ["text", "image"],
-                        }
-                    ],
+                    "models": [model_config],
                 }
             }
         }
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
 
         mcp_args: list[str] = []
-        restore_home = f'export HOME="${HOME_VAR}"; unset {HOME_VAR}; '
         if mcp_urls:
             extension_path = f"{agent_dir}/mcp.js"
             mcp = {
@@ -175,15 +152,13 @@ class PiHarness(Harness[PiHarnessConfig]):
                     for name, url in mcp_urls.items()
                 }
             }
-            await runtime.write(f"{agent_dir}/mcp.json", json.dumps(mcp).encode())
-            await runtime.write(extension_path, MCP_WRAPPER.encode())
-            mcp_args = [
-                "--extension",
-                extension_path,
-                "--mcp-config",
-                f"{agent_dir}/mcp.json",
-            ]
-            restore_home = ""
+            extension = (
+                f'import {{ createMcpAdapter }} from "{MCP_ADAPTER}";\n'
+                "export default createMcpAdapter({ config: "
+                f"JSON.parse({json.dumps(json.dumps(mcp))}) }});\n"
+            )
+            await runtime.write(extension_path, extension.encode())
+            mcp_args = ["--extension", extension_path]
 
         env = {
             **self.config.resolved_env,
@@ -202,9 +177,9 @@ class PiHarness(Harness[PiHarnessConfig]):
             PI_BIN,
             "--no-approve",
             "--provider",
-            PROVIDER,
+            provider,
             "--model",
-            ctx.model,
+            model,
             *mcp_args,
             *skill_args,
         ]
@@ -215,16 +190,16 @@ class PiHarness(Harness[PiHarnessConfig]):
         pi_wrapper = f"{agent_dir}/pi"
         await runtime.write(
             pi_wrapper,
-            f'#!/bin/sh\n{restore_home}exec {shlex.join(pi_args)} "$@"\n'.encode(),
+            f'#!/bin/sh\nexec {NODE_BIN_DIR}/node {shlex.join(pi_args)} "$@"\n'.encode(),
         )
         await runtime.run(["chmod", "+x", pi_wrapper], {})
         env["PI_ACP_PI_COMMAND"] = pi_wrapper
-        return await PI_ACP.run(
-            runtime,
-            env,
-            ACP_COMMAND,
-            prompt,
-            session_path=f"{agent_dir}/acp-session",
+        return ACPConfig(
+            env=env,
+            command=ACP_COMMAND,
+            prompt=prompt,
+            # Pi's extension owns the task-scoped MCP configuration.
+            mcp_urls={},
             # Pi can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
         )

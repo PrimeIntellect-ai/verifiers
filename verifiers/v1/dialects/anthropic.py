@@ -40,13 +40,20 @@ STOP_REASONS = {
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
 }
-THINKING = ("thinking", "redacted_thinking")
+# Claude may reorder mixed thinking block types between a response and its replay.
+THINKING = ("redacted_thinking", "thinking")
 
 
 def parse_content(content) -> str | list[ContentPart]:
     """Anthropic user-side content (text + image blocks) -> typed content parts."""
     if isinstance(content, str):
         return content
+    if (
+        isinstance(content, list)
+        and len(content) == 1
+        and content[0].get("type") == "text"
+    ):
+        return content[0].get("text", "")
     parts: list[ContentPart] = []
     for block in content or []:
         if block.get("type") == "text":
@@ -77,6 +84,7 @@ def parse_messages(body: dict) -> Messages:
                 else content or []
             )
             state = [block for block in blocks if block["type"] in THINKING]
+            state.sort(key=lambda block: THINKING.index(block["type"]))
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             reasoning = "".join(
                 b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
@@ -125,6 +133,7 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     data = message.model_dump()
     blocks = data.get("content") or []
     state = [block for block in blocks if block["type"] in THINKING]
+    state.sort(key=lambda block: THINKING.index(block["type"]))
     content: list[str] = []
     reasoning: list[str] = []
     calls: list[ToolCall] = []
