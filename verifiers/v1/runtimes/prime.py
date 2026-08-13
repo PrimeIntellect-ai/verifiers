@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import os
 import shlex
 import tempfile
 from collections.abc import AsyncIterator
@@ -39,6 +40,14 @@ MAX_LIFETIME = 24 * 60 * 60
 """Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
 
+def base_labels() -> list[str]:
+    """Sandbox labels injected by the launching process via comma-separated
+    ``VF_SANDBOX_LABELS`` (e.g. a trainer stamps its run name so every sandbox of a
+    run is findable on the platform). Config labels extend these."""
+    raw = os.environ.get("VF_SANDBOX_LABELS", "")
+    return [label for label in (part.strip() for part in raw.split(",")) if label]
+
+
 class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
@@ -54,7 +63,7 @@ class PrimeConfig(NetworkPolicyConfig):
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = Field(default_factory=list)
-    """Labels attached to the sandbox."""
+    """Labels attached to the sandbox, extending any base labels from ``VF_SANDBOX_LABELS``."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = 1.0
     """CPU cores."""
@@ -175,7 +184,9 @@ class PrimeRuntime(Runtime):
                 sandbox = await self._client.create(
                     CreateSandboxRequest(
                         name=self.name,
-                        labels=self.config.labels,
+                        labels=list(
+                            dict.fromkeys([*base_labels(), *self.config.labels])
+                        ),
                         docker_image=self.config.image,
                         vm=self.config.vm,
                         guaranteed=self.config.guaranteed,
