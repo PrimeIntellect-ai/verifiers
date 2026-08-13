@@ -147,6 +147,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         provider, _, _ = ctx.model.partition("/")
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
+        skills_dir = f"{state_dir}/skills"
         config = {
             # Provider replay state must remain byte-exact in this isolated rollout transcript.
             "logging": {"redactSensitive": "off"},
@@ -195,11 +196,19 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             },
         }
         if self.config.skills:
-            config["skills"] = {"load": {"extraDirs": [self._staged_skills_dir]}}
+            config["skills"] = {"load": {"extraDirs": [skills_dir]}}
         if not self.config.use_bundled_skill:
             # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
             config.setdefault("skills", {})["allowBundled"] = ["__none__"]
         await runtime.write(config_path, json.dumps(config).encode())
+        if self.config.skills:
+            copied = await runtime.run(
+                ["cp", "-R", self._staged_skills_dir, skills_dir], {}
+            )
+            if copied.exit_code != 0:
+                raise RuntimeError(
+                    f"failed to isolate OpenClaw skills: {copied.stderr.strip()[-500:]}"
+                )
 
         env = {
             **self.config.resolved_env,
