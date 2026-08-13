@@ -8,22 +8,54 @@ budget (turns / tokens), checked between turns.
 """
 
 import asyncio
+import inspect
 import logging
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import get_origin, get_type_hints
 
 from pydantic import TypeAdapter
 
+from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.trace import Trace
-
-if TYPE_CHECKING:
-    from verifiers.v1.errors import RolloutError
+from verifiers.v1.errors import RolloutError, TaskError
+from verifiers.v1.trace import InterceptRecord, Trace
+from verifiers.v1.types import (
+    AssistantMessage,
+    Messages,
+    Request,
+    Response,
+    ToolMessage,
+    UserMessage,
+)
+from verifiers.v1.utils.decorators import invoke
 
 logger = logging.getLogger(__name__)
+
+
+def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
+    """Select a hook boundary solely from its annotated parameters."""
+    hints = get_type_hints(handler)
+    annotations = [
+        get_origin(hints[name]) or hints[name]
+        for name in inspect.signature(handler).parameters
+        if name in hints
+    ]
+    boundaries = [kind for kind in annotations if kind in (Request, Response)]
+    if len(boundaries) == 1 and annotations.count(Trace) <= 1:
+        return boundaries[0]
+    if not boundaries and allow_trace and annotations.count(Trace) == 1:
+        return Trace
+    expected = "Request, Response, or Trace" if allow_trace else "Request or Response"
+    raise TypeError(f"{handler.__name__} must have exactly one {expected} parameter")
+
+
+async def call_hook(handler: Callable, available: dict[type, object]) -> object:
+    result = invoke(handler, available)
+    return await result if inspect.isawaitable(result) else result
 
 
 @dataclass(frozen=True)
@@ -68,8 +100,14 @@ class RolloutSession:
     trace: Trace
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     """The resolved execution policy, including task-level restrictions."""
-    stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
+    trace_stops: list[Callable[..., Awaitable[bool] | bool]] = field(
+        default_factory=list
+    )
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    request_interceptors: list[Callable] = field(default_factory=list)
+    response_interceptors: list[Callable] = field(default_factory=list)
+    request_stops: list[Callable] = field(default_factory=list)
+    response_stops: list[Callable] = field(default_factory=list)
     client: Client | None = None
     """The model client serving this rollout's turns. The interception server assigns it at
     `register` (one server-owned client per distinct endpoint config), so every rollout it
@@ -80,22 +118,12 @@ class RolloutSession:
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
     last_request: bytes | None = None
-    """Digest of the most recently served request body; with `last_response`, the replay cache
-    that keeps the message graph atomic under harness-SDK retries. A retry re-sends the
-    byte-identical request; when it matches, the interception server replays the recorded
-    response instead of re-sampling and committing a second turn — which would fork the graph
-    into a dead-end branch. Only a fully served request is cached, so a genuinely failed attempt
-    still re-runs. Turns are issued sequentially (one outstanding request at a time), so a retry
-    is always of the most recent request — keeping only the last one is sufficient and bounded."""
+    """Digest of the most recently served request body. Together with `last_response`, this
+    replays the common SDK retry of the latest completed exchange without re-sampling it."""
     last_response: dict | None = None
     """The response returned for `last_request`, replayed verbatim on a retry."""
     inflight: dict[bytes, "asyncio.Future[dict | None]"] = field(default_factory=dict)
-    """Body digest -> the future of the attempt currently computing it. A retry that arrives
-    while the first attempt is still in flight (a slow turn) awaits this future instead of
-    starting a second inference — the other half of retry atomicity (with `last_response`, which
-    covers a retry after the attempt finished). Because a slow turn is coalesced rather than
-    re-sampled, retries stay safe without an inflated client timeout. The future resolves to the
-    served response, or to None if the attempt produced no servable response (error/refuse)."""
+    """Body digest -> the response currently computing, used to coalesce an in-flight retry."""
     released: bool = False
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record
@@ -104,6 +132,230 @@ class RolloutSession:
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
+    prepared_tool_results: dict[str, ToolMessage] = field(default_factory=dict)
+    prepared_users: Counter[str] = field(default_factory=Counter)
+
+    @property
+    def stopped(self) -> bool:
+        return self.trace.stop_condition is not None
+
+    async def rewrite_request(
+        self, request: Request, *, run_stops: bool = True
+    ) -> tuple[Request, list[InterceptRecord], str | None]:
+        """Run typed request interceptors and stops over one canonical request."""
+        if not self.request_interceptors and (not run_stops or not self.request_stops):
+            return request, [], None
+        turn = graph.prepare_turn(self.trace, request.messages)
+        prepared_users = self.prepared_users.copy()
+        prepared: set[int] = set()
+        candidates: set[int] = set()
+        for position in range(turn.tail_start, len(request.messages)):
+            message = request.messages[position]
+            if isinstance(message, UserMessage):
+                candidates.add(position)
+                key = graph.message_hash(message)
+                if prepared_users[key]:
+                    prepared_users[key] -= 1
+                    prepared.add(position)
+            elif isinstance(message, ToolMessage):
+                candidates.add(position)
+                if self.prepared_tool_results.get(message.tool_call_id) == message:
+                    prepared.add(position)
+        already_intercepted = candidates and candidates == prepared
+
+        current = request
+        records: list[InterceptRecord] = []
+        try:
+            interceptors = [] if already_intercepted else self.request_interceptors
+            for handler in interceptors:
+                candidate = current.model_copy(deep=True)
+                result = await call_hook(
+                    handler, {Request: candidate, Trace: self.trace}
+                )
+                if result is None:
+                    continue
+                if not isinstance(result, Request):
+                    raise TypeError(f"expected Request, got {type(result).__name__}")
+                if len(result.messages) != len(current.messages):
+                    raise ValueError(
+                        "request interceptors cannot add or remove messages"
+                    )
+                if result.tools != current.tools:
+                    raise ValueError("request interceptors cannot rewrite tools")
+                for position, (before, after) in enumerate(
+                    zip(current.messages, result.messages, strict=True)
+                ):
+                    if before == after:
+                        continue
+                    if position not in candidates - prepared:
+                        raise ValueError(
+                            "request interceptors can only rewrite new user or tool messages"
+                        )
+                    if type(after) is not type(before):
+                        raise TypeError(
+                            f"expected {type(before).__name__}, got {type(after).__name__}"
+                        )
+                    if (
+                        isinstance(before, ToolMessage)
+                        and after.tool_call_id != before.tool_call_id
+                    ):
+                        raise ValueError(
+                            "request interceptors cannot change a tool-call ID"
+                        )
+                if result != current:
+                    current = result
+                    records.append(InterceptRecord(handler=handler.__name__))
+
+            stops = self.request_stops if run_stops else []
+            for stop in stops:
+                candidate = current.model_copy(deep=True)
+                result = await call_hook(stop, {Request: candidate, Trace: self.trace})
+                if not isinstance(result, bool):
+                    raise TypeError(
+                        f"@stop must return bool, got {type(result).__name__}"
+                    )
+                if result:
+                    return current, records, stop.__name__
+        except RolloutError:
+            raise
+        except Exception as error:
+            raise TaskError(
+                f"request interception failed: {type(error).__name__}: {error}"
+            ) from error
+        return current, records, None
+
+    def consume_prepared(self, messages: Messages) -> None:
+        """Forget pre-harness rewrites only after their model request commits."""
+        for message in messages:
+            if isinstance(message, UserMessage):
+                key = graph.message_hash(message)
+                if self.prepared_users[key]:
+                    self.prepared_users[key] -= 1
+            elif isinstance(message, ToolMessage):
+                self.prepared_tool_results.pop(message.tool_call_id, None)
+
+    async def prepare_users(
+        self, request: Request
+    ) -> tuple[Request, list[InterceptRecord]]:
+        """Intercept caller-owned user turns before the harness stores them."""
+        branch = self.trace.messages
+        rewritten, records, _ = await self.rewrite_request(
+            Request(messages=[*branch, *request.messages]), run_stops=False
+        )
+        tail = rewritten.messages[len(branch) :]
+        self.prepared_users.update(
+            graph.message_hash(message)
+            for message in tail
+            if isinstance(message, UserMessage)
+        )
+        return Request(messages=tail), records
+
+    async def rewrite_response(
+        self, response: Response
+    ) -> tuple[Response, list[InterceptRecord], str | None]:
+        """Run typed response interceptors and stops before harness delivery."""
+        records: list[InterceptRecord] = []
+        try:
+            for handler in self.response_interceptors:
+                candidate = response.model_copy(deep=True)
+                result = await call_hook(
+                    handler, {Response: candidate, Trace: self.trace}
+                )
+                if result is None:
+                    continue
+                if not isinstance(result, Response):
+                    raise TypeError(f"expected Response, got {type(result).__name__}")
+                if result == response:
+                    continue
+                unchanged = result.model_copy(
+                    update={
+                        "message": response.message,
+                        "finish_reason": response.finish_reason,
+                    }
+                )
+                if unchanged != response:
+                    raise ValueError(
+                        "response interceptors can only replace the assistant message"
+                    )
+                if (
+                    result.message.reasoning_content
+                    or result.message.tool_calls
+                    or result.message.provider_state
+                ):
+                    raise ValueError(
+                        "response interceptors must return an inert text-only message"
+                    )
+                response = result.model_copy(update={"finish_reason": "stop"})
+                records.append(InterceptRecord(handler=handler.__name__))
+
+            for stop in self.response_stops:
+                candidate = response.model_copy(deep=True)
+                result = await call_hook(stop, {Response: candidate, Trace: self.trace})
+                if not isinstance(result, bool):
+                    raise TypeError(
+                        f"@stop must return bool, got {type(result).__name__}"
+                    )
+                if result:
+                    return response, records, stop.__name__
+        except RolloutError:
+            raise
+        except Exception as error:
+            raise TaskError(
+                f"response interception failed: {type(error).__name__}: {error}"
+            ) from error
+        return response, records, None
+
+    async def handle_tool(self, phase: str, message: ToolMessage) -> dict:
+        """Intercept a harness-owned tool result before the harness records it."""
+        branches = [
+            branch
+            for branch in self.trace.branches
+            if branch.nodes
+            and isinstance(branch.nodes[-1].message, AssistantMessage)
+            and any(
+                call.id == message.tool_call_id
+                for call in branch.nodes[-1].message.tool_calls or []
+            )
+        ]
+        if len(branches) != 1:
+            raise TaskError(
+                f"tool call {message.tool_call_id!r} matched {len(branches)} branches"
+            )
+        branch = branches[0]
+        assistant = branch.nodes[-1].message
+        assert isinstance(assistant, AssistantMessage)
+        # Keep earlier results in the hook's trace, but commit them only when the model
+        # request arrives and can supply their token attribution.
+        previous = [
+            self.prepared_tool_results[call.id]
+            for call in assistant.tool_calls or []
+            if call.id in self.prepared_tool_results
+        ]
+        request, records, stopped = await self.rewrite_request(
+            Request(
+                messages=[*branch.messages, *previous, message],
+                tools=self.trace.tools or None,
+            )
+        )
+        candidate = request.messages[-1]
+        assert isinstance(candidate, ToolMessage)
+        self.trace.request_rewrites.extend(records)
+        if stopped is not None:
+            committed = request.messages if phase == "after" else request.messages[:-1]
+            turn = graph.prepare_turn(self.trace, committed)
+            turn.commit_prompt()
+            self.consume_prepared(turn.tail)
+            self.trace.stop(stopped)
+            return {"action": "stop", "reason": stopped}
+        if phase == "before" and candidate == message:
+            return {"action": "allow"}
+        self.prepared_tool_results[candidate.tool_call_id] = candidate
+        if candidate != message:
+            return {
+                "action": "rewrite",
+                "message": candidate.model_dump(exclude_none=True),
+            }
+        return {"action": "allow"}
 
     @cached_property
     def state_adapter(self) -> TypeAdapter:
@@ -139,8 +391,11 @@ class RolloutSession:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
             return limit
-        for stop in self.stops:
-            if await stop(self.trace):
+        for stop in self.trace_stops:
+            result = await call_hook(stop, {Trace: self.trace})
+            if not isinstance(result, bool):
+                raise TaskError(f"@stop must return bool, got {type(result).__name__}")
+            if result:
                 self.trace.stop(stop.__name__)
                 logger.debug("stop %r fired: id=%s", stop.__name__, self.trace.id)
                 return stop.__name__

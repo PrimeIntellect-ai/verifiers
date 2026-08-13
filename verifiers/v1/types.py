@@ -101,6 +101,13 @@ class Tool(BaseModel):
     strict: bool | None = None
 
 
+class Request(BaseModel):
+    """The typed conversation about to cross a model or harness boundary."""
+
+    messages: Messages
+    tools: list[Tool] | None = None
+
+
 FinishReason = Literal["stop", "length", "tool_calls"] | None
 
 

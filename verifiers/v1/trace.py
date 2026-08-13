@@ -25,6 +25,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     KeptTokens,
+    Message,
     Messages,
     Sampling,
     Tool,
@@ -123,6 +124,10 @@ class TraceTask(BaseModel, Generic[DataT]):
     """The (immutable) row being solved."""
     hash: str | None = None
     """Content hash of `data` (`Task.hash`) — the task's identity across runs."""
+
+
+class InterceptRecord(BaseModel):
+    handler: str
 
 
 class Reward(BaseModel):
@@ -364,6 +369,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph; branches are derived views and storage stays linear in turns."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
+    request_rewrites: list[InterceptRecord] = Field(default_factory=list)
+    """Request changes made by `@intercept`, in execution order."""
+    response_rewrites: list[InterceptRecord] = Field(default_factory=list)
+    """Response changes made by `@intercept`, in execution order."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -449,6 +458,19 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 )
             )
         return branches
+
+    @property
+    def messages(self) -> Messages:
+        """Messages on the final branch."""
+        branches = self.branches
+        return branches[-1].messages if branches else []
+
+    @property
+    def last_message(self) -> Message:
+        """The most recently stored message."""
+        if not self.nodes:
+            raise ValueError("trace has no messages")
+        return self.nodes[-1].message
 
     @property
     def num_branches(self) -> int:

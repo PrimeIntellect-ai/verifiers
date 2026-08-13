@@ -27,12 +27,12 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     make_runtime,
 )
-from verifiers.v1.session import RolloutLimits, RolloutSession
+from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
-from verifiers.v1.types import Messages
-from verifiers.v1.utils.decorators import invoke
+from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,11 @@ class Rollout:
         )
         if on_trace is not None:
             on_trace(self.trace)
+        interceptors = [
+            (hook_boundary(fn, allow_trace=False), fn)
+            for fn in discover_decorated(task, "intercept")
+        ]
+        stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
@@ -107,8 +112,16 @@ class Rollout:
                     else ["*"]
                 )
             ),
-            stops=task.hooks("stop"),
+            trace_stops=[fn for boundary, fn in stops if boundary is Trace],
             limits=limits,
+            request_interceptors=[
+                fn for boundary, fn in interceptors if boundary is Request
+            ],
+            response_interceptors=[
+                fn for boundary, fn in interceptors if boundary is Response
+            ],
+            request_stops=[fn for boundary, fn in stops if boundary is Request],
+            response_stops=[fn for boundary, fn in stops if boundary is Response],
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -249,15 +262,66 @@ class Rollout:
             # execution policy while preserving the framework routes the agent uses.
             await runtime.prepare_execution([self._endpoint, *self._urls.values()])
             async with boundary(HarnessError, "opening harness session"):
-                self._harness_session = await self.harness.session(
-                    self.ctx,
-                    self.trace,
-                    runtime,
-                    self._endpoint,
-                    self._secret,
-                    self._urls,
-                    self.trace.task.data,
-                )
+                harness_data = self.trace.task.data
+                if (
+                    self._session.request_interceptors
+                    and harness_data.prompt is not None
+                ):
+                    prompt = harness_data.prompt
+                    system_prompt = harness_data.system_prompt
+                    if isinstance(prompt, str):
+                        system_prompt, prompt = self.harness.resolve_prompt(
+                            harness_data
+                        )
+                    messages = (
+                        [UserMessage(content=prompt)]
+                        if isinstance(prompt, str)
+                        else list(prompt)
+                    )
+                    has_system = system_prompt is not None
+                    if has_system:
+                        messages.insert(0, SystemMessage(content=system_prompt))
+                    prepared, rewrites = await self._session.prepare_users(
+                        Request(messages=messages)
+                    )
+                    messages = prepared.messages
+                    self.trace.request_rewrites.extend(rewrites)
+                    if has_system:
+                        messages = messages[1:]
+                    rewritten_prompt = (
+                        messages[0].content
+                        if isinstance(prompt, str)
+                        and len(messages) == 1
+                        and isinstance(messages[0], UserMessage)
+                        and isinstance(messages[0].content, str)
+                        else messages
+                    )
+                    harness_data = harness_data.model_copy(
+                        update={
+                            "prompt": rewritten_prompt,
+                            "system_prompt": system_prompt,
+                        }
+                    )
+                if not self._session.stopped:
+                    session_kwargs = (
+                        {"tool_interception_url": f"{runtime.host_url(base_url)}/tool"}
+                        if self.harness.SUPPORTS_TOOL_INTERCEPTION
+                        and (
+                            self._session.request_interceptors
+                            or self._session.request_stops
+                        )
+                        else {}
+                    )
+                    self._harness_session = await self.harness.session(
+                        self.ctx,
+                        self.trace,
+                        runtime,
+                        self._endpoint,
+                        self._secret,
+                        self._urls,
+                        harness_data,
+                        **session_kwargs,
+                    )
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
@@ -270,7 +334,7 @@ class Rollout:
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
-        return True
+        return not self._session.stopped
 
     async def step(self, messages: Messages | None = None) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
@@ -295,6 +359,14 @@ class Rollout:
         try:
             async with asyncio.timeout_at(self.deadline_at):
                 assert self._harness_session is not None
+                if messages is not None and self._session.request_interceptors:
+                    prepared, rewrites = await self._session.prepare_users(
+                        Request(messages=messages)
+                    )
+                    messages = prepared.messages
+                    self.trace.request_rewrites.extend(rewrites)
+                    if self._session.stopped:
+                        return False
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget —
@@ -311,6 +383,8 @@ class Rollout:
                 self.fail(e)
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
+            if self._session.stopped:
+                return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e

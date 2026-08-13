@@ -20,7 +20,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import BaseModel
 from pydantic_core import from_json
 
-from verifiers.v1.types import Messages, Response, Sampling, SamplingConfig, Tool
+from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
@@ -193,8 +193,8 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         content. Returned paths never contain request values."""
 
     @abstractmethod
-    def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
-        """The native request -> vf prompt + tools (for the trace)."""
+    def parse_request(self, body: ReqT) -> Request:
+        """The native request -> the typed model request."""
 
     def parse_sampling(self, body: ReqT) -> Sampling:
         """The native request's call settings -> the canonical `Sampling` (for the
@@ -211,6 +211,18 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def validate_response(self, raw: dict) -> RespT:
         """Validate a native response, normalizing provider-compatible extensions if needed."""
         return self.response_type.model_validate(raw)
+
+    @abstractmethod
+    def rewrite_request(self, body: ReqT, before: Request, after: Request) -> None:
+        """Patch rewritten user/tool messages into the native conversation."""
+
+    @abstractmethod
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        """Replace the native assistant response with inert text."""
+
+    @abstractmethod
+    def stream_events(self, raw: dict) -> list[bytes]:
+        """Serialize a rewritten response as a minimal native SSE stream."""
 
     @abstractmethod
     def stream_parser(self) -> StreamParser:

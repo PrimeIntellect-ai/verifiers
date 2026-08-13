@@ -30,6 +30,7 @@ from verifiers.v1.types import (
     ImageUrlContentPart,
     ImageUrlSource,
     Messages,
+    Request,
     Response,
     Sampling,
     SamplingConfig,
@@ -196,6 +197,37 @@ def mediate_content(value, path: str):
             continue
         mediated.append(block)
     return mediated, capabilities
+
+
+def content_to_wire(content) -> str | list[dict]:
+    """Typed text/image content in Anthropic's native request shape."""
+    if isinstance(content, str):
+        return content
+    blocks = []
+    for part in content:
+        if isinstance(part, TextContentPart):
+            blocks.append({"type": "text", "text": part.text})
+            continue
+        metadata, separator, data = part.image_url.url.partition(",")
+        if separator and metadata.startswith("data:") and metadata.endswith(";base64"):
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": metadata[5:-7],
+                        "data": data,
+                    },
+                }
+            )
+        else:
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {"type": "url", "url": part.image_url.url},
+                }
+            )
+    return blocks
 
 
 def parse_messages(body: dict) -> Messages:
@@ -380,7 +412,9 @@ class AnthropicStreamParser(StreamParser):
         for index, parts in self.partial_json.items():
             self.blocks[index]["input"] = json.loads("".join(parts) or "{}")
         self.message["content"] = [self.blocks[index] for index in sorted(self.blocks)]
-        return response_from_wire(self.validate_response(self.message))
+        response = response_from_wire(self.validate_response(self.message))
+        response.raw = self.message
+        return response
 
 
 class ModdedUsage(AnthropicUsage):
@@ -480,6 +514,12 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
         append_user_notice(mediated.setdefault("messages", []))
         return mediated, capabilities
 
+    def is_terminal_event(self, chunk: bytes) -> bool:
+        return any(
+            line.removeprefix(b"event:").strip() == b"message_stop"
+            for line in chunk.splitlines()
+        )
+
     def auth_headers(self, api_key: str) -> dict[str, str]:
         return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
 
@@ -493,9 +533,7 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
-    def parse_request(
-        self, body: MessageCreateParams
-    ) -> tuple[Messages, list[Tool] | None]:
+    def parse_request(self, body: MessageCreateParams) -> Request:
         tools = [
             Tool(
                 name=t["name"],
@@ -505,10 +543,103 @@ class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
             for t in body.get("tools") or []
             if "input_schema" in t  # skip server tools (web_search etc.)
         ] or None
-        return parse_messages(body), tools
+        return Request(messages=parse_messages(body), tools=tools)
 
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
+
+    def rewrite_request(self, body: dict, before: Request, after: Request) -> None:
+        original = [
+            m for m in before.messages if isinstance(m, (UserMessage, ToolMessage))
+        ]
+        rewritten = [
+            m for m in after.messages if isinstance(m, (UserMessage, ToolMessage))
+        ]
+        targets: list[tuple[dict, dict | None]] = []
+        for native in body.get("messages", []):
+            if native.get("role") == "assistant":
+                continue
+            content = native.get("content")
+            if isinstance(content, str):
+                targets.append((native, None))
+                continue
+            blocks = content or []
+            targets.extend(
+                (native, block)
+                for block in blocks
+                if block.get("type") == "tool_result"
+            )
+            if any(block.get("type") != "tool_result" for block in blocks):
+                targets.append((native, None))
+
+        for (native, block), old, new in zip(targets, original, rewritten, strict=True):
+            if old == new:
+                continue
+            if block is not None:
+                block["content"] = content_to_wire(new.content)
+                continue
+            replacement = content_to_wire(new.content)
+            if isinstance(native.get("content"), str):
+                native["content"] = replacement
+                continue
+            replacement = (
+                [{"type": "text", "text": replacement}]
+                if isinstance(replacement, str)
+                else replacement
+            )
+            blocks = native.get("content") or []
+            updated = []
+            inserted = False
+            for current in blocks:
+                if current.get("type") == "tool_result":
+                    updated.append(current)
+                elif not inserted:
+                    updated.extend(replacement)
+                    inserted = True
+            native["content"] = updated
+
+    def rewrite_response(self, raw: dict, text: str) -> None:
+        raw["content"] = [{"type": "text", "text": text}]
+        raw["stop_reason"] = "end_turn"
+        raw["stop_sequence"] = None
+
+    def stream_events(self, raw: dict) -> list[bytes]:
+        def event(kind: str, payload: dict) -> bytes:
+            return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
+
+        text = raw["content"][0]["text"]
+        head = {**raw, "content": [], "stop_reason": None, "stop_sequence": None}
+        if isinstance(usage := head.get("usage"), dict):
+            head["usage"] = {**usage, "output_tokens": 0}
+        return [
+            event("message_start", {"type": "message_start", "message": head}),
+            event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            ),
+            event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": text},
+                },
+            ),
+            event("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            event(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": raw.get("usage") or {},
+                },
+            ),
+            event("message_stop", {"type": "message_stop"}),
+        ]
 
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)

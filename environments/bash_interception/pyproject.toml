@@ -1,0 +1,13 @@
+[project]
+name = "bash-interception"
+version = "0.1.0"
+description = "Stop or replace Bash tool calls before they execute."
+requires-python = ">=3.11"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bash_interception"]

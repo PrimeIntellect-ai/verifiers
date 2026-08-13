@@ -40,9 +40,9 @@ class TaskConfig(BaseConfig):
     """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
 
     stops: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
-    """Stop conditions `(trace) -> bool` plugged by name, merged with the task's
-    `@vf.stop` methods (a plugged function replaces a decorated one with the same
-    name)."""
+    """Typed `Request`, `Response`, or `Trace` stop predicates plugged by name and
+    merged with the task's `@vf.stop` methods (a plugged function replaces a
+    decorated one with the same name)."""
     metrics: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
     """Metrics `(task, trace, runtime) -> float` plugged by name, merged with the
     task's `@vf.metric` methods."""
