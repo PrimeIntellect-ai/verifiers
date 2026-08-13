@@ -4,12 +4,12 @@ import asyncio
 import contextlib
 import json
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, RolloutError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.task import TaskData
@@ -47,6 +47,7 @@ class ACP:
         prompt: str | Messages | None,
         system_prompt: str | None = None,
         session_meta: dict | None = None,
+        on_error: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> "ACPHarnessSession":
         """Create a persistent ACP-backed handle owned by one rollout."""
         return ACPHarnessSession(
@@ -63,6 +64,7 @@ class ACP:
             prompt=prompt,
             system_prompt=system_prompt,
             session_meta=session_meta,
+            on_error=on_error,
         )
 
     async def run(
@@ -184,6 +186,7 @@ class ACPHarnessSession(HarnessSession):
         prompt: str | Messages | None,
         system_prompt: str | None,
         session_meta: dict | None,
+        on_error: Callable[[BaseException], Awaitable[None]] | None,
     ) -> None:
         super().__init__(harness, ctx, trace, runtime, endpoint, secret, mcp_urls, data)
         self.env = env
@@ -191,6 +194,7 @@ class ACPHarnessSession(HarnessSession):
         self.prompt = prompt
         self.system_prompt = system_prompt
         self.session_meta = session_meta or {}
+        self.on_error = on_error
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
         self._stderr_tail = bytearray()
@@ -217,6 +221,21 @@ class ACPHarnessSession(HarnessSession):
 
     def _stderr(self) -> str:
         return self._stderr_tail.decode(errors="replace").strip()
+
+    async def _raise_error(self, error: BaseException) -> None:
+        if not isinstance(error, Exception):
+            raise error
+        if self.on_error is not None:
+            try:
+                await self.on_error(error)
+            except Exception:
+                # Diagnostics must never replace the rollout's authoritative
+                # attribution. Untyped errors may intentionally be enriched by
+                # the callback, but a typed error is already ready for capture.
+                if isinstance(error, RolloutError):
+                    raise error
+                raise
+        raise error
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
         prompt = self.prompt if messages is None else messages
@@ -249,14 +268,14 @@ class ACPHarnessSession(HarnessSession):
                     _packet({"operation": "prompt", "config": config})
                 )
                 response = await self._reader.read()
-            except BaseException:
+            except BaseException as error:  # noqa: BLE001 - shield cleanup, then re-raise
                 await run_shielded(self._stop(graceful=False))
-                raise
+                await self._raise_error(error)
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
-            raise RuntimeError(detail)
+            await self._raise_error(RuntimeError(detail))
         return ProgramResult(exit_code=0, stdout=response.get("reply", ""), stderr="")
 
     async def _stop(self, *, graceful: bool) -> None:
