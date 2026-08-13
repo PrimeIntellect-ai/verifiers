@@ -31,6 +31,7 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.utils.prime import ensure_prime_auth
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class PrimeConfig(NetworkPolicyConfig):
     ~10 minutes) and caches the result, so later sandboxes on the same ref start in
     seconds."""
     workdir: str = "/app"
-    vm: bool = False
+    vm: bool = True
     """Run as a micro-VM rather than a container (kernel features / stronger isolation)."""
     guaranteed: bool = False
     """Request guaranteed (vs best-effort) capacity."""
@@ -125,6 +126,7 @@ class PrimeRuntime(Runtime):
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
+        ensure_prime_auth()
         super().__init__(name)
         self.config = config
         self.info = PrimeRuntimeInfo(**config.model_dump())
