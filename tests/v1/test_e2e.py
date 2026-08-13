@@ -116,6 +116,8 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.num_turns == 1
     assert trace.stop_condition == "agent_completed"
     assert trace.reward == 1.0
+    assert trace.task.key == f"echo:{trace.task.data.answer}"
+    assert trace.task.hash is not None
     # The seat's resolved identity rides the trace (policy metadata for trainers).
     assert trace.agent is not None
     assert trace.agent.config.sampling.max_tokens == 2048

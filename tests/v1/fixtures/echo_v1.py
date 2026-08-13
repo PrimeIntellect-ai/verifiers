@@ -30,6 +30,10 @@ class EchoData(vf.TaskData):
 
 
 class EchoTask(vf.Task[EchoData]):
+    @property
+    def key(self) -> str:
+        return f"echo:{self.data.answer}"
+
     @vf.stop
     async def single_turn(self, trace: vf.Trace) -> bool:
         return trace.num_turns >= 1

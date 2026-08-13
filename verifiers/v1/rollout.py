@@ -83,6 +83,7 @@ class Rollout:
             task=TraceTask(
                 type=type(task).__name__,
                 data=task.data,
+                key=task.key,
                 hash=task.hash,
             ),
             state=state_cls(type(task))(),

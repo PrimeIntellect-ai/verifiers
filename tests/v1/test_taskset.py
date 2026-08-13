@@ -37,7 +37,9 @@ def test_head_bounds_an_infinite_taskset() -> None:
 
 def test_iteration_materializes_a_finite_taskset() -> None:
     taskset = FiniteTaskset(vf.TasksetConfig())
-    assert len(list(taskset)) == 10
+    tasks = list(taskset)
+    assert len(tasks) == 10
+    assert all(task.key == task.hash for task in tasks)
     assert idxs(taskset.head(4)) == [0, 1, 2, 3]
 
 
