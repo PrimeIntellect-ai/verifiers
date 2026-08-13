@@ -19,13 +19,13 @@ from verifiers.v1.clients import (
     ModelContext,
 )
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
-    NetworkPolicyConfig,
     Runtime,
     RuntimeConfig,
     SubprocessConfig,

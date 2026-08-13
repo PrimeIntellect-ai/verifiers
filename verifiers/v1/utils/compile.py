@@ -5,9 +5,9 @@ them at construction where the pairing is statically decidable."""
 import logging
 from collections.abc import Collection
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
-    NetworkPolicyConfig,
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,

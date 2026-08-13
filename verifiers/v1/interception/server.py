@@ -39,7 +39,10 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
-from verifiers.v1.dialects.base import is_sse_done_event
+from verifiers.v1.dialects.base import (
+    PROVIDER_CAPABILITY_POLICY_CODE,
+    is_sse_done_event,
+)
 from verifiers.v1.errors import (
     OverlongPromptError,
     ProviderError,
@@ -54,7 +57,7 @@ from verifiers.v1.interception.tunnel import (
     make_tunnel,
 )
 from verifiers.v1.session import RolloutSession
-from verifiers.v1.trace import Error, ModelCall, TimeSpan
+from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Messages, Response, Tool, Usage
 
 logger = logging.getLogger(__name__)
@@ -258,6 +261,21 @@ class InterceptionServer(Interception):
             status=getattr(error, "status_code", 502),
         )
 
+    def mediate_capabilities(
+        self, session: RolloutSession, dialect: Dialect, body: dict
+    ) -> tuple[dict, list[str]]:
+        if not session.network_policy.network_restricted:
+            return body, []
+        mediated, capabilities = dialect.mediate_external_capabilities(body)
+        capabilities = list(dict.fromkeys(capabilities))
+        if capabilities:
+            logger.warning(
+                "interception removed provider capabilities: id=%s paths=%s",
+                session.trace.id,
+                ",".join(capabilities),
+            )
+        return mediated, capabilities
+
     def record_call(
         self,
         session: RolloutSession,
@@ -269,6 +287,7 @@ class InterceptionServer(Interception):
         finish_reason: "FinishReason" = None,
         usage: "Usage | None" = None,
         error: BaseException | None = None,
+        policy_paths: list[str] | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -310,6 +329,12 @@ class InterceptionServer(Interception):
                     if isinstance(error, ProviderError)
                     else "".join(traceback.format_exception(error)),
                 ),
+                policy=PolicyEvent(
+                    code=PROVIDER_CAPABILITY_POLICY_CODE,
+                    paths=policy_paths,
+                )
+                if policy_paths
+                else None,
             )
         )
 
@@ -331,6 +356,8 @@ class InterceptionServer(Interception):
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
+        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        body, policy_paths = self.mediate_capabilities(session, dialect, body)
         streaming = dialect.streaming(body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
@@ -355,7 +382,15 @@ class InterceptionServer(Interception):
         # coalescing cache, as it was before in-flight retries were introduced.
         if streaming:
             prompt, tools = dialect.parse_request(body)
-            return await self._stream(request, session, dialect, body, prompt, tools)
+            return await self._stream(
+                request,
+                session,
+                dialect,
+                body,
+                prompt,
+                tools,
+                policy_paths,
+            )
 
         async def coalesced(inflight: "asyncio.Future[dict | None]") -> web.Response:
             # Await the first attempt instead of re-sampling. None means it produced no servable
@@ -423,7 +458,6 @@ class InterceptionServer(Interception):
                 )
             turn = graph.prepare_turn(session.trace, prompt)
             session.error = None
-            upstream_request: dict | None = None
             call_response: Response | None = None
             node: int | None = None
             error: Exception | None = None
@@ -432,13 +466,9 @@ class InterceptionServer(Interception):
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
-                    upstream_request = dialect.apply_overrides(
-                        body, session.ctx.model, session.ctx.sampling
-                    )
                     call_response = await session.client.get_response(
                         dialect,
                         body,
-                        session.ctx.model,
                         session.ctx.sampling,
                         headers=request.headers,
                         session_id=session.trace.id,
@@ -502,7 +532,7 @@ class InterceptionServer(Interception):
                 self.record_call(
                     session,
                     dialect,
-                    upstream_request,
+                    body,
                     started,
                     node=node,
                     finish_reason=call_response.finish_reason
@@ -510,6 +540,7 @@ class InterceptionServer(Interception):
                     else None,
                     usage=call_response.usage if call_response else None,
                     error=error,
+                    policy_paths=policy_paths,
                 )
             return serve(call_response)
         finally:
@@ -529,6 +560,7 @@ class InterceptionServer(Interception):
         body: dict,
         prompt: Messages,
         tools: list[Tool] | None = None,
+        policy_paths: list[str] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         incrementally assembling the response to record on the trace (the only client that
@@ -550,7 +582,6 @@ class InterceptionServer(Interception):
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
         session.error = None
-        upstream_request: dict | None = None
         reply = None
         response: Response | None = None
         node: int | None = None
@@ -559,14 +590,9 @@ class InterceptionServer(Interception):
         started = time.time()
         try:
             try:
-                upstream_request = dialect.apply_overrides(
-                    body, session.ctx.model, session.ctx.sampling
-                )
                 reply = await session.client.relay(
                     dialect,
                     body,
-                    session.ctx.model,
-                    session.ctx.sampling,
                     headers=request.headers,
                     session_id=session.trace.id,
                 )
@@ -679,6 +705,21 @@ class InterceptionServer(Interception):
                         await resp.write(event)
                     await resp.write_eof()
             return resp
+        except OverlongPromptError as e:
+            # A streamed terminal provider failure is discovered only after its response body
+            # was relayed. Context exhaustion remains a clean truncation like earlier failures.
+            error = e
+            session.trace.stop("context_length")
+            logger.debug("prompt too long: id=%s", session.trace.id)
+            return resp
+        except RolloutError as e:
+            # A streamed terminal provider failure is discovered only after the
+            # response body has been relayed. Keep it off the graph and preserve
+            # the typed cause for the rollout if the native SDK does not retry it.
+            if node is None:
+                error = e
+                session.error = e
+            raise
         except BaseException as e:
             # Anything that propagates (a mid-relay upstream failure, a parser or commit
             # error, a cancellation) ends a real exchange; couple it to the record unless
@@ -692,12 +733,13 @@ class InterceptionServer(Interception):
             self.record_call(
                 session,
                 dialect,
-                upstream_request,
+                body,
                 started,
                 node=node,
                 finish_reason=response.finish_reason if response is not None else None,
                 usage=response.usage if response is not None else None,
                 error=error,
+                policy_paths=policy_paths,
             )
 
     async def handle_aux(
@@ -711,8 +753,11 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
+            body = await request.json()
+            body["model"] = session.ctx.model
+            body = self.mediate_capabilities(session, dialect, body)[0]
             result = await session.client.relay_aux(
-                dialect, route, await request.json(), headers=request.headers
+                dialect, route, body, headers=request.headers
             )
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.

@@ -15,10 +15,10 @@ from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
-    NetworkPolicyConfig,
     ProgramResult,
     Runtime,
     RuntimeProcess,

@@ -9,13 +9,22 @@ parsing reads the `output` items. Relay-only: the eval client forwards the progr
 
 import json
 from collections import deque
+from typing import cast
 
 from openai.types.responses import (
     ResponseUsage,
 )
+from openai.types.responses.response_create_params import ResponseCreateParams
 from pydantic import BaseModel, ConfigDict
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    append_user_notice,
+    blocked_url,
+    iter_sse_reverse,
+)
+from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -45,6 +54,42 @@ _TERMINAL_MARKERS = tuple(
 )
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
+# Client tools return calls to the harness; every other type may execute at the provider.
+_CLIENT_TOOL_TYPES = (
+    "function",
+    "custom",
+    "local_shell",
+    "apply_patch",
+    "computer",
+    "computer_use_preview",
+)
+_CLIENT_TOOL_CHOICES = (*_CLIENT_TOOL_TYPES, "namespace", "tool_search", "shell")
+_SAFE_INPUT_TYPES = (
+    "input_text",
+    "input_file",
+    "input_image",
+    "computer_screenshot",
+    "output_text",
+    "refusal",
+    "computer_call",
+    "function_call",
+    "custom_tool_call",
+    "reasoning",
+    "compaction",
+    "tool_search_call",
+    "local_shell_call",
+    "local_shell_call_output",
+    "shell_call",
+    "shell_call_output",
+    "apply_patch_call",
+    "apply_patch_call_output",
+    "compaction_trigger",
+)
+TEXT_TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
+BLANK_PNG = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR42mNk+M/wHwAF/gL+Xw4AAAAASUVORK5CYII="
+)
 
 
 class ProviderUsageInputTokensDetails(BaseModel):
@@ -96,6 +141,115 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
+def mediate_tools(tools, path: str) -> tuple[list[dict], list[str]]:
+    if tools is not None and not isinstance(tools, list):
+        return [], [path]
+    mediated = []
+    capabilities = []
+    for index, tool in enumerate(tools or []):
+        item_path = f"{path}[{index}]"
+        if not isinstance(tool, dict):
+            capabilities.append(item_path)
+            continue
+        kind = tool.get("type")
+        if kind in _CLIENT_TOOL_TYPES:
+            mediated.append(tool)
+            continue
+        if kind == "namespace":
+            nested, removed = mediate_tools(tool.get("tools"), f"{item_path}.tools")
+            capabilities.extend(removed)
+            if nested:
+                mediated.append({**tool, "tools": nested})
+            continue
+        if kind == "tool_search" and tool.get("execution") == "client":
+            mediated.append(tool)
+            continue
+        environment = tool.get("environment")
+        if (
+            kind == "shell"
+            and isinstance(environment, dict)
+            and environment.get("type") == "local"
+        ):
+            mediated.append(tool)
+            continue
+        capabilities.append(f"{item_path}.type")
+    return mediated, capabilities
+
+
+def blocked_content_path(value, path: str) -> str | None:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if blocked := blocked_content_path(item, f"{path}[{index}]"):
+                return blocked
+        return None
+    if not isinstance(value, dict):
+        return None
+
+    kind = value.get("type")
+    caller = value.get("caller")
+    if caller is not None and not (
+        isinstance(caller, dict) and caller.get("type") == "direct"
+    ):
+        return f"{path}.caller.type"
+    if kind == "input_file":
+        if value.get("file_id"):
+            return f"{path}.file_id"
+        if "file_url" in value:
+            if not isinstance(value["file_url"], str) or blocked_url(value["file_url"]):
+                return f"{path}.file_url"
+        elif not isinstance(value.get("file_data"), str):
+            return f"{path}.file_data"
+    elif kind in ("input_image", "computer_screenshot"):
+        if value.get("file_id"):
+            return f"{path}.file_id"
+        if not isinstance(value.get("image_url"), str) or blocked_url(
+            value["image_url"]
+        ):
+            return f"{path}.image_url"
+
+    if kind == "reasoning" and value.get("id") and not value.get("encrypted_content"):
+        return f"{path}.id"
+    if kind == "item_reference" or kind is None and set(value) == {"id"}:
+        return f"{path}.id"
+
+    if kind == "tool_search_call" and value.get("execution") != "client":
+        return f"{path}.execution"
+    if kind == "shell_call":
+        environment = value.get("environment")
+        if not (isinstance(environment, dict) and environment.get("type") == "local"):
+            return f"{path}.environment"
+    if kind in ("additional_tools", "tool_search_output"):
+        if kind == "tool_search_output" and value.get("execution") != "client":
+            return f"{path}.execution"
+        _, removed = mediate_tools(value.get("tools"), f"{path}.tools")
+        return removed[0] if removed else None
+
+    if kind in (
+        "computer_call_output",
+        "function_call_output",
+        "custom_tool_call_output",
+    ):
+        return blocked_content_path(value.get("output"), f"{path}.output")
+    if kind in (None, "message") and "role" in value and "content" in value:
+        return blocked_content_path(value["content"], f"{path}.content")
+    return None if kind in _SAFE_INPUT_TYPES else f"{path}.type"
+
+
+def mediate_content(value, path: str):
+    if not isinstance(value, list):
+        blocked = blocked_content_path(value, path)
+        return ("", [blocked]) if blocked else (value, [])
+
+    mediated = []
+    capabilities = []
+    for index, part in enumerate(value):
+        if blocked := blocked_content_path(part, f"{path}[{index}]"):
+            capabilities.append(blocked)
+            continue
+        mediated.append(part)
+    return mediated, capabilities
+
+
 def fold_assistant(items: list[dict]) -> AssistantMessage:
     """One run of assistant-side items -> one typed assistant message."""
     content = ""
@@ -136,6 +290,27 @@ def response_from_wire(response: OpenAIResponse) -> Response:
     """An OpenAI Responses object -> a vf `Response` (its `output` items folded into one
     assistant message)."""
     data = response.model_dump()
+    status = data.get("status")
+    if status not in (None, "completed", "incomplete"):
+        error = data.get("error") or {}
+        code = error.get("code") if isinstance(error, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        detail = ": ".join(str(value) for value in (status, code, message) if value)
+        if code == "context_length_exceeded":
+            raise OverlongPromptError(
+                f"upstream Responses request did not complete: {detail}"
+            )
+        status_code = (
+            429
+            if code in ("rate_limit_exceeded", "rate_limit_error")
+            else 400
+            if code == "invalid_prompt"
+            else 502
+        )
+        raise model_error(
+            f"upstream Responses request did not complete: {detail}",
+            status_code=status_code,
+        )
     content = ""
     reasoning: list[str] = []
     calls: list[ToolCall] = []
@@ -217,7 +392,7 @@ class ResponsesStreamParser(StreamParser):
         raise ValueError("Responses stream ended without a terminal event")
 
 
-class ResponsesDialect(Dialect[dict, OpenAIResponse]):
+class ResponsesDialect(Dialect[ResponseCreateParams, OpenAIResponse]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -236,12 +411,121 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     upstream_path = "/responses"
     response_type = OpenAIResponse
 
+    def mediate_external_capabilities(
+        self, body: ResponseCreateParams
+    ) -> tuple[ResponseCreateParams, list[str]]:
+        mediated = body
+        capabilities: list[str] = []
+
+        for field in ("previous_response_id", "conversation"):
+            if mediated.pop(field, None) is not None:
+                capabilities.append(field)
+
+        if mediated.pop("prompt", None) is not None:
+            capabilities.append("prompt")
+        if cast(dict, mediated).pop("plugins", None) is not None:
+            capabilities.append("plugins")
+
+        raw_input = mediated.get("input")
+        if isinstance(raw_input, list):
+            safe_input = []
+            for item_index, item in enumerate(raw_input):
+                item_path = f"input[{item_index}]"
+                if not isinstance(item, dict):
+                    safe_input.append(item)
+                    continue
+                kind = item.get("type")
+                if kind in ("additional_tools", "tool_search_output"):
+                    if blocked := blocked_content_path(
+                        {**item, "tools": []}, item_path
+                    ):
+                        capabilities.append(blocked)
+                        continue
+                    item["tools"], removed = mediate_tools(
+                        item.get("tools"), f"{item_path}.tools"
+                    )
+                    capabilities.extend(removed)
+                    if kind == "tool_search_output" or item["tools"]:
+                        safe_input.append(item)
+                    continue
+                content_field = None
+                if kind in TEXT_TOOL_OUTPUT_TYPES:
+                    content_field = "output"
+                elif kind in (None, "message") and "content" in item:
+                    content_field = "content"
+
+                if content_field:
+                    content, removed = mediate_content(
+                        item.get(content_field), f"{item_path}.{content_field}"
+                    )
+                    capabilities.extend(removed)
+                    if removed:
+                        item[content_field] = content or ""
+
+                scan = {**item, content_field: []} if content_field else item
+                blocked = blocked_content_path(scan, item_path)
+                if blocked is None:
+                    safe_input.append(item)
+                else:
+                    capabilities.append(blocked)
+                    if kind == "computer_call_output" and blocked.startswith(
+                        f"{item_path}.output"
+                    ):
+                        item["output"] = {
+                            "type": "computer_screenshot",
+                            "image_url": BLANK_PNG,
+                        }
+                        safe_input.append(item)
+            mediated["input"] = safe_input
+        elif blocked := blocked_content_path(raw_input, "input"):
+            capabilities.append(blocked)
+            mediated["input"] = []
+
+        tools, tool_capabilities = mediate_tools(mediated.get("tools"), "tools")
+        capabilities.extend(tool_capabilities)
+        if "tools" in mediated:
+            mediated["tools"] = tools
+            if not tools:
+                mediated.pop("tool_choice", None)
+
+        choice = mediated.get("tool_choice")
+        valid_choice = choice is None or (
+            isinstance(choice, str) and choice in ("none", "auto", "required")
+        )
+        if isinstance(choice, dict):
+            kind = choice.get("type")
+            valid_choice = kind in _CLIENT_TOOL_CHOICES and any(
+                tool.get("type") == kind
+                and ("name" not in choice or tool.get("name") == choice["name"])
+                for tool in tools
+            )
+            if kind == "allowed_tools":
+                choice_tools, choice_capabilities = mediate_tools(
+                    choice.get("tools"), "tool_choice.tools"
+                )
+                valid_choice = not choice_capabilities
+                mediated["tool_choice"] = {**choice, "tools": choice_tools}
+        if not valid_choice:
+            capabilities.append("tool_choice")
+            mediated.pop("tool_choice")
+
+        input_items = mediated.get("input")
+        if not isinstance(input_items, list):
+            input_items = (
+                []
+                if input_items is None
+                else [{"role": "user", "content": input_items}]
+            )
+        append_user_notice(input_items, text_type="input_text", message_type="message")
+        mediated["input"] = input_items
+        return mediated, capabilities
+
     def is_terminal_event(self, chunk: bytes) -> bool:
         # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
         return any(marker in chunk for marker in _TERMINAL_MARKERS)
 
-    def parse_sampling(self, body: dict) -> Sampling:
+    def parse_sampling(self, body: ResponseCreateParams) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
         # (e.g. `summary`) as the wire sent them.
@@ -257,7 +541,9 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             settings["max_tokens"] = settings.pop("max_output_tokens")
         return Sampling.model_validate(settings)
 
-    def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
+    def parse_request(
+        self, body: ResponseCreateParams
+    ) -> tuple[Messages, list[Tool] | None]:
         prompt: Messages = []
         if instructions := body.get("instructions"):
             prompt.append(SystemMessage(content=instructions))
@@ -318,7 +604,9 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()
 
-    def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
+    def apply_overrides(
+        self, body: ResponseCreateParams, model: str, sampling: SamplingConfig
+    ) -> ResponseCreateParams:
         # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
         # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
         s = sampling.model_dump(exclude_none=True)
@@ -354,4 +642,4 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             for k, v in body.items()
             if k not in _SAMPLING_KEYS and k not in overrides
         }
-        return {**steered, **overrides}
+        return cast(ResponseCreateParams, {**steered, **overrides})

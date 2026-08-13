@@ -4,9 +4,9 @@ from typing import Annotated
 
 from pydantic import Field
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
-    NetworkPolicyConfig,
     ProgramResult,
     Runtime,
     RuntimeProcess,

@@ -10,11 +10,19 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any
+from typing import Any, cast
+from urllib.parse import urlsplit
 
 from openai.types.chat import ChatCompletion
+from openai.types.chat.completion_create_params import CompletionCreateParams
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    append_user_notice,
+    blocked_url,
+    parse_sse_event,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -43,6 +51,10 @@ class ModdedChatCompletion(ChatCompletion):
 
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
+# Client tools return calls to the harness; every other type may execute at the provider.
+_CLIENT_TOOL_TYPES = ("function", "custom")
+_SAFE_CONTENT_TYPES = ("text", "refusal", "input_audio", "image_url", "file")
+
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
@@ -310,7 +322,7 @@ class ChatStreamParser(StreamParser):
         return response_from_wire(ModdedChatCompletion.model_validate(completion))
 
 
-class ChatDialect(Dialect[dict, ChatCompletion]):
+class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -332,13 +344,138 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
             "response_format",
             "tool_choice",
             "parallel_tool_calls",
+            "extra_body",
         }
     )
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
 
-    def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
+    def mediate_external_capabilities(
+        self, body: CompletionCreateParams
+    ) -> tuple[CompletionCreateParams, list[str]]:
+        mediated = body
+        capabilities: list[str] = []
+
+        if mediated.pop("web_search_options", None) is not None:
+            capabilities.append("web_search_options")
+        if cast(dict, mediated).pop("plugins", None) is not None:
+            capabilities.append("plugins")
+
+        audio = mediated.get("audio")
+        voice = audio.get("voice") if isinstance(audio, dict) else None
+        if isinstance(voice, dict) and voice.get("id"):
+            capabilities.append("audio.voice.id")
+            mediated.pop("audio")
+            modalities = mediated.get("modalities")
+            if isinstance(modalities, list):
+                mediated["modalities"] = [
+                    item for item in modalities if item != "audio"
+                ] or ["text"]
+
+        raw_tools = mediated.get("tools")
+        tool_items = raw_tools if isinstance(raw_tools, list) else []
+        if raw_tools is not None and not isinstance(raw_tools, list):
+            capabilities.append("tools")
+        tools = []
+        for index, tool in enumerate(tool_items):
+            if (
+                isinstance(tool, dict)
+                and tool.get("type", "function") in _CLIENT_TOOL_TYPES
+            ):
+                tools.append(tool)
+            else:
+                capabilities.append(f"tools[{index}].type")
+        if "tools" in mediated:
+            mediated["tools"] = tools
+
+        choice = mediated.get("tool_choice")
+        valid_choice = choice is None or (
+            isinstance(choice, str) and choice in ("none", "auto", "required")
+        )
+        if isinstance(choice, dict):
+            kind = choice.get("type", "function")
+            valid_choice = any(
+                kind == tool.get("type", "function")
+                and isinstance(tool.get(kind), dict)
+                and isinstance(choice.get(kind), dict)
+                and tool[kind].get("name") == choice[kind].get("name")
+                for tool in tools
+            )
+            if kind == "allowed_tools":
+                allowed = choice.get("allowed_tools")
+                allowed_tools = (
+                    allowed.get("tools") if isinstance(allowed, dict) else None
+                )
+                valid_choice = isinstance(allowed_tools, list) and all(
+                    isinstance(tool, dict)
+                    and tool.get("type", "function") in _CLIENT_TOOL_TYPES
+                    for tool in allowed_tools
+                )
+        if raw_tools is not None and not tools and choice not in (None, "none"):
+            valid_choice = False
+        if not valid_choice:
+            capabilities.append(
+                "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
+            )
+            mediated.pop("tool_choice", None)
+
+        for message_index, message in enumerate(mediated.get("messages") or []):
+            if not isinstance(message, dict):
+                continue
+            if isinstance(message.get("audio"), dict) and message["audio"].get("id"):
+                path = f"messages[{message_index}].audio.id"
+                capabilities.append(path)
+                message.pop("audio")
+                if message.get("content") is None:
+                    message["content"] = ""
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            safe_content = []
+            for part_index, part in enumerate(content):
+                path = f"messages[{message_index}].content[{part_index}]"
+                capability = None
+                kind = part.get("type") if isinstance(part, dict) else None
+                if kind not in _SAFE_CONTENT_TYPES:
+                    capability = f"{path}.type"
+                elif kind == "image_url":
+                    image = part.get("image_url") or {}
+                    url = image.get("url") if isinstance(image, dict) else image
+                    if not isinstance(url, str) or blocked_url(url):
+                        capability = f"{path}.image_url.url"
+                elif kind == "file":
+                    file = part.get("file")
+                    if not isinstance(file, dict):
+                        capability = f"{path}.file"
+                    elif file.get("file_id"):
+                        capability = f"{path}.file.file_id"
+                    else:
+                        file_data = file.get("file_data")
+                        if file_data is not None and not isinstance(file_data, str):
+                            capability = f"{path}.file.file_data"
+                        elif isinstance(file_data, str):
+                            try:
+                                parsed = urlsplit(file_data)
+                            except ValueError:
+                                capability = f"{path}.file.file_data"
+                            else:
+                                if (parsed.scheme or parsed.netloc) and blocked_url(
+                                    file_data
+                                ):
+                                    capability = f"{path}.file.file_data"
+                if capability is None:
+                    safe_content.append(part)
+                else:
+                    capabilities.append(capability)
+            message["content"] = safe_content or ""
+
+        append_user_notice(mediated.setdefault("messages", []))
+        return mediated, capabilities
+
+    def parse_request(
+        self, body: CompletionCreateParams
+    ) -> tuple[Messages, list[Tool] | None]:
         messages: Messages = []
         tool_names: dict[str, str] = {}
         for raw in body.get("messages", []):
@@ -353,7 +490,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                     tool_names[call.id] = call.name
         return messages, parse_tools(body.get("tools"))
 
-    def parse_sampling(self, body: dict) -> Sampling:
+    def parse_sampling(self, body: CompletionCreateParams) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Canonicalize the max-tokens alias; when both ride the wire (an eval override
         # on top of a harness's `max_completion_tokens`), the override wins.
@@ -367,7 +504,13 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()
 
-    def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
+    def apply_overrides(
+        self, body: CompletionCreateParams, model: str, sampling: SamplingConfig
+    ) -> CompletionCreateParams:
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
-        # the sampling knobs it set (later keys win, so the eval's override the program's).
-        return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
+        # the sampling knobs it set. The selected model is authoritative even if a permissive
+        # sampling config carries an extra field named `model`.
+        return cast(
+            CompletionCreateParams,
+            {**body, **sampling.model_dump(exclude_none=True), "model": model},
+        )

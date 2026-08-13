@@ -7,13 +7,22 @@ trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded
 """
 
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import cast
 
 from anthropic.types import Message as AnthropicMessage
+from anthropic.types import MessageCreateParams
 from anthropic.types import Usage as AnthropicUsage
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    append_user_notice,
+    blocked_url,
+    parse_sse_event,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -42,6 +51,54 @@ STOP_REASONS = {
 }
 # Claude may reorder mixed thinking block types between a response and its replay.
 THINKING = ("redacted_thinking", "thinking")
+# These versioned tool families return calls to the harness; every other typed tool may execute
+# at the provider. Anchoring the pattern keeps new versions client-side without treating an
+# arbitrary dated provider tool as safe.
+_CLIENT_TOOL_TYPE = re.compile(r"(?:bash|text_editor|computer|memory)_\d{8}").fullmatch
+_CONTENT_WRAPPERS = (
+    "tool_result",
+    "code_execution_tool_result",
+    "bash_code_execution_tool_result",
+    "text_editor_code_execution_tool_result",
+    "web_search_tool_result",
+    "web_fetch_tool_result",
+    "tool_search_tool_result",
+    "mcp_tool_result",
+    "advisor_tool_result",
+    "code_execution_result",
+    "bash_code_execution_result",
+    "encrypted_code_execution_result",
+    "web_fetch_result",
+)
+_SAFE_CONTENT_TYPES = (
+    "text",
+    "image",
+    "document",
+    "tool_reference",
+    "thinking",
+    "redacted_thinking",
+    "tool_use",
+    "search_result",
+    "server_tool_use",
+    "mid_conv_system",
+    "compaction",
+    "fallback",
+    "mcp_tool_use",
+    "web_search_result",
+    "web_search_tool_result_error",
+    "web_fetch_tool_result_error",
+    "tool_search_tool_search_result",
+    "tool_search_tool_result_error",
+    "code_execution_tool_result_error",
+    "bash_code_execution_tool_result_error",
+    "text_editor_code_execution_tool_result_error",
+    "text_editor_code_execution_create_result",
+    "text_editor_code_execution_str_replace_result",
+    "text_editor_code_execution_view_result",
+    "advisor_result",
+    "advisor_redacted_result",
+    "advisor_tool_result_error",
+)
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -66,6 +123,79 @@ def parse_content(content) -> str | list[ContentPart]:
                 url = f"data:{source.get('media_type', '')};base64,{source.get('data', '')}"
             parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
     return parts
+
+
+def blocked_content_path(value, path: str) -> str | None:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if blocked := blocked_content_path(item, f"{path}[{index}]"):
+                return blocked
+        return None
+    if not isinstance(value, dict):
+        return None
+
+    kind = value.get("type")
+    caller = value.get("caller")
+    if caller is not None and not (
+        isinstance(caller, dict) and caller.get("type") == "direct"
+    ):
+        return f"{path}.caller.type"
+    if kind in ("image", "document"):
+        source_path = f"{path}.source"
+        source = value.get("source") or {}
+        if not isinstance(source, dict):
+            return source_path
+        source_kind = source.get("type")
+        if source_kind == "content":
+            return blocked_content_path(source.get("content"), f"{source_path}.content")
+        if source_kind == "url":
+            url = source.get("url")
+            if not isinstance(url, str) or blocked_url(url):
+                return f"{source_path}.url"
+        if source_kind == "file":
+            return (
+                f"{source_path}.file_id"
+                if source.get("file_id")
+                else f"{source_path}.type"
+            )
+        if source_kind not in ("base64", "text", "url"):
+            return f"{source_path}.type"
+
+    if kind in (
+        "container_upload",
+        "code_execution_output",
+        "bash_code_execution_output",
+    ) and value.get("file_id"):
+        return f"{path}.file_id"
+    if kind in _CONTENT_WRAPPERS:
+        return blocked_content_path(value.get("content"), f"{path}.content")
+    return None if kind in _SAFE_CONTENT_TYPES else f"{path}.type"
+
+
+def mediate_content(value, path: str):
+    if not isinstance(value, list):
+        blocked = blocked_content_path(value, path)
+        return ("", [blocked]) if blocked else (value, [])
+
+    mediated = []
+    capabilities = []
+    for index, block in enumerate(value):
+        item_path = f"{path}[{index}]"
+        if isinstance(block, dict) and block.get("type") in _CONTENT_WRAPPERS:
+            if blocked := blocked_content_path({**block, "content": []}, item_path):
+                capabilities.append(blocked)
+                continue
+            content, removed = mediate_content(
+                block.get("content"), f"{item_path}.content"
+            )
+            if removed:
+                block["content"] = content or ""
+                capabilities.extend(removed)
+        elif blocked := blocked_content_path(block, item_path):
+            capabilities.append(blocked)
+            continue
+        mediated.append(block)
+    return mediated, capabilities
 
 
 def parse_messages(body: dict) -> Messages:
@@ -265,7 +395,7 @@ class ModdedAnthropicMessage(AnthropicMessage):
     usage: ModdedUsage  # type: ignore[assignment]
 
 
-class AnthropicDialect(Dialect[dict, AnthropicMessage]):
+class AnthropicDialect(Dialect[MessageCreateParams, AnthropicMessage]):
     sampling_fields = frozenset(
         {
             "temperature",
@@ -283,6 +413,73 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     upstream_path = "/v1/messages"
     response_type = ModdedAnthropicMessage
 
+    def mediate_external_capabilities(
+        self, body: MessageCreateParams
+    ) -> tuple[MessageCreateParams, list[str]]:
+        mediated = body
+        capabilities: list[str] = []
+
+        for key in ("container", "mcp_servers"):
+            if mediated.pop(key, None):
+                capabilities.append(key)
+
+        system, removed = mediate_content(mediated.get("system"), "system")
+        capabilities.extend(removed)
+        if removed:
+            if system:
+                mediated["system"] = system
+            else:
+                mediated.pop("system")
+
+        for message_index, message in enumerate(mediated.get("messages") or []):
+            if not isinstance(message, dict):
+                continue
+            content, removed = mediate_content(
+                message.get("content"), f"messages[{message_index}].content"
+            )
+            capabilities.extend(removed)
+            if removed:
+                message["content"] = content or ""
+
+        raw_tools = mediated.get("tools")
+        tool_items = raw_tools if isinstance(raw_tools, list) else []
+        if raw_tools is not None and not isinstance(raw_tools, list):
+            capabilities.append("tools")
+        tools = []
+        for index, tool in enumerate(tool_items):
+            kind = tool.get("type") if isinstance(tool, dict) else None
+            if isinstance(tool, dict) and (
+                (isinstance(kind, str) and _CLIENT_TOOL_TYPE(kind))
+                or (kind in (None, "custom") and "input_schema" in tool)
+            ):
+                tools.append(tool)
+                continue
+            capabilities.append(f"tools[{index}].type")
+        if "tools" in mediated:
+            mediated["tools"] = tools
+
+        choice = mediated.get("tool_choice")
+        valid_choice = choice is None
+        if isinstance(choice, dict):
+            kind = choice.get("type")
+            valid_choice = (
+                kind == "none"
+                or bool(tools)
+                and (
+                    kind in ("auto", "any")
+                    or kind == "tool"
+                    and any(tool.get("name") == choice.get("name") for tool in tools)
+                )
+            )
+        if not valid_choice:
+            capabilities.append(
+                "tool_choice.type" if isinstance(choice, dict) else "tool_choice"
+            )
+            mediated.pop("tool_choice", None)
+
+        append_user_notice(mediated.setdefault("messages", []))
+        return mediated, capabilities
+
     def auth_headers(self, api_key: str) -> dict[str, str]:
         return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
 
@@ -296,7 +493,9 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             "error": {"type": "invalid_request_error", "message": message},
         }
 
-    def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
+    def parse_request(
+        self, body: MessageCreateParams
+    ) -> tuple[Messages, list[Tool] | None]:
         tools = [
             Tool(
                 name=t["name"],
@@ -314,7 +513,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
 
-    def parse_sampling(self, body: dict) -> Sampling:
+    def parse_sampling(self, body: MessageCreateParams) -> Sampling:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `output_config.effort` (where `apply_overrides` puts the eval's
         # reasoning effort) onto the typed knob; keep any other output-config keys.
@@ -328,7 +527,9 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
                 settings.pop("output_config")
         return Sampling.model_validate(settings)
 
-    def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
+    def apply_overrides(
+        self, body: MessageCreateParams, model: str, sampling: SamplingConfig
+    ) -> MessageCreateParams:
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
@@ -350,4 +551,4 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             for k, v in body.items()
             if k not in ("temperature", "top_p") and k not in overrides
         }
-        return {**steered, **overrides}
+        return cast(MessageCreateParams, {**steered, **overrides})

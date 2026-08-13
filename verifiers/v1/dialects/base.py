@@ -27,6 +27,45 @@ RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
+PROVIDER_CAPABILITY_POLICY_CODE = "provider_capability_unavailable"
+CAPABILITY_NOTICE = (
+    "Network protocol blocked fetching a resource. Continue without those capabilities; "
+    "use local tools or inline data already present in the conversation, and do not retry "
+    "the blocked provider-side operation."
+)
+
+
+def blocked_url(value: str) -> bool:
+    """Whether a provider-resolved resource is not inline data."""
+    return not value.lower().startswith("data:")
+
+
+def append_user_notice(
+    messages: list,
+    *,
+    text_type: str = "text",
+    message_type: str | None = None,
+) -> None:
+    """Add stable restricted-network context to the earliest user input."""
+    part = {"type": text_type, "text": CAPABILITY_NOTICE}
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            message["content"] = [*content, part]
+        elif isinstance(content, str):
+            message["content"] = (
+                f"{content}\n\n{CAPABILITY_NOTICE}" if content else CAPABILITY_NOTICE
+            )
+        else:
+            message["content"] = [part]
+        return
+    message = {"role": "user", "content": [part]}
+    if message_type is not None:
+        message["type"] = message_type
+    messages.append(message)
+
 
 def is_sse_done_event(raw: bytes) -> bool:
     """Whether one complete SSE event carries the DONE sentinel."""
@@ -148,6 +187,12 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
     @abstractmethod
+    def mediate_external_capabilities(self, body: ReqT) -> tuple[ReqT, list[str]]:
+        """Remove provider-side capabilities during restricted execution. Implementations add
+        the same policy context on every call because the agent does not retain injected request
+        content. Returned paths never contain request values."""
+
+    @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
         """The native request -> vf prompt + tools (for the trace)."""
 
@@ -174,5 +219,5 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     @abstractmethod
     def apply_overrides(self, body: ReqT, model: str, sampling: SamplingConfig) -> ReqT:
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
-        the only field mutation the proxy makes to the native JSON object. Model overlays;
-        sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
+        model overlays; sampling is authoritative (the program's sampling keys are dropped, the
+        eval's applied). Capability mediation may subsequently remove restricted fields."""

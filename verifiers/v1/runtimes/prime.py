@@ -20,11 +20,11 @@ from urllib.parse import urlsplit
 from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
-    NetworkPolicyConfig,
     ProgramResult,
     Runtime,
     RuntimeProcess,

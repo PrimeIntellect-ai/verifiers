@@ -99,8 +99,9 @@ class TaskData(BaseModel):
 
     network_allow: list[str] = Field(default_factory=lambda: ["*"])
     """Execution-time destinations requested by this task. `*` leaves the runtime
-    allowlist unchanged; a concrete list replaces a wildcard or combines with existing
-    entries. Prime runtimes accept host-level entries and require `vm=true`."""
+    allowlist unchanged; a concrete list replaces a wildcard or retains entries also
+    present in an existing allowlist. Prime runtimes accept host-level entries and
+    require `vm=true`."""
     network_block: list[str] = Field(default_factory=list)
     """Execution-time destinations denied by this task and combined with runtime
     blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker

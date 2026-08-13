@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import (
@@ -26,7 +27,6 @@ from verifiers.v1.mcp.server import (
     state_signature,
 )
 from verifiers.v1.runtimes import (
-    NetworkPolicyConfig,
     Runtime,
     make_runtime,
 )

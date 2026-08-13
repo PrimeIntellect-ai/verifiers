@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -21,6 +22,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
+    ModalConfig,
     Runtime,
     RuntimeConfig,
     make_runtime,
@@ -92,7 +94,22 @@ class Rollout:
         )
         if on_trace is not None:
             on_trace(self.trace)
-        self._session = RolloutSession(ctx, self.trace, task.hooks("stop"), limits)
+        self._session = RolloutSession(
+            ctx=ctx,
+            trace=self.trace,
+            network_policy=(
+                runtime_config
+                if isinstance(runtime_config, NetworkPolicyConfig)
+                else NetworkPolicyConfig(
+                    allow=[]
+                    if isinstance(runtime_config, ModalConfig)
+                    and not runtime_config.network_access
+                    else ["*"]
+                )
+            ),
+            stops=task.hooks("stop"),
+            limits=limits,
+        )
         self._stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None

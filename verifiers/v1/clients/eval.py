@@ -70,15 +70,14 @@ class EvalClient(Client):
         self,
         dialect: Dialect,
         body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
+        sampling: SamplingConfig,
         session_id: str | None = None,
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
             join_url(self.base_url, dialect.upstream_path),
-            dialect.apply_overrides(body, model, sampling_args),
+            body,
             self._headers(dialect, headers, session_id),
         )
         # A corrupted response (e.g. an HTML error page or a truncated body on a
@@ -164,8 +163,6 @@ class EvalClient(Client):
         self,
         dialect: Dialect,
         body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
         session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
@@ -173,7 +170,7 @@ class EvalClient(Client):
         # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
             join_url(self.base_url, dialect.upstream_path),
-            dialect.apply_overrides(body, model, sampling_args),
+            body,
             self._headers(dialect, headers, session_id),
             stream=True,
         )
