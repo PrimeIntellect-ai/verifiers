@@ -483,7 +483,9 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             try:
                 result = await runtime.run(command, {})
             except TimeoutError as error:
-                raise infrastructure_error(operation, path, "timed out", removed) from error
+                raise infrastructure_error(
+                    operation, path, "timed out", removed
+                ) from error
             except Exception as error:
                 raise infrastructure_error(
                     operation, path, f"runtime failed: {error}", removed
@@ -497,7 +499,10 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             exit_code = getattr(result, "exit_code", None)
             if isinstance(exit_code, bool) or not isinstance(exit_code, int):
                 raise infrastructure_error(
-                    operation, path, "runtime returned no authoritative exit status", removed
+                    operation,
+                    path,
+                    "runtime returned no authoritative exit status",
+                    removed,
                 )
             return result, exit_code
 
@@ -553,12 +558,17 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                     ) from error
                 if stopped is None:
                     raise infrastructure_error(
-                        "daemon stop", None, "runtime returned no authoritative result", []
+                        "daemon stop",
+                        None,
+                        "runtime returned no authoritative result",
+                        [],
                     )
                 if getattr(stopped, "timed_out", False):
                     raise infrastructure_error("daemon stop", None, "timed out", [])
                 stop_exit_code = getattr(stopped, "exit_code", None)
-                if isinstance(stop_exit_code, bool) or not isinstance(stop_exit_code, int):
+                if isinstance(stop_exit_code, bool) or not isinstance(
+                    stop_exit_code, int
+                ):
                     raise infrastructure_error(
                         "daemon stop",
                         None,
