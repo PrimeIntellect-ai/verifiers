@@ -379,7 +379,9 @@ class PendingTurn:
             if len(self.trace.nodes) == self.node_count
             else prepare_turn(self.trace, self.prompt)
         )
-        assistant_id = _commit_turn(turn, response)
+        assistant_id = _commit_turn(
+            turn, response, original=self if turn is not self else None
+        )
         if tools:
             self.trace.tools = tools
         return assistant_id
@@ -535,7 +537,9 @@ def _attribute_kept_tokens(
     node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
 
 
-def _commit_turn(turn: PendingTurn, response: Response) -> int:
+def _commit_turn(
+    turn: PendingTurn, response: Response, original: PendingTurn | None = None
+) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
@@ -559,19 +563,25 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # ids and keeps the message-hash prefix.
     prefix = turn.prefix_node_ids
     path_len = turn.path_len  # cumulative stored token length of the reused prefix
-    if tokens is not None and prefix:
-        # Compare node by node against the prompt_ids slice at the running offset (C-level list
-        # ==, short-circuits at the first divergent node) — no full concatenation materialized.
-        keep = 0
-        off = 0
-        for nid in prefix:
-            node_tokens = trace.nodes[nid].token_ids
-            if prompt_ids[off : off + len(node_tokens)] != node_tokens:
-                break
-            off += len(node_tokens)
-            keep += 1
-        prefix = prefix[:keep]
-        path_len = off
+    if tokens is not None:
+        # The original path produced this inference, so prefer it on a tie. A commit-time
+        # re-resolution wins only when a concurrent turn added a longer token-identical prefix.
+        best = -1
+        for candidate in (original, turn) if original is not None else (turn,):
+            # Compare node by node against the prompt_ids slice at the running offset (C-level
+            # list ==, short-circuits at the first divergent node) — no full concatenation.
+            keep = 0
+            off = 0
+            for nid in candidate.prefix_node_ids:
+                node_tokens = trace.nodes[nid].token_ids
+                if prompt_ids[off : off + len(node_tokens)] != node_tokens:
+                    break
+                off += len(node_tokens)
+                keep += 1
+            if keep > best:
+                prefix = candidate.prefix_node_ids[:keep]
+                path_len = off
+                best = keep
     num_reused = len(prefix)
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
