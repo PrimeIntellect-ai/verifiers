@@ -4,9 +4,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import shutil
 import sys
 import time
-import tomllib
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -18,7 +18,7 @@ from pydantic_core import from_json
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
-from verifiers.v1.cli.output import CONFIG_FILE, write_config
+from verifiers.v1.cli.output import write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_taskset_config,
@@ -26,7 +26,7 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.cli.resume import distribute, split_resume
+from verifiers.v1.cli.resume import distribute
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
@@ -51,7 +51,7 @@ ResultRow = dict[str, Any]
 USAGE = (
     "usage: uv run validate [<taskset-id>] [--only-setup | --only-gold] "
     "[-o <output-dir>] [--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       uv run validate --resume <output-dir>\n"
+    "       uv run validate @ <run-dir>/config.toml --resume   (re-run missing/errored/timed-out tasks)\n"
     "       runs persisted gold and setup-only checks per task (no model)"
 )
 
@@ -72,9 +72,10 @@ def validation_mode(config: ValidateConfig) -> str:
 
 
 def output_path(config: ValidateConfig) -> Path:
-    if config.output_dir is not None:
-        return config.output_dir
-    return Path("outputs") / f"{config.name}--validate" / config.uuid
+    """Where this run writes: `output_dir / run.dir` — the same grouping convention as
+    eval and training."""
+    assert config.run.dir is not None
+    return config.output_dir / config.run.dir
 
 
 def _write_rows(path: Path, rows: Sequence[ResultRow]) -> None:
@@ -194,18 +195,6 @@ def save_run(config: ValidateConfig, results_dir: Path, total: int) -> None:
     write_config(config, results_dir)
     (results_dir / RESULTS_FILE).write_text("")
     write_summary(results_dir, summarize([], total, validation_mode(config)))
-
-
-def load_resume_config(resume_dir: Path) -> ValidateConfig:
-    path = resume_dir / CONFIG_FILE
-    if not path.exists():
-        raise SystemExit(
-            f"--resume: no config.toml in {resume_dir} - not a validate output dir"
-        )
-    config = ValidateConfig.model_validate(tomllib.loads(path.read_text()))
-    config.resume = resume_dir
-    config.output_dir = resume_dir
-    return config
 
 
 def _classify(valid: bool, exc: BaseException | None) -> str:
@@ -385,7 +374,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     checks = "gold+setup" if mode == "all" else mode
     out = output_path(config)
     selected_keys = [task.hash for task in tasks]
-    if config.resume is None:
+    if not config.resume:
         save_run(config, out, len(tasks))
         rows: list[ResultRow] = []
         counts = [1] * len(tasks)
@@ -400,7 +389,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     ]
     logger.info(
         "%s %d/%d task(s) from %s on the %s runtime (%s)",
-        "resuming" if config.resume is not None else "validating",
+        "resuming" if config.resume else "validating",
         len(plan),
         len(tasks),
         config.name,
@@ -480,28 +469,31 @@ def main(argv: list[str] | None = None) -> None:
         with plugin_errors():
             cli(_narrow(argv))  # full option help, narrowed to the given taskset
         return
-    resume_dir, rest = split_resume(argv, "validate")
-    if resume_dir is not None:
-        if rest:
-            raise SystemExit(
-                f"{USAGE}\n--resume replays the saved config and takes no other arguments"
-            )
-        with plugin_errors():
-            config = load_resume_config(resume_dir)
-    else:
-        if not extract_id(argv, "taskset") and not references_config_file(argv):
-            raise SystemExit(
-                USAGE
-            )  # need a taskset (positional / --taskset.id) or a @ file.toml
+    if not extract_id(argv, "taskset") and not references_config_file(argv):
+        raise SystemExit(
+            USAGE
+        )  # need a taskset (positional / --taskset.id) or a @ file.toml
 
-        with plugin_errors():
-            config_type = _narrow(argv)
-            sys.argv = [
-                sys.argv[0],
-                *argv,
-            ]  # let prime-pydantic-config render help/errors
-            config = cli(config_type)
+    with plugin_errors():
+        config_type = _narrow(argv)
+        sys.argv = [
+            sys.argv[0],
+            *argv,
+        ]  # let prime-pydantic-config render help/errors
+        config = cli(config_type)
     out = output_path(config)
+    # A named run directory is re-entered only by `--resume` or wiped by `--clean`: any
+    # other write into it would overwrite the previous run's results.
+    if config.clean and not config.resume and out.exists():
+        if not out.resolve().is_relative_to(config.output_dir.resolve()):
+            raise SystemExit("--clean requires run.dir to remain under output_dir")
+        shutil.rmtree(out)
+    results_file = out / RESULTS_FILE
+    if not config.resume and results_file.exists() and results_file.stat().st_size > 0:
+        raise SystemExit(
+            f"run directory {out} already contains results - append --resume to re-run "
+            "its missing/errored tasks, overwrite it with --clean, or pick another --run.name"
+        )
     setup_logging(
         "DEBUG" if config.verbose else "INFO",
         log_file=str(out / LOG_FILE),
