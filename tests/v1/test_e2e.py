@@ -61,7 +61,6 @@ USER_RUNTIMES = [
     pytest.param("modal", marks=[mark.modal], id="harness-in-modal"),
 ]
 
-
 # ACP-backed harnesses: each must preserve an exchange across interaction segments and
 # retain MCP access after resuming. Cover every harness in the local container runtime,
 # plus remote placements for the sandbox/tunnel and native-process boundaries.
