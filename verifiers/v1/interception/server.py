@@ -413,6 +413,12 @@ class InterceptionServer(Interception):
         ):
             logger.debug("intercept replay: id=%s (retried request)", session.trace.id)
             return _completion_response(session.last_response)
+        if session.last_request == req_hash:
+            # A fresh attempt supersedes the recorded response for the same body: drop it
+            # so this attempt's own retries coalesce or re-run instead of replaying the
+            # previous turn.
+            session.last_request = None
+            session.last_response = None
 
         try:
             model_request = dialect.parse_request(body)
