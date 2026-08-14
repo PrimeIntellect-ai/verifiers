@@ -73,8 +73,12 @@ def main(argv: list[str] | None = None) -> None:
     # config a resume typically re-runs — would overwrite the previous run.
     run_path = output_path(config)
     if config.clean and not config.resume and run_path.exists():
-        if not run_path.resolve().is_relative_to(config.output_dir.resolve()):
-            raise SystemExit("--clean requires run.dir to remain under output_dir")
+        output_dir = config.output_dir.resolve()
+        resolved_run_path = run_path.resolve()
+        if resolved_run_path == output_dir or not resolved_run_path.is_relative_to(
+            output_dir
+        ):
+            raise SystemExit("--clean requires run.dir to name a child of output_dir")
         shutil.rmtree(run_path)
     traces_file = run_path / TRACES_FILE
     if not config.resume and traces_file.exists() and traces_file.stat().st_size > 0:
