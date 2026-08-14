@@ -135,6 +135,42 @@ COMPACTION_FRAMING = (
     "model, use the information in this summary to assist with your own analysis:"
 )
 
+# With a history file, the summary is licensed to be tight: raw data stays greppable, so
+# the checkpoint carries decisions and state instead of hedging with carried payloads.
+HISTORY_PROMPT_NOTE = (
+    "\nThe full transcript you are summarizing will remain available to the next LLM in a "
+    "file it can grep, so keep the summary tight and targeted — decisions, state, and next "
+    "steps. Raw data, long outputs, and exact quotes can be recovered from the file."
+)
+HISTORY_FRAMING_NOTE = (
+    "\n\nThe full transcript this summary replaced is at {path} — grep it (bash) if a "
+    "detail you need is missing from the summary."
+)
+
+
+def render_history(messages: list[dict]) -> str:
+    """Render discarded transcript messages as greppable role-tagged text."""
+    blocks = []
+    for m in messages:
+        role = m.get("role", "?")
+        parts = []
+        if m.get("reasoning_content"):
+            parts.append(f"(reasoning)\n{m['reasoning_content']}")
+        content = m.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if part.get("type") == "text":
+                    parts.append(part.get("text", ""))
+                else:
+                    parts.append(f"[{part.get('type', 'attachment')}]")
+        elif content:
+            parts.append(str(content))
+        for tc in m.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            parts.append(f"(tool call) {fn.get('name')}({fn.get('arguments', '')})")
+        blocks.append(f"[{role}]\n" + "\n".join(parts))
+    return "\n\n".join(blocks) + "\n"
+
 
 def write_diagnostics(phase: str, **values) -> None:
     path = Path(RUNTIME_DIAGNOSTICS)
@@ -1180,7 +1216,14 @@ class Driver:
 
     async def checkpoint(self, messages: list[dict], tool_schemas: list[dict]) -> None:
         keep = 2 if messages and messages[0].get("role") == "system" else 1
-        request = [*messages, {"role": "user", "content": COMPACTION_PROMPT}]
+        prompt = COMPACTION_PROMPT
+        history_path = ""
+        if self.args.history_file:
+            SPILL_DIR.mkdir(parents=True, exist_ok=True)
+            history_path = str(SPILL_DIR / f"history-{self.compactions + 1}.txt")
+            Path(history_path).write_text(render_history(messages[keep:]))
+            prompt += HISTORY_PROMPT_NOTE
+        request = [*messages, {"role": "user", "content": prompt}]
         while True:
             try:
                 completion = await self.client.chat.completions.create(
@@ -1202,10 +1245,10 @@ class Driver:
         usage = getattr(completion, "usage", None)
         if usage and usage.prompt_tokens:
             self.peak_prompt_tokens = max(self.peak_prompt_tokens, usage.prompt_tokens)
-        messages[:] = [
-            *messages[:keep],
-            {"role": "user", "content": COMPACTION_FRAMING + "\n\n" + summary},
-        ]
+        framing = COMPACTION_FRAMING + "\n\n" + summary
+        if history_path:
+            framing += HISTORY_FRAMING_NOTE.format(path=history_path)
+        messages[:] = [*messages[:keep], {"role": "user", "content": framing}]
         self.last_prompt_tokens = 0
         self.compactions += 1
         self.compaction_pending = False
@@ -1348,6 +1391,7 @@ def parse_args():
     p.add_argument("--max-subagents", type=int, default=16)
     p.add_argument("--compact-tool", action="store_true")
     p.add_argument("--context-budget-tokens", type=int, default=150_000)
+    p.add_argument("--history-file", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--max-compactions", type=int, default=MAX_COMPACTIONS)
     p.add_argument("--max-turns", type=int, default=MAX_TURNS)
     p.add_argument("--disclose-budget", action="store_true")

@@ -45,6 +45,12 @@ class RhoHarnessConfig(HarnessConfig):
     just a safety net: compacting earlier than the physical limit is how the skill gets
     practiced. 0 disables (tests only)."""
 
+    history_file: bool = True
+    """Write the transcript a checkpoint replaces to a greppable file named in the
+    framing message. Recoverable history licenses tighter summaries — the checkpoint
+    carries decisions and state, and raw data stays a grep away instead of rotting in
+    context. Off for seats where compaction-as-skill is the curriculum."""
+
     max_compactions: int = 8
     """Checkpoint compactions allowed per rollout; past the cap the transcript grows
     uncompacted."""
@@ -98,6 +104,7 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         if self.config.compact_tool:
             args.append("--compact-tool")
         args.append(f"--context-budget-tokens={self.config.context_budget_tokens}")
+        args.append("--history-file" if self.config.history_file else "--no-history-file")
         args.append(f"--max-compactions={self.config.max_compactions}")
         # One cap, owned by the framework: the box spends the budget it is measured
         # against instead of walking into a refused call.
