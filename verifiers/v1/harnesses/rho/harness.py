@@ -95,9 +95,10 @@ class RhoHarness(Harness[RhoHarnessConfig]):
         if self.config.subagents:
             args.append("--subagents")
         # One cap, owned by the framework: the box spends the budget it is measured
-        # against instead of walking into a refused call.
+        # against instead of walking into a refused call. A resumed segment gets the
+        # REMAINING allowance — the trace has already spent turns against the cap.
         if trace.agent is not None and trace.agent.config.max_turns:
-            args.append(f"--max-turns={trace.agent.config.max_turns}")
+            args.append(f"--max-turns={max(0, trace.agent.config.max_turns - trace.num_turns)}")
         if self.config.disclose_budget:
             args.append("--disclose-budget")
         if mcp_urls:

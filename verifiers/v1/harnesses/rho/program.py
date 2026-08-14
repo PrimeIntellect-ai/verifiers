@@ -213,12 +213,13 @@ _spill_counter = 0
 
 
 def _spill(text: str, label: str) -> str:
-    global _spill_counter
+    # mkstemp, not a counter: the counter resets per process, and a resumed segment
+    # (or a shared /tmp) would overwrite files an earlier transcript still names.
     SPILL_DIR.mkdir(parents=True, exist_ok=True)
-    _spill_counter += 1
-    path = SPILL_DIR / f"{label}-{_spill_counter}.txt"
-    path.write_text(text)
-    return str(path)
+    fd, path = tempfile.mkstemp(dir=SPILL_DIR, prefix=f"{label}-", suffix=".txt")
+    os.write(fd, text.encode())
+    os.close(fd)
+    return path
 
 
 def cap_output(text: str, label: str = "output") -> str:
@@ -460,7 +461,13 @@ class App:
         params = self._verbs.get(verb, [])
 
         def proxy(*args, **kwargs):
-            kwargs.update(zip(params, args))
+            if len(args) > len(params):
+                raise TypeError(f"{self._name}.{verb}() takes at most {len(params)} positional arguments ({len(args)} given)")
+            positional = dict(zip(params, args))
+            collisions = set(positional) & set(kwargs)
+            if collisions:
+                raise TypeError(f"{self._name}.{verb}() got multiple values for {sorted(collisions)}")
+            kwargs.update(positional)
             kwargs = {k: v for k, v in kwargs.items() if v is not None}
             return bridge("mcp", {"app": self._name, "verb": verb, "args": kwargs})
 
@@ -542,7 +549,8 @@ except BaseException:
 '''
 
 KERNEL_ENV_KEEP = ("PATH", "HOME", "LANG", "TERM", "TMPDIR", "PYTHONPATH", "VIRTUAL_ENV")
-KERNEL_ENV_PREFIXES = ("LC_", "UV_", "XDG_")
+# No UV_ prefix: UV_INDEX_<NAME>_PASSWORD and credential-bearing index URLs ride it.
+KERNEL_ENV_PREFIXES = ("LC_", "XDG_")
 
 
 def kernel_env() -> dict[str, str]:
@@ -768,6 +776,11 @@ async def connect_mcp(config: dict, clients: dict):
             app, _, verb = bare.partition("_")
             if not verb:
                 app, verb = "misc", bare
+            if (app, verb) in dispatch:
+                other = dispatch[(app, verb)][0]
+                raise ValueError(
+                    f"tool name collision: {app}.{verb} is served by both {other!r} and {name!r}"
+                )
             props = (tool.inputSchema or {}).get("properties", {})
             required = set((tool.inputSchema or {}).get("required", []))
             dispatch[(app, verb)] = (name, tool.name, list(props))
@@ -807,11 +820,18 @@ async def call_mcp_raw(servers, clients, server_name, raw_name, arguments):
         return text
 
 
+def _safe_component(name: str) -> str:
+    """Doc-tree names come from the task's MCP server; keep them single path components."""
+    if not name or name in (".", "..") or "/" in name or "\\" in name or name.startswith("."):
+        raise ValueError(f"unsafe tool doc path component: {name!r}")
+    return name
+
+
 def write_tool_docs(box: Path, docs: dict) -> None:
     for (app, verb), text in docs.items():
-        d = box / TOOLS_DIR / app
+        d = box / TOOLS_DIR / _safe_component(app)
         d.mkdir(parents=True, exist_ok=True)
-        (d / verb).write_text(text)
+        (d / _safe_component(verb)).write_text(text)
     if docs:
         app, verb = next(iter(docs))
         (box / TOOLS_DIR / "README").write_text(
@@ -830,11 +850,11 @@ def write_catalog_docs(box: Path, catalog: dict) -> None:
         return
     root = box / TOOLS_DIR
     for app, entry in sorted(catalog.items()):
-        directory = root / app
+        directory = root / _safe_component(app)
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "README").write_text(f"{app} — {entry['summary']}\n")
         for verb, doc in sorted(entry["verbs"].items()):
-            (directory / verb).write_text(doc)
+            (directory / _safe_component(verb)).write_text(doc)
     (root / "README").write_text(
         f"{len(catalog)} apps are documented here, one directory each. ./tools/<app>/README says\n"
         "what an app is, ./tools/<app>/<verb> documents one of its tools. The <app> names are\n"
@@ -1012,6 +1032,7 @@ class Driver:
         self.box = Path.cwd()
         self.tools: list[str] = args.tools.split(",") if args.tools else []
         self.kernel: Kernel | None = None
+        self.apps_payload: dict = {}
         self.dispatch: dict = {}
         self.servers: dict = {}
         self.clients: dict = {}
@@ -1059,6 +1080,10 @@ class Driver:
         else:
             write_tool_docs(self.box, docs)
             self.documented_apps = set(self.served_apps)
+        reserved = {"json", "completion", "agent"} & set(apps_payload)
+        if reserved:
+            raise ValueError(f"app names collide with run_code globals: {sorted(reserved)}")
+        self.apps_payload = apps_payload
         if "run_code" in self.tools:
             self.kernel = Kernel(
                 {"apps": apps_payload, "subagents": self.args.subagents}
@@ -1109,7 +1134,7 @@ class Driver:
         messages = []
         if system:
             messages.append({"role": "system", "content": str(system)})
-        body = str(prompt) + (schema_suffix("Respond with", schema) if schema else "")
+        body = str(prompt) + (schema_suffix("Respond with", schema) if schema is not None else "")
         messages.append({"role": "user", "content": body})
         problem = "no attempts left"
         for attempt in range(2):
@@ -1119,7 +1144,7 @@ class Driver:
                 model=self.args.model, messages=messages, **self._effort_kwargs()
             )
             text = completion.choices[0].message.content or ""
-            if not schema:
+            if schema is None:
                 return text
             value, problem = parse_reply(text, schema)
             if problem is None:
@@ -1137,12 +1162,12 @@ class Driver:
                 "finish the task directly",
             )
         self.subagents_spawned += 1
-        body = str(prompt) + (schema_suffix("Your final message must be", schema) if schema else "")
+        body = str(prompt) + (schema_suffix("Your final message must be", schema) if schema is not None else "")
         if session and session in self.sessions:
-            # Continue the named session: same transcript, same tool surface — the
-            # follow-up rides the context already paid for.
+            # Continue the named session: same transcript, tool surface, and kernel —
+            # the follow-up rides the context already paid for.
             stored = self.sessions[session]
-            messages, allowed = stored["messages"], stored["tools"]
+            messages, allowed, kernel = stored["messages"], stored["tools"], stored["kernel"]
             messages.append({"role": "user", "content": body})
         else:
             allowed = [t for t in self.tools if t != "compact"]
@@ -1151,40 +1176,54 @@ class Driver:
                 if unknown:
                     raise BridgeError("ValueError", f"unknown subagent tools: {unknown} (available: {allowed})")
                 allowed = [t for t in allowed if t in tools]
+            # A subagent gets its own kernel: agent() is only reachable from inside a
+            # parent cell, whose kernel is blocked in bridge() — routing sub-cells to
+            # it would corrupt the frame stream. Blank context means blank namespace.
+            kernel = Kernel({"apps": self.apps_payload, "subagents": False}) if "run_code" in allowed else None
             messages = [
-                {"role": "system", "content": self.subagent_system_prompt()},
+                {"role": "system", "content": self.subagent_system_prompt(allowed)},
                 {"role": "user", "content": body},
             ]
             if session:
-                self.sessions[session] = {"messages": messages, "tools": allowed}
-        final = await self.run_loop(
-            messages,
-            tools=allowed,
-            depth=1,
-            # No per-spawn ceiling: allocation is the policy's call; the shared budget
-            # binds, minus the reserve that keeps the parent able to act.
-            max_turns=None if self.budget.remaining is None else self.budget.remaining - (SPAWN_RESERVE_TURNS - 1),
-            effort=effort,
-        )
-        if final is None:
-            return None
-        if not schema:
-            return final
-        for _ in range(2):
-            value, problem = parse_reply(final, schema)
-            if problem is None:
-                return value
-            if self.budget.remaining is not None and self.budget.remaining < 1:
-                break
-            messages.append({"role": "user", "content": f"{problem}. Reply with only the corrected JSON."})
-            final = await self.run_loop(messages, tools=[], depth=1, max_turns=1, effort=effort)
+                self.sessions[session] = {"messages": messages, "tools": allowed, "kernel": kernel}
+        try:
+            final = await self.run_loop(
+                messages,
+                tools=allowed,
+                depth=1,
+                # No per-spawn ceiling: allocation is the policy's call; the shared budget
+                # binds, minus the reserve that keeps the parent able to act.
+                max_turns=None if self.budget.remaining is None else self.budget.remaining - (SPAWN_RESERVE_TURNS - 1),
+                effort=effort,
+                kernel=kernel,
+            )
             if final is None:
-                break
-        raise BridgeError("ValueError", "subagent did not return JSON matching the schema")
+                return None
+            if schema is None:
+                return final
+            problem = None
+            for _ in range(2):
+                value, problem = parse_reply(final, schema)
+                if problem is None:
+                    return value
+                if self.budget.remaining is not None and self.budget.remaining < 1:
+                    break
+                messages.append({"role": "user", "content": f"{problem}. Reply with only the corrected JSON."})
+                final = await self.run_loop(messages, tools=[], depth=1, max_turns=1, effort=effort, kernel=kernel)
+                if final is None:
+                    break
+            if final is not None:
+                value, problem = parse_reply(final, schema)
+                if problem is None:
+                    return value
+            raise BridgeError("ValueError", f"subagent did not return JSON matching the schema: {problem}")
+        finally:
+            if kernel is not None and not session:
+                await kernel.close()
 
     # --- native tool dispatch -------------------------------------------------------
 
-    async def execute_tool(self, name: str, arguments: dict, depth: int):
+    async def execute_tool(self, name: str, arguments: dict, depth: int, kernel: Kernel | None = None):
         if name == "read":
             return await asyncio.to_thread(
                 run_read, arguments.get("path", ""), arguments.get("offset"), arguments.get("limit"), self.box
@@ -1202,8 +1241,9 @@ class Driver:
                 run_bash, arguments.get("command", ""), arguments.get("timeout"), self.box
             )
         if name == "run_code":
-            assert self.kernel is not None
-            return await self.kernel.run_cell(
+            kernel = kernel if kernel is not None else self.kernel
+            assert kernel is not None
+            return await kernel.run_cell(
                 arguments.get("code", ""), lambda call: self.handle_call(call, depth=depth)
             )
         if name == "compact" and depth == 0:
@@ -1213,7 +1253,7 @@ class Driver:
 
     # --- prompts --------------------------------------------------------------------
 
-    def system_prompt_base(self, tools: list[str]) -> str:
+    def system_prompt_base(self, tools: list[str], advertise_agent: bool | None = None) -> str:
         parts = ["You are an agent operating in a minimal harness."]
         lines = []
         if "read" in tools:
@@ -1239,7 +1279,7 @@ class Driver:
                     "bash) and pre-bound in run_code as <app>.<verb>(...) returning Python objects."
                 )
             lines.append("`completion(prompt, schema=None)` makes one standalone model call from code.")
-            if self.args.subagents:
+            if self.args.subagents if advertise_agent is None else advertise_agent:
                 lines.append(
                     "`agent(prompt, schema=None, effort=None, tools=None, session=None)` runs a "
                     "subagent with a blank context and returns its final message (parsed when "
@@ -1255,8 +1295,10 @@ class Driver:
         parts.append(" ".join(lines))
         return "\n\n".join(p for p in parts if p)
 
-    def subagent_system_prompt(self) -> str:
-        base = self.system_prompt_base([t for t in self.tools if t != "compact"])
+    def subagent_system_prompt(self, allowed: list[str]) -> str:
+        # Built from the seat's actual surface: no advertised tools it can't call,
+        # and never agent() — depth 1 rejects it.
+        base = self.system_prompt_base(allowed, advertise_agent=False)
         return base + (
             "\n\nYou are a subagent. Work the task to completion; your final message is returned "
             "verbatim to the caller as data, not prose for a human."
@@ -1266,9 +1308,7 @@ class Driver:
 
     async def checkpoint(self, messages: list[dict], tool_schemas: list[dict]) -> None:
         keep = 2  # the protected prefix: system + the opening user message (assemble_messages)
-        SPILL_DIR.mkdir(parents=True, exist_ok=True)
-        history_path = str(SPILL_DIR / f"history-{self.compactions + 1}.txt")
-        Path(history_path).write_text(render_history(messages[keep:]))
+        history_path = _spill(render_history(messages[keep:]), "history")
         request = [*messages, {"role": "user", "content": COMPACTION_PROMPT + HISTORY_PROMPT_NOTE}]
         while True:
             try:
@@ -1282,9 +1322,13 @@ class Driver:
                 break
             except Exception as error:
                 # A compaction request that itself overflows trims oldest non-protected
-                # messages and retries until it fits (Codex's trim loop).
+                # messages and retries until it fits (Codex's trim loop). Drop one
+                # message plus any contiguous tool results, so an assistant turn with
+                # parallel tool calls never leaves orphaned tool messages behind.
                 if is_overflow_error(error) and len(request) > keep + 2:
-                    del request[keep : keep + 2]
+                    del request[keep]
+                    while keep < len(request) - 1 and request[keep].get("role") == "tool":
+                        del request[keep]
                     continue
                 raise
         summary = completion.choices[0].message.content or "(no summary available)"
@@ -1340,6 +1384,7 @@ class Driver:
         depth: int,
         max_turns: int | None,
         effort: str | None = None,
+        kernel: Kernel | None = None,
     ) -> str | None:
         """Drive one agent loop. Returns the final assistant text (None if none)."""
         tool_schemas = build_tool_schemas(tools)
@@ -1368,6 +1413,10 @@ class Driver:
                 )
             except Exception as error:
                 if depth == 0 and is_overflow_error(error) and not overflow_retried:
+                    if self.budget.remaining is not None and self.budget.remaining <= 1:
+                        # No budget for the checkpoint the retry needs: end cleanly
+                        # with what we have instead of re-sending the same request.
+                        return final
                     # A work turn rejected for context length forces a compaction and
                     # retries exactly once. The refused call cost nothing — refund it.
                     # (Assumes the interception server's ledger also skipped the refused
@@ -1397,9 +1446,11 @@ class Driver:
             msg = completion.choices[0].message
             # Append complete — reasoning included. The transcript is append-only.
             messages.append(msg.model_dump(exclude_none=True))
-            if msg.content:
-                final = msg.content
             if not msg.tool_calls:
+                # Only a tool-free reply is a final answer; preparatory text alongside
+                # tool calls must not pass as a truncated subagent's result.
+                if msg.content:
+                    final = msg.content
                 break
             for tc in msg.tool_calls:
                 try:
@@ -1409,7 +1460,12 @@ class Driver:
                 except Exception as e:  # noqa: BLE001 - malformed calls become retryable tool errors
                     out = f"invalid tool arguments ({e}) — send a JSON object matching the tool's schema"
                 else:
-                    out = await self.execute_tool(tc.function.name, arguments, depth)
+                    try:
+                        out = await self.execute_tool(tc.function.name, arguments, depth, kernel)
+                    except BridgeError as e:
+                        out = f"{tc.function.name} failed: {e}"
+                    except Exception as e:  # noqa: BLE001 - tool faults are observations, not rollout failures
+                        out = f"{tc.function.name} failed: {type(e).__name__}: {e}"
                 content = out if isinstance(out, list) else str(out)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
             if depth == 0:
@@ -1431,6 +1487,9 @@ class Driver:
     async def close(self) -> None:
         if self.kernel is not None:
             await self.kernel.close()
+        for stored in self.sessions.values():
+            if stored.get("kernel") is not None:
+                await stored["kernel"].close()
         for client in self.clients.values():
             await client.aclose()
 
