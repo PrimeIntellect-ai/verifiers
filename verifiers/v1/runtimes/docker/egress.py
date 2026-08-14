@@ -1,4 +1,4 @@
-"""In-process HTTP(S) policy proxy for network-filtered Docker runtimes."""
+"""Authenticated host bridge and HTTP(S) policy proxy for container runtimes."""
 
 import asyncio
 import base64
@@ -7,9 +7,11 @@ import hmac
 import secrets
 import socket
 import ssl
+import struct
 from dataclasses import dataclass
-from ipaddress import ip_address
-from urllib.parse import urlsplit, urlunsplit
+from ipaddress import ip_address, ip_network
+from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.request import proxy_bypass_environment
 
 import h11
 
@@ -72,6 +74,147 @@ class NetworkPolicy:
         )
 
 
+@dataclass(frozen=True)
+class _UpstreamProxy:
+    host: str
+    port: int
+    scheme: str
+    authorization: bytes | None
+    username: str | None
+    password: str | None
+
+    @property
+    def remote_dns(self) -> bool:
+        return self.scheme in ("http", "https", "socks4a", "socks5h")
+
+    @classmethod
+    def parse(cls, url: str) -> "_UpstreamProxy":
+        parsed = urlsplit(url if "://" in url else f"http://{url}")
+        schemes = {"http", "https", "socks4", "socks4a", "socks5", "socks5h"}
+        if parsed.scheme not in schemes or parsed.hostname is None:
+            raise ValueError(f"unsupported upstream proxy URL: {url!r}")
+        username = unquote(parsed.username) if parsed.username is not None else None
+        password = unquote(parsed.password or "") if username is not None else None
+        authorization = None
+        if username is not None and parsed.scheme in ("http", "https"):
+            credentials = f"{username}:{password}"
+            authorization = b"Basic " + base64.b64encode(credentials.encode())
+        return cls(
+            parsed.hostname,
+            parsed.port or {"http": 80, "https": 443}.get(parsed.scheme, 1080),
+            parsed.scheme,
+            authorization,
+            username,
+            password,
+        )
+
+
+@dataclass(frozen=True)
+class _ProxyRoute:
+    upstream: _UpstreamProxy | None = None
+    no_proxy: str | None = None
+
+
+def _proxy_bypass(host: str, no_proxy: str) -> bool:
+    if proxy_bypass_environment(host, {"no": no_proxy}):
+        return True
+    hostname = urlsplit(f"//{host}").hostname
+    if hostname is None:
+        return False
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        return False
+    for entry in no_proxy.split(","):
+        with contextlib.suppress(ValueError):
+            if address in ip_network(entry.strip(), strict=False):
+                return True
+    return False
+
+
+async def _connect_socks(
+    proxy: _UpstreamProxy,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    host: str,
+    port: int,
+) -> None:
+    username = (proxy.username or "").encode()
+    if proxy.scheme in ("socks5", "socks5h"):
+        methods = b"\x00\x02" if proxy.username is not None else b"\x00"
+        writer.write(bytes((5, len(methods))) + methods)
+        await _drain(writer)
+        version, method = await asyncio.wait_for(reader.readexactly(2), _HEADER_TIMEOUT)
+        if version != 5 or method == 0xFF:
+            raise ConnectionError("SOCKS5 proxy rejected authentication methods")
+        if method == 2:
+            password = (proxy.password or "").encode()
+            if len(username) > 255 or len(password) > 255:
+                raise ValueError("SOCKS5 proxy credentials are too long")
+            writer.write(
+                bytes((1, len(username)))
+                + username
+                + bytes((len(password),))
+                + password
+            )
+            await _drain(writer)
+            if (
+                await asyncio.wait_for(reader.readexactly(2), _HEADER_TIMEOUT)
+                != b"\x01\x00"
+            ):
+                raise ConnectionError("SOCKS5 proxy rejected credentials")
+        elif method != 0:
+            raise ConnectionError(
+                f"SOCKS5 proxy selected unsupported method ({method})"
+            )
+        try:
+            address = ip_address(host)
+            encoded_host = bytes((1 if address.version == 4 else 4,)) + address.packed
+        except ValueError:
+            encoded = host.encode("idna")
+            if len(encoded) > 255:
+                raise ValueError("SOCKS5 target hostname is too long")
+            encoded_host = bytes((3, len(encoded))) + encoded
+        writer.write(b"\x05\x01\x00" + encoded_host + struct.pack("!H", port))
+        await _drain(writer)
+        version, status, _, address_type = await asyncio.wait_for(
+            reader.readexactly(4), _HEADER_TIMEOUT
+        )
+        if version != 5 or status != 0:
+            raise ConnectionError(f"SOCKS5 proxy rejected connection ({status})")
+        length = {1: 4, 4: 16}.get(address_type)
+        if address_type == 3:
+            length = (await asyncio.wait_for(reader.readexactly(1), _HEADER_TIMEOUT))[0]
+        if length is None:
+            raise ConnectionError("SOCKS5 proxy returned an invalid address")
+        await asyncio.wait_for(reader.readexactly(length + 2), _HEADER_TIMEOUT)
+        return
+
+    suffix = b""
+    try:
+        address = ip_address(host)
+        if address.version != 4:
+            raise ValueError
+        encoded_host = address.packed
+    except ValueError:
+        if proxy.scheme != "socks4a":
+            raise ConnectionError("SOCKS4 requires an IPv4 target")
+        encoded_host = b"\x00\x00\x00\x01"
+        suffix = host.encode("idna") + b"\x00"
+    writer.write(
+        b"\x04\x01"
+        + struct.pack("!H", port)
+        + encoded_host
+        + username
+        + b"\x00"
+        + suffix
+    )
+    await _drain(writer)
+    response = await asyncio.wait_for(reader.readexactly(8), _HEADER_TIMEOUT)
+    if response[1] != 90:
+        raise ConnectionError(f"SOCKS4 proxy rejected connection ({response[1]})")
+
+
 async def _read_client_hello(
     reader: asyncio.StreamReader,
 ) -> tuple[bytes, str | None]:
@@ -117,8 +260,26 @@ class EgressProxy:
         self._authorization = b"Basic " + base64.b64encode(
             f"verifiers:{self.token}".encode()
         )
+        self._routes = {self._authorization: _ProxyRoute()}
+        self._route_tokens: dict[tuple[str, str], str] = {}
         self.server: asyncio.Server | None = None
         self.port = 0
+
+    def token_for(self, upstream: str | None, no_proxy: str | None = None) -> str:
+        if not upstream:
+            return self.token
+        key = (upstream, no_proxy or "")
+        if token := self._route_tokens.get(key):
+            return token
+        token = secrets.token_urlsafe(32)
+        authorization = b"Basic " + base64.b64encode(f"verifiers:{token}".encode())
+        try:
+            parsed = _UpstreamProxy.parse(upstream)
+        except ValueError:
+            parsed = None
+        self._routes[authorization] = _ProxyRoute(parsed, no_proxy)
+        self._route_tokens[key] = token
+        return token
 
     async def start(
         self, bind_host: str | None = None, *, listener: socket.socket | None = None
@@ -159,7 +320,13 @@ class EgressProxy:
                 ),
                 b"",
             )
-            if not hmac.compare_digest(authorization, self._authorization):
+            selected = object()
+            route: _ProxyRoute | object = selected
+            for expected, candidate in self._routes.items():
+                if hmac.compare_digest(authorization, expected):
+                    route = candidate
+                    break
+            if route is selected:
                 response_started = True
                 writer.write(
                     b"HTTP/1.1 407 Proxy Authentication Required\r\n"
@@ -168,6 +335,8 @@ class EgressProxy:
                 )
                 await _drain(writer)
                 return
+            assert isinstance(route, _ProxyRoute)
+            upstream_proxy = route.upstream
             method = request.method.decode("ascii")
             target = request.target.decode("ascii")
             connect = method == "CONNECT"
@@ -194,39 +363,95 @@ class EgressProxy:
             permitted = (connect or scheme == "http") and self.policy.permits(
                 scheme, host, port, connect=connect
             )
-            addresses = []
+            framework = any(
+                network_rule_matches(route, scheme, host, port)
+                for route in self.policy.routes
+            )
+            authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+            if (framework and host.lower() == HOST_ALIAS) or (
+                upstream_proxy is not None
+                and route.no_proxy is not None
+                and _proxy_bypass(authority, route.no_proxy)
+            ):
+                upstream_proxy = None
+            target_addresses = []
+            proxy_target = None
             if permitted:
                 dial_host = "127.0.0.1" if host.lower() == HOST_ALIAS else host
-                addresses = await asyncio.wait_for(
-                    asyncio.get_running_loop().getaddrinfo(
-                        dial_host, port, type=socket.SOCK_STREAM
-                    ),
-                    _IO_TIMEOUT,
-                )
-                framework = any(
-                    network_rule_matches(route, scheme, host, port)
-                    for route in self.policy.routes
-                )
+                if (
+                    upstream_proxy is None
+                    or not self.policy.allow_non_global
+                    or not upstream_proxy.remote_dns
+                ):
+                    target_addresses = await asyncio.wait_for(
+                        asyncio.get_running_loop().getaddrinfo(
+                            dial_host, port, type=socket.SOCK_STREAM
+                        ),
+                        _IO_TIMEOUT,
+                    )
                 if not framework and not self.policy.allow_non_global:
-                    for *_, address in addresses:
+                    for *_, address in target_addresses:
                         resolved = ip_address(address[0])
                         mapped = getattr(resolved, "ipv4_mapped", None)
                         if not (mapped or resolved).is_global:
                             permitted = False
                             break
+                if permitted and upstream_proxy is not None and target_addresses:
+                    # Keep an upstream proxy from resolving an allowed name to a private address.
+                    candidates = [address[4][0] for address in target_addresses]
+                    if upstream_proxy.scheme in ("socks4", "socks4a"):
+                        candidates = [
+                            address
+                            for address in candidates
+                            if ip_address(address).version == 4
+                        ]
+                    if (
+                        not upstream_proxy.remote_dns
+                        or not self.policy.allow_non_global
+                    ):
+                        if not candidates:
+                            permitted = False
+                        else:
+                            proxy_target = candidates[0]
             if not permitted:
                 response_started = True
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 await _drain(writer)
                 return
+            assert upstream_proxy is None or isinstance(upstream_proxy, _UpstreamProxy)
+            connect_host = (
+                upstream_proxy.host if upstream_proxy is not None else dial_host
+            )
+            connect_port = upstream_proxy.port if upstream_proxy is not None else port
+            addresses = (
+                await asyncio.wait_for(
+                    asyncio.get_running_loop().getaddrinfo(
+                        connect_host, connect_port, type=socket.SOCK_STREAM
+                    ),
+                    _IO_TIMEOUT,
+                )
+                if upstream_proxy is not None
+                else target_addresses
+            )
             for family, _, _, _, address in addresses:
                 try:
+                    tls = (
+                        ssl.create_default_context()
+                        if upstream_proxy and upstream_proxy.scheme == "https"
+                        else None
+                    )
                     upstream_reader, upstream_writer = await asyncio.wait_for(
                         asyncio.open_connection(
                             address[0],
                             address[1],
                             family=family,
                             flags=socket.AI_NUMERICHOST,
+                            ssl=tls,
+                            server_hostname=(
+                                upstream_proxy.host
+                                if upstream_proxy is not None and tls
+                                else None
+                            ),
                         ),
                         _HEADER_TIMEOUT,
                     )
@@ -235,7 +460,47 @@ class EgressProxy:
                     continue
             if upstream_reader is None or upstream_writer is None:
                 raise ConnectionError(f"could not connect to {host}:{port}")
+            socks = upstream_proxy is not None and upstream_proxy.scheme.startswith(
+                "socks"
+            )
+            if socks:
+                await _connect_socks(
+                    upstream_proxy,
+                    upstream_reader,
+                    upstream_writer,
+                    proxy_target or host,
+                    port,
+                )
             if connect:
+                if upstream_proxy is not None and not socks:
+                    if proxy_target is None:
+                        authority = request.target
+                    else:
+                        target_host = (
+                            f"[{proxy_target}]" if ":" in proxy_target else proxy_target
+                        )
+                        authority = f"{target_host}:{port}".encode("ascii")
+                    headers = [
+                        b"CONNECT " + authority + b" HTTP/1.1",
+                        b"Host: " + authority,
+                    ]
+                    if upstream_proxy.authorization is not None:
+                        headers.append(
+                            b"Proxy-Authorization: " + upstream_proxy.authorization
+                        )
+                    upstream_writer.write(b"\r\n".join(headers) + b"\r\n\r\n")
+                    await _drain(upstream_writer)
+                    response_head = await asyncio.wait_for(
+                        upstream_reader.readuntil(b"\r\n\r\n"), _HEADER_TIMEOUT
+                    )
+                    response = h11.Connection(h11.CLIENT)
+                    response.receive_data(response_head)
+                    status = response.next_event()
+                    if (
+                        not isinstance(status, h11.Response)
+                        or not 200 <= status.status_code < 300
+                    ):
+                        raise ConnectionError("upstream proxy rejected CONNECT")
                 response_started = True
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await _drain(writer)
@@ -253,7 +518,19 @@ class EgressProxy:
                     await _drain(upstream_writer)
                 await _relay(reader, writer, upstream_reader, upstream_writer)
             else:
-                path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+                if upstream_proxy is None or socks:
+                    path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+                elif proxy_target is None:
+                    path = request.target
+                else:
+                    target_host = (
+                        f"[{proxy_target}]" if ":" in proxy_target else proxy_target
+                    )
+                    if port != (443 if scheme == "https" else 80):
+                        target_host = f"{target_host}:{port}"
+                    path = urlunsplit(
+                        (scheme, target_host, parsed.path or "/", parsed.query, "")
+                    )
                 authority = f"[{host}]" if ":" in host else host
                 if port != (443 if scheme == "https" else 80):
                     authority = f"{authority}:{port}"
@@ -281,6 +558,14 @@ class EgressProxy:
                     for name, value in request.headers
                     if name.lower() not in excluded
                 ]
+                if (
+                    upstream_proxy is not None
+                    and not socks
+                    and upstream_proxy.authorization is not None
+                ):
+                    headers.append(
+                        (b"Proxy-Authorization", upstream_proxy.authorization)
+                    )
                 upstream = h11.Connection(h11.CLIENT)
                 upstream_writer.write(
                     upstream.send(

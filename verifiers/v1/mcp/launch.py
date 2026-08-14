@@ -317,12 +317,23 @@ async def reachable_url(
     runtime; `consumer_is_local` = the consumer can use a host-local URL without a tunnel.
 
     - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
-    - the server runs in a remote sandbox -> its own published URL (`expose`), reachable anywhere;
-    - else it's host-local -> localhost to a local consumer, a host tunnel to a remote one."""
+    - a non-colocated sandbox service -> its published URL (`expose`), when it has one;
+    - a host-local URL -> direct for a local consumer, through a host tunnel for a remote one."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
-    elif not service.is_local:  # in a remote sandbox → it publishes its own port
-        yield await service.expose(port)
+    elif published := await service.expose(port):
+        if consumer_is_local or not service.is_local:
+            yield published
+        else:
+            published_port = urlsplit(published).port
+            if published_port is None:
+                raise ToolsetError(
+                    f"{service.type} runtime exposed an invalid URL: {published}"
+                )
+            async with PrimeTunnel().expose(published_port) as url:
+                yield url
+    elif not service.is_local:
+        raise ToolsetError(f"{service.type} runtime did not expose service port {port}")
     elif consumer_is_local:  # local consumer → localhost, no public tunnel
         yield f"http://127.0.0.1:{port}"
     else:  # remote consumer → a host tunnel publishes the port outward
@@ -365,8 +376,9 @@ async def _serve(
             runtime = harness_runtime
         else:
             runtime = make_runtime(cfg.runtime)
-            await runtime.start()
+            runtime.configure_exposure()
             stack.push_async_callback(runtime.stop)
+            await runtime.start()
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime
