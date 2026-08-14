@@ -69,20 +69,21 @@ def main(argv: list[str] | None = None) -> None:
             "gepa optimizes one agent's prompt against per-trace rewards and can't "
             "drive a multi-agent interaction — only eval runs those"
         )
-    if config.dry_run:  # resolved + validated; write it to the output dir and exit
-        logger.info(
-            "wrote config to %s", write_config(config, output_path(config), "gepa.json")
-        )
-        return
-
-    # A named run directory is never silently reused: a second run writing into it
-    # would overwrite its results.
+    # A named run directory is never silently reused: any write into it — the dry-run
+    # config included, which would destroy the existing traces' config provenance —
+    # would overwrite the previous run.
     traces_file = output_path(config) / TRACES_FILE
     if traces_file.exists() and traces_file.stat().st_size > 0:
         raise SystemExit(
             f"run directory {output_path(config)} already contains results - "
             "pick another --run.name or delete it"
         )
+
+    if config.dry_run:  # resolved + validated; write it to the output dir and exit
+        logger.info(
+            "wrote config to %s", write_config(config, output_path(config), "gepa.json")
+        )
+        return
 
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out run still
     # runs the runner's `serving()` teardown (interception / tool-server runtimes); further
